@@ -196,4 +196,60 @@ void main() {
 
     expect(find.text('Clarification resolved.'), findsOneWidget);
   });
+
+  // ── Plan/52 — bottom sheet layout ──────────────────────────────────────────
+
+  double screenHeight(WidgetTester tester) =>
+      tester.view.physicalSize.height / tester.view.devicePixelRatio;
+
+  testWidgets('sheet opens partially, leaving the chat visible above it', (
+    tester,
+  ) async {
+    await pumpSheet(tester, request: _richRequest());
+
+    // The header sits well below the top of the screen: that gap is the chat
+    // the user needs in order to answer. A full-screen modal would put this
+    // at ~0.
+    final headerTop = tester.getTopLeft(find.text('Direction')).dy;
+    expect(headerTop, greaterThan(screenHeight(tester) * 0.25));
+
+    // Actions are pinned regardless of extent.
+    expect(submitButton(), findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, 'Cancel'), findsOneWidget);
+  });
+
+  testWidgets('focusing a text field lifts the sheet clear of the keyboard', (
+    tester,
+  ) async {
+    await pumpSheet(tester, request: _richRequest());
+    final before = tester.getTopLeft(find.text('Direction')).dy;
+
+    // showKeyboard focuses without hit-testing, so the assertion doesn't
+    // depend on the field happening to be above the fold at rest.
+    await tester.showKeyboard(find.byType(TextField).first);
+    await tester.pumpAndSettle();
+
+    final after = tester.getTopLeft(find.text('Direction')).dy;
+    expect(
+      after,
+      lessThan(before),
+      reason: 'sheet must expand so the field cannot open behind the keyboard',
+    );
+  });
+
+  testWidgets('rejection banner is on screen while the sheet is partial', (
+    tester,
+  ) async {
+    const msg = 'Not connected — check the link to Pi and retry.';
+    await pumpSheet(tester, request: _richRequest(), error: msg);
+
+    final banner = find.text(msg);
+    expect(banner, findsOneWidget);
+
+    // Pinned above the actions, so it stays readable at any extent — which is
+    // exactly when the user is looking at the chat behind the sheet.
+    final rect = tester.getRect(banner);
+    expect(rect.top, greaterThanOrEqualTo(0));
+    expect(rect.bottom, lessThanOrEqualTo(screenHeight(tester)));
+  });
 }

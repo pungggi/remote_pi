@@ -4,8 +4,18 @@ import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 
-/// Plan/51 — full-screen modal rendering an interactive `extension_ui_request`
-/// (ask_user via pi-ask).
+/// Plan/52 — sheet extents as a fraction of the available height. [_kInitial]
+/// shows the question plus a few messages of chat; a drag (or focusing a text
+/// field, see `_ExtensionUiSheetState._expandForKeyboard`) takes it to [_kMax]
+/// for long multi-question flows.
+const double _kMin = 0.35;
+const double _kInitial = 0.55;
+const double _kMax = 0.95;
+
+/// Plan/51 — renders an interactive `extension_ui_request` (ask_user via
+/// pi-ask). Plan/52 — as a draggable bottom sheet rather than a full-screen
+/// modal: the question almost always refers to what the agent just said, so
+/// covering the chat hid the very context needed to answer it.
 ///
 /// Drives the rich `ask` envelope when present (single/multi/preview options +
 /// custom text per question), else falls back to the plain SDK method
@@ -48,6 +58,11 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
   // (relay drop, pi-ask gone) doesn't strand the user on a spinner forever.
   Timer? _submitTimeout;
   bool _awaitHint = false;
+  // Plan/52 — drives the sheet extent from the grab handle and from keyboard
+  // focus. `isAttached` is false until the sheet's first layout, so every use
+  // is guarded.
+  final DraggableScrollableController _sheetController =
+      DraggableScrollableController();
 
   AskEnrichmentWire? get _ask => widget.request.ask;
 
@@ -92,7 +107,32 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
       c.dispose();
     }
     _textController.dispose();
+    _sheetController.dispose();
     super.dispose();
+  }
+
+  /// The handle is outside the scrollable, so `DraggableScrollableSheet` never
+  /// sees the drag — forward it to the controller by hand.
+  void _onHandleDrag(DragUpdateDetails d) {
+    if (!_sheetController.isAttached) return;
+    final height = MediaQuery.sizeOf(context).height;
+    final delta = d.primaryDelta;
+    if (height <= 0 || delta == null) return;
+    _sheetController.jumpTo(
+      (_sheetController.size - delta / height).clamp(_kMin, _kMax),
+    );
+  }
+
+  /// A focused text field means the keyboard is coming up. Without this the
+  /// field opens behind it whenever the sheet sits below full height.
+  void _expandForKeyboard() {
+    if (!_sheetController.isAttached) return;
+    if (_sheetController.size >= _kMax - 0.001) return;
+    _sheetController.animateTo(
+      _kMax,
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+    );
   }
 
   TextEditingController _customFor(String qid) =>
@@ -219,42 +259,107 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
     final title = widget.request.title ?? ask?.title ?? 'Clarification needed';
 
     // System back (Android) mirrors the close button: cancel the flow instead
-    // of popping the chat route underneath while the modal is still overlaid.
+    // of popping the chat route underneath while the sheet is still overlaid.
+    // Plan/52 — back still CANCELS; it deliberately does not merely collapse
+    // the sheet, so the gesture keeps the meaning verified on device for #64.
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop && !_submitting) _cancel();
       },
-      child: Material(
-        color: colors.bg,
-        child: SafeArea(
-          child: Scaffold(
-            backgroundColor: colors.bg,
-            resizeToAvoidBottomInset: true,
-            appBar: AppBar(
-              backgroundColor: colors.bg,
-              elevation: 0,
-              scrolledUnderElevation: 0,
-              leading: IconButton(
-                icon: const Icon(Icons.close),
-                tooltip: 'Cancel',
-                onPressed: _submitting ? null : _cancel,
+      child: DraggableScrollableSheet(
+        controller: _sheetController,
+        initialChildSize: _kInitial,
+        minChildSize: _kMin,
+        maxChildSize: _kMax,
+        snap: true,
+        snapSizes: const [_kMin, _kInitial, _kMax],
+        // This sheet is a Stack overlay, not a route: reaching the min extent
+        // must never try to pop anything. It leaves the tree only when the
+        // viewmodel clears the pending request.
+        shouldCloseOnMinExtent: false,
+        builder: (context, scrollController) => Material(
+          color: colors.bg,
+          elevation: 8,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            children: [
+              _buildHeader(context, title),
+              Expanded(
+                // Focus anywhere in the scrollable means a text field took the
+                // keyboard — lift the sheet before it can cover the field.
+                child: Focus(
+                  onFocusChange: (hasFocus) {
+                    if (hasFocus) _expandForKeyboard();
+                  },
+                  child: ask != null
+                      ? _buildRich(context, ask, scrollController)
+                      : _buildDegraded(context, scrollController),
+                ),
               ),
-              title: Text(title),
-            ),
-            body: ask != null
-                ? _buildRich(context, ask)
-                : _buildDegraded(context),
-            bottomNavigationBar: _buildActions(context),
+              _buildActions(context),
+            ],
           ),
         ),
       ),
     );
   }
 
-  Widget _buildRich(BuildContext context, AskEnrichmentWire ask) {
+  Widget _buildHeader(BuildContext context, String title) {
+    final colors = context.colors;
+    final text = Theme.of(context).textTheme;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onVerticalDragUpdate: _onHandleDrag,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 8, bottom: 2),
+            child: Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: colors.border,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          Row(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.close),
+                tooltip: 'Cancel',
+                onPressed: _submitting ? null : _cancel,
+              ),
+              Expanded(
+                child: Text(
+                  title,
+                  style: text.titleMedium,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 16),
+            ],
+          ),
+          Divider(height: 1, color: colors.border),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRich(
+    BuildContext context,
+    AskEnrichmentWire ask,
+    ScrollController controller,
+  ) {
     return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      // The sheet only drags from its scrollable — this controller is the one
+      // DraggableScrollableSheet handed us, so dragging the list past its top
+      // resizes the sheet instead of overscrolling.
+      controller: controller,
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       itemCount: ask.questions.length,
       separatorBuilder: (_, _) => const SizedBox(height: 24),
       itemBuilder: (context, i) => _buildQuestion(context, ask.questions[i]),
@@ -414,109 +519,123 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
     );
   }
 
-  Widget _buildDegraded(BuildContext context) {
+  Widget _buildDegraded(BuildContext context, ScrollController controller) {
     final text = Theme.of(context).textTheme;
     final message = widget.request.message ?? widget.request.title ?? '';
-    return Padding(
+    // Scrollable (not a bare Column) for the same reason as _buildRich: the
+    // drag-to-resize gesture needs the sheet's own controller, and short
+    // content must not overflow when the sheet sits at its minimum extent.
+    return ListView(
+      controller: controller,
       padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (message.isNotEmpty) ...[
-            Text(message, style: text.bodyLarge),
-            const SizedBox(height: 16),
-          ],
-          switch (widget.request.method) {
-            ExtensionUiMethod.select => RadioGroup<String>(
-              groupValue: _singleValue,
-              onChanged: (v) => setState(() => _singleValue = v),
-              child: Column(
-                children: [
-                  for (final opt in widget.request.options)
-                    RadioListTile<String>(
-                      value: opt,
-                      title: Text(opt),
-                      enabled: !_submitting,
-                    ),
-                ],
-              ),
-            ),
-            ExtensionUiMethod.input || ExtensionUiMethod.editor => TextField(
-              controller: _textController,
-              maxLines: 5,
-              enabled: !_submitting,
-              // _canSubmit reads this text; rebuild per keystroke or the
-              // Submit button never enables.
-              onChanged: (_) => setState(() {}),
-              decoration: InputDecoration(
-                hintText: widget.request.placeholder ?? '',
-                border: const OutlineInputBorder(),
-              ),
-            ),
-            ExtensionUiMethod.confirm => Text(
-              'Please confirm.',
-              style: text.titleMedium,
-            ),
-            // ChatViewModel consumes notify requests without opening this
-            // sheet. Keep the defensive enum branch empty; [message] above
-            // already renders it once if this path ever becomes reachable.
-            ExtensionUiMethod.notify => const SizedBox.shrink(),
-          },
+      children: [
+        if (message.isNotEmpty) ...[
+          Text(message, style: text.bodyLarge),
+          const SizedBox(height: 16),
         ],
-      ),
+        switch (widget.request.method) {
+          ExtensionUiMethod.select => RadioGroup<String>(
+            groupValue: _singleValue,
+            onChanged: (v) => setState(() => _singleValue = v),
+            child: Column(
+              children: [
+                for (final opt in widget.request.options)
+                  RadioListTile<String>(
+                    value: opt,
+                    title: Text(opt),
+                    enabled: !_submitting,
+                  ),
+              ],
+            ),
+          ),
+          ExtensionUiMethod.input || ExtensionUiMethod.editor => TextField(
+            controller: _textController,
+            maxLines: 5,
+            enabled: !_submitting,
+            // _canSubmit reads this text; rebuild per keystroke or the
+            // Submit button never enables.
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              hintText: widget.request.placeholder ?? '',
+              border: const OutlineInputBorder(),
+            ),
+          ),
+          ExtensionUiMethod.confirm => Text(
+            'Please confirm.',
+            style: text.titleMedium,
+          ),
+          // ChatViewModel consumes notify requests without opening this
+          // sheet. Keep the defensive enum branch empty; [message] above
+          // already renders it once if this path ever becomes reachable.
+          ExtensionUiMethod.notify => const SizedBox.shrink(),
+        },
+      ],
     );
   }
 
   Widget _buildActions(BuildContext context) {
     final colors = context.colors;
     final showError = widget.error != null && widget.error!.isNotEmpty;
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (showError)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Text(
-                  widget.error!,
-                  style: TextStyle(color: colors.error, fontSize: 13),
+    // Pinned to the sheet's bottom at every extent, so the error banner stays
+    // readable with the sheet collapsed — which is exactly when the user is
+    // looking at the chat behind it. There is no Scaffold here any more, so
+    // `resizeToAvoidBottomInset` can't lift the buttons: pad by the keyboard
+    // inset by hand or Submit/Cancel open behind the keyboard.
+    final keyboard = MediaQuery.viewInsetsOf(context).bottom;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.bg,
+        border: Border(top: BorderSide(color: colors.border)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(16, 8, 16, 12 + keyboard),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (showError)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    widget.error!,
+                    style: TextStyle(color: colors.error, fontSize: 13),
+                  ),
+                )
+              else if (_awaitHint)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    'No response from Pi yet — retry or cancel.',
+                    style: TextStyle(fontSize: 13),
+                  ),
                 ),
-              )
-            else if (_awaitHint)
-              const Padding(
-                padding: EdgeInsets.only(bottom: 8),
-                child: Text(
-                  'No response from Pi yet — retry or cancel.',
-                  style: TextStyle(fontSize: 13),
-                ),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: _submitting ? null : _cancel,
+                      child: const Text('Cancel'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: (_canSubmit && !_submitting) ? _submit : null,
+                      child: _submitting
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Submit'),
+                    ),
+                  ),
+                ],
               ),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: _submitting ? null : _cancel,
-                    child: const Text('Cancel'),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: FilledButton(
-                    onPressed: (_canSubmit && !_submitting) ? _submit : null,
-                    child: _submitting
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Text('Submit'),
-                  ),
-                ),
-              ],
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
