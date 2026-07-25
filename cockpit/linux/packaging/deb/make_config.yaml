@@ -35,6 +35,6 @@ keywords:
   - agent
   - cockpit
 startup_notify: true
-startup_wm_class: work.jacobmoura.cockpit
+startup_wm_class: ch.pungitore.piper.cockpit
 icon: linux/runner/resources/app_icon_512.png
-metainfo: linux/work.jacobmoura.cockpit.metainfo.xml
+metainfo: linux/ch.pungitore.piper.cockpit.metainfo.xml

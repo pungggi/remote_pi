@@ -17,16 +17,21 @@ import { canonicalizeEd25519PublicKey } from "../mesh/encoding.js";
  * file-backed store at `~/.pi/remote/identity.json` with `0o600`
  * permissions and the parent dir at `0o700`.
  *
- * **Migration**: previous builds used `keytar` against service
- * `dev.remotepi.mac`. This module reads from the old service if the new
- * service is empty, copies the entry to the new service `dev.remotepi.pi`,
- * and deletes the old one. Both keytar and `@napi-rs/keyring` address the
- * same OS-level credential store on every supported platform, so the read
- * succeeds without keeping the deprecated `keytar` dependency.
+ * **Migration**: the upstream project used `keytar` against a `*.mac`
+ * service and migrates it into the current `*.pi` one — reading the old
+ * service when the new is empty, copying the entry over, then deleting the
+ * old. This fork keeps the mechanism but points both ends at its own
+ * namespace, so the migration is inert here: no `ch.pungitore.piper.mac`
+ * entry has ever been written.
+ *
+ * It must stay that way. Pointing OLD_SERVICE back at the upstream
+ * `dev.remotepi.mac` would make this fork adopt a Remote Pi installation's
+ * Pi identity **and delete it**, breaking that installation's pairing. The
+ * two products are meant to coexist on one machine.
  */
 
-const NEW_SERVICE = "dev.remotepi.pi";  // platform-neutral
-const OLD_SERVICE = "dev.remotepi.mac"; // legacy keytar service (pre-2026-05-25)
+const NEW_SERVICE = "ch.pungitore.piper.pi";  // platform-neutral
+const OLD_SERVICE = "ch.pungitore.piper.mac"; // legacy keytar service (pre-2026-05-25)
 const ACCOUNT = "longterm-ed25519";
 
 /**
@@ -200,9 +205,9 @@ async function _writeKeypairToFile(kp: Ed25519Keypair): Promise<void> {
  *      it first would mask the file identity — returning a DIFFERENT key, or
  *      (when the keyring is empty) minting a fresh one and persisting it —
  *      silently breaking the existing pairing. So when both exist, file wins.
- *   2. New keyring service `dev.remotepi.pi` (read retried — a transiently
+ *   2. New keyring service `ch.pungitore.piper.pi` (read retried — a transiently
  *      locked Keychain throws; we don't treat that as "no key")
- *   3. Old keyring service `dev.remotepi.mac` (migrate → step 2, delete old)
+ *   3. Old keyring service `ch.pungitore.piper.mac` (migrate → step 2, delete old)
  *   4. Generate a fresh keypair, BUT only when it's safe to: either both
  *      keyring reads succeeded and returned nothing (genuine first run), or
  *      the keyring is genuinely unavailable on a platform without a core one

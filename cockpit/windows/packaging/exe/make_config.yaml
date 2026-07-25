@@ -1,7 +1,7 @@
 # Instalador Windows (Inno Setup) do Cockpit. NÃO buildável neste Mac — gerado
 # no job `windows` do CI (windows-latest + Inno Setup). Sem assinatura nesta
 # fase (aviso do SmartScreen documentado no site).
-app_id: work.jacobmoura.cockpit
+app_id: ch.pungitore.piper.cockpit
 display_name: Remote Pi Cockpit
 publisher_name: Jacob Moura
 publisher_url: https://jacobmoura.work

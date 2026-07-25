@@ -1,4 +1,4 @@
-package dev.remotepi.identity
+package ch.pungitore.piper.identity
 
 import android.app.KeyguardManager
 import android.content.Context
@@ -110,6 +110,6 @@ class BlockStoreStore(private val context: Context) {
     }
 
     companion object {
-        private const val BLOB_KEY = "dev.remotepi.owner.identity"
+        private const val BLOB_KEY = "ch.pungitore.piper.owner.identity"
     }
 }

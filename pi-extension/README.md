@@ -512,7 +512,7 @@ remote-pi install
 
 The `install` command:
 - Writes `~/.config/systemd/user/remote-pi-supervisord.service` (Linux)
-  or `~/Library/LaunchAgents/dev.remotepi.supervisord.plist` (macOS)
+  or `~/Library/LaunchAgents/ch.pungitore.piper.supervisord.plist` (macOS)
 - Activates it via `systemctl --user enable --now` or `launchctl bootstrap`
 - The supervisor starts immediately and re-starts on every login
 

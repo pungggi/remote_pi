@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.remotepi.remote_pi_identity_example"
+    namespace = "ch.pungitore.piper.identity_example"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -20,7 +20,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "dev.remotepi.remote_pi_identity_example"
+        applicationId = "ch.pungitore.piper.identity_example"
         // plan/23 § "Versão mínima Android" — example app standardizes
         // on Android 14 (API 34).
         minSdk = 34

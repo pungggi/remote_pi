@@ -7,7 +7,7 @@ project(runner LANGUAGES CXX)
 set(BINARY_NAME "cockpit")
 # The unique GTK application identifier for this application. See:
 # https://wiki.gnome.org/HowDoI/ChooseApplicationID
-set(APPLICATION_ID "work.jacobmoura.cockpit")
+set(APPLICATION_ID "ch.pungitore.piper.cockpit")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
@@ -175,7 +175,7 @@ install(PROGRAMS "${COCKPIT_CLI_EXE}" DESTINATION "${CMAKE_INSTALL_PREFIX}"
 
 # === Desktop integration (nome + ícone para publicação) ===
 # .desktop com Name=Cockpit, e ícones do tema hicolor nomeados pelo
-# APPLICATION_ID (work.jacobmoura.cockpit) — é assim que o launcher/dock e a
+# APPLICATION_ID (ch.pungitore.piper.cockpit) — é assim que o launcher/dock e a
 # barra de tarefas resolvem nome e ícone do app empacotado (deb/AppImage/snap).
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cockpit.desktop"
   DESTINATION "${CMAKE_INSTALL_PREFIX}/share/applications"

@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
  * daemon fleet survives reboots (plan/26 W3).
  *
  * Platform support:
- *   - **macOS**: writes `~/Library/LaunchAgents/dev.remotepi.supervisord.plist`
+ *   - **macOS**: writes `~/Library/LaunchAgents/ch.pungitore.piper.supervisord.plist`
  *     and runs `launchctl bootstrap gui/<uid> <plist>` (modern API) with a
  *     fallback to `launchctl load` for older macOS.
  *   - **Linux**: writes `~/.config/systemd/user/remote-pi-supervisord.service`
@@ -105,10 +105,10 @@ export function systemdUnitPath(): string {
 }
 
 export function launchdPlistPath(): string {
-  return join(homedir(), "Library", "LaunchAgents", "dev.remotepi.supervisord.plist");
+  return join(homedir(), "Library", "LaunchAgents", "ch.pungitore.piper.supervisord.plist");
 }
 
-export const LAUNCHD_LABEL = "dev.remotepi.supervisord";
+export const LAUNCHD_LABEL = "ch.pungitore.piper.supervisord";
 /** systemd --user unit name (with `.service`) for the supervisor. */
 export const SYSTEMD_UNIT = "remote-pi-supervisord.service";
 /** Windows Task Scheduler task name (plan/40). */

@@ -8,7 +8,7 @@ referência: [`../../plan/43-cockpit-packaging.md`](../../plan/43-cockpit-packag
 
 | Item | Valor |
 |---|---|
-| App ID (macOS bundle id / Linux app id) | `work.jacobmoura.cockpit` |
+| App ID (macOS bundle id / Linux app id) | `ch.pungitore.piper.cockpit` |
 | Nome de exibição | **Remote Pi Cockpit** |
 | Binário | `cockpit` (Linux/Windows) / `Cockpit` (macOS) — **não** renomeado |
 | Team ID (Apple) | `U843T2P7A2` |
@@ -21,7 +21,7 @@ referência: [`../../plan/43-cockpit-packaging.md`](../../plan/43-cockpit-packag
 - Windows: `CompanyName`/`ProductName`/`LegalCopyright` em
   `windows/runner/Runner.rc`; versão vem dos defines `FLUTTER_VERSION_*`
   (injetados em build; o `#else "1.0.0"` é só fallback).
-- Linux: `.desktop` + ícones hicolor + `work.jacobmoura.cockpit.metainfo.xml`
+- Linux: `.desktop` + ícones hicolor + `ch.pungitore.piper.cockpit.metainfo.xml`
   (AppStream), instalados via `linux/CMakeLists.txt`.
 
 ## Ferramenta

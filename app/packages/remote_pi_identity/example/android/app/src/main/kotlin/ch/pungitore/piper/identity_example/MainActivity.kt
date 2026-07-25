@@ -1,4 +1,4 @@
-package dev.remotepi.remote_pi_identity_example
+package ch.pungitore.piper.identity_example
 
 import io.flutter.embedding.android.FlutterActivity
 

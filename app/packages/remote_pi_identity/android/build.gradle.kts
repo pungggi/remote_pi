@@ -1,4 +1,4 @@
-group = "dev.remotepi.identity"
+group = "ch.pungitore.piper.identity"
 version = "0.2.0"
 
 buildscript {
@@ -27,7 +27,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.remotepi.identity"
+    namespace = "ch.pungitore.piper.identity"
 
     compileSdk = 36
 

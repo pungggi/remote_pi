@@ -22,7 +22,7 @@ final class KeychainSyncStore {
         case osStatus(OSStatus, String)
     }
 
-    private let service = "dev.remotepi.owner.identity"
+    private let service = "ch.pungitore.piper.owner.identity"
     private let account = "singleton"
 
     /// Loads the current blob, or nil if not yet stored.

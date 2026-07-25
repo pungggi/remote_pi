@@ -4,8 +4,8 @@ import 'package:app/protocol/protocol.dart' show PiHarness;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-const _kPeersService = 'dev.remotepi.peers';
-const _kRoomsService = 'dev.remotepi.rooms';
+const _kPeersService = 'ch.pungitore.piper.peers';
+const _kRoomsService = 'ch.pungitore.piper.rooms';
 
 /// Plan-17 follow-up — persisted snapshot of every room we have ever
 /// learned about for a peer (relay-announced via `room_announced` /

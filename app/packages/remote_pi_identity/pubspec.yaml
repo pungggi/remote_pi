@@ -22,7 +22,7 @@ flutter:
   plugin:
     platforms:
       android:
-        package: dev.remotepi.identity
+        package: ch.pungitore.piper.identity
         pluginClass: RemotePiIdentityPlugin
       ios:
         pluginClass: RemotePiIdentityPlugin

@@ -79,8 +79,8 @@ class InMemoryBackend implements KeyStoreBackend {
   }
 }
 
-const NEW_SERVICE = "dev.remotepi.pi";
-const OLD_SERVICE = "dev.remotepi.mac";
+const NEW_SERVICE = "ch.pungitore.piper.pi";
+const OLD_SERVICE = "ch.pungitore.piper.mac";
 const ACCOUNT = "longterm-ed25519";
 
 beforeEach(async () => {

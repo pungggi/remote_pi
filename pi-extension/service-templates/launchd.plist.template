@@ -4,7 +4,7 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>dev.remotepi.supervisord</string>
+  <string>ch.pungitore.piper.supervisord</string>
 
   <key>ProgramArguments</key>
   <array>

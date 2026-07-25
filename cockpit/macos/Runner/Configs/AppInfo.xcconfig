@@ -10,7 +10,7 @@ PRODUCT_NAME = Cockpit
 // The application's bundle identifier. BUNDLE_ID_SUFFIX é vazio em
 // Release/Profile; o config Debug do Runner define `.debug` — isola Hive
 // (path_provider) e chaves do Keychain do build de produção.
-PRODUCT_BUNDLE_IDENTIFIER = work.jacobmoura.cockpit$(BUNDLE_ID_SUFFIX)
+PRODUCT_BUNDLE_IDENTIFIER = ch.pungitore.piper.cockpit$(BUNDLE_ID_SUFFIX)
 
 // The copyright displayed in application information
 PRODUCT_COPYRIGHT = Copyright © 2026 Jacob Moura. All rights reserved.

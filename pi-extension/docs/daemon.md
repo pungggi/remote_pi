@@ -36,9 +36,9 @@ re-run it and the supervisor unloads the old entry before bootstrapping
 the new one. If it still fails:
 
 ```bash
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/dev.remotepi.supervisord.plist
-launchctl unload ~/Library/LaunchAgents/dev.remotepi.supervisord.plist 2>/dev/null
-rm ~/Library/LaunchAgents/dev.remotepi.supervisord.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/ch.pungitore.piper.supervisord.plist
+launchctl unload ~/Library/LaunchAgents/ch.pungitore.piper.supervisord.plist 2>/dev/null
+rm ~/Library/LaunchAgents/ch.pungitore.piper.supervisord.plist
 remote-pi install
 ```
 

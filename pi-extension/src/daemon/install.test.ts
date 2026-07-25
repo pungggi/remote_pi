@@ -70,7 +70,7 @@ describe("findTemplate", () => {
     expect(p.endsWith("launchd.plist.template")).toBe(true);
     const content = readFileSync(p, "utf8");
     expect(content).toContain("<key>Label</key>");
-    expect(content).toContain("dev.remotepi.supervisord");
+    expect(content).toContain("ch.pungitore.piper.supervisord");
     expect(content).toContain("{NODE}");
     expect(content).toContain("{SUPERVISOR}");
   });
@@ -224,7 +224,7 @@ describe.skipIf(posixOnly)("paths", () => {
   });
 
   test("launchdPlistPath lives under ~/Library/LaunchAgents/", () => {
-    expect(launchdPlistPath()).toMatch(/Library\/LaunchAgents\/dev\.remotepi\.supervisord\.plist$/);
+    expect(launchdPlistPath()).toMatch(/Library\/LaunchAgents\/ch\.pungitore\.piper\.supervisord\.plist$/);
   });
 });
 

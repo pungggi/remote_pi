@@ -22,7 +22,7 @@ val keystoreProperties = Properties().apply {
 val hasReleaseKeystore = keystoreProperties.getProperty("storeFile") != null
 
 android {
-    namespace = "work.jacobmoura.remotepi"
+    namespace = "ch.pungitore.piper"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -36,7 +36,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "work.jacobmoura.remotepi"
+        applicationId = "ch.pungitore.piper"
         // plan/23 § "Versão mínima Android" — the remote_pi_identity
         // plugin requires API 34 (Block Store + modern biometry), so
         // the app inherits the same floor. Bump intentional, recorded

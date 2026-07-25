@@ -2,7 +2,7 @@
 <!-- AppStream metadata (mínimo) para empacotamento Linux. Instalado em
      share/metainfo/. O <id> casa com o app ID e o .desktop. -->
 <component type="desktop-application">
-  <id>work.jacobmoura.cockpit</id>
+  <id>ch.pungitore.piper.cockpit</id>
   <name>Remote Pi Cockpit</name>
   <summary>Cliente desktop multi-pane do Remote Pi</summary>
 
@@ -10,7 +10,7 @@
   <!-- Licença do projeto ainda pendente no monorepo; placeholder válido. -->
   <project_license>LicenseRef-proprietary</project_license>
 
-  <developer id="work.jacobmoura">
+  <developer id="ch.pungitore">
     <name>Jacob Moura</name>
   </developer>
 
@@ -23,7 +23,7 @@
     </p>
   </description>
 
-  <launchable type="desktop-id">work.jacobmoura.cockpit.desktop</launchable>
+  <launchable type="desktop-id">ch.pungitore.piper.cockpit.desktop</launchable>
 
   <url type="homepage">https://jacobmoura.work</url>
 

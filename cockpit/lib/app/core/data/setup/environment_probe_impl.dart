@@ -67,7 +67,7 @@ class EnvironmentProbeImpl implements EnvironmentProbe {
       // Sinal primário: o serviço foi instalado por `remote-pi install`.
       if (Platform.isMacOS) {
         final plist = File(
-          '$home/Library/LaunchAgents/dev.remotepi.supervisord.plist',
+          '$home/Library/LaunchAgents/ch.pungitore.piper.supervisord.plist',
         );
         if (await plist.exists()) return true;
       } else if (Platform.isLinux) {
