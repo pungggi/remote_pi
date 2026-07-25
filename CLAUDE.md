@@ -1,55 +1,54 @@
-# Remote Pi — Orquestrador
+# Piper — Orchestrator
 
-Você está na **raiz** do monorepo Remote Pi. Esta pasta é exclusivamente para **planejamento**.
+You are at the **root** of the Piper monorepo. This folder is the planning
+and orchestration hub for the whole repo.
 
-## O que fazer aqui
+## What to do here
 
-- Ler e escrever em `plan/NN-<slug>.md` (ex: `plan/03-protocol.md`)
-- Discutir arquitetura, decisões de produto, trade-offs
-- Refinar planos existentes baseado em feedback
-- Indicar qual subprojeto recebe a próxima implementação
+- Read and write `plan/NN-<slug>.md` (e.g. `plan/03-protocol.md`)
+- Discuss architecture, product decisions, trade-offs
+- Refine existing plans based on feedback
+- Point out which subproject receives the next implementation
 
-## O que NÃO fazer aqui
+## Structure
 
-- Não editar código em `app/`, `pi-extension/`, `relay/`, `site/`, `cockpit/`
-- Não rodar comandos de build/test dos subprojetos a partir daqui
-- Para implementar algo, abra o Claude **dentro** do subprojeto alvo — cada um
-  tem sua própria `CLAUDE.md` e persona. Daqui sai o plano, não o código.
+See [README.md](./README.md) for the overview and [plan/](./plan/) for the plans.
 
-## Estrutura
+## Decisions already made
 
-Veja [README.md](./README.md) para visão geral e [plan/](./plan/) para os planos.
+Before proposing a change of direction (architecture, pairing, scope, UI,
+security), read [`plan/00-decisions.md`](./plan/00-decisions.md). That file lists
+decisions closed in exploratory conversation; they **must not be revisited
+without strong evidence**.
 
-## Decisões já tomadas
+If you still want to revisit one, open an explicit discussion — do not change it
+silently.
 
-Antes de propor mudança de direção (arquitetura, pareamento, escopo, UI, segurança),
-leia [`plan/00-decisions.md`](./plan/00-decisions.md). Esse arquivo lista decisões
-fechadas em conversa exploratória e **não devem ser revisitadas sem evidência forte**.
+## Plan conventions
 
-Se ainda assim quiser revisitar, abra discussão explícita — não mude silenciosamente.
+- Sequential numbering: `01-bootstrap.md`, `02-ai-orchestration.md`, ...
+- **Plans in this fork use the `100+` range** (`100-app-ask-user-ui.md`,
+  `101-...`). The low range belongs to upstream and keeps growing there — reusing
+  the same numbers causes file collisions on merge and ambiguity in code comments
+  (`plan 51` ended up meaning two different things)
+- Every plan has: Context, Expected structure, Steps with acceptance criteria,
+  DoD, Next plans
+- Plans describe **what** + **how to verify**, not the complete code
+- Pseudocode or exact commands are welcome; the real implementation lives in the
+  subproject
 
-## Convenções de planos
+## Promoting a plan to implementation
 
-- Numeração sequencial: `01-bootstrap.md`, `02-ai-orchestration.md`, ...
-- **Planos deste fork usam a faixa `100+`** (`100-app-ask-user-ui.md`,
-  `101-...`). A faixa baixa pertence ao upstream e continua crescendo lá —
-  usar os mesmos números causa colisão de arquivo no merge e ambiguidade nos
-  comentários de código (`plano 51` chegou a significar duas coisas)
-- Cada plano tem: Contexto, Estrutura esperada, Passos com critério de aceite, DoD, Próximos planos
-- Planos descrevem **o que** + **como verificar**, não o código completo
-- Pseudocódigo ou comandos exatos são bem-vindos; implementação real fica no subprojeto
+Once a plan has the user's acceptance and the steps are concrete enough for an
+agent to execute, the work moves to the target subproject. Each subproject has
+its own `CLAUDE.md` and persona — read it before touching that subproject's code,
+whether you open a separate Claude session there or implement from here.
 
-## Quando promover um plano a implementação
+## Available scouts
 
-Quando o plano tem aceite do usuário e os passos estão concretos o suficiente
-para um agente executar, abra Claude no subprojeto alvo e passe o plano como
-contexto. O agente daquele subprojeto seguirá sua própria persona.
-
-## Scouts disponíveis
-
-Para fotografar o estado de qualquer subprojeto antes de planejar, invoque os
-subagents Scout em paralelo via `Task` — eles são read-only e reportam em
-formato fixo:
+To snapshot the state of any subproject before planning, invoke the Scout
+subagents in parallel with the `Agent` tool, passing the scout name as
+`subagent_type` — they are read-only and report in a fixed format:
 
 - `scout-app` — Flutter (`app/`)
 - `scout-pi-extension` — Node/TS (`pi-extension/`)
@@ -57,14 +56,14 @@ formato fixo:
 - `scout-site` — NextJS (`site/`)
 - `scout-cockpit` — Flutter Desktop (`cockpit/`)
 
-Dispare múltiplos numa única mensagem para rodar em paralelo. Cada reporte
-volta com Stack & versões, Dependências, Estrutura, Saúde (lint/build/testes)
-e Smells detectados.
+Fire several `Agent` calls in a single message to run them in parallel. Each
+report comes back with Stack & versions, Dependencies, Structure, Health
+(lint/build/tests) and detected Smells.
 
-## Este repositório é um fork
+## This repository is a fork
 
-Este monorepo é um **fork** de [`jacobaraujo7/remote_pi`](https://github.com/jacobaraujo7/remote_pi)
-e segue uma linha de produto própria. Antes de mexer em identidade (bundle IDs,
-domínios, branding) ou de trazer mudanças do upstream, leia
-[`FORK.md`](./FORK.md) — ele define a direção do merge (sempre upstream →
-fork), o que é divergência intencional e como sincronizar.
+This monorepo is a **fork** of [`jacobaraujo7/remote_pi`](https://github.com/jacobaraujo7/remote_pi)
+and follows its own product line. Before touching identity (bundle IDs, domains,
+branding) or pulling changes from upstream, read [`FORK.md`](./FORK.md) — it
+defines the merge direction (always upstream → fork), what counts as intentional
+divergence, and how to sync.
