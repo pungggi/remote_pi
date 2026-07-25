@@ -64,7 +64,7 @@ void main() {
       expect(state, isA<OnboardingInProgress>());
       final p = state as OnboardingInProgress;
       expect(p.step, OnboardingStep.welcome);
-      expect(p.relayChoice, RelayChoice.community);
+      expect(p.relayChoice, RelayChoice.fromQr);
       expect(p.customRelayUrl, isEmpty);
       expect(p.customRelayError, isNull);
     });

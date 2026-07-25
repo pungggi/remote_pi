@@ -23,8 +23,8 @@ class OnboardingViewModel extends ViewModel<OnboardingState> {
       case OnboardingStep.welcome:
         emit(s.copyWith(step: OnboardingStep.relay));
       case OnboardingStep.relay:
-        // Validate the relay choice before advancing. Empty custom URL
-        // is allowed — it falls back to the default community relay.
+        // Validate the relay choice before advancing. Empty custom URL is
+        // allowed — same outcome as RelayChoice.fromQr.
         if (s.relayChoice == RelayChoice.custom &&
             s.customRelayUrl.isNotEmpty) {
           final reason = relayUrlValidationMessage(s.customRelayUrl);
@@ -33,7 +33,9 @@ class OnboardingViewModel extends ViewModel<OnboardingState> {
             return;
           }
         }
-        // Persist relay (null = use default community).
+        // Persist relay. null = no override: resolveRelayUrl falls back to
+        // kDefaultRelayUrl until pairing, where PairingViewModel adopts the
+        // relay advertised in the QR (plan/102).
         final urlToSave = s.relayChoice == RelayChoice.custom &&
                 s.customRelayUrl.isNotEmpty
             ? s.customRelayUrl

@@ -3,7 +3,7 @@
 
 enum OnboardingStep { welcome, relay, pair }
 
-enum RelayChoice { community, custom }
+enum RelayChoice { fromQr, custom }
 
 sealed class OnboardingState {
   const OnboardingState();
@@ -17,7 +17,7 @@ class OnboardingInProgress extends OnboardingState {
 
   const OnboardingInProgress({
     this.step = OnboardingStep.welcome,
-    this.relayChoice = RelayChoice.community,
+    this.relayChoice = RelayChoice.fromQr,
     this.customRelayUrl = '',
     this.customRelayError,
   });

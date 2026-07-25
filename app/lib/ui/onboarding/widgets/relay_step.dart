@@ -4,14 +4,18 @@ import 'package:app/ui/onboarding/states/onboarding_state.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
-/// Empty custom URL is allowed — onboarding treats it as "use default
-/// community relay" (saves null in Preferences, falls back to
-/// [kDefaultRelayUrl] via [resolveRelayUrl]).
-
-/// Onboarding step 2 — relay choice. Two vertical cards: self-hosted
-/// (recommended for the privacy story) vs community (convenience).
-/// The custom card carries a URL field with inline validation; leaving
-/// it empty falls back to the default community relay.
+/// Onboarding step 2 — relay choice.
+///
+/// Plan/102 — the default is [RelayChoice.fromQr]: the Pi runs a relay on the
+/// local network and advertises its address in the pairing QR, which
+/// PairingViewModel adopts on scan. That is the only workable default, since a
+/// LAN address comes from DHCP and cannot be known before pairing.
+///
+/// Picking it saves `null` in Preferences, so until the first scan
+/// [resolveRelayUrl] falls back to [kDefaultRelayUrl] — the relay adoption then
+/// overwrites it. The manual card stays for relays that are NOT discovered this
+/// way: one reachable from outside the WLAN, or a host the QR cannot name.
+/// Leaving its field empty is the same as choosing the QR option.
 class RelayStep extends StatelessWidget {
   final OnboardingInProgress state;
   final ValueChanged<RelayChoice> onChoice;
@@ -29,8 +33,8 @@ class RelayStep extends StatelessWidget {
   });
 
   bool get _canContinue {
-    if (state.relayChoice == RelayChoice.community) return true;
-    // Empty custom URL is allowed (treated as default community relay).
+    if (state.relayChoice == RelayChoice.fromQr) return true;
+    // Empty custom URL is allowed — same outcome as RelayChoice.fromQr.
     if (state.customRelayUrl.isEmpty) return true;
     return isValidRelayUrl(state.customRelayUrl);
   }
@@ -60,22 +64,26 @@ class RelayStep extends StatelessWidget {
                 fontFamily: kMonoFamily, fontSize: 11, color: colors.muted),
           ),
           const SizedBox(height: 24),
-          _CustomRelayCard(
+          _RelayCard(
+            title: 'From the pairing QR',
             badge: 'recommended',
-            description: 'Self-hosted. Best privacy.',
+            description:
+                'Your PC runs the relay on your Wi-Fi and puts its address in '
+                'the QR code. The app picks it up when you scan — nothing to '
+                'type, and nothing leaves your network.',
+            selected: state.relayChoice == RelayChoice.fromQr,
+            onTap: () => onChoice(RelayChoice.fromQr),
+          ),
+          const SizedBox(height: 12),
+          _CustomRelayCard(
+            description:
+                'For a relay the QR cannot name — one you reach from outside '
+                'your Wi-Fi, for example.',
             selected: state.relayChoice == RelayChoice.custom,
             customUrl: state.customRelayUrl,
             error: state.customRelayError,
             onTap: () => onChoice(RelayChoice.custom),
             onUrlChanged: onCustomUrl,
-          ),
-          const SizedBox(height: 12),
-          _RelayCard(
-            title: 'Community relay',
-            description: 'Hosted by us. Quick to start.',
-            footer: kDefaultRelayUrl,
-            selected: state.relayChoice == RelayChoice.community,
-            onTap: () => onChoice(RelayChoice.community),
           ),
           const Spacer(),
           Row(
@@ -131,7 +139,7 @@ class RelayStep extends StatelessWidget {
 class _RelayCard extends StatelessWidget {
   final String title;
   final String description;
-  final String? footer;
+  final String? badge;
   final bool selected;
   final VoidCallback onTap;
   const _RelayCard({
@@ -139,7 +147,7 @@ class _RelayCard extends StatelessWidget {
     required this.description,
     required this.selected,
     required this.onTap,
-    this.footer,
+    this.badge,
   });
 
   @override
@@ -180,6 +188,25 @@ class _RelayCard extends StatelessWidget {
                     ),
                   ),
                 ),
+                if (badge != null)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: colors.accent.withValues(alpha: 0.15),
+                      borderRadius:
+                          const BorderRadius.all(Radius.circular(4)),
+                    ),
+                    child: Text(
+                      badge!,
+                      style: TextStyle(
+                        fontFamily: kMonoFamily,
+                        fontSize: 9,
+                        color: colors.accent,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
               ],
             ),
             const SizedBox(height: 8),
@@ -195,20 +222,6 @@ class _RelayCard extends StatelessWidget {
                 ),
               ),
             ),
-            if (footer != null) ...[
-              const SizedBox(height: 6),
-              Padding(
-                padding: const EdgeInsets.only(left: 26),
-                child: Text(
-                  footer!,
-                  style: TextStyle(
-                    fontFamily: kMonoFamily,
-                    fontSize: 10,
-                    color: colors.muted,
-                  ),
-                ),
-              ),
-            ],
           ],
         ),
       ),
@@ -263,7 +276,7 @@ class _CustomRelayCard extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    'Use my own server',
+                    'Enter it manually',
                     style: TextStyle(
                       fontFamily: kMonoFamily,
                       fontSize: 13,
@@ -325,7 +338,7 @@ class _CustomRelayCard extends StatelessWidget {
                   ),
                   decoration: InputDecoration(
                     isDense: true,
-                    hintText: 'https://my-relay.com',
+                    hintText: 'http://192.168.1.10:3000',
                     hintStyle:
                         TextStyle(fontFamily: kMonoFamily, color: colors.muted),
                     errorText: error,
