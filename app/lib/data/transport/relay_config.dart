@@ -20,8 +20,18 @@
 
 import 'package:app/data/preferences/preferences.dart';
 
-/// Public community relay. Hardcoded; not configurable at build time
-/// to keep the onboarding flow deterministic.
+/// Fallback relay, used only until a real one is known.
+///
+/// Plan/102 — Piper's default topology is a relay on the user's own machine,
+/// reached over the WLAN. That address is per-network and handed out by DHCP,
+/// so it cannot be a build-time constant: the phone learns it from the pairing
+/// QR (`r`), which PairingViewModel adopts into Preferences.
+///
+/// This constant is what `resolveRelayUrl` returns before that happens — a
+/// fresh install that has not paired yet, or a QR with no `r`. It points at
+/// upstream's public relay, which still works for reaching a Pi from outside
+/// the WLAN. Hardcoded rather than build-time configurable to keep the
+/// onboarding flow deterministic.
 const String kDefaultRelayUrl = 'https://relay-rp1.jacobmoura.work';
 
 /// User-facing message returned when [isValidRelayUrl] rejects a value.

@@ -121,6 +121,7 @@ import {
   isWebSocketScheme,
   toWebSocketUrl,
 } from "./config.js";
+import { toPhoneReachableUrl } from "./lan.js";
 import { Box, Container, Image, Text } from "@earendil-works/pi-tui";
 
 // ── State machine ─────────────────────────────────────────────────────────────
@@ -3095,7 +3096,14 @@ async function _cmdPair(ctx: Pick<ExtensionContext, "ui" | "cwd">, args = ""): P
   const ttlMs = ttlMatch ? clampPairTtlMs(Number(ttlMatch[1]) * 1000) : TOKEN_TTL_MS;
   const { token, expiresAt } = qrSession.issueToken(ttlMs);
   const roomId = _myRoomId ?? roomIdFor(cwd, sessionName);
-  const qrUri = buildQRUri(token, edKp.publicKey, sessionName, roomId);
+  // plan/102 — advertise the relay in the QR so the phone can adopt it. The
+  // default relay is loopback (a relay on this machine), which the phone
+  // cannot reach, so it is rewritten to this machine's LAN address. A null
+  // here means no LAN address exists (Wi-Fi down, or only virtual
+  // interfaces): emit the QR without `r` and let the app fall back to its own
+  // relay setting rather than advertising an address nothing can reach.
+  const advertisedRelay = toPhoneReachableUrl(resolveRelayUrl().url) ?? undefined;
+  const qrUri = buildQRUri(token, edKp.publicKey, sessionName, roomId, advertisedRelay);
   // Render both the QR ASCII and the copy-paste URI inside the Pi TUI's
   // chat panel via `pi.sendMessage` — the same channel the SDK uses for
   // agent responses + tool results. `process.stderr.write` (the old QR

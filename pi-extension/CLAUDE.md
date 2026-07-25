@@ -35,7 +35,9 @@ Ordem de resolução (precedência):
 1. `process.env.REMOTE_PI_RELAY` — escape hatch pra CI/ops
 2. `~/.pi/remote/config.json` (`{ "relay": "..." }`) — persistido via
    `/remote-pi set-relay <url>`
-3. `kDefaultRelayUrl` (`https://relay-rp1.jacobmoura.work`) — produção
+3. `kDefaultRelayUrl` (`http://127.0.0.1:3000`) — relay local, o padrão do
+   Piper (plan/102). O relay público do upstream continua exportado como
+   `kPublicRelayUrl` para acesso de fora da WLAN.
 
 Slash commands:
 

@@ -2796,7 +2796,7 @@ describe("/remote-pi set-relay + config", () => {
     await status("", ctx);
 
     const text = (ctx.ui.notify.mock.calls[0]![0]) as string;
-    expect(text).toContain("https://relay-rp1.jacobmoura.work");
+    expect(text).toContain("http://127.0.0.1:3000");
   });
 
   test("/remote-pi status reflects env override (canonicalized to https://)", async () => {
@@ -3091,8 +3091,8 @@ describe("routeClientMessage cancel handling", () => {
 
 // ── QR no longer carries `r` (relay URL) ──────────────────────────────────────
 
-describe("QR payload (no r field, with rm)", () => {
-  test("buildQRUri produces URI with t + epk + n (no r)", async () => {
+describe("QR payload (optional r, with rm)", () => {
+  test("buildQRUri produces URI with t + epk + n", async () => {
     const { buildQRUri } = await import("./pairing/qr.js");
     const epk = Buffer.alloc(32, 0x42);
     const uri = buildQRUri("token-abc", epk, "feature/x");
@@ -3101,7 +3101,27 @@ describe("QR payload (no r field, with rm)", () => {
     expect(url.searchParams.get("t")).toBe("token-abc");
     expect(url.searchParams.get("epk")).toBeTruthy();
     expect(url.searchParams.get("n")).toBe("feature/x");
-    expect(url.searchParams.get("r")).toBeNull();   // ← key assertion: no relay URL
+  });
+
+  // plan/102 — `r` carries the relay for the LAN default: the phone cannot
+  // have a per-network IP configured ahead of pairing, so the QR is the only
+  // channel that has it in time.
+  test("buildQRUri includes r=<relay> when one is advertised", async () => {
+    const { buildQRUri } = await import("./pairing/qr.js");
+    const epk = Buffer.alloc(32, 0x42);
+    const uri = buildQRUri("token-abc", epk, "feature/x", undefined, "http://192.168.1.42:3000");
+    const url = new URL(uri.replace("remotepi:", "https:"));
+    expect(url.searchParams.get("r")).toBe("http://192.168.1.42:3000");
+  });
+
+  test("buildQRUri omits r when no relay is advertised", async () => {
+    // No LAN address resolved — the app falls back to its own setting rather
+    // than being pointed at something unreachable.
+    const { buildQRUri } = await import("./pairing/qr.js");
+    const epk = Buffer.alloc(32, 0x42);
+    const uri = buildQRUri("token-abc", epk, "feature/x");
+    const url = new URL(uri.replace("remotepi:", "https:"));
+    expect(url.searchParams.get("r")).toBeNull();
     expect(uri).not.toContain("r=");
   });
 

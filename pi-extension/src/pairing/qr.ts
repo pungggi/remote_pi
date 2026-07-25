@@ -70,9 +70,25 @@ export function buildQRUri(
    * cai em room=main e o relay drops com "dest not found").
    */
   roomId?: string,
+  /**
+   * Relay URL to advertise, in a form the PHONE can reach — i.e. already run
+   * through `toPhoneReachableUrl`, never loopback. The app adopts it during
+   * pairing, which is what makes the LAN default work without the user typing
+   * an IP on the phone (plan/102).
+   *
+   * Omit to fall back to the app's own relay configuration; that is the right
+   * call when no LAN address could be resolved, since an unreachable `r` is
+   * worse than none.
+   */
+  relayUrl?: string,
 ): string {
-  // `r` (relay URL) removed in plano 14 — relay now comes from app config /
-  // pi-ext env|config|default chain. Keeps QR ~30-50 chars shorter.
+  // `r` (relay URL) was removed in plano 14 — the relay came from the app
+  // config / pi-ext env|config|default chain, and dropping it kept the QR
+  // ~30-50 chars shorter. plan/102 brings it back: with a LAN relay the
+  // address is per-network and cannot be pre-configured on the phone, so the
+  // QR is the only channel that has it at pairing time. The size argument no
+  // longer applies (see the `n` note below — the URI is rendered into the
+  // chat panel, not the QR overflow area).
   // `n` (session name) is kept: the app uses it for the pre-pair_ok preview
   // screen (showing the agent name immediately after scan, before the
   // handshake completes). Dropping it briefly shrank the QR but the QR
@@ -85,6 +101,7 @@ export function buildQRUri(
     n: sessionName.slice(0, 80),
   });
   if (roomId) params.set("rm", roomId);
+  if (relayUrl) params.set("r", relayUrl);
   return `remotepi://pair?${params.toString()}`;
 }
 
@@ -125,6 +142,7 @@ export function startQRRotation(
   longtermEdPk: Uint8Array,
   sessionName: string,
   roomId?: string,
+  relayUrl?: string,
 ): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
@@ -132,7 +150,7 @@ export function startQRRotation(
   const rotate = () => {
     if (stopped) return;
     const { token, expiresAt } = qrSession.issueToken();
-    const uri = buildQRUri(token, longtermEdPk, sessionName, roomId);
+    const uri = buildQRUri(token, longtermEdPk, sessionName, roomId, relayUrl);
     displayQR(uri);
     console.log(
       `⏱  Renews at ${new Date(expiresAt).toLocaleTimeString()} — waiting for scan…`,

@@ -268,11 +268,14 @@ Future<PeerTransport> _productionPairingTransportFactory(
   QrPairPayload qr,
   SimpleKeyPair deviceEd25519,
 ) async {
-  // Plan 14: pairing connects via the GLOBAL relay URL (Preferences),
-  // not whatever was embedded in the QR. Mismatch between qr.relayUrl
-  // and the user's configured relay is handled upstream by
-  // `pair_request_flow.dart` (raises a `relay_mismatch` error that
-  // PairingViewModel surfaces as a "trocar relay?" modal).
+  // Plan 14: pairing connects via the GLOBAL relay URL (Preferences), not
+  // whatever was embedded in the QR.
+  //
+  // Plan/102 keeps that rule and feeds it instead: PairingViewModel adopts
+  // `qr.relayUrl` into Preferences BEFORE calling this factory, so a QR that
+  // advertises the Pi's LAN relay ends up here as the resolved URL. The
+  // `relay_mismatch` guard in `pair_request_flow.dart` stays behind it as a
+  // safety net for the cases adoption skips (invalid or absent `r`).
   final relayUrl = resolveRelayUrl(_injector.get<Preferences>());
   return WsTransport.connect(
     relayUrl: relayUrl,

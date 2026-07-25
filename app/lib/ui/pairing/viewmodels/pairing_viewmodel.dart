@@ -64,6 +64,20 @@ class PairingViewModel extends ViewModel<PairingState> {
       // requireKeyPair() never throws here.
       final ownerKey = await _ownerBridge.requireKeyPair();
 
+      // Plan/102 — adopt the relay the QR advertises, BEFORE building the
+      // transport (the factory reads `resolveRelayUrl(prefs)`).
+      //
+      // With a LAN relay the address is per-network and assigned by DHCP, so
+      // it cannot be configured on the phone ahead of time — the QR is the
+      // only channel that carries it at pairing time. Adopting is also the
+      // only correct choice: the Pi that produced this QR is waiting on that
+      // relay, so pairing against any other one just fails.
+      //
+      // Ignoring an invalid value rather than failing keeps a malformed QR
+      // from bricking pairing — performPairing's `relay_mismatch` check is
+      // still behind this and will surface the disagreement.
+      await _adoptRelayFromQr(qr);
+
       final transport = await _transportFactory(qr, ownerKey);
       _transport = transport;
 
@@ -99,6 +113,21 @@ class PairingViewModel extends ViewModel<PairingState> {
       await _closeTransient();
       emit(PairingError(message: e.toString(), canRetry: true));
     }
+  }
+
+  /// Persists `qr.relayUrl` as the app's relay when the QR carries a usable
+  /// one that differs from the current setting. No-op when the QR has no `r`
+  /// (older Pis, or a Pi that could not resolve a LAN address), when the
+  /// value fails validation, or when it already matches — so a re-scan on an
+  /// unchanged network writes nothing.
+  Future<void> _adoptRelayFromQr(QrPairPayload qr) async {
+    final advertised = qr.relayUrl;
+    if (advertised == null || advertised.isEmpty) return;
+    if (!isValidRelayUrl(advertised)) return;
+    if (toWsRelayUrl(advertised) == toWsRelayUrl(resolveRelayUrl(_prefs))) {
+      return;
+    }
+    await _prefs.setRelayUrl(advertised);
   }
 
   /// Retry after an error.

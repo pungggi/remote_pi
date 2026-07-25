@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Piper runs against a relay on the local network by default, reached over
+  plain http:// (→ ws://) at an address the router hands out. Since Android 9
+  (API 28) cleartext is blocked unless a config like this one permits it, and
+  minSdk here is 34 — without this file `ws://192.168.x.y:3000` fails.
+
+  Why cleartextTrafficPermitted is set on base-config rather than on a
+  narrower <domain-config>: network security config matches hostnames and IP
+  literals only — it has no CIDR or wildcard form, so "any address in
+  192.168.0.0/16" cannot be expressed. The relay's LAN address is whatever
+  DHCP assigned, so enumerating it at build time is not possible.
+
+  What limits the exposure: the app only ever opens connections to the relay
+  the user configured, and `isValidRelayUrl` makes http:// an explicit choice
+  the user types (or adopts from a scanned QR). The update checker uses
+  https:// and stays on TLS. A public relay should still be https — cleartext
+  being permitted does not mean it is used.
+
+  See plan/102-lan-default.md.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

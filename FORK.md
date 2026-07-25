@@ -127,28 +127,34 @@ Ainda não migrado: `site/` (copy e links de loja do upstream), `branding/`
 (o logo continua sendo o do Remote Pi) e os registros históricos (`plan/`,
 `CHANGELOG.md`), que descrevem o que foi decidido na época e ficam como estão.
 
-## Rodar num único WLAN (sem relay público)
+## Rodar num único WLAN (o padrão)
+
+Esta é a divergência funcional mais importante do fork: o padrão do Piper é
+relay **na sua própria rede**, não o relay público do upstream. Desenho e
+decisões em [`plan/102`](./plan/102-lan-default.md).
 
 App e `pi-extension` são ambos **clientes** WebSocket — nenhum dos dois escuta,
-e não há descoberta na rede local (nada de mDNS). Um relay é sempre necessário,
-mas ele pode rodar dentro da sua rede:
+e não há descoberta na rede local (nada de mDNS), então um relay continua
+necessário. O que muda é onde ele roda:
 
 ```bash
-cd relay && cargo run --release          # ou: docker build -t relay . && docker run -p 3000:3000 -v relay-data:/data relay
+cd relay && cargo run --release
+# ou: docker build -t relay . && docker run -p 3000:3000 -v relay-data:/data relay
 ```
 
-Aponte os dois lados pro IP da máquina na LAN:
+Com o relay de pé, o resto é automático:
 
-```bash
-# pi-extension
-REMOTE_PI_RELAY=http://192.168.1.10:3000 pi      # ou: /remote-pi set-relay http://192.168.1.10:3000
-```
+- a extensão fala com ele por loopback (`http://127.0.0.1:3000`, o default);
+- o QR de pareamento anuncia a forma LAN (`r=http://<ip>:3000`), descoberta via
+  `src/lan.ts`;
+- o app adota esse endereço ao escanear e o persiste.
 
-No app, o mesmo endereço em Onboarding/Settings. `http://` é aceito de
-propósito para relays locais e convertido pra `ws://` no transporte.
+Nada de digitar IP no celular, e a cada troca de rede basta parear de novo.
+`REMOTE_PI_RELAY` sobrepõe tudo quando a detecção erra a interface.
 
-**Pendência conhecida no Android:** `minSdk = 34` e o manifest não declara
-`networkSecurityConfig` nem `usesCleartextTraffic`, então tráfego em claro é
-bloqueado e `ws://<ip-local>` falha. O iOS já está preparado
-(`NSAllowsLocalNetworking` + `NSLocalNetworkUsageDescription` no `Info.plist`).
-Alternativa sem texto em claro: TLS local (Caddy com CA interna) ou Tailscale.
+Para alcançar o Pi **de fora** da WLAN ainda é preciso um relay público —
+`kPublicRelayUrl` continua apontando pro do upstream. Alternativa que resolve os
+dois casos sem relay público: Tailscale.
+
+**Firewall:** macOS e Windows bloqueiam a porta 3000 de entrada por padrão. Se o
+celular não conectar mas o relay estiver de pé, é o primeiro lugar pra olhar.

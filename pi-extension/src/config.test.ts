@@ -5,6 +5,7 @@ import {
   toWebSocketUrl,
   toHttpUrl,
   kDefaultRelayUrl,
+  kPublicRelayUrl,
 } from "./config.js";
 
 describe("isValidRelayUrl (strict http(s):// only)", () => {
@@ -89,8 +90,15 @@ describe("toHttpUrl (ws(s):// → http(s)://)", () => {
 });
 
 describe("kDefaultRelayUrl", () => {
-  test("is canonical https:// form (no scheme conversion needed at resolve time)", () => {
-    expect(kDefaultRelayUrl).toMatch(/^https:\/\//);
-    expect(kDefaultRelayUrl).toBe("https://relay-rp1.jacobmoura.work");
+  // plan/102 — the default relay is one running on this machine, not the
+  // public one. Canonical http(s):// form either way; the transport layer
+  // converts to ws(s):// when it opens the socket.
+  test("is the loopback relay in canonical http:// form", () => {
+    expect(kDefaultRelayUrl).toMatch(/^http:\/\//);
+    expect(kDefaultRelayUrl).toBe("http://127.0.0.1:3000");
+  });
+
+  test("the public relay stays available as an explicit opt-in", () => {
+    expect(kPublicRelayUrl).toBe("https://relay-rp1.jacobmoura.work");
   });
 });

@@ -117,6 +117,25 @@ class _PrefsForTest extends Preferences {
   String? get relayUrl => _relay;
 }
 
+/// Preferences that record `setRelayUrl` writes and reflect them back, so the
+/// Plan/102 relay adoption is observable. `_PrefsForTest` pins the getter to a
+/// fixed value and would hide the write.
+class _RecordingPrefs extends Preferences {
+  String? _relay;
+  final List<String?> writes = [];
+
+  _RecordingPrefs({String? relay}) : _relay = relay, super(_FakeSecureStorage());
+
+  @override
+  String? get relayUrl => _relay;
+
+  @override
+  Future<void> setRelayUrl(String? value) async {
+    writes.add(value);
+    _relay = value;
+  }
+}
+
 class _FakeStorage extends PairingStorage {
   final List<PeerRecord> _saved = [];
 
@@ -142,6 +161,13 @@ const _qrUri =
     'remotepi://pair?t=AAAAAAAAAAAAAAAAAAAAAA&'
     'epk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&'
     'r=ws%3A%2F%2Flocalhost&n=test+session';
+
+/// Same QR with a caller-chosen `r` — Plan/102 has the Pi advertise the relay
+/// it is reachable on, and the app adopt it.
+String _qrUriWithRelay(String relay) =>
+    'remotepi://pair?t=AAAAAAAAAAAAAAAAAAAAAA&'
+    'epk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&'
+    'r=${Uri.encodeComponent(relay)}&n=test+session';
 
 /// A pairing transport factory that runs a fake "Pi" responder which replies
 /// with the given inner message to whatever `pair_request` it receives.
@@ -255,6 +281,72 @@ void main() {
       expect(fakeRepo.adoptedChannel, isNotNull);
       expect(fakeRepo.adoptedPeer?.remoteEpk, isNotEmpty);
       expect(fakeRepo.disconnectCalls, 1);
+
+      vm.dispose();
+    });
+
+    // ── Plan/102 — relay adoption from the QR (LAN default) ─────────────────
+
+    test('adopts the LAN relay advertised in the QR before connecting', () async {
+      final storage = _FakeStorage();
+      final bridge = await _bootedBridge(storage);
+      final prefs = _RecordingPrefs(); // no override → falls back to default
+      final factory = _factoryReplyingWith({
+        'type': 'pair_ok',
+        'session_name': 'test session',
+      });
+      final vm = PairingViewModel(storage, factory, _SpyConn(), prefs, bridge);
+
+      await vm.onQrScanned(_qrUriWithRelay('http://192.168.1.42:3000'));
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      expect(prefs.writes, ['http://192.168.1.42:3000']);
+      expect(prefs.relayUrl, 'http://192.168.1.42:3000');
+      // Adoption happens before performPairing, so its relay_mismatch guard
+      // sees matching URLs and pairing goes through.
+      expect(vm.state, isA<PairingPaired>());
+
+      vm.dispose();
+    });
+
+    test('does not rewrite the relay when the QR advertises the current one', () async {
+      final storage = _FakeStorage();
+      final bridge = await _bootedBridge(storage);
+      final prefs = _RecordingPrefs(relay: 'http://192.168.1.42:3000');
+      final factory = _factoryReplyingWith({
+        'type': 'pair_ok',
+        'session_name': 'test session',
+      });
+      final vm = PairingViewModel(storage, factory, _SpyConn(), prefs, bridge);
+
+      await vm.onQrScanned(_qrUriWithRelay('http://192.168.1.42:3000'));
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      expect(prefs.writes, isEmpty);
+      expect(vm.state, isA<PairingPaired>());
+
+      vm.dispose();
+    });
+
+    test('ignores an unusable relay in the QR rather than failing the scan', () async {
+      final storage = _FakeStorage();
+      final bridge = await _bootedBridge(storage);
+      final prefs = _RecordingPrefs(relay: 'http://192.168.1.42:3000');
+      final vm = PairingViewModel(
+        storage,
+        (qr, key) async => throw Exception('socket exception'),
+        _SpyConn(),
+        prefs,
+        bridge,
+      );
+
+      // ws:// is rejected by isValidRelayUrl — the app stores the http(s)
+      // form and converts at transport time.
+      await vm.onQrScanned(_qrUriWithRelay('ws://192.168.1.99:3000'));
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      expect(prefs.writes, isEmpty);
+      expect(prefs.relayUrl, 'http://192.168.1.42:3000');
 
       vm.dispose();
     });

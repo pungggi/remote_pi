@@ -6,13 +6,30 @@ const CONFIG_DIR = path.join(os.homedir(), ".pi", "remote");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 
 /**
- * Default community relay. Stored in canonical http(s):// form — conversion
- * to ws(s):// happens at the transport layer (see `toWebSocketUrl`). The
- * community relay's reverse proxy maps `:443 → :3000` (the WS port), so the
- * URL has no explicit port and the WebSocket upgrade rides on the same TLS
- * connection as the HTTPS endpoints used by the mesh client.
+ * Upstream's community relay, kept as a documented escape hatch for anyone who
+ * wants to reach their Pi from outside the WLAN. Not the default here — see
+ * `kDefaultRelayUrl`. The reverse proxy in front of it maps `:443 → :3000`
+ * (the WS port), so the URL has no explicit port and the WebSocket upgrade
+ * rides on the same TLS connection as the HTTPS mesh endpoints.
  */
-export const kDefaultRelayUrl = "https://relay-rp1.jacobmoura.work";
+export const kPublicRelayUrl = "https://relay-rp1.jacobmoura.work";
+
+/**
+ * Default relay: one running on this machine, reached over loopback.
+ *
+ * Piper's default topology is phone and Pi on the same WLAN with the relay
+ * next to the Pi, so no traffic and no pairing metadata leaves the network.
+ * The extension connects over loopback because that is the most robust route
+ * to a process on the same host — it survives the machine changing IP,
+ * roaming between networks, or having no LAN at all.
+ *
+ * The phone cannot use this address. The pairing QR advertises the LAN form
+ * instead (see `lan.ts` / `toPhoneReachableUrl`).
+ *
+ * Stored in canonical http(s):// form — conversion to ws(s):// happens at the
+ * transport layer (see `toWebSocketUrl`).
+ */
+export const kDefaultRelayUrl = "http://127.0.0.1:3000";
 
 export type RemotePiConfig = { relay?: string };
 
