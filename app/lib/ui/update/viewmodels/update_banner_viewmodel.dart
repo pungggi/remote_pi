@@ -43,11 +43,14 @@ class UpdateBannerViewModel extends ViewModel<UpdateBannerState> {
   final String format;
   final String arch;
 
-  /// Página de download do site — fallback quando não há artefato compatível.
+  /// Fallback quando o manifest não traz artefato compatível.
   final String fallbackUrl;
 
+  /// Página de releases do fork. O upstream manda pra página de download do
+  /// site dele; o fork não tem site publicado, e a lista de releases do próprio
+  /// repositório sempre existe e já mostra todos os artefatos.
   static const String _kFallbackUrl =
-      'https://remote-pi.jacobmoura.work/download';
+      'https://github.com/pungggi/remote_pi/releases';
 
   bool _checked = false;
   bool _disposed = false;

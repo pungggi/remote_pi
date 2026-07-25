@@ -5,8 +5,8 @@
 # latest.json. O macOS saiu do release: o fork não tem identidade de assinatura
 # Apple, e um dmg sem notarização o Gatekeeper recusa. Build local segue
 # funcionando (`flutter build macos`) — ver cockpit/packaging/README.md.
-# Publicação no site é MANUAL (gate): baixar o latest.json da release e colocar
-# no rp-s3 (<host>/cockpit/data) — ver rp-s3/README.md.
+# Publicação é MANUAL (gate): baixar latest.json + appcast-windows.xml da release
+# e comitar em cockpit/ no branch `downloads` deste repositório.
 #
 # Runbook por plataforma: cockpit/packaging/README.md.
 
@@ -288,9 +288,9 @@ jobs:
             echo ""
             echo "---"
             echo "**Publicação (gate manual):** baixe \`latest.json\` e"
-            echo "\`appcast-windows.xml\` desta release e coloque em"
-            echo "\`<host do rp-s3>/cockpit/data/\` (ver \`rp-s3/README.md\`)."
-            echo "O \`latest.json\` liga o card/site (e o notify do Linux); o appcast liga"
+            echo "\`appcast-windows.xml\` desta release e comite em"
+            echo "\`cockpit/\` no branch \`downloads\` deste repositório."
+            echo "O \`latest.json\` liga o card (e o notify do Linux); o appcast liga"
             echo "o self-update (WinSparkle) dos cockpits já instalados. Até subir,"
             echo "ninguém atualiza."
           } >> "$NOTES_FILE"
@@ -311,6 +311,6 @@ jobs:
             echo "Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
             echo ""
             echo "**Próximo passo (manual):** baixar \`latest.json\` +"
-            echo "\`appcast-windows.xml\` da release e colocar no rp-s3"
-            echo "(\`<host>/cockpit/data/\`) — liga site/card e o self-update."
+            echo "\`appcast-windows.xml\` da release e comitar em \`cockpit/\`"
+            echo "no branch \`downloads\` — liga o card e o self-update."
           } >> "$GITHUB_STEP_SUMMARY"

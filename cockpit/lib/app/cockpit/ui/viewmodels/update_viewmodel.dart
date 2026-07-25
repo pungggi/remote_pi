@@ -48,11 +48,14 @@ class UpdateViewModel extends ChangeNotifier {
   String get format => _target.format;
   String get arch => _target.arch;
 
-  /// Página de download do site — fallback quando não há artefato da plataforma.
+  /// Fallback quando o manifest não traz artefato da plataforma.
   final String fallbackUrl;
 
+  /// Página de releases do fork. O upstream manda pra página de download do
+  /// site dele; o fork não tem site publicado, e a lista de releases do próprio
+  /// repositório sempre existe e já mostra todos os artefatos.
   static const String _kFallbackUrl =
-      'https://remote-pi.jacobmoura.work/download';
+      'https://github.com/pungggi/remote_pi/releases';
 
   UpdateInfo? _available; // caminho Linux/notify
   StreamSubscription<SelfUpdateState>? _selfSub;

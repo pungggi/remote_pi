@@ -193,9 +193,11 @@ Future<Module> buildCockpitModule() async {
   );
 }
 
-/// Base do rp-s3 onde mora o appcast do self-update (Windows).
+/// Base do branch `downloads` deste repositório, onde mora o appcast do
+/// self-update (Windows). Ver [UpdateCheckerImpl.defaultManifestUrl] pra por que
+/// não é mais o host do upstream nem `/releases/latest/download/`.
 const String _kDownloadsBase =
-    'https://rp-s3.jacobmoura.work/downloads/cockpit';
+    'https://raw.githubusercontent.com/pungggi/remote_pi/downloads/cockpit';
 
 /// [UpdateTarget] da máquina atual: versão do app + plataforma/formato/arch do
 /// manifest + URL do appcast de self-update (só Windows; `null` no resto).

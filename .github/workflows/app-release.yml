@@ -111,7 +111,7 @@ jobs:
           (cd out && sha256sum RemotePi.apk > SHA256SUMS)
           BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
           jq -n --arg version "$VERSION" --arg date "$(date -u +%F)" \
-            --arg notes "Remote Pi (app) ${VERSION}" \
+            --arg notes "Piper (app) ${VERSION}" \
             --arg url "$BASE/RemotePi.apk" \
             --arg sha256 "$(sha256sum out/RemotePi.apk | cut -d' ' -f1)" \
             --argjson size "$(stat -c%s out/RemotePi.apk)" \
@@ -132,10 +132,10 @@ jobs:
               echo "APK Android assinado — instalação direta. Conferir integridade com o SHA256SUMS."
               echo ""
               echo "---"
-              echo "**Publicação no site (gate manual):** baixe o \`latest.json\` desta release e coloque em \`/Users/flutterando/app/data/\` no host do rp-s3 — só então o site e o aviso in-app passam a ofertar esta versão."
+              echo "**Publicação (gate manual):** baixe o \`latest.json\` desta release e comite em \`app/latest.json\` no branch \`downloads\` deste repositório — só então o aviso in-app passa a ofertar esta versão."
             } > "$NOTES_FILE"
             gh release create "$RELEASE_TAG" out/RemotePi.apk out/SHA256SUMS out/latest.json \
-              --title "Remote Pi (app) ${VERSION}" \
+              --title "Piper (app) ${VERSION}" \
               --notes-file "$NOTES_FILE" \
               --latest=false
           fi
@@ -143,12 +143,12 @@ jobs:
       - name: Resumo
         run: |
           {
-            echo "## Remote Pi app ${{ steps.v.outputs.version }} — APK publicado"
+            echo "## Piper app ${{ steps.v.outputs.version }} — APK publicado"
             echo ""
             echo "Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
             echo ""
             echo "Asset: \`RemotePi.apk\` (assinado com o keystore release, verificado no job)."
             echo ""
             echo "**Próximo passo (manual):** baixar o \`latest.json\` da release e"
-            echo "colocar no rp-s3 (\`/Users/flutterando/app/data/\`) pra ir ao ar no site e no aviso in-app."
+            echo "comitar em \`app/latest.json\` no branch \`downloads\` pra ir ao ar no aviso in-app."
           } >> "$GITHUB_STEP_SUMMARY"

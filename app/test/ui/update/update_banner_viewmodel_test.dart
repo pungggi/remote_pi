@@ -188,7 +188,7 @@ void main() {
       final vm = _vm(_FakeChecker(info), opener: opener);
       await vm.check();
       await vm.download();
-      expect(opener.opened, ['https://remote-pi.jacobmoura.work/download']);
+      expect(opener.opened, ['https://github.com/pungggi/remote_pi/releases']);
     });
   });
 }

@@ -18,8 +18,19 @@ class UpdateCheckerImpl implements UpdateChecker {
   })  : manifestUrl = manifestUrl ?? defaultManifestUrl,
         _dio = dio ?? _defaultDio(timeout);
 
+  /// Manifest do **fork**, servido pelo branch `downloads` deste repositório.
+  ///
+  /// O upstream serve o dele de um host próprio (rp-s3 numa VPS); o fork não tem
+  /// essa infra, e apontar pra lá faria o Piper oferecer builds do Remote Pi.
+  /// `raw.githubusercontent` dá URL estável sem host novo — o gate de publicação
+  /// deixa de ser "copiar o arquivo no volume" e passa a ser um commit naquele
+  /// branch.
+  ///
+  /// Não dá pra usar `/releases/latest/download/`: as releases do repo se
+  /// dividem em `app-v*` e `cockpit-v*`, e `latest` devolveria a mais recente
+  /// entre as duas — ora o app, ora o Cockpit.
   static const String defaultManifestUrl =
-      'https://rp-s3.jacobmoura.work/downloads/app/latest.json';
+      'https://raw.githubusercontent.com/pungggi/remote_pi/downloads/app/latest.json';
 
   final String manifestUrl;
   final Dio _dio;
