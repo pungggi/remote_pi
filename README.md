@@ -11,19 +11,27 @@
 
 ---
 
+> **This is a fork.** It follows its own product line and does not track back
+> into the original project. Upstream is
+> [`jacobaraujo7/remote_pi`](https://github.com/jacobaraujo7/remote_pi) — see
+> [FORK.md](./FORK.md) for what diverges and how upstream changes are merged in.
+
 ## Links
 
-- **Official site** — <https://remote-pi.jacobmoura.work>
+- **GitHub (this fork)** — <https://github.com/pungggi/remote_pi>
+- **Upstream project** — <https://github.com/jacobaraujo7/remote_pi>
 - **Package documentation** — <https://pi.dev/packages/remote-pi?name=remote-pi>
-- **GitHub** — <https://github.com/jacobaraujo7/remote_pi>
 
 ### Downloads
 
+This fork has no published builds yet — build from source (see each package's
+README), or grab the upstream releases below if you want the original app.
+
 | Platform | Status |
 |---|---|
-| Google Play (Android) | [Get it on Google Play](https://play.google.com/store/apps/details?id=work.jacobmoura.remotepi) |
-| App Store (iOS) | [Download on the App Store](https://apps.apple.com/app/remote-pi-coding-agent/id6773499691) |
-| APK (sideload, Android) | [GitHub Releases](https://github.com/jacobaraujo7/remote_pi/releases) |
+| Google Play (Android) | *not published — upstream: [Remote Pi](https://play.google.com/store/apps/details?id=work.jacobmoura.remotepi)* |
+| App Store (iOS) | *not published — upstream: [Remote Pi](https://apps.apple.com/app/remote-pi-coding-agent/id6773499691)* |
+| APK (sideload, Android) | *not published — upstream: [GitHub Releases](https://github.com/jacobaraujo7/remote_pi/releases)* |
 
 ## What's in this repo
 
