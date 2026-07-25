@@ -1,6 +1,6 @@
-# Fork — linha de produto própria
+# Piper — fork do Remote Pi
 
-Este repositório é um **hard fork** de
+**Piper** é um **hard fork** de
 [`jacobaraujo7/remote_pi`](https://github.com/jacobaraujo7/remote_pi).
 Ele não pretende voltar pro upstream: a divergência de identidade (bundle IDs,
 domínios, branding) é intencional e permanente.
@@ -97,9 +97,35 @@ verificado:
 
 ```bash
 cd app          && flutter analyze && flutter test
-cd pi-extension && npm ci && npm test
+cd pi-extension && pnpm install && pnpm typecheck && pnpm test   # pnpm, não npm
 cd relay        && cargo test
 ```
+
+## Identidade do fork
+
+| Upstream | Piper |
+|---|---|
+| `work.jacobmoura.remotepi` | `ch.pungitore.piper` |
+| `work.jacobmoura.cockpit` | `ch.pungitore.piper.cockpit` |
+| `dev.remotepi.identity` | `ch.pungitore.piper.identity` |
+| `dev.remotepi.owner.identity` | `ch.pungitore.piper.owner.identity` |
+| `dev.remotepi.{peers,rooms,pi,mac}` | `ch.pungitore.piper.{peers,rooms,pi,mac}` |
+| `dev.remotepi.supervisord` | `ch.pungitore.piper.supervisord` |
+| "Remote Pi" / "Remote Pi Cockpit" | "Piper" / "Piper Cockpit" |
+
+Os identificadores de keyring (`*.peers`, `*.rooms`, `*.pi`, `*.owner.identity`)
+guardam as chaves de pareamento. **Nunca aponte a migração legada de
+`pairing/storage.ts` de volta pro namespace `dev.remotepi.*`**: ela copia a
+entrada antiga e *apaga* a original, ou seja, quebraria o pareamento de uma
+instalação Remote Pi na mesma máquina.
+
+Assinatura Apple não vem configurada — `DEVELOPMENT_TEAM` está vazio nos três
+projetos Xcode, `ExportOptions.plist` traz `APPLE_TEAM_ID_NOT_SET` e o
+`cockpit-release.yml` lê `secrets.APPLE_SIGN_ID`.
+
+Ainda não migrado: `site/` (copy e links de loja do upstream), `branding/`
+(o logo continua sendo o do Remote Pi) e os registros históricos (`plan/`,
+`CHANGELOG.md`), que descrevem o que foi decidido na época e ficam como estão.
 
 ## Rodar num único WLAN (sem relay público)
 

@@ -1,8 +1,4 @@
-<p align="center">
-  <img src="branding/logo-full.svg" width="140" alt="Remote Pi logo" />
-</p>
-
-<h1 align="center">Remote Pi</h1>
+<h1 align="center">Piper</h1>
 
 <p align="center">
   Control your <a href="https://github.com/earendil-works/pi">Pi coding agent</a> from your phone.
@@ -11,10 +7,14 @@
 
 ---
 
-> **This is a fork.** It follows its own product line and does not track back
-> into the original project. Upstream is
-> [`jacobaraujo7/remote_pi`](https://github.com/jacobaraujo7/remote_pi) — see
-> [FORK.md](./FORK.md) for what diverges and how upstream changes are merged in.
+> **This is a fork.** Piper is a fork of
+> [`jacobaraujo7/remote_pi`](https://github.com/jacobaraujo7/remote_pi) (Remote
+> Pi) and follows its own product line — it does not track back into the
+> original project. See [FORK.md](./FORK.md) for what diverges and how upstream
+> changes are merged in.
+>
+> The logo in `branding/` is still Remote Pi's and is not used here yet;
+> Piper needs its own artwork before anything ships.
 
 ## Links
 
