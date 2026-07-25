@@ -3,9 +3,9 @@
 Reference copy for both store listings. Keep in sync when metadata changes.
 Google Play section is at the bottom; most copy is shared.
 
-- **iOS Bundle ID:** `ch.pungitore.piper.app` (the plain `ch.pungitore.piper` is reserved by another Apple team)
+- **iOS Bundle ID:** `ch.pungitore.piper` (the plain `ch.pungitore.piper` is reserved by another Apple team)
 - **Android applicationId:** `ch.pungitore.piper` (separate Play namespace — no conflict)
-- **Apple Team:** `U843T2P7A2`
+- **Apple Team:** _noch nicht gesetzt_ (eigene Team-ID eintragen)
 - **Min iOS:** 18.0 · **Min Android:** API 34 (Android 14)
 - **Platforms:** iPhone **+ iPad** (universal — iPad 13" screenshots required)
 
@@ -135,7 +135,7 @@ routes ephemeral traffic.
 ```
 First / Last name:  Jacob / Moura
 Phone:              <your phone, intl format e.g. +55 ...>
-Email:              jacobaraujo7@gmail.com
+Email:              alessandro@pungitore.ch
 ```
 
 **Attachment:** the demo video (mp4) and/or a link to it in the notes below.
@@ -158,7 +158,7 @@ NETWORK & PRIVACY
 The app connects to a relay over TLS to reach your machines. Public relays must use TLS; cleartext (http/ws) is permitted only on the local network for self-hosted relays. No personal data is collected.
 
 CONTACT
-Jacob Moura — jacobaraujo7@gmail.com
+ngSoftware — alessandro@pungitore.ch
 ```
 
 ### Demo video — recording checklist

@@ -9,9 +9,9 @@ referência: [`../../plan/43-cockpit-packaging.md`](../../plan/43-cockpit-packag
 | Item | Valor |
 |---|---|
 | App ID (macOS bundle id / Linux app id) | `ch.pungitore.piper.cockpit` |
-| Nome de exibição | **Remote Pi Cockpit** |
+| Nome de exibição | **Piper Cockpit** |
 | Binário | `cockpit` (Linux/Windows) / `Cockpit` (macOS) — **não** renomeado |
-| Team ID (Apple) | `U843T2P7A2` |
+| Team ID (Apple) | _eigene Team-ID eintragen_ |
 | Versão (SSOT) | `version:` do `pubspec.yaml` (`x.y.z+n`) |
 
 - macOS: `PRODUCT_BUNDLE_IDENTIFIER` em `macos/Runner/Configs/AppInfo.xcconfig`;
@@ -48,7 +48,7 @@ linux/packaging/rpm/make_config.yaml
 ## macOS — build + sign + DMG + notarize + staple (ponta a ponta)
 
 Validado localmente em 2026-06-12 (DMG aceito pelo Gatekeeper). Pré-requisitos:
-identidade **"Developer ID Application: Jacob Moura (U843T2P7A2)"** no Keychain e
+identidade **"Developer ID Application: <SEU NOME> (<TEAM_ID>)"** no Keychain e
 a API key do App Store Connect.
 
 ```bash
@@ -61,24 +61,24 @@ APP="build/macos/Build/Products/Release/Cockpit.app"
 # 2. Assina o .app com Developer ID + Hardened Runtime + entitlements de Release.
 codesign --force --deep --options runtime --timestamp \
   --entitlements macos/Runner/Release.entitlements \
-  --sign "Developer ID Application: Jacob Moura (U843T2P7A2)" "$APP"
+  --sign "Developer ID Application: <SEU NOME> (<TEAM_ID>)" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"   # checagem
 
 # 3. Monta o DMG (hdiutil — sem dependências; o maker do Fastforge usa `appdmg`
 #    via npm, alternativa pra CI). Layout: app + atalho /Applications.
 mkdir -p dist
 STAGE=$(mktemp -d); cp -R "$APP" "$STAGE/"; ln -s /Applications "$STAGE/Applications"
-DMG="dist/RemotePiCockpit-1.0.0-macos-universal.dmg"
-hdiutil create -volname "Remote Pi Cockpit" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+DMG="dist/PiperCockpit-1.0.0-macos-universal.dmg"
+hdiutil create -volname "Piper Cockpit" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 rm -rf "$STAGE"
 
 # 4. Assina o DMG.
 codesign --force --timestamp \
-  --sign "Developer ID Application: Jacob Moura (U843T2P7A2)" "$DMG"
+  --sign "Developer ID Application: <SEU NOME> (<TEAM_ID>)" "$DMG"
 
 # 5. Notariza (App Store Connect API key) e aguarda.
 xcrun notarytool submit "$DMG" \
-  --key "/Users/jacob/Library/Mobile Documents/com~apple~CloudDocs/Flutterando/RemotePi/CockpitApp/AuthKey_3Y2J8MA3M4.p8" \
+  --key "<caminho para as suas chaves de assinatura>/AuthKey_3Y2J8MA3M4.p8" \
   --key-id 3Y2J8MA3M4 \
   --issuer a76c76e6-a413-449e-926c-f2c30d5645c4 \
   --wait
@@ -103,7 +103,7 @@ fastforge package --platform windows --targets exe   # usa windows/packaging/exe
 ```
 
 Sem assinatura nesta fase (aviso do SmartScreen documentado no site). Artefato:
-`RemotePiCockpit-Setup-<v>-windows-x64.exe`.
+`PiperCockpit-Setup-<v>-windows-x64.exe`.
 
 ## Linux — `.deb` + `.rpm` (x86_64 e arm64)
 
@@ -146,9 +146,9 @@ Por isso há **um par** de chaves, não dois.
   - macOS: `SUPublicEDKey` em `macos/Runner/Info.plist`.
   - Windows: recurso `EdDSAPub EDDSA {...}` em `windows/runner/Runner.rc`.
 - **Privada** (NUNCA commitar): backup em
-  `…/CloudDocs/Flutterando/RemotePi/CockpitApp/sparkle_ed25519_private_key.txt`
+  `<caminho para as suas chaves de assinatura>/sparkle_ed25519_private_key.txt`
   (iCloud, junto dos certs Apple) **e** no secret do GitHub `SPARKLE_PRIVATE_KEY`.
-  Gerada via Sparkle na conta de keychain `remote-pi-cockpit`.
+  Gerada via Sparkle na conta de keychain `piper-cockpit`.
 
 Regenerar / rotacionar (⚠️ trocar a chave **trava a base instalada**: os apps
 antigos só confiam na pública embutida neles — só faça se a privada vazar, e
@@ -157,10 +157,10 @@ saiba que os usuários atuais terão que reinstalar manualmente):
 ```bash
 cd cockpit
 # (re)gera; imprime a SUPublicEDKey; privada vai pro Keychain (conta dedicada)
-./macos/Pods/Sparkle/bin/generate_keys --account remote-pi-cockpit
+./macos/Pods/Sparkle/bin/generate_keys --account piper-cockpit
 # exporta a privada pro iCloud (pede "Allow" no Keychain)
-./macos/Pods/Sparkle/bin/generate_keys --account remote-pi-cockpit -x \
-  "/Users/jacob/Library/Mobile Documents/com~apple~CloudDocs/Flutterando/RemotePi/CockpitApp/sparkle_ed25519_private_key.txt"
+./macos/Pods/Sparkle/bin/generate_keys --account piper-cockpit -x \
+  "<caminho para as suas chaves de assinatura>/sparkle_ed25519_private_key.txt"
 # atualizar: SUPublicEDKey (Info.plist), EdDSAPub (Runner.rc) e o secret SPARKLE_PRIVATE_KEY
 ```
 

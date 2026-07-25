@@ -7,7 +7,7 @@
 	<key>destination</key>
 	<string>export</string>
 	<key>teamID</key>
-	<string>U843T2P7A2</string>
+	<string>APPLE_TEAM_ID_NOT_SET</string>
 	<key>signingStyle</key>
 	<string>automatic</string>
 	<key>uploadSymbols</key>

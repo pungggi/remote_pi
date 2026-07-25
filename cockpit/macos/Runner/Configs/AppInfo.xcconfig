@@ -13,4 +13,4 @@ PRODUCT_NAME = Cockpit
 PRODUCT_BUNDLE_IDENTIFIER = ch.pungitore.piper.cockpit$(BUNDLE_ID_SUFFIX)
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 Jacob Moura. All rights reserved.
+PRODUCT_COPYRIGHT = © 2026 Jacob Moura · Piper fork © 2026 ngSoftware

@@ -2,16 +2,16 @@
 # com `apt install rpm` → rpmbuild; arch detectada por uname -m). Valida-se em
 # container fedora:40 (premissa do plano).
 #
-# Artefato resultante: remote-pi-cockpit-<versão>.<arch>.rpm
-display_name: Remote Pi Cockpit
-summary: Cliente desktop multi-pane do Remote Pi
+# Artefato resultante: piper-cockpit-<versão>.<arch>.rpm
+display_name: Piper Cockpit
+summary: Cliente desktop multi-pane do Piper
 license: LicenseRef-proprietary
 url: https://jacobmoura.work
-vendor: Jacob Moura
-packager: Jacob Moura
-packagerEmail: jacobaraujo7@gmail.com
+vendor: ngSoftware
+packager: ngSoftware
+packagerEmail: alessandro@pungitore.ch
 group: Development/Tools
-generic_name: Remote Pi Cockpit
+generic_name: Piper Cockpit
 # Deps de runtime: GTK3 (nome do pacote no Fedora).
 requires:
   - gtk3
@@ -31,6 +31,6 @@ startup_notify: true
 icon: linux/runner/resources/app_icon_512.png
 metainfo: linux/ch.pungitore.piper.cockpit.metainfo.xml
 description: |
-  Cockpit é o cliente desktop do Remote Pi: uma GUI multi-pane sobre o motor do
+  Cockpit é o cliente desktop do Piper: uma GUI multi-pane sobre o motor do
   Pi. Roda agentes (cada um um `pi --mode rpc`) e terminais lado a lado, com
   árvore de arquivos, worktrees por workspace e agendamento de daemons.

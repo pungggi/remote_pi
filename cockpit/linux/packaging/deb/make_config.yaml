@@ -2,16 +2,16 @@
 # (ubuntu-24.04) e `linux-arm64` (ubuntu-24.04-arm) do CI. A arquitetura é
 # detectada pelo Fastforge (uname -m) no runner.
 #
-# Artefato resultante: remote-pi-cockpit_<versão>_<arch>.deb
-display_name: Remote Pi Cockpit
-package_name: remote-pi-cockpit
+# Artefato resultante: piper-cockpit_<versão>_<arch>.deb
+display_name: Piper Cockpit
+package_name: piper-cockpit
 # Installed-Size do pacote .deb, em KB (campo obrigatório do maker do Fastforge).
 # Estimativa do bundle Flutter Linux release (~150 MB); recalibrar com
 # `du -sk build/linux/*/release/bundle` quando houver build Linux real.
 installed_size: 150000
 maintainer:
-  name: Jacob Moura
-  email: jacobaraujo7@gmail.com
+  name: ngSoftware
+  email: alessandro@pungitore.ch
 section: devel
 priority: optional
 # Deps de runtime: GTK3 + libs base do bundle Flutter Linux. (Confirmar/expandir
@@ -25,13 +25,13 @@ dependencies:
   - libmpv2
   # Plano 51 — flutter_secure_storage (senha de banco) usa o Secret Service.
   - libsecret-1-0
-generic_name: Remote Pi Cockpit
+generic_name: Piper Cockpit
 categories:
   - Development
   - IDE
 keywords:
   - pi
-  - remote-pi
+  - piper
   - agent
   - cockpit
 startup_notify: true

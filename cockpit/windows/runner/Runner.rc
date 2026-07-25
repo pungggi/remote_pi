@@ -92,11 +92,11 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "Jacob Moura" "\0"
+            VALUE "CompanyName", "ngSoftware" "\0"
             VALUE "FileDescription", "Remote Pi Cockpit" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "Cockpit" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 Jacob Moura. All rights reserved." "\0"
+            VALUE "LegalCopyright", "(C) 2026 Jacob Moura - Piper fork (C) 2026 ngSoftware" "\0"
             VALUE "OriginalFilename", "Cockpit.exe" "\0"
             VALUE "ProductName", "Remote Pi Cockpit" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"

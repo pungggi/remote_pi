@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
 Name=Cockpit
-GenericName=Remote Pi Cockpit
-Comment=Cliente desktop do Remote Pi — GUI multi-pane sobre o motor do Pi
+GenericName=Piper Cockpit
+Comment=Cliente desktop do Piper — GUI multi-pane sobre o motor do Pi
 Exec=cockpit
 Icon=ch.pungitore.piper.cockpit
 Terminal=false
 Categories=Development;IDE;
 StartupWMClass=ch.pungitore.piper.cockpit
-Keywords=pi;remote-pi;agent;cockpit;
+Keywords=pi;piper;agent;cockpit;

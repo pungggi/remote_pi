@@ -66,7 +66,7 @@ jobs:
     defaults: { run: { working-directory: cockpit } }
     env:
       VERSION: ${{ needs.meta.outputs.version }}
-      SIGN_ID: "Developer ID Application: Jacob Moura (U843T2P7A2)"
+      SIGN_ID: ${{ secrets.APPLE_SIGN_ID }}
     steps:
       - uses: actions/checkout@v4
         with:

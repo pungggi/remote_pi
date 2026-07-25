@@ -3,20 +3,20 @@
      share/metainfo/. O <id> casa com o app ID e o .desktop. -->
 <component type="desktop-application">
   <id>ch.pungitore.piper.cockpit</id>
-  <name>Remote Pi Cockpit</name>
-  <summary>Cliente desktop multi-pane do Remote Pi</summary>
+  <name>Piper Cockpit</name>
+  <summary>Cliente desktop multi-pane do Piper</summary>
 
   <metadata_license>CC0-1.0</metadata_license>
   <!-- Licença do projeto ainda pendente no monorepo; placeholder válido. -->
   <project_license>LicenseRef-proprietary</project_license>
 
   <developer id="ch.pungitore">
-    <name>Jacob Moura</name>
+    <name>ngSoftware</name>
   </developer>
 
   <description>
     <p>
-      Cockpit é o cliente desktop do Remote Pi: uma GUI multi-pane sobre o motor
+      Cockpit é o cliente desktop do Piper: uma GUI multi-pane sobre o motor
       do Pi. Roda agentes (cada um um <code>pi --mode rpc</code>) e terminais
       lado a lado, com árvore de arquivos, worktrees por workspace e
       agendamento de daemons.

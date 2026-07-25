@@ -6,7 +6,7 @@
 output: dist/
 variables:
   # Sobrescreva com env na CI; aqui ficam como referência/local.
-  APPLE_SIGNING_IDENTITY: "Developer ID Application: Jacob Moura (U843T2P7A2)"
+  APPLE_SIGNING_IDENTITY: "Developer ID Application: APPLE_SIGN_ID_NOT_SET"
 
 releases:
   # macOS: DMG universal (assinatura + notarização são passos manuais/CI à parte;

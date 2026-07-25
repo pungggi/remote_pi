@@ -2,13 +2,13 @@
 # no job `windows` do CI (windows-latest + Inno Setup). Sem assinatura nesta
 # fase (aviso do SmartScreen documentado no site).
 app_id: ch.pungitore.piper.cockpit
-display_name: Remote Pi Cockpit
-publisher_name: Jacob Moura
+display_name: Piper Cockpit
+publisher_name: ngSoftware
 publisher_url: https://jacobmoura.work
 # O binário do runner Windows é `cockpit.exe` (BINARY_NAME=cockpit).
 executable_name: cockpit.exe
 # Instala por usuário (sem exigir admin) em %LOCALAPPDATA%\Programs.
-install_dir_name: "{userpf}\\Remote Pi Cockpit"
+install_dir_name: "{userpf}\\Piper Cockpit"
 privileges_required: lowest
 create_desktop_icon: true
 setup_icon_file: windows/runner/resources/app_icon.ico

@@ -14,7 +14,7 @@
          the gallery uses the Android Photo Picker (no storage permission). -->
     <uses-permission android:name="android.permission.CAMERA"/>
     <application
-        android:label="Remote Pi"
+        android:label="Piper"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

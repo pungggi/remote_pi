@@ -11,7 +11,7 @@
 	     (requiresOnDeviceRecognition); audio is transcribed locally and is
 	     never written to a file nor sent to any server. -->
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Remote Pi uses the microphone to dictate messages by voice. Audio is processed on your device and is never sent to any server.</string>
+	<string>Piper uses the microphone to dictate messages by voice. Audio is processed on your device and is never sent to any server.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Speech recognition turns your dictated voice into text on your device. Audio is processed on-device and is never sent to any server.</string>
 	<!-- Public relays must use TLS (https/wss). NSAllowsLocalNetworking permits
@@ -25,7 +25,7 @@
 	</dict>
 	<!-- Required for iOS 14+ to connect to devices on the local network (LAN relay). -->
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Remote Pi connects to a relay on your local network to communicate with your Mac.</string>
+	<string>Piper connects to a relay on your local network to communicate with your Mac.</string>
 	<!-- App uses only standard TLS transport + Ed25519 signatures (digital
 	     signature is exempt). Qualifies for the standard export-compliance
 	     exemption; set to false so uploads don't require manual compliance
@@ -37,7 +37,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Remote Pi</string>
+	<string>Piper</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -45,7 +45,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Remote Pi</string>
+	<string>Piper</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
