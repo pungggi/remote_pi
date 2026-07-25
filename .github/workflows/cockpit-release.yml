@@ -1,9 +1,12 @@
 # Release do Cockpit (plano 43, passo 3).
 #
 # Trigger: tag `cockpit-v<versão>` (a versão DEVE bater com o pubspec.yaml).
-# Produz: GitHub Release com 6 artefatos + SHA256SUMS + latest.json.
+# Produz: GitHub Release com 5 artefatos (Windows + Linux) + SHA256SUMS +
+# latest.json. O macOS saiu do release: o fork não tem identidade de assinatura
+# Apple, e um dmg sem notarização o Gatekeeper recusa. Build local segue
+# funcionando (`flutter build macos`) — ver cockpit/packaging/README.md.
 # Publicação no site é MANUAL (gate): baixar o latest.json da release e colocar
-# no rp-s3 (volume /Users/flutterando/cockpit/data) — ver rp-s3/README.md.
+# no rp-s3 (<host>/cockpit/data) — ver rp-s3/README.md.
 #
 # Runbook por plataforma: cockpit/packaging/README.md.
 
@@ -50,130 +53,16 @@ jobs:
             echo "::error::tag $RELEASE_TAG pede $VERSION mas o pubspec está em $PUBSPEC"
             exit 1
           fi
-          # Plano 47: o Sparkle (macOS) compara CFBundleVersion (o +n). Sem build
-          # number o self-update não detecta a versão nova — exigir +n explícito.
+          # O +n era exigido pelo Sparkle do macOS (comparava CFBundleVersion).
+          # Com o macOS fora do release, nada mais o consome — mas continua
+          # obrigatório: é convenção do Flutter e o pubspec do Cockpit já o traz,
+          # então relaxar aqui só abriria espaço pra release sem build number.
           if [ "$BUILD" = "$FULL" ] || [ -z "$BUILD" ]; then
-            echo "::error::pubspec precisa de build number (ex: $VERSION+8) pro Sparkle comparar a versão"
+            echo "::error::pubspec precisa de build number (ex: $VERSION+8)"
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "build=$BUILD" >> "$GITHUB_OUTPUT"
-
-  macos:
-    name: macOS dmg (universal, notarizado)
-    needs: meta
-    runs-on: macos-latest
-    defaults: { run: { working-directory: cockpit } }
-    env:
-      VERSION: ${{ needs.meta.outputs.version }}
-      SIGN_ID: ${{ secrets.APPLE_SIGN_ID }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.RELEASE_TAG }}
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-
-      - name: Importa certificado Developer ID em keychain temporário
-        env:
-          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
-          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-        run: |
-          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
-          KEYCHAIN_PASS=$(openssl rand -hex 16)
-          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
-          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
-          echo "$MACOS_CERT_P12" | base64 -d > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
-            -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: \
-            -s -k "$KEYCHAIN_PASS" "$KEYCHAIN"
-          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
-          rm "$RUNNER_TEMP/cert.p12"
-
-      - name: Build · sign · notarize · zip (Sparkle) · dmg
-        env:
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: |
-          flutter pub get
-          flutter build macos --release
-          APP="build/macos/Build/Products/Release/Cockpit.app"
-          # Assina o .app (Developer ID + Hardened Runtime + timestamp). --deep
-          # cobre os componentes do Sparkle aninhados (Sparkle.framework,
-          # Autoupdate, Updater.app, XPCServices), exigência da notarização.
-          codesign --force --deep --options runtime --timestamp \
-            --entitlements macos/Runner/Release.entitlements \
-            --sign "$SIGN_ID" "$APP"
-          # O --deep reassinou o cockpit-hook (Contents/Resources) SEM as
-          # entitlements dele. É um exe AOT do Dart: sob hardened runtime sem
-          # allow-jit/allow-unsigned-executable-memory o macOS o mata (SIGKILL).
-          # Reassina o helper com as entitlements certas e re-sela o topo do app
-          # (sem --deep, pra não reassinar/estragar de novo o helper).
-          codesign --force --options runtime --timestamp \
-            --entitlements macos/cockpit_hook.entitlements \
-            --sign "$SIGN_ID" "$APP/Contents/Resources/cockpit-hook"
-          # Mesmo caso do cockpit-cli: exe AOT do Dart solto em Resources/. O
-          # --deep NÃO assina Mach-O avulso em Resources/ (só trata code conhecido
-          # — frameworks/plugins/XPC), então ele saía sem Developer ID, sem
-          # timestamp e sem hardened runtime → notarização Invalid. Assina explícito.
-          codesign --force --options runtime --timestamp \
-            --entitlements macos/cockpit_hook.entitlements \
-            --sign "$SIGN_ID" "$APP/Contents/Resources/cockpit-cli"
-          codesign --force --options runtime --timestamp \
-            --entitlements macos/Runner/Release.entitlements \
-            --sign "$SIGN_ID" "$APP"
-          codesign --verify --deep --strict --verbose=2 "$APP"
-          mkdir -p dist
-          echo "$APPLE_API_KEY" | base64 -d > "$RUNNER_TEMP/apikey.p8"
-          notarize() {
-            local out
-            out=$(xcrun notarytool submit "$1" --key "$RUNNER_TEMP/apikey.p8" \
-              --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" --wait 2>&1)
-            echo "$out"
-            # Em rejeição (Invalid) o submit não traz os motivos; puxa o log com os
-            # issues (arquivo + razão) pra diagnosticar sem caça manual.
-            if echo "$out" | grep -q "status: Invalid"; then
-              local id
-              id=$(echo "$out" | grep -m1 -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
-              echo "::error::Notarização Invalid — log da submissão $id:"
-              xcrun notarytool log "$id" --key "$RUNNER_TEMP/apikey.p8" \
-                --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" || true
-              return 1
-            fi
-          }
-          # 1) Notariza o .app (submetendo um zip) e grampeia o ticket no bundle.
-          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/notarize-app.zip"
-          notarize "$RUNNER_TEMP/notarize-app.zip"
-          xcrun stapler staple "$APP"
-          # 2) Artefato de update do Sparkle (plano 47): zip do .app já
-          #    notarizado+stapled — Sparkle troca o bundle in-place (zip é o
-          #    caminho recomendado, não o dmg). NÃO entra no latest.json.
-          ditto -c -k --keepParent "$APP" "dist/Cockpit-${VERSION}-macos.zip"
-          # 3) DMG de primeira instalação, a partir do .app já stapled.
-          STAGE=$(mktemp -d)
-          cp -R "$APP" "$STAGE/"
-          ln -s /Applications "$STAGE/Applications"
-          DMG="dist/RemotePiCockpit-${VERSION}-macos-universal.dmg"
-          hdiutil create -volname "Remote Pi Cockpit" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
-          rm -rf "$STAGE"
-          codesign --force --timestamp --sign "$SIGN_ID" "$DMG"
-          notarize "$DMG"
-          xcrun stapler staple "$DMG"
-          spctl -a -t open --context context:primary-signature -vv "$DMG"
-          rm "$RUNNER_TEMP/apikey.p8"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos
-          # dmg (primeira instalação) + Cockpit-<v>-macos.zip (update Sparkle).
-          path: cockpit/dist/*
-          if-no-files-found: error
 
   windows:
     name: Windows exe (x64, Inno Setup)
@@ -295,7 +184,7 @@ jobs:
 
   publish:
     name: GitHub Release + latest.json
-    needs: [meta, macos, windows, linux]
+    needs: [meta, windows, linux]
     runs-on: ubuntu-24.04
     env:
       VERSION: ${{ needs.meta.outputs.version }}
@@ -317,7 +206,6 @@ jobs:
           : > artifacts.ndjson
           for f in *; do
             case "$f" in
-              *macos-universal.dmg) p=macos   a=universal fmt=dmg ;;
               *windows-x64.exe)     p=windows a=x64       fmt=exe ;;
               *_amd64.deb)          p=linux   a=x64       fmt=deb ;;
               *_arm64.deb)          p=linux   a=arm64     fmt=deb ;;
@@ -333,13 +221,13 @@ jobs:
               >> artifacts.ndjson
           done
           COUNT=$(jq -s length artifacts.ndjson)
-          if [ "$COUNT" -ne 6 ]; then
-            echo "::error::esperava 6 artefatos no manifest, achei $COUNT"
+          if [ "$COUNT" -ne 5 ]; then
+            echo "::error::esperava 5 artefatos no manifest, achei $COUNT"
             exit 1
           fi
           # Notas: primeira seção do CHANGELOG; fallback genérico.
           NOTES=$(awk '/^## /{n++} n==1' ../cockpit/CHANGELOG.md | tail -n +2 | sed '/^$/d' | head -20)
-          [ -n "$NOTES" ] || NOTES="Remote Pi Cockpit ${VERSION}"
+          [ -n "$NOTES" ] || NOTES="Piper Cockpit ${VERSION}"
           jq -n --arg version "$VERSION" --arg date "$(date -u +%F)" \
             --arg notes "$NOTES" --slurpfile artifacts artifacts.ndjson \
             '{version:$version, date:$date, notes:$notes, artifacts:$artifacts}' \
@@ -347,15 +235,14 @@ jobs:
           rm artifacts.ndjson
           cat latest.json
 
-      - name: Assina artefatos e gera appcasts (Sparkle/WinSparkle)
+      - name: Assina o instalador e gera o appcast (WinSparkle)
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-          BUILD: ${{ needs.meta.outputs.build }}
         run: |
-          # Plano 47 — assina o .app.zip (macOS) e o .exe (Windows) com a MESMA
-          # chave ed25519 (decisão E refinada): ed25519 é determinístico, então
-          # PyNaCl gera a assinatura que Sparkle e WinSparkle verificam. Sem
-          # ferramenta nativa nos runners — só a chave (secret).
+          # Plano 47 — assina o .exe (Windows) com a chave ed25519: ed25519 é
+          # determinístico, então PyNaCl gera a assinatura que o WinSparkle
+          # verifica. Sem ferramenta nativa nos runners — só a chave (secret).
+          # O ramo macOS saiu junto com o job de release do macOS.
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install --quiet pynacl
           cat > "$RUNNER_TEMP/sign.py" <<'PY'
@@ -368,31 +255,11 @@ jobs:
           sign() { "$RUNNER_TEMP/venv/bin/python3" "$RUNNER_TEMP/sign.py" "$1"; }
           cd release
           BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
-          ZIP="Cockpit-${VERSION}-macos.zip"
           EXE="RemotePiCockpit-Setup-${VERSION}-windows-x64.exe"
-          test -f "$ZIP"; test -f "$EXE"
-          MAC_SIG=$(sign "$ZIP"); MAC_LEN=$(stat -c%s "$ZIP")
+          test -f "$EXE"
           WIN_SIG=$(sign "$EXE"); WIN_LEN=$(stat -c%s "$EXE")
           PUBDATE=$(date -u +"%a, %d %b %Y %H:%M:%S +0000")
           NOTES=$(jq -r .notes latest.json)
-          # macOS: sparkle:version = CFBundleVersion (build +n); shortVersion = marketing.
-          cat > appcast-macos.xml <<XML
-          <?xml version="1.0" encoding="utf-8"?>
-          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-            <channel>
-              <title>Remote Pi Cockpit</title>
-              <item>
-                <title>${VERSION}</title>
-                <pubDate>${PUBDATE}</pubDate>
-                <sparkle:version>${BUILD}</sparkle:version>
-                <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
-                <sparkle:minimumSystemVersion>10.15.0</sparkle:minimumSystemVersion>
-                <description><![CDATA[${NOTES}]]></description>
-                <enclosure url="${BASE}/${ZIP}" sparkle:edSignature="${MAC_SIG}" length="${MAC_LEN}" type="application/octet-stream" />
-              </item>
-            </channel>
-          </rss>
-          XML
           # Windows: WinSparkle baixa o .exe do Inno e roda silencioso via
           # sparkle:installerArguments; sparkle:version = versão marketing (bate
           # com o ProductVersion do Runner.rc).
@@ -400,7 +267,7 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
             <channel>
-              <title>Remote Pi Cockpit</title>
+              <title>Piper Cockpit</title>
               <item>
                 <title>${VERSION}</title>
                 <pubDate>${PUBDATE}</pubDate>
@@ -411,7 +278,6 @@ jobs:
             </channel>
           </rss>
           XML
-          echo "== appcast-macos.xml =="; cat appcast-macos.xml
           echo "== appcast-windows.xml =="; cat appcast-windows.xml
 
       - name: Cria (ou atualiza) a GitHub Release
@@ -421,18 +287,18 @@ jobs:
           {
             echo ""
             echo "---"
-            echo "**Publicação (gate manual):** baixe \`latest.json\`, \`appcast-macos.xml\`"
-            echo "e \`appcast-windows.xml\` desta release e coloque em"
-            echo "\`/Users/flutterando/cockpit/data/\` no host do rp-s3 (ver \`rp-s3/README.md\`)."
-            echo "O \`latest.json\` liga o card/site (e o notify do Linux); os appcasts ligam"
-            echo "o self-update (Sparkle/WinSparkle) dos cockpits já instalados. Até subir,"
+            echo "**Publicação (gate manual):** baixe \`latest.json\` e"
+            echo "\`appcast-windows.xml\` desta release e coloque em"
+            echo "\`<host do rp-s3>/cockpit/data/\` (ver \`rp-s3/README.md\`)."
+            echo "O \`latest.json\` liga o card/site (e o notify do Linux); o appcast liga"
+            echo "o self-update (WinSparkle) dos cockpits já instalados. Até subir,"
             echo "ninguém atualiza."
           } >> "$NOTES_FILE"
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release/* --clobber
           else
             gh release create "$RELEASE_TAG" release/* \
-              --title "Remote Pi Cockpit ${VERSION}" \
+              --title "Piper Cockpit ${VERSION}" \
               --notes-file "$NOTES_FILE" \
               --latest=false
           fi
@@ -444,7 +310,7 @@ jobs:
             echo ""
             echo "Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
             echo ""
-            echo "**Próximo passo (manual):** baixar \`latest.json\` + \`appcast-macos.xml\`"
-            echo "+ \`appcast-windows.xml\` da release e colocar no rp-s3"
-            echo "(\`/Users/flutterando/cockpit/data/\`) — liga site/card e o self-update."
+            echo "**Próximo passo (manual):** baixar \`latest.json\` +"
+            echo "\`appcast-windows.xml\` da release e colocar no rp-s3"
+            echo "(\`<host>/cockpit/data/\`) — liga site/card e o self-update."
           } >> "$GITHUB_STEP_SUMMARY"
