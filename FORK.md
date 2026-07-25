@@ -18,9 +18,13 @@ repositório precisa continuar mergeável. Este documento define como.
 upstream/main ──merge──► main ──merge──► <branch de trabalho>
 ```
 
-`main` é espelho do upstream mais os commits de divergência (identidade,
-branding, docs deste fork). Nada de feature vai direto pra `main` sem passar
-por um branch de trabalho.
+`main` é o **tronco do Piper**: o upstream mergeado mais os commits de
+divergência (identidade, branding, docs deste fork). Nada de feature vai direto
+pra `main` sem passar por um branch de trabalho.
+
+Não existe branch local espelhando o upstream, e não precisa: `git fetch
+upstream` já mantém `upstream/main` como referência somente leitura. É ela o
+espelho.
 
 ## Remotes
 
@@ -49,6 +53,31 @@ Ligue o `rerere` uma vez para não resolver o mesmo conflito a cada sync:
 ```bash
 git config rerere.enabled true
 ```
+
+## Contribuir de volta pro upstream
+
+Desde que a renomeação para Piper entrou, **nenhum PR pro upstream pode sair de
+`main`**. Um PR tirado dali carregaria junto `ch.pungitore.piper`, "Piper
+Cockpit", os placeholders de assinatura Apple e a CLAUDE.md reescrita —
+impossível de mergear no repositório do Jacob.
+
+Branch de contribuição sai sempre de `upstream/main`, nunca de `main`:
+
+```bash
+git fetch upstream
+git checkout -b fix/<tema> upstream/main
+# … commits que valem para os dois lados …
+git push -u origin fix/<tema>
+```
+
+Os branches `feature/mobile-ask-user` (PR #64) e `feature/ask-user-sheet-layout`
+(follow-up do plano 101, ainda não aberto) existem exatamente por isso e ficam
+**congelados**: são a versão do trabalho sem a identidade do fork. Apagá-los
+quebraria o PR aberto.
+
+Quando algo nasce em `main` e depois se mostra útil pro upstream, o caminho é
+`git cherry-pick` do commit sobre um branch novo tirado de `upstream/main` —
+conferindo que ele não toca em nenhum ponto da tabela de divergência abaixo.
 
 ## Conflitos recorrentes esperados
 
