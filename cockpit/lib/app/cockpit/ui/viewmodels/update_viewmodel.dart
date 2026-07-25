@@ -9,18 +9,19 @@ import 'package:cockpit/app/cockpit/domain/value_objects/semver.dart';
 import 'package:cockpit/app/cockpit/domain/value_objects/update_target.dart';
 import 'package:flutter/foundation.dart';
 
-/// Dono do mini card de atualização do rail. Tem **dois modos**, decididos pela
+/// Dono do mini card de atualização do rail. Tem **três modos**, decididos pela
 /// plataforma:
 ///
-/// - **macOS (self-update, plano 47):** [check] liga o [SelfUpdater] nativo
-///   (Sparkle) — checa/baixa em background; o card reflete o [SelfUpdateState]
-///   (baixando → pronto) e o toque instala+relança o já baixado.
-/// - **Windows (self-update):** o WinSparkle não baixa sozinho — o card para em
-///   "Update available" e o toque é que dispara download+install. Ver
-///   [SelfUpdatePhase].
+/// - **Windows (self-update, plano 47):** [check] liga o [SelfUpdater] nativo
+///   (WinSparkle), que não baixa sozinho — o card para em "Update available" e
+///   o toque é que dispara download+install. Ver [SelfUpdatePhase].
 /// - **Linux (notify, plano 43):** [check] lê o `latest.json` via [UpdateChecker];
 ///   se houver versão **maior** e **não dispensada**, o card aparece e o toque
 ///   abre a URL do artefato no navegador (download manual).
+/// - **macOS (nenhum):** o fork não publica build de macOS — sem appcast e sem
+///   artefato no manifest. [UpdateTarget.hasUpdateChannel] é `false` e o card
+///   nunca aparece; checar seria gastar rede pra oferecer um download
+///   inexistente.
 ///
 /// Tudo best-effort: falhas são silenciosas, nunca derrubam o boot.
 class UpdateViewModel extends ChangeNotifier {
@@ -69,22 +70,31 @@ class UpdateViewModel extends ChangeNotifier {
   Timer? _periodic;
   static const Duration _checkInterval = Duration(hours: 6);
 
-  /// `true` em macOS/Windows (há motor de self-update); `false` no Linux.
+  /// `true` no Windows (há motor de self-update); `false` no Linux e no macOS.
   bool get isSelfUpdate => _selfUpdater.isSupported;
+
+  /// A plataforma publica releases? `false` no macOS — ver
+  /// [UpdateTarget.hasUpdateChannel].
+  bool get hasUpdateChannel => _target.hasUpdateChannel;
 
   // ---- Estado unificado consumido pelo card ----
 
   /// O card deve aparecer?
   bool get hasUpdate {
+    if (!hasUpdateChannel) return false;
     if (isSelfUpdate) {
       return !_selfDismissed && _selfUpdater.state.hasPendingUpdate;
     }
     return _available != null;
   }
 
-  /// Artefato baixado e pronto pra instalar — **só macOS** (o WinSparkle nunca
-  /// reporta "baixou"). Governa o texto "restart to install" e o ícone, não o
-  /// clique: quem habilita o clique é o card sempre chamar [primaryAction].
+  /// Artefato baixado e pronto pra instalar. Governa o texto "restart to
+  /// install" e o ícone, não o clique: quem habilita o clique é o card sempre
+  /// chamar [primaryAction].
+  ///
+  /// Hoje **inalcançável**: era a fase do Sparkle (macOS), e o WinSparkle nunca
+  /// reporta "baixou". Fica porque é contrato do motor, não do fork — ver
+  /// [SelfUpdatePhase.downloaded].
   bool get isReadyToInstall =>
       isSelfUpdate && _selfUpdater.state.isReadyToInstall;
 
@@ -104,9 +114,8 @@ class UpdateViewModel extends ChangeNotifier {
     final prefix = v == null ? '' : 'v$v — ';
     if (!isSelfUpdate) return '${prefix}click to download';
     return switch (_selfUpdater.state.phase) {
-      // macOS: baixado em background, só falta reiniciar.
+      // Fases de auto-download do motor — o WinSparkle não as emite.
       SelfUpdatePhase.downloaded => '${prefix}restart to install',
-      // macOS: download em curso (o Windows nunca passa por aqui).
       SelfUpdatePhase.downloading =>
         v == null ? 'Downloading…' : 'Downloading v$v…',
       // Windows: disponível, o clique é que baixa+instala.
@@ -119,6 +128,8 @@ class UpdateViewModel extends ChangeNotifier {
   /// Checa updates no boot e arma uma re-checagem periódica (a cada
   /// [_checkInterval]) enquanto o app está aberto. Silencioso em falha.
   Future<void> check() async {
+    // Sem canal de release (macOS) nem o timer é armado: nada a checar.
+    if (!hasUpdateChannel) return;
     await _runCheck();
     _periodic ??= Timer.periodic(_checkInterval, (_) => _runCheck());
   }
@@ -132,7 +143,7 @@ class UpdateViewModel extends ChangeNotifier {
   /// Também limpa a dispensa local, já que pedir explicitamente é o oposto de
   /// dispensar.
   Future<void> checkNow() async {
-    if (_disposed) return;
+    if (_disposed || !hasUpdateChannel) return;
     _selfDismissed = false;
     if (isSelfUpdate) {
       _selfSub ??= _selfUpdater.changes.listen(_onSelfUpdateChange);
@@ -148,7 +159,7 @@ class UpdateViewModel extends ChangeNotifier {
 
   /// Uma passada de checagem (boot ou periódica).
   Future<void> _runCheck() async {
-    if (_disposed) return;
+    if (_disposed || !hasUpdateChannel) return;
     if (isSelfUpdate) {
       _selfSub ??= _selfUpdater.changes.listen(_onSelfUpdateChange);
       if (!_selfInitialized) {
@@ -192,6 +203,9 @@ class UpdateViewModel extends ChangeNotifier {
   /// baixado; Windows inicia download+install); Linux → baixa o artefato (abre a
   /// URL no navegador).
   Future<void> primaryAction() async {
+    // Inalcançável pelo card (que só renderiza com [hasUpdate]), mas o menu e
+    // futuros call-sites não têm essa garantia.
+    if (!hasUpdateChannel) return;
     if (isSelfUpdate) {
       await _selfUpdater.applyUpdate();
       return;

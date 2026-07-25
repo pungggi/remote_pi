@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:cockpit/app/cockpit/data/update/noop_self_updater.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/dismissed_update_store.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/self_updater.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/update_checker.dart';
@@ -84,6 +85,23 @@ const _kWindowsTarget = UpdateTarget(
   format: 'exe',
   arch: 'x64',
   selfUpdateFeedUrl: 'https://example.test/appcast-windows.xml',
+);
+
+/// Linux: sem self-update, com canal (notify pelo `latest.json`).
+const _kLinuxTarget = UpdateTarget(
+  version: '1.8.3',
+  platform: 'linux',
+  format: 'deb',
+  arch: 'x64',
+);
+
+/// macOS: sem canal nenhum — o fork não publica build de macOS.
+const _kMacTarget = UpdateTarget(
+  version: '1.8.3',
+  platform: 'macos',
+  format: 'dmg',
+  arch: 'universal',
+  hasUpdateChannel: false,
 );
 
 UpdateInfo _info(String version) =>
@@ -202,7 +220,84 @@ void main() {
     });
   });
 
-  group('UpdateViewModel — self-update no macOS (fases de download)', () {
+  group('UpdateViewModel — macOS não tem canal de release', () {
+    late _FakeSelfUpdater updater;
+    late _FakeChecker checker;
+    late _FakeOpener opener;
+    late UpdateViewModel vm;
+
+    setUp(() {
+      updater = _FakeSelfUpdater();
+      checker = _FakeChecker(_info('1.8.4')); // haveria update, se houvesse canal
+      opener = _FakeOpener();
+      vm = UpdateViewModel(
+        checker,
+        _FakeDismissed(),
+        opener,
+        _kMacTarget,
+        updater,
+      );
+    });
+    tearDown(() {
+      vm.dispose();
+      updater.dispose();
+    });
+
+    test('check() não toca no motor nem no manifest', () async {
+      await vm.check();
+
+      expect(updater.checks, isEmpty);
+      expect(checker.calls, 0);
+      expect(vm.hasUpdate, isFalse);
+    });
+
+    test('checkNow() do menu também é no-op', () async {
+      await vm.checkNow();
+
+      expect(updater.checks, isEmpty);
+      expect(checker.calls, 0);
+      expect(vm.hasUpdate, isFalse);
+    });
+
+    test('card não aparece nem se o motor emitir update disponível', () async {
+      await vm.check();
+      updater.emit(
+        const SelfUpdateState(SelfUpdatePhase.available, version: '1.8.4'),
+      );
+
+      expect(vm.hasUpdate, isFalse);
+    });
+
+    test('primaryAction não abre URL nem aciona o motor', () async {
+      await vm.check();
+      await vm.primaryAction();
+
+      expect(opener.opened, isEmpty);
+      expect(updater.applyCount, 0);
+    });
+  });
+
+  group('UpdateViewModel — Linux mantém o canal de notify', () {
+    test('check() lê o manifest e mostra o card', () async {
+      final checker = _FakeChecker(_info('1.8.4'));
+      final vm = UpdateViewModel(
+        checker,
+        _FakeDismissed(),
+        _FakeOpener(),
+        _kLinuxTarget,
+        const NoopSelfUpdater(),
+      );
+      addTearDown(vm.dispose);
+
+      await vm.check();
+
+      expect(checker.calls, 1);
+      expect(vm.hasUpdate, isTrue);
+      expect(vm.cardSubtitle, 'v1.8.4 — click to download');
+    });
+  });
+
+  group('UpdateViewModel — fases de auto-download do motor', () {
     late _FakeSelfUpdater updater;
     late UpdateViewModel vm;
 

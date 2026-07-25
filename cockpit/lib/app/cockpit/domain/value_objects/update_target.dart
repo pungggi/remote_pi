@@ -10,18 +10,28 @@ class UpdateTarget {
     required this.format,
     required this.arch,
     this.selfUpdateFeedUrl,
+    this.hasUpdateChannel = true,
   });
 
   /// Versão do app rodando (de `package_info`).
   final String version;
 
-  /// macOS → dmg/universal; Windows → exe/x64; Linux → deb/(arm64|x64).
+  /// Windows → exe/x64; Linux → deb/(arm64|x64). macOS descreve o que *seria*
+  /// publicado, mas não tem canal — ver [hasUpdateChannel].
   final String platform;
   final String format;
   final String arch;
 
-  /// Plano 47 — URL do appcast do self-update nativo (Sparkle/WinSparkle):
-  /// `appcast-macos.xml` no macOS, `appcast-windows.xml` no Windows. `null` no
-  /// Linux (sem self-update → cai no caminho de notify + download manual).
+  /// Plano 47 — URL do appcast do self-update nativo (WinSparkle):
+  /// `appcast-windows.xml` no Windows. `null` onde não há self-update (Linux →
+  /// notify + download manual; macOS → nada, ver [hasUpdateChannel]).
   final String? selfUpdateFeedUrl;
+
+  /// A plataforma tem canal de release neste fork?
+  ///
+  /// `false` só no macOS: sem identidade de assinatura Apple o job de macOS saiu
+  /// do `cockpit-release.yml`, então não existe nem `appcast-macos.xml` (self-
+  /// update) nem artefato macOS no `latest.json` (notify). Sem esta flag o macOS
+  /// cairia no caminho de notify e ofereceria um download que não existe.
+  final bool hasUpdateChannel;
 }

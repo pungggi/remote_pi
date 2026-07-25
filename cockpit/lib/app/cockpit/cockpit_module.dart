@@ -168,9 +168,9 @@ Future<Module> buildCockpitModule() async {
         ..addInstance<UpdateChecker>(const UpdateCheckerImpl())
         ..addInstance<UrlOpener>(const UrlOpenerImpl())
         ..addInstance<UpdateTarget>(_updateTarget(appVersion))
-        // Self-update nativo (plano 47): Sparkle/WinSparkle quando há appcast
-        // pra plataforma (macOS/Windows); Noop no Linux → o card cai no caminho
-        // de notify + download manual (UpdateChecker).
+        // Self-update nativo (plano 47): WinSparkle quando há appcast pra
+        // plataforma (só Windows); Noop no Linux → o card cai no caminho de
+        // notify + download manual (UpdateChecker); Noop no macOS → sem card.
         ..addInstance<SelfUpdater>(_buildSelfUpdater(_updateTarget(appVersion)))
         ..route(
           '/',
@@ -193,21 +193,25 @@ Future<Module> buildCockpitModule() async {
   );
 }
 
-/// Base do rp-s3 onde moram `latest.json` (notify) e os appcasts (self-update).
+/// Base do rp-s3 onde mora o appcast do self-update (Windows).
 const String _kDownloadsBase =
     'https://rp-s3.jacobmoura.work/downloads/cockpit';
 
 /// [UpdateTarget] da máquina atual: versão do app + plataforma/formato/arch do
-/// manifest + URL do appcast de self-update (macOS/Windows; `null` no Linux).
-/// macOS → dmg/universal; Windows → exe/x64; Linux → deb/(arm64|x64).
+/// manifest + URL do appcast de self-update (só Windows; `null` no resto).
+/// Windows → exe/x64; Linux → deb/(arm64|x64); macOS → sem canal.
 UpdateTarget _updateTarget(String version) {
+  // macOS não tem canal de release neste fork: o job saiu do
+  // `cockpit-release.yml` porque não há identidade de assinatura Apple, e um dmg
+  // sem notarização o Gatekeeper recusa. Não existe `appcast-macos.xml` nem
+  // artefato macOS no `latest.json` — nem self-update, nem notify.
   if (Platform.isMacOS) {
     return UpdateTarget(
       version: version,
       platform: 'macos',
       format: 'dmg',
       arch: 'universal',
-      selfUpdateFeedUrl: '$_kDownloadsBase/appcast-macos.xml',
+      hasUpdateChannel: false,
     );
   }
   if (Platform.isWindows) {
@@ -229,19 +233,21 @@ UpdateTarget _updateTarget(String version) {
 }
 
 /// Constrói o [SelfUpdater] da plataforma: [AutoUpdaterSelfUpdater] quando há
-/// appcast (macOS/Windows), [NoopSelfUpdater] no Linux (sem self-update nativo →
-/// o `UpdateViewModel` usa o caminho de notify + download manual).
+/// appcast (só Windows), [NoopSelfUpdater] no Linux (sem self-update nativo → o
+/// `UpdateViewModel` usa o caminho de notify + download manual) e no macOS (sem
+/// canal nenhum — ver [UpdateTarget.hasUpdateChannel]).
 ///
-/// `autoDownloads` distingue os dois motores: só o Sparkle (macOS) baixa o
-/// artefato em background por conta própria. O WinSparkle exige o clique do
-/// usuário pra baixar+instalar — ver doc do [AutoUpdaterSelfUpdater].
+/// `autoDownloads: false` porque o único motor que sobrou é o WinSparkle, que
+/// **não baixa sozinho** e exige o clique do usuário pra baixar+instalar. O
+/// parâmetro segue existindo na fachada porque descreve o contrato do motor —
+/// ver doc do [AutoUpdaterSelfUpdater].
 SelfUpdater _buildSelfUpdater(UpdateTarget target) {
-  // Em debug/profile (flutter run) o Sparkle é veneno: o bundle id é o mesmo do
-  // app instalado, o check acha release novo e o Autoupdate MATA o processo pra
+  // Em debug/profile (flutter run) o self-update é veneno: o bundle id é o mesmo
+  // do app instalado, o check acha release novo e o motor MATA o processo pra
   // instalar/relançar — o run morre com "Lost connection to device" sem erro.
   // Self-update só faz sentido no build release distribuído.
   if (!kReleaseMode) return const NoopSelfUpdater();
   final feed = target.selfUpdateFeedUrl;
   if (feed == null) return const NoopSelfUpdater();
-  return AutoUpdaterSelfUpdater(feedUrl: feed, autoDownloads: Platform.isMacOS);
+  return AutoUpdaterSelfUpdater(feedUrl: feed, autoDownloads: false);
 }
