@@ -30,14 +30,14 @@ README), or grab the upstream releases below if you want the original app.
 | Platform | Status |
 |---|---|
 | Google Play (Android) | *not published — upstream: [Remote Pi](https://play.google.com/store/apps/details?id=work.jacobmoura.remotepi)* |
-| App Store (iOS) | *not published — upstream: [Remote Pi](https://apps.apple.com/app/remote-pi-coding-agent/id6773499691)* |
 | APK (sideload, Android) | *not published — upstream: [GitHub Releases](https://github.com/jacobaraujo7/remote_pi/releases)* |
+| iOS / macOS | **not supported by this fork** — see [FORK.md](./FORK.md#plataformas-apple-fora-de-escopo) |
 
 ## What's in this repo
 
 | Package | Stack | Role |
 |---|---|---|
-| [`app/`](./app) | Flutter (iOS / Android) | Mobile client |
+| [`app/`](./app) | Flutter (Android) | Mobile client |
 | [`pi-extension/`](./pi-extension) | Node + TypeScript | Pi extension exposing `/remote-pi` |
 | [`relay/`](./relay) | Rust + Tokio | WebSocket routing + signed mesh membership storage |
 | [`site/`](./site) | NextJS | Landing page + legal pages |

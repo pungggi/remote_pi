@@ -1,13 +1,18 @@
-# Store Listings — Remote Pi (App Store + Google Play)
+# Store Listings — Piper (Google Play)
 
-Reference copy for both store listings. Keep in sync when metadata changes.
-Google Play section is at the bottom; most copy is shared.
+Reference copy for the store listing. Keep in sync when metadata changes.
 
-- **iOS Bundle ID:** `ch.pungitore.piper` (the plain `ch.pungitore.piper` is reserved by another Apple team)
+> **The App Store half of this document does not apply to this fork.** Apple
+> platforms are out of scope (see [FORK.md](../FORK.md#plataformas-apple-fora-de-escopo)):
+> there is no Apple Developer membership, no signing identity and no iOS
+> pipeline. The iOS sections below are kept as inherited reference — screenshot
+> specs, review notes, the demo-video checklist — because they cost nothing to
+> keep and would be expensive to reconstruct if that decision is ever revisited.
+> **Nothing in them describes a shipping path today.**
+
 - **Android applicationId:** `ch.pungitore.piper` (separate Play namespace — no conflict)
-- **Apple Team:** _noch nicht gesetzt_ (eigene Team-ID eintragen)
-- **Min iOS:** 18.0 · **Min Android:** API 34 (Android 14)
-- **Platforms:** iPhone **+ iPad** (universal — iPad 13" screenshots required)
+- **Min Android:** API 34 (Android 14)
+- ~~**iOS Bundle ID**, **Apple Team**, **Min iOS**, **iPhone + iPad**~~ — not applicable, see above
 
 > ⚠️ **Copy rule:** never claim "end-to-end encrypted". The relay still sees
 > plaintext traffic. The honest privacy story is **TLS + a self-hostable relay

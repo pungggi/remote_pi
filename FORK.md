@@ -91,6 +91,8 @@ tenha mudado a lógica em volta, não só o identificador.
 | URLs de relay / site / downloads | `app/lib/data/transport/relay_config.dart`, `pi-extension/src/config.ts`, `cockpit/lib/app/cockpit/cockpit_module.dart`, `site/src/**` |
 | Branding | `branding/**`, `README.md`, `app/store_listing.md` |
 | Instruções de agente | `CLAUDE.md` da raiz |
+| Âncora de confiança do self-update | `cockpit/windows/runner/Runner.rc`, `cockpit/macos/Runner/Info.plist` |
+| Apple fora de escopo | `app/ios/ExportOptions.plist` (removida — conflito modify/delete) |
 
 ## Numeração de planos
 
@@ -148,10 +150,57 @@ guardam as chaves de pareamento. **Nunca aponte a migração legada de
 entrada antiga e *apaga* a original, ou seja, quebraria o pareamento de uma
 instalação Remote Pi na mesma máquina.
 
-Assinatura Apple não vem configurada — `DEVELOPMENT_TEAM` está vazio nos três
-projetos Xcode e `ExportOptions.plist` traz `APPLE_TEAM_ID_NOT_SET`. O
-`cockpit-release.yml` não lê mais `secrets.APPLE_SIGN_ID`: o job de macOS saiu
-inteiro do release, e com ele a assinatura. Sobra o iOS do `app/`.
+## Plataformas Apple: fora de escopo
+
+**Decisão (2026-07-25): este fork não entrega iOS nem macOS.** Não há
+membership no Apple Developer Program, não há identidade de assinatura, e o
+desenvolvimento acontece só em Windows. Isso não é pendência — é escopo.
+
+O que decorre disso:
+
+- `cockpit-release.yml` não tem job de macOS (saiu no `bf9914b`) e não lê mais
+  `secrets.APPLE_SIGN_ID`.
+- `app-release.yml` sempre foi só Android. **Nenhum workflow chama `xcodebuild`**
+  — `DEVELOPMENT_TEAM = ""` nos três alvos de `app/ios/Runner.xcodeproj` não
+  bloqueia nada, porque não existe pipeline pra bloquear.
+- `app/ios/ExportOptions.plist` foi **removida**: era `method:
+  app-store-connect` com `APPLE_TEAM_ID_NOT_SET`, referenciada por nenhum
+  script, e um placeholder assim se lê como TODO em vez de decisão. Se o
+  upstream mexer nela, o merge dá conflito modify/delete — resolver mantendo a
+  remoção.
+- `app/store_listing.md` mantém as seções de iOS como referência herdada, com
+  aviso no topo de que não descrevem caminho de publicação.
+- `cockpit/distribute_options.yaml` ainda traz o release `macos` (dmg) e a
+  variável `APPLE_SIGNING_IDENTITY: "… APPLE_SIGN_ID_NOT_SET"`. Inertes: o
+  `cockpit-release.yml` só invoca o Fastforge com `--platform windows` e
+  `--platform linux`. Ficam pelo mesmo motivo das pastas — é arquivo que o
+  upstream edita.
+
+As pastas `app/ios/` e `cockpit/macos/`, e os ramos `Platform.isIOS` /
+`Platform.isMacOS` do código Dart, **ficam**. Arrancá-los renderia conflito em
+todo merge do upstream em troca de nenhum ganho funcional — o scaffold do
+Flutter é inerte quando ninguém compila pra aquela plataforma.
+
+### Armadilha herdada: o Debug do macOS exige certificado de distribuição
+
+Em `cockpit/macos/Runner.xcodeproj`, a config **Debug** do alvo Runner traz:
+
+```
+CODE_SIGN_IDENTITY = "Developer ID Application";
+CODE_SIGN_STYLE    = Manual;
+DEVELOPMENT_TEAM   = "";
+```
+
+enquanto a **Release** está em `Automatic` — o inverso do que se espera. Veio do
+`e9a5bff` do upstream ("flavor debug no macOS"), onde faz sentido: o autor tem
+o certificado. Aqui significa que `flutter run -d macos` falha na assinatura numa
+máquina sem "Developer ID Application" instalado, apesar de `cockpit/CLAUDE.md`
+listar esse comando como padrão. `flutter build macos` (Release, `Automatic`)
+não é afetado.
+
+Deixado como está de propósito: mexer criaria divergência num arquivo que o
+upstream edita, para consertar um build que este fork não faz. Se algum dia
+alguém aqui for compilar no macOS, é o primeiro lugar pra olhar.
 
 ## Segredos de release
 
