@@ -149,8 +149,46 @@ entrada antiga e *apaga* a original, ou seja, quebraria o pareamento de uma
 instalação Remote Pi na mesma máquina.
 
 Assinatura Apple não vem configurada — `DEVELOPMENT_TEAM` está vazio nos três
-projetos Xcode, `ExportOptions.plist` traz `APPLE_TEAM_ID_NOT_SET` e o
-`cockpit-release.yml` lê `secrets.APPLE_SIGN_ID`.
+projetos Xcode e `ExportOptions.plist` traz `APPLE_TEAM_ID_NOT_SET`. O
+`cockpit-release.yml` não lê mais `secrets.APPLE_SIGN_ID`: o job de macOS saiu
+inteiro do release, e com ele a assinatura. Sobra o iOS do `app/`.
+
+## Segredos de release (nenhum configurado)
+
+Os dois workflows dependem de segredos que **este fork nunca criou** — a
+consulta à API devolve `total_count: 0`. Enquanto ficarem faltando, nenhum
+release roda; não por acaso o repositório ainda não tem release nenhuma.
+
+| Segredo | Workflow | Para quê |
+|---|---|---|
+| `ANDROID_KEYSTORE` | `app-release` | keystore `.jks` em base64 |
+| `ANDROID_KEYSTORE_PASSWORD` | `app-release` | senha do keystore |
+| `ANDROID_KEY_ALIAS` | `app-release` | alias da chave |
+| `ANDROID_KEY_PASSWORD` | `app-release` | senha da chave |
+| `SPARKLE_PRIVATE_KEY` | `cockpit-release` | seed ed25519 (base64) que assina o `.exe` do appcast |
+
+O keystore Android é **identidade permanente**: o Android recusa um update
+assinado por outra chave, então perdê-lo significa nunca mais atualizar as
+instalações existentes. Guarde-o fora do repositório e com backup.
+
+### A âncora de confiança do Windows ainda é do upstream
+
+`cockpit/windows/runner/Runner.rc` embarca a chave **pública** ed25519 que o
+WinSparkle usa pra verificar o instalador:
+
+```
+EdDSAPub EDDSA {"WoJTWryr48pWiAnDPqqt/Iu9f6gAsU7A1zBb5mBLruI="}
+```
+
+Essa é a chave do autor original — a privada correspondente é dele. O fork não
+consegue produzir assinatura que este build aceite, e não deveria querer: uma
+âncora de confiança de terceiro é exatamente o que não se herda num fork.
+
+Ligar o self-update do Windows exige, na ordem: gerar um par ed25519 próprio,
+trocar o `EdDSAPub` do `Runner.rc` pela pública nova, e pôr a seed privada em
+`SPARKLE_PRIVATE_KEY`. Trocar só o segredo quebra a verificação; trocar só o
+`Runner.rc` idem. O `SUPublicEDKey` do `macos/Runner/Info.plist` tem o mesmo
+problema, mas está inerte enquanto não houver release de macOS.
 
 Ainda não migrado: `site/` (copy e links de loja do upstream), `branding/`
 (o logo continua sendo o do Remote Pi) e os registros históricos (`plan/`,

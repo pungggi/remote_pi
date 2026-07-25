@@ -1,4 +1,4 @@
-# Release Android do app Remote Pi (app/).
+# Release Android do app Piper (app/).
 #
 # Trigger: tag `app-v<versão>` (a versão DEVE bater com app/pubspec.yaml).
 # Produz: GitHub Release com `RemotePi.apk` assinado (keystore release) +
