@@ -1,8 +1,8 @@
-# 52 — `ask_user` como bottom sheet arrastável (chat visível)
+# 101 — `ask_user` como bottom sheet arrastável (chat visível)
 
 ## Contexto
 
-O [plano 51](./51-app-ask-user-ui.md) entregou a renderização do `ask_user` no
+O [plano 100](./100-app-ask-user-ui.md) entregou a renderização do `ask_user` no
 app, e o fluxo foi verificado em hardware (PR #64). O uso real expôs uma
 limitação de **layout**, não de protocolo:
 
@@ -86,7 +86,7 @@ colapsado a 0.35. Nunca ficam atrás do conteúdo rolável.
 Hoje o `Scaffold(resizeToAvoidBottomInset: true)` resolve. Fora dele, é preciso
 tratar `MediaQuery.viewInsets.bottom` explicitamente **e** expandir o sheet
 para `maxChildSize` quando um `TextField` (custom text) ganha foco — senão o
-campo abre atrás do teclado. Esta é a limitação que o plano 51 já registrou
+campo abre atrás do teclado. Esta é a limitação que o plano 100 já registrou
 como v1; aqui ela precisa ser fechada, não herdada.
 
 **Aceite**: com o sheet colapsado, tocar num campo de texto livre expande o
@@ -149,4 +149,4 @@ falha ambiental pré-existente de `speech_service_test`, macOS-only).
 - Se o sheet não resolver na prática (ex: formulários longos continuam
   incômodos), avaliar o card inline no stream com barra sticky — descartado
   aqui por custo, não por mérito.
-- `elaborate mode` no mobile segue fora de escopo (limitação v1 do plano 51).
+- `elaborate mode` no mobile segue fora de escopo (limitação v1 do plano 100).

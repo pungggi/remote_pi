@@ -1074,7 +1074,7 @@ let _currentTurnId: string | null = null;
 // Module-level pi reference
 let _pi: ExtensionAPI | null = null;
 
-// Plan/51 — Bridge to pi-ask's clarification-flow events. null until the
+// Plan/100 — Bridge to pi-ask's clarification-flow events. null until the
 // extension factory wires it (and null if the SDK exposes no events bus).
 let _extensionUiBridge: ExtensionUiBridge | null = null;
 
@@ -2037,7 +2037,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
 
   _pi = pi;
 
-  // Plan/51 — bridge @eko24ive/pi-ask clarification flows to the paired app.
+  // Plan/100 — bridge @eko24ive/pi-ask clarification flows to the paired app.
   // Inert when pi-ask isn't installed (no events fire) or the SDK exposes no
   // events bus. ask_user without pi-ask doesn't exist, so this never breaks a
   // Pi that doesn't use the extension. Dispose any prior bridge first so a
@@ -4516,7 +4516,7 @@ function _handleSessionSync(
     truncated,
   });
 
-  // Plan/51 — replay ask_user flows still awaiting an answer. The bridge
+  // Plan/100 — replay ask_user flows still awaiting an answer. The bridge
   // broadcasts `started` once; a peer that connects afterwards would otherwise
   // see the tool call as plain history text while the desktop stays blocked on
   // the TUI dialog (reproduced: close the app, fire ask_user, reopen → no

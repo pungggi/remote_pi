@@ -1,4 +1,4 @@
-// Plan/51 — ChatViewModel routing for extension_ui_request (ask_user via
+// Plan/100 — ChatViewModel routing for extension_ui_request (ask_user via
 // pi-ask): open modal, submit-result warning → retry error, completed notify →
 // dismiss, and the offline fail-fast on respond.
 

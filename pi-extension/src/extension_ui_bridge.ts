@@ -1,4 +1,4 @@
-// Plan/51 — Bridge @eko24ive/pi-ask clarification flows to the paired app over
+// Plan/100 — Bridge @eko24ive/pi-ask clarification flows to the paired app over
 // the extension_ui_request/response contract.
 //
 // pi-ask (when installed) runs ask_user in the Pi TUI on the desktop AND emits

@@ -13,7 +13,7 @@ export type QueuedMessageItem = {
   created_at: number;
 };
 
-// ── Plan/51 — extension_ui_request bridge (mirror SDK RPC contract) ───────
+// ── Plan/100 — extension_ui_request bridge (mirror SDK RPC contract) ───────
 // The paired app renders interactive extension prompts (ask_user today, via
 // @eko24ive/pi-ask) natively instead of stranding the mobile user. The wire
 // mirrors the SDK's `pi --mode rpc` extension_ui_request/response contract
@@ -198,7 +198,7 @@ export type ClientMessage =
   | { type: "model_set"; id: string; provider: string; model_id: string }
   | { type: "thinking_set"; id: string; level: ThinkingLevel }
   | { type: "list_models"; id: string }
-  // Plan/51 — interactive extension prompt response (ask_user via pi-ask).
+  // Plan/100 — interactive extension prompt response (ask_user via pi-ask).
   // Mirrors RpcExtensionUIResponse; the optional `ask` envelope carries
   // pi-ask's structured answer so multi/preview/notes survive the round-trip.
   | ExtensionUiResponseWire;
@@ -333,7 +333,7 @@ export type ServerMessage =
   | { type: "action_ok"; in_reply_to: string; action: ActionName }
   | { type: "action_error"; in_reply_to: string; action: ActionName; error: string }
   | { type: "models_list"; in_reply_to: string; models: WireModel[]; current?: WireModel }
-  // Plan/51 — interactive extension prompt (ask_user via pi-ask). Mirrors
+  // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors
   // RpcExtensionUIRequest (select/confirm/input/editor/notify); the optional
   // `ask` envelope carries pi-ask's full question so the app renders richly.
   | ExtensionUiRequestWire;

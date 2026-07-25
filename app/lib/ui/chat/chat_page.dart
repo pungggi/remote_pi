@@ -81,13 +81,13 @@ class ChatPage extends StatelessWidget {
       ),
     );
 
-    // Plan/51 — an interactive extension_ui_request (ask_user via pi-ask)
+    // Plan/100 — an interactive extension_ui_request (ask_user via pi-ask)
     // renders layered ABOVE the Scaffold. Purely reactive: the overlay leaves
     // the tree when the pending request clears (completed dismiss) — no route
     // lifecycle to manage. `error` carries a submit-result rejection so the
     // sheet can offer a retry instead of a dead end.
     //
-    // Plan/52 — the sheet sizes itself (DraggableScrollableSheet), so this fill
+    // Plan/101 — the sheet sizes itself (DraggableScrollableSheet), so this fill
     // is just the coordinate space it lays out in. The area above the sheet
     // paints nothing and hit-tests through to the chat, which is the point:
     // the user can read and scroll the conversation while answering.

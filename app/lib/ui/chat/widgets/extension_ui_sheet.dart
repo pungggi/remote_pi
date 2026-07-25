@@ -4,7 +4,7 @@ import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 
-/// Plan/52 — sheet extents as a fraction of the available height. [_kInitial]
+/// Plan/101 — sheet extents as a fraction of the available height. [_kInitial]
 /// shows the question plus a few messages of chat; a drag (or focusing a text
 /// field, see `_ExtensionUiSheetState._expandForKeyboard`) takes it to [_kMax]
 /// for long multi-question flows.
@@ -12,8 +12,8 @@ const double _kMin = 0.35;
 const double _kInitial = 0.55;
 const double _kMax = 0.95;
 
-/// Plan/51 — renders an interactive `extension_ui_request` (ask_user via
-/// pi-ask). Plan/52 — as a draggable bottom sheet rather than a full-screen
+/// Plan/100 — renders an interactive `extension_ui_request` (ask_user via
+/// pi-ask). Plan/101 — as a draggable bottom sheet rather than a full-screen
 /// modal: the question almost always refers to what the agent just said, so
 /// covering the chat hid the very context needed to answer it.
 ///
@@ -28,7 +28,7 @@ const double _kMax = 0.95;
 class ExtensionUiSheet extends StatefulWidget {
   final ExtensionUiRequest request;
 
-  /// Plan/51 — submit-result rejection message for [request] (null when none /
+  /// Plan/100 — submit-result rejection message for [request] (null when none /
   /// resolved). Surfaced so the user can retry instead of hitting a dead end
   /// when pi-ask rejects an answer.
   final String? error;
@@ -54,11 +54,11 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
   String? _singleValue;
   final TextEditingController _textController = TextEditingController();
   bool _submitting = false;
-  // Plan/51 — backstop so a submit/cancel that never gets a `completed`/error
+  // Plan/100 — backstop so a submit/cancel that never gets a `completed`/error
   // (relay drop, pi-ask gone) doesn't strand the user on a spinner forever.
   Timer? _submitTimeout;
   bool _awaitHint = false;
-  // Plan/52 — drives the sheet extent from the grab handle and from keyboard
+  // Plan/101 — drives the sheet extent from the grab handle and from keyboard
   // focus. `isAttached` is false until the sheet's first layout, so every use
   // is guarded.
   final DraggableScrollableController _sheetController =
@@ -260,7 +260,7 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
 
     // System back (Android) mirrors the close button: cancel the flow instead
     // of popping the chat route underneath while the sheet is still overlaid.
-    // Plan/52 — back still CANCELS; it deliberately does not merely collapse
+    // Plan/101 — back still CANCELS; it deliberately does not merely collapse
     // the sheet, so the gesture keeps the meaning verified on device for #64.
     return PopScope(
       canPop: false,

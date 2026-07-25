@@ -1,4 +1,4 @@
-// Plan/51 — ExtensionUiSheet behavior around submit enablement, rejection
+// Plan/100 — ExtensionUiSheet behavior around submit enablement, rejection
 // retry, and system back. Covers the riskiest interactive logic of the
 // ask_user modal (the protocol surface is covered by
 // test/protocol/extension_ui_test.dart).
@@ -197,7 +197,7 @@ void main() {
     expect(find.text('Clarification resolved.'), findsOneWidget);
   });
 
-  // ── Plan/52 — bottom sheet layout ──────────────────────────────────────────
+  // ── Plan/101 — bottom sheet layout ──────────────────────────────────────────
 
   double screenHeight(WidgetTester tester) =>
       tester.view.physicalSize.height / tester.view.devicePixelRatio;

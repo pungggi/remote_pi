@@ -58,7 +58,7 @@ class SyncService extends Service {
   final StreamController<SessionEvent> _eventController =
       StreamController<SessionEvent>.broadcast();
 
-  // Plan/51 — transient interactive extension prompts (ask_user via pi-ask).
+  // Plan/100 — transient interactive extension prompts (ask_user via pi-ask).
   // Never persisted (live UI requests, not chat history); surfaced to the
   // ChatViewModel, which opens a full-screen modal.
   final StreamController<ExtensionUiRequest> _extensionUiController =
@@ -115,7 +115,7 @@ class SyncService extends Service {
   Stream<StreamingMessage?> get streamingStream => _streamingController.stream;
   Stream<SessionEvent> get events => _eventController.stream;
 
-  /// Plan/51 — stream of interactive extension_ui_request prompts (ask_user
+  /// Plan/100 — stream of interactive extension_ui_request prompts (ask_user
   /// via pi-ask). Transient: not written to the DB; the ChatViewModel renders
   /// a full-screen modal and replies via [respondExtensionUi].
   Stream<ExtensionUiRequest> get extensionUiRequestStream =>
@@ -326,7 +326,7 @@ class SyncService extends Service {
     await ch.send(Cancel(id: _newId(), targetId: targetId));
   }
 
-  /// Plan/51 — respond to an interactive extension_ui_request (ask_user).
+  /// Plan/100 — respond to an interactive extension_ui_request (ask_user).
   /// The ChatViewModel builds the [ExtensionUiResponse] (value/confirmed/
   /// cancelled + optional `ask` envelope); the SyncService just ships it.
   /// Returns false when there is no live channel or the send fails so the
@@ -648,7 +648,7 @@ class SyncService extends Service {
         _writeCompaction(summary, tokensBefore, ts);
 
       case ExtensionUiRequest():
-        // Plan/51 — transient interactive prompt (ask_user via pi-ask).
+        // Plan/100 — transient interactive prompt (ask_user via pi-ask).
         // Surface to the UI; never persist (it's a live request, not history).
         _extensionUiController.add(msg);
         break;

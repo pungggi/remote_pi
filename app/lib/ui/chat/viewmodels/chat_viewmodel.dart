@@ -46,9 +46,9 @@ class ChatViewModel extends ViewModel<ChatState> {
   StreamingMessage? _streaming;
   bool _working = false;
   List<QueuedMsg> _queuedMessages = const [];
-  // Plan/51 — interactive extension_ui_request awaiting an answer (ask_user).
+  // Plan/100 — interactive extension_ui_request awaiting an answer (ask_user).
   ExtensionUiRequest? _pendingUiRequest;
-  // Plan/51 — last submit-result error for the pending request (null when none
+  // Plan/100 — last submit-result error for the pending request (null when none
   // / resolved). Surfaced to the modal so the user can retry instead of staring
   // at a closed/dismissed flow that's still blocked on desktop.
   String? _pendingUiError;
@@ -244,7 +244,7 @@ class ChatViewModel extends ViewModel<ChatState> {
     _recompute();
   }
 
-  /// Plan/51 — interactive extension_ui_request arrived (ask_user via pi-ask).
+  /// Plan/100 — interactive extension_ui_request arrived (ask_user via pi-ask).
   ///
   /// A `notify` whose id matches the open request is either:
   ///  - a `completed` dismiss (notify_type absent/info) → close the modal, OR
@@ -327,7 +327,7 @@ class ChatViewModel extends ViewModel<ChatState> {
   Future<void> approveTool(String toolCallId, ApproveDecision decision) =>
       _sync.approveTool(toolCallId, decision);
 
-  /// Plan/51 — submit (or cancel) an interactive extension_ui_request.
+  /// Plan/100 — submit (or cancel) an interactive extension_ui_request.
   ///
   /// Does NOT clear the pending request optimistically: pi-ask may reject the
   /// answer (`invalid_answer`) without emitting `completed`, which would close

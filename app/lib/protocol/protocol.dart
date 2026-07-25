@@ -787,7 +787,7 @@ sealed class ServerMessage {
       'action_ok' => ActionOk.fromJson(json),
       'action_error' => ActionError.fromJson(json),
       'models_list' => ModelsList.fromJson(json),
-      // Plan/51 — interactive extension prompt (ask_user via pi-ask). Mirrors
+      // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors
       // the SDK's extension_ui_request RPC contract; optional `ask` envelope
       // carries pi-ask's full question so the app renders multi/preview/notes.
       'extension_ui_request' => ExtensionUiRequest.fromJson(json),
@@ -1382,7 +1382,7 @@ class Bye extends ServerMessage {
 }
 
 // ---------------------------------------------------------------------------
-// Plan/51 — extension_ui_request bridge (mirror SDK RPC contract)
+// Plan/100 — extension_ui_request bridge (mirror SDK RPC contract)
 //
 // Interactive extension prompts (ask_user today, via @eko24ive/pi-ask) are
 // rendered natively instead of stranding the mobile user. The wire mirrors the

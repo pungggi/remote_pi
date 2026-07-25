@@ -45,13 +45,13 @@ class ChatReady extends ChatState {
   final bool isWorking;
   final List<QueuedMsg> queuedMessages;
 
-  /// Plan/51 — an interactive extension_ui_request (ask_user via pi-ask)
+  /// Plan/100 — an interactive extension_ui_request (ask_user via pi-ask)
   /// awaiting an answer. Non-null → the chat renders a full-screen modal.
   /// Cleared on submit/cancel/completed. Identity compared (the ViewModel
   /// reuses the same instance across recomputes until it changes).
   final ExtensionUiRequest? pendingUiRequest;
 
-  /// Plan/51 — last submit-result error for [pendingUiRequest] (null when none
+  /// Plan/100 — last submit-result error for [pendingUiRequest] (null when none
   /// or resolved). Shown in the modal so the user can retry instead of hitting a
   /// dead end when pi-ask rejects an answer.
   final String? pendingUiError;
