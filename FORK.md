@@ -153,42 +153,45 @@ projetos Xcode e `ExportOptions.plist` traz `APPLE_TEAM_ID_NOT_SET`. O
 `cockpit-release.yml` não lê mais `secrets.APPLE_SIGN_ID`: o job de macOS saiu
 inteiro do release, e com ele a assinatura. Sobra o iOS do `app/`.
 
-## Segredos de release (nenhum configurado)
+## Segredos de release
 
-Os dois workflows dependem de segredos que **este fork nunca criou** — a
-consulta à API devolve `total_count: 0`. Enquanto ficarem faltando, nenhum
-release roda; não por acaso o repositório ainda não tem release nenhuma.
+Os cinco segredos que os workflows consomem estão configurados desde
+2026-07-25 (antes disso a API devolvia `total_count: 0` e nenhum release podia
+rodar):
 
 | Segredo | Workflow | Para quê |
 |---|---|---|
 | `ANDROID_KEYSTORE` | `app-release` | keystore `.jks` em base64 |
 | `ANDROID_KEYSTORE_PASSWORD` | `app-release` | senha do keystore |
-| `ANDROID_KEY_ALIAS` | `app-release` | alias da chave |
+| `ANDROID_KEY_ALIAS` | `app-release` | alias da chave (`piper`) |
 | `ANDROID_KEY_PASSWORD` | `app-release` | senha da chave |
 | `SPARKLE_PRIVATE_KEY` | `cockpit-release` | seed ed25519 (base64) que assina o `.exe` do appcast |
 
-O keystore Android é **identidade permanente**: o Android recusa um update
-assinado por outra chave, então perdê-lo significa nunca mais atualizar as
-instalações existentes. Guarde-o fora do repositório e com backup.
+**As duas chaves são identidades permanentes e não têm cópia no GitHub** — um
+secret é write-only, não dá pra recuperar o valor depois. Perder o backup
+local é perder a chave.
 
-### A âncora de confiança do Windows ainda é do upstream
+- **Keystore Android**: o Android recusa update assinado por outra chave.
+  Perdê-lo trava toda instalação existente num beco sem saída — o usuário
+  precisa desinstalar (perdendo dados) e instalar de novo. Fingerprint atual
+  (o `app-release` compara contra ele e falha se o Gradle cair pras debug keys):
+  `63:D8:82:B7:A0:59:E2:64:D8:9D:72:46:5E:EC:25:BD:0B:40:C3:64:BE:FB:84:C7:0F:70:33:E0:D5:D6:37:71`
+- **Seed ed25519**: perder só obriga a rotacionar, mas rotacionar **trava a
+  base instalada do Cockpit** — os apps antigos só confiam na pública embutida
+  neles. Ver `cockpit/packaging/README.md`.
 
-`cockpit/windows/runner/Runner.rc` embarca a chave **pública** ed25519 que o
-WinSparkle usa pra verificar o instalador:
+### Âncora de confiança do self-update
 
-```
-EdDSAPub EDDSA {"WoJTWryr48pWiAnDPqqt/Iu9f6gAsU7A1zBb5mBLruI="}
-```
+`cockpit/windows/runner/Runner.rc` embarca a chave **pública** ed25519 contra a
+qual o WinSparkle verifica o instalador; `macos/Runner/Info.plist` tem a mesma
+em `SUPublicEDKey` (inerte, sem release de macOS). Até 2026-07-25 as duas eram
+a chave do autor do upstream — uma âncora de confiança de terceiro, e na
+prática impossível de usar, já que a privada correspondente nunca foi nossa.
+Hoje são do fork.
 
-Essa é a chave do autor original — a privada correspondente é dele. O fork não
-consegue produzir assinatura que este build aceite, e não deveria querer: uma
-âncora de confiança de terceiro é exatamente o que não se herda num fork.
-
-Ligar o self-update do Windows exige, na ordem: gerar um par ed25519 próprio,
-trocar o `EdDSAPub` do `Runner.rc` pela pública nova, e pôr a seed privada em
-`SPARKLE_PRIVATE_KEY`. Trocar só o segredo quebra a verificação; trocar só o
-`Runner.rc` idem. O `SUPublicEDKey` do `macos/Runner/Info.plist` tem o mesmo
-problema, mas está inerte enquanto não houver release de macOS.
+Rotacionar exige os três passos **juntos**: par novo, `EdDSAPub` do `Runner.rc`
+e `SUPublicEDKey` do `Info.plist` trocados, seed nova em `SPARKLE_PRIVATE_KEY`.
+Mexer num só quebra a verificação.
 
 Ainda não migrado: `site/` (copy e links de loja do upstream), `branding/`
 (o logo continua sendo o do Remote Pi) e os registros históricos (`plan/`,

@@ -33,14 +33,18 @@
 	<key>FLTEnableMergedPlatformUIThread</key>
 	<false/>
 	<!-- Plano 47 — self-update via Sparkle (pacote auto_updater). Chave pública
-	     EdDSA (a privada vive no iCloud + secret SPARKLE_PRIVATE_KEY). O feed
-	     (appcast-macos.xml) é setado em runtime via setFeedURL (delegate do
-	     plugin), então NÃO há SUFeedURL aqui — o Sparkle 2 lança exceção se
-	     houver delegate de feed E SUFeedURL juntos. Auto-check + auto-update
-	     silencioso (decisões B/C): baixa em background e instala no próximo
-	     quit; o nosso card reflete o estado. -->
+	     EdDSA deste fork, a mesma do EdDSAPub em windows/runner/Runner.rc (uma
+	     seed ed25519 serve aos dois motores); a privada é o secret
+	     SPARKLE_PRIVATE_KEY. O feed (appcast-macos.xml) é setado em runtime via
+	     setFeedURL (delegate do plugin), então NÃO há SUFeedURL aqui — o Sparkle
+	     2 lança exceção se houver delegate de feed E SUFeedURL juntos.
+
+	     INERTE hoje: o fork não publica release de macOS (sem identidade de
+	     assinatura Apple), então nada consome este appcast. A chave foi trocada
+	     junto com a do Windows mesmo assim — deixar a do upstream aqui seria
+	     manter uma âncora de confiança de terceiro esperando ser reativada. -->
 	<key>SUPublicEDKey</key>
-	<string>WoJTWryr48pWiAnDPqqt/Iu9f6gAsU7A1zBb5mBLruI=</string>
+	<string>SgNmu3IHpmS/lIUAEgyjkrrIQGe2cOBshp4pOJLc8pE=</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUAutomaticallyUpdate</key>

@@ -142,26 +142,39 @@ Sparkle e WinSparkle usam **ed25519**, que é determinístico — a mesma chave 
 aos dois (verificado: `sign_update` do Sparkle e PyNaCl geram assinatura idêntica).
 Por isso há **um par** de chaves, não dois.
 
-- **Pública** (commitada): `WoJTWryr48pWiAnDPqqt/Iu9f6gAsU7A1zBb5mBLruI=`
-  - macOS: `SUPublicEDKey` em `macos/Runner/Info.plist`.
+- **Pública** (commitada): `SgNmu3IHpmS/lIUAEgyjkrrIQGe2cOBshp4pOJLc8pE=`
+  - macOS: `SUPublicEDKey` em `macos/Runner/Info.plist` (inerte — sem release de
+    macOS neste fork).
   - Windows: recurso `EdDSAPub EDDSA {...}` em `windows/runner/Runner.rc`.
-- **Privada** (NUNCA commitar): backup em
-  `<caminho para as suas chaves de assinatura>/sparkle_ed25519_private_key.txt`
-  (iCloud, junto dos certs Apple) **e** no secret do GitHub `SPARKLE_PRIVATE_KEY`.
-  Gerada via Sparkle na conta de keychain `piper-cockpit`.
+- **Privada** (NUNCA commitar): seed de 32 bytes em base64, no secret do GitHub
+  `SPARKLE_PRIVATE_KEY` + backup fora do repositório.
+
+> **Par deste fork.** Até 2026-07-25 as duas cópias da pública eram a chave do
+> autor do upstream, cuja privada nunca foi nossa: o fork não conseguia assinar
+> release alguma, e a âncora de confiança do self-update apontava pra um
+> terceiro. O par atual foi gerado aqui e a privada nunca saiu da máquina do
+> dono do repositório, exceto pro secret.
 
 Regenerar / rotacionar (⚠️ trocar a chave **trava a base instalada**: os apps
 antigos só confiam na pública embutida neles — só faça se a privada vazar, e
 saiba que os usuários atuais terão que reinstalar manualmente):
 
 ```bash
-cd cockpit
-# (re)gera; imprime a SUPublicEDKey; privada vai pro Keychain (conta dedicada)
-./macos/Pods/Sparkle/bin/generate_keys --account piper-cockpit
-# exporta a privada pro iCloud (pede "Allow" no Keychain)
-./macos/Pods/Sparkle/bin/generate_keys --account piper-cockpit -x \
-  "<caminho para as suas chaves de assinatura>/sparkle_ed25519_private_key.txt"
-# atualizar: SUPublicEDKey (Info.plist), EdDSAPub (Runner.rc) e o secret SPARKLE_PRIVATE_KEY
+# Gera o par com Node (sem Xcode/Sparkle no PATH); imprime as duas metades em
+# base64. O round-trip confirma que a seed deriva a pública — é essa a
+# propriedade que o PyNaCl do CI usa (SigningKey(seed)).
+node -e '
+const c = require("crypto");
+const { publicKey, privateKey } = c.generateKeyPairSync("ed25519");
+const pub  = publicKey.export({type:"spki", format:"der"}).subarray(-32);
+const seed = privateKey.export({type:"pkcs8", format:"der"}).subarray(-32);
+console.log("public :", pub.toString("base64"));
+console.log("seed   :", seed.toString("base64"));
+'
+# atualizar os três, sempre juntos:
+#   1. SUPublicEDKey  (macos/Runner/Info.plist)
+#   2. EdDSAPub       (windows/runner/Runner.rc)
+#   3. secret SPARKLE_PRIVATE_KEY  →  gh secret set SPARKLE_PRIVATE_KEY < seed.txt
 ```
 
 ### Assinatura + appcasts (no CI, job `publish`)

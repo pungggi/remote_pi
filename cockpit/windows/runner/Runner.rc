@@ -117,11 +117,15 @@ END
 //
 // O plugin auto_updater_windows NÃO chama win_sparkle_set_eddsa_public_key(),
 // então a chave precisa ser embarcada como recurso "EdDSAPub" do tipo "EDDSA".
-// É a MESMA chave ed25519 do Sparkle (macOS) — uma chave só serve aos dois
-// (verificado: sign_update e PyNaCl produzem assinatura idêntica). A privada
-// vive no iCloud + secret SPARKLE_PRIVATE_KEY. VALIDAR no Windows real.
 //
-EdDSAPub EDDSA {"WoJTWryr48pWiAnDPqqt/Iu9f6gAsU7A1zBb5mBLruI="}
+// Esta é a ÂNCORA DE CONFIANÇA do self-update: o WinSparkle só instala um .exe
+// cuja assinatura casa com ela. Chave DESTE FORK — a do upstream estava aqui
+// até então, o que significava confiar na chave privada de um terceiro (e, na
+// prática, não conseguir assinar release nenhuma, porque essa privada não é
+// nossa). A privada correspondente é a seed do secret SPARKLE_PRIVATE_KEY;
+// trocar uma sem a outra quebra a verificação. VALIDAR no Windows real.
+//
+EdDSAPub EDDSA {"SgNmu3IHpmS/lIUAEgyjkrrIQGe2cOBshp4pOJLc8pE="}
 /////////////////////////////////////////////////////////////////////////////
 
 
