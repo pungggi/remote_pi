@@ -7,13 +7,13 @@ export function SiteFooter() {
     <footer className="footer">
       <div className="wrap footer-inner">
         <div className="copy">
-          © {new Date().getFullYear()} <b>Flutterando</b>. Piper is open
-          source under the MIT license.
+          <b>Piper</b> — open source under the MIT license. Software, not a
+          service: no account, no relay operated for you.
         </div>
         <nav className="footer-links">
           <Link href="/cockpit">Cockpit</Link>
           <Link href="/download">Download</Link>
-          <Link href="/terms">Terms of Service</Link>
+          <Link href="/terms">Terms</Link>
           <Link href="/privacy">Privacy Policy</Link>
           <a
             href={`${GITHUB_URL}/blob/main/PROTOCOL.md`}
