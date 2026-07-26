@@ -39,11 +39,33 @@ Ordem de resolução (precedência):
    Piper (plan/102).
 
 **Não existe constante de relay público.** O Piper não opera nenhum e não aponta
-pro de terceiros. Acesso de fora da WLAN se resolve por rede overlay (Tailscale,
-WireGuard): o relay já faz bind em `0.0.0.0`, e uma URL não-loopback passa
-intacta pro QR (`lan.ts` / `toPhoneReachableUrl`), então basta apontar a config
-pro endereço da overlay. `detectLanIPv4` de propósito não reconhece
-`100.64.0.0/10` — a escolha da overlay fica explícita.
+pro de terceiros.
+
+## Endereço anunciado no QR
+
+`resolveAdvertisedRelayUrl` responde uma pergunta **diferente** de
+`resolveRelayUrl`: não "como este processo alcança o relay?" (loopback é a
+melhor resposta quando o relay roda aqui), e sim "que endereço o celular
+disca?". Precedência:
+
+1. `REMOTE_PI_ADVERTISE`
+2. `~/.pi/remote/config.json` (`{ "advertise": "..." }`), via
+   `/remote-pi set-advertise <url>` — argumento vazio limpa
+3. a URL do relay com loopback reescrito pro IP de LAN (`lan.ts` /
+   `toPhoneReachableUrl`) — o default do plan/102
+
+Acesso de fora da WLAN se resolve por rede overlay (Tailscale, WireGuard):
+`set-advertise http://100.x.y.z:3000` põe o endereço da overlay no QR **sem**
+tirar a extensão do loopback. Sem essa separação, a única forma de anunciar a
+overlay era apontar o relay pra ela, e aí um `tailscaled` parado derrubava
+junto a conexão local — por uma interface que ela nunca precisou.
+
+`detectLanIPv4` de propósito não reconhece `100.64.0.0/10`: detectar sozinho
+moveria tráfego pra dentro de uma VPN sem o usuário pedir.
+
+`/remote-pi status` só imprime a linha `📱 Pairing QR advertises:` quando o
+endereço anunciado difere do relay — o único caso em que "qual URL está
+valendo?" tem duas respostas.
 
 Slash commands:
 

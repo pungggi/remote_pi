@@ -96,10 +96,11 @@ To reach your Pi from **outside** your Wi-Fi, put both ends on the same overlay
 network instead of exposing anything publicly. With
 [Tailscale](https://tailscale.com) installed on the machine and the phone, the
 relay you already run gets a second address on the tailnet (`100.x.y.z`) that is
-reachable from anywhere and stable across networks. Point the extension at it:
+reachable from anywhere and stable across networks. Tell the pairing QR to
+advertise it:
 
 ```bash
-/remote-pi set-relay http://100.x.y.z:3000
+/remote-pi set-advertise http://100.x.y.z:3000
 ```
 
 The pairing QR then advertises that address, the app adopts it on scan, and the

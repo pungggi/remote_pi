@@ -403,17 +403,29 @@ export default function DocsPage() {
           <p>
             Nothing else has to change: the relay binds{" "}
             <InlineCode>0.0.0.0</InlineCode>, so the overlay interface is
-            already served, and a non-loopback relay URL is passed into the
-            pairing QR unchanged. The whole setup is one command:
+            already served. The whole setup is one command:
           </p>
           <CodeBlock
-            code="/remote-pi set-relay http://100.x.y.z:3000"
+            code="/remote-pi set-advertise http://100.x.y.z:3000"
             label="In Pi, on the machine"
             language="text"
           />
           <p>
             No port forwarding, no domain, no certificate — the overlay carries
             its own encryption and only your devices can reach the port at all.
+          </p>
+          <p>
+            Note that&apos;s <InlineCode>set-advertise</InlineCode>, not{" "}
+            <InlineCode>set-relay</InlineCode>. They answer different questions:{" "}
+            <InlineCode>set-relay</InlineCode> changes how the machine reaches
+            its own relay, where loopback is the sturdiest answer;{" "}
+            <InlineCode>set-advertise</InlineCode> changes what the{" "}
+            <em>phone</em> dials, where loopback means nothing. Run{" "}
+            <InlineCode>/remote-pi status</InlineCode> to see both — the{" "}
+            <InlineCode>📱 Pairing QR advertises:</InlineCode> line shows up
+            only when they differ.
+          </p>
+          <p>
             The overlay address is never auto-detected: LAN discovery matches
             RFC 1918 only, and Tailscale&apos;s{" "}
             <InlineCode>100.64.0.0/10</InlineCode> is deliberately excluded, so

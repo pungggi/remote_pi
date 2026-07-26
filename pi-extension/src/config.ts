@@ -29,7 +29,11 @@ const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
  */
 export const kDefaultRelayUrl = "http://127.0.0.1:3000";
 
-export type RemotePiConfig = { relay?: string };
+export type RemotePiConfig = {
+  relay?: string;
+  /** See `resolveAdvertisedRelayUrl` — the address the pairing QR carries. */
+  advertise?: string;
+};
 
 export function loadConfig(): RemotePiConfig {
   try {
@@ -69,6 +73,45 @@ export function resolveRelayUrl(): RelayResolution {
   const cfg = loadConfig();
   if (cfg.relay && cfg.relay.length > 0) return { url: toHttpUrl(cfg.relay), source: "config" };
   return { url: toHttpUrl(kDefaultRelayUrl), source: "default" };
+}
+
+/**
+ * Resolves the address the pairing QR should advertise, or null when there is
+ * none to advertise honestly.
+ *
+ * This is deliberately **separate from the relay URL the extension connects
+ * to**. Those two answer different questions:
+ *
+ *   - `resolveRelayUrl` — how does *this process* reach the relay? Loopback is
+ *     the best answer whenever the relay runs here: it survives the machine
+ *     changing IP, roaming between networks, and having no LAN at all.
+ *   - this function — what address does the *phone* dial? Loopback is
+ *     meaningless there, so it needs a routable one.
+ *
+ * Collapsing them costs robustness. Reaching the relay from outside the WLAN
+ * means advertising an overlay address (Tailscale, WireGuard), and without
+ * this split the only way to get that into the QR was to point the extension
+ * itself at the overlay — so a stopped VPN daemon took the local connection
+ * down with it, over an interface it never needed.
+ *
+ * Precedence:
+ *   1. `REMOTE_PI_ADVERTISE` env var (ops/CI escape hatch)
+ *   2. `~/.pi/remote/config.json` `advertise` field (`/remote-pi set-advertise`)
+ *   3. the relay URL, rewritten from loopback to this machine's LAN address
+ *      (see `lan.ts` / `toPhoneReachableUrl`) — the plan/102 default
+ *
+ * Returns null only in case 3, when the relay URL is loopback and no LAN
+ * address exists (Wi-Fi down, only virtual interfaces). The caller then emits
+ * a QR without `r` rather than one pointing at an unreachable address.
+ */
+export function resolveAdvertisedRelayUrl(
+  rewriteForPhone: (url: string) => string | null,
+): string | null {
+  const env = process.env["REMOTE_PI_ADVERTISE"];
+  if (env && env.length > 0) return toHttpUrl(env);
+  const cfg = loadConfig();
+  if (cfg.advertise && cfg.advertise.length > 0) return toHttpUrl(cfg.advertise);
+  return rewriteForPhone(resolveRelayUrl().url);
 }
 
 /**

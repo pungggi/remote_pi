@@ -116,6 +116,7 @@ import { hostname, tmpdir } from "node:os";
 import {
   kDefaultRelayUrl,
   resolveRelayUrl,
+  resolveAdvertisedRelayUrl,
   saveConfig,
   isValidRelayUrl,
   isWebSocketScheme,
@@ -2461,7 +2462,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
         "setup", "status", "stop",
         "pair", "devices", "revoke",
         "rename",
-        "set-relay",
+        "set-relay", "set-advertise",
         "peers",  // plan/25 Wave D — local + cross-PC inventory
         "create", "remove", "daemons",  // daemon registry (plan/26 W1)
         // Fleet ops use the `daemon` prefix so `/remote-pi stop` keeps
@@ -2484,6 +2485,11 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
       else if (sub === "pair" || sub.startsWith("pair ")) { await _cmdPair(ctx, sub.slice("pair".length).trim()); }
       else if (sub === "devices")                { await _cmdList(ctx); }
       else if (sub.startsWith("revoke"))         { await _cmdRevoke(sub.slice("revoke".length).trim(), ctx); }
+      // set-advertise first: `startsWith("set-")` would not disambiguate, but
+      // more importantly "set-relay" is not a prefix of "set-advertise", so
+      // order only matters if a future subcommand shares a prefix. Keep them
+      // adjacent so that stays visible.
+      else if (sub.startsWith("set-advertise"))  { _cmdSetAdvertise(sub.slice("set-advertise".length).trim(), ctx); }
       else if (sub.startsWith("set-relay"))      { _cmdSetRelay(sub.slice("set-relay".length).trim(), ctx); }
       else if (sub === "rename" || sub.startsWith("rename ")) { await _renameAgent(sub.slice("rename".length).trim()); }
       else if (sub === "peers")                  { await _cmdPeers(ctx); }
@@ -2517,6 +2523,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     handler: async (args, ctx) => { _lastCtx = ctx; await _cmdRevoke(args.trim(), ctx); },
   });
   pi.registerCommand("remote-pi set-relay", { description: "Persist a new relay URL to user config", handler: async (args, ctx) => { _lastCtx = ctx; _cmdSetRelay(args.trim(), ctx); } });
+  pi.registerCommand("remote-pi set-advertise", { description: "Set the address the pairing QR advertises (e.g. a Tailscale IP); empty clears it", handler: async (args, ctx) => { _lastCtx = ctx; _cmdSetAdvertise(args.trim(), ctx); } });
 
   // Plan/25 Wave D
   pi.registerCommand("remote-pi peers", {
@@ -2595,7 +2602,17 @@ function _cmdStatus(ctx: Pick<ExtensionContext, "ui">): void {
       : `🟡 Relay: on, waiting for first pairing (${relayUrl})`;
   }
 
-  ctx.ui.notify(`[remote-pi]\n  ${meshLine}\n  ${relayLine}`, "info");
+  // Advertise line — only when it differs from the relay URL, i.e. when the
+  // phone dials a different address than this process does. That is the whole
+  // point of the split, and the one case where "which URL is in effect?" has
+  // two answers, so it is also the one case worth spelling out.
+  const advertised = resolveAdvertisedRelayUrl((url) => toPhoneReachableUrl(url));
+  const advertiseLine =
+    advertised && advertised !== relayUrl
+      ? `\n  📱 Pairing QR advertises: ${advertised}`
+      : "";
+
+  ctx.ui.notify(`[remote-pi]\n  ${meshLine}\n  ${relayLine}${advertiseLine}`, "info");
 }
 
 /**
@@ -3096,13 +3113,15 @@ async function _cmdPair(ctx: Pick<ExtensionContext, "ui" | "cwd">, args = ""): P
   const ttlMs = ttlMatch ? clampPairTtlMs(Number(ttlMatch[1]) * 1000) : TOKEN_TTL_MS;
   const { token, expiresAt } = qrSession.issueToken(ttlMs);
   const roomId = _myRoomId ?? roomIdFor(cwd, sessionName);
-  // plan/102 — advertise the relay in the QR so the phone can adopt it. The
-  // default relay is loopback (a relay on this machine), which the phone
-  // cannot reach, so it is rewritten to this machine's LAN address. A null
-  // here means no LAN address exists (Wi-Fi down, or only virtual
-  // interfaces): emit the QR without `r` and let the app fall back to its own
-  // relay setting rather than advertising an address nothing can reach.
-  const advertisedRelay = toPhoneReachableUrl(resolveRelayUrl().url) ?? undefined;
+  // plan/102 — advertise the relay in the QR so the phone can adopt it. By
+  // default that is the relay URL with loopback rewritten to this machine's
+  // LAN address, since the phone cannot dial loopback. `REMOTE_PI_ADVERTISE` /
+  // `set-advertise` override it, which is how an overlay address (Tailscale)
+  // gets into the QR without moving this process off loopback. A null means
+  // there is no honest address to advertise: emit the QR without `r` and let
+  // the app fall back to its own relay setting.
+  const advertisedRelay =
+    resolveAdvertisedRelayUrl((url) => toPhoneReachableUrl(url)) ?? undefined;
   const qrUri = buildQRUri(token, edKp.publicKey, sessionName, roomId, advertisedRelay);
   // Render both the QR ASCII and the copy-paste URI inside the Pi TUI's
   // chat panel via `pi.sendMessage` — the same channel the SDK uses for
@@ -3311,6 +3330,50 @@ function _cmdSetRelay(arg: string, ctx: Pick<ExtensionContext, "ui">): void {
   saveConfig({ relay: raw });
   ctx.ui.notify(
     `[remote-pi] Relay set to ${raw}. Run /remote-pi start (or restart) to apply.`,
+    "info",
+  );
+}
+
+/**
+ * `/remote-pi set-advertise <url>` — the address the pairing QR carries.
+ *
+ * Separate from `set-relay` on purpose: this one changes what the *phone*
+ * dials, leaving this process on whatever route it already uses. That is what
+ * makes an overlay address (Tailscale, WireGuard) reachable from outside the
+ * WLAN without taking the local loopback connection hostage to the VPN daemon.
+ *
+ * An empty argument clears it, restoring the plan/102 default of advertising
+ * this machine's LAN address.
+ */
+function _cmdSetAdvertise(arg: string, ctx: Pick<ExtensionContext, "ui">): void {
+  const raw = arg.trim();
+  if (!raw) {
+    saveConfig({ advertise: undefined });
+    ctx.ui.notify(
+      "[remote-pi] Advertised address cleared — the pairing QR falls back to " +
+      "this machine's LAN address. To set one: /remote-pi set-advertise <url>",
+      "info",
+    );
+    return;
+  }
+  if (isWebSocketScheme(raw)) {
+    ctx.ui.notify(
+      `[remote-pi] Use http:// or https://. The extension converts to WebSocket automatically.`,
+      "error",
+    );
+    return;
+  }
+  if (!isValidRelayUrl(raw)) {
+    ctx.ui.notify(
+      `[remote-pi] Invalid URL: ${raw}. Must start with http:// or https://`,
+      "error",
+    );
+    return;
+  }
+  saveConfig({ advertise: raw });
+  ctx.ui.notify(
+    `[remote-pi] Pairing QR will advertise ${raw}. Takes effect on the next ` +
+    `/remote-pi pair — already-paired devices keep their current address.`,
     "info",
   );
 }
@@ -5021,6 +5084,19 @@ if (_isDirectRun()) {
       saveConfig({ relay: raw });
       console.log(`Relay set to ${raw}`);
     }
+  } else if (subcmd === "set-advertise") {
+    const raw = (cliArgs[0] ?? "").trim();
+    if (!raw) {
+      saveConfig({ advertise: undefined });
+      console.log("Advertised address cleared — the pairing QR falls back to this machine's LAN address");
+    } else if (isWebSocketScheme(raw)) {
+      console.log(`Use http:// or https://. The extension converts to WebSocket automatically.`);
+    } else if (!isValidRelayUrl(raw)) {
+      console.log(`Invalid URL: ${raw}. Must start with http:// or https://`);
+    } else {
+      saveConfig({ advertise: raw });
+      console.log(`Pairing QR will advertise ${raw}`);
+    }
   } else if (subcmd === "create") {
     // Standalone: `remote-pi create <cwd> [--name "X"]`. The shell already
     // split the args and stripped the outer quotes, so an arg like
@@ -5125,7 +5201,9 @@ if (_isDirectRun()) {
       "  revoke <shortid>                Revoke a paired device",
       "",
       "Config:",
-      "  set-relay <url>                 Set the relay URL (http:// or https://)",
+      "  set-relay <url>                 Set the relay URL this machine connects to",
+      "  set-advertise [<url>]           Set the address the pairing QR advertises",
+      "                                  (e.g. a Tailscale IP); empty clears it",
       "",
       "Agent mesh:",
       "  peers                           List agents on the local + cross-PC mesh",

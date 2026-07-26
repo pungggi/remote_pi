@@ -277,13 +277,19 @@ terceiro entregava o papel de ponto único de confiança (roteamento *e* conteú
 já que o relay vê tudo em claro) antes de o usuário escolher qualquer coisa.
 
 Com Tailscale nos dois lados, o relay que já roda ganha um segundo endereço
-(`100.x.y.z`) alcançável de qualquer lugar. Duas propriedades fazem funcionar
-sem código novo: o relay faz bind em `0.0.0.0`, e `toPhoneReachableUrl`
-(`src/lan.ts`) repassa URL não-loopback intacta pro QR. Então basta:
+(`100.x.y.z`) alcançável de qualquer lugar. O relay faz bind em `0.0.0.0`, então
+a interface da overlay já é servida. Basta:
 
 ```text
-/remote-pi set-relay http://100.x.y.z:3000
+/remote-pi set-advertise http://100.x.y.z:3000
 ```
+
+`set-advertise` e não `set-relay`: o endereço anunciado no QR resolve por um
+caminho próprio (`resolveAdvertisedRelayUrl`), separado da URL que **este
+processo** usa. Loopback continua a melhor rota local — sobrevive a troca de
+IP, roaming e ausência de LAN. Colapsar os dois obrigava a apontar a extensão
+pra overlay só pra pôr o endereço no QR, e aí um `tailscaled` parado derrubava
+junto a conexão local, por uma interface que ela nunca precisou.
 
 Vantagem sobre o default LAN: o endereço da tailnet é estável entre redes, então
 some o custo de re-parear a cada troca de rede que o plan/102 aceita.

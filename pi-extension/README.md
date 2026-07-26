@@ -296,20 +296,26 @@ picks up a second address on the overlay — with Tailscale a `100.x.y.z` from
 the CGNAT range — that is reachable from anywhere and, unlike a LAN IP, stays
 the same when you change networks.
 
-Two properties make this work with no extra moving parts:
-
-- the relay binds `0.0.0.0`, so the overlay interface is already served
-- a non-loopback relay URL passes into the QR unchanged (see `lan.ts`
-  `toPhoneReachableUrl`), so the advertised address is the overlay one
-
-So the whole setup is pointing the extension at the overlay address:
+The relay binds `0.0.0.0`, so the overlay interface is already served. The
+whole setup is telling the pairing QR to advertise the overlay address:
 
 ```text
-/remote-pi set-relay http://100.x.y.z:3000
+/remote-pi set-advertise http://100.x.y.z:3000
 ```
 
 No port forwarding, no domain, no certificate — the overlay carries its own
 encryption and only your devices can reach the port at all.
+
+Note this is **`set-advertise`, not `set-relay`**. The two answer different
+questions: `set-relay` changes how *this process* reaches the relay, where
+loopback is the most robust answer whenever the relay runs on the same
+machine; `set-advertise` changes what the *phone* dials, where loopback is
+meaningless. Using `set-relay` for the overlay works, but it routes this
+machine's own connection over the VPN interface for no reason — and then a
+stopped `tailscaled` takes the local connection down with it.
+
+Run `/remote-pi status` to see both. The `📱 Pairing QR advertises:` line only
+appears when the two differ.
 
 The overlay address is never auto-detected: `detectLanIPv4` matches RFC 1918
 only, and Tailscale's `100.64.0.0/10` is deliberately not in that set. Picking
@@ -342,6 +348,10 @@ order (highest precedence first):
 1. `REMOTE_PI_RELAY` environment variable (CI / one-off overrides)
 2. `~/.pi/remote/config.json`
 3. The built-in default (`http://127.0.0.1:3000` — a relay on this machine)
+
+The address advertised in the pairing QR resolves separately, through
+`REMOTE_PI_ADVERTISE` → the config file's `advertise` field → the relay URL
+with loopback rewritten to this machine's LAN address.
 
 Verify the active URL and its source with:
 
