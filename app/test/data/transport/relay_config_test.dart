@@ -54,7 +54,9 @@ void main() {
       expect(isValidRelayUrl('http://localhost'), isTrue);
       expect(isValidRelayUrl('http://127.0.0.1:8080'), isTrue);
       expect(isValidRelayUrl('https://relay.example.com'), isTrue);
-      expect(isValidRelayUrl('http://100.81.166.99:3000'), isTrue);
+      // Overlay-network form (Tailscale hands out 100.64.0.0/10) — the shape
+      // used to reach the relay from outside the WLAN.
+      expect(isValidRelayUrl('http://100.100.100.100:3000'), isTrue);
     });
 
     test('rejects ws:// and wss:// — those are conversions only', () {
