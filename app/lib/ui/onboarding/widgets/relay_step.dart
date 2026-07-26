@@ -233,7 +233,6 @@ class _CustomRelayCard extends StatelessWidget {
   final bool selected;
   final String customUrl;
   final String? error;
-  final String? badge;
   final String? description;
   final VoidCallback onTap;
   final ValueChanged<String> onUrlChanged;
@@ -243,7 +242,6 @@ class _CustomRelayCard extends StatelessWidget {
     required this.error,
     required this.onTap,
     required this.onUrlChanged,
-    this.badge,
     this.description,
   });
 
@@ -285,25 +283,6 @@ class _CustomRelayCard extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (badge != null)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: colors.accent.withValues(alpha: 0.15),
-                      borderRadius:
-                          const BorderRadius.all(Radius.circular(4)),
-                    ),
-                    child: Text(
-                      badge!,
-                      style: TextStyle(
-                        fontFamily: kMonoFamily,
-                        fontSize: 9,
-                        color: colors.accent,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
               ],
             ),
             if (description != null) ...[
