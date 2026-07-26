@@ -4,7 +4,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 
 /**
- * `resolveAdvertisedRelayUrl` reads `~/.pi/remote/config.json`, so each test
+ * `resolveAdvertisedRelayUrl` reads `~/.pi/piper/config.json`, so each test
  * needs its own home. `homedir` is read when config.ts computes CONFIG_DIR at
  * module load, which means the mock has to be installed before the import and
  * the home has to stay fixed for the whole file — per-test isolation comes
@@ -14,14 +14,14 @@ import { tmpdir } from "node:os";
  * lan.test.ts does it.
  */
 const HOME = fs.mkdtempSync(path.join(tmpdir(), "remote-pi-config-"));
-const CONFIG_FILE = path.join(HOME, ".pi", "remote", "config.json");
+const CONFIG_FILE = path.join(HOME, ".pi", "piper", "config.json");
 
 vi.mock("node:os", async (importOriginal) => {
   const orig = await importOriginal<typeof import("node:os")>();
   const patched = { ...orig, homedir: () => HOME };
   // config.ts uses `import os from "node:os"`, so the default export has to be
   // patched too — a named-only mock silently leaves `os.homedir()` real and
-  // the tests then read the developer's actual ~/.pi/remote/config.json.
+  // the tests then read the developer's actual ~/.pi/piper/config.json.
   return { ...patched, default: patched };
 });
 

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-const CONFIG_DIR = path.join(os.homedir(), ".pi", "remote");
+const CONFIG_DIR = path.join(os.homedir(), ".pi", "piper");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 
 /**
@@ -60,7 +60,7 @@ export type RelayResolution = { url: string; source: "env" | "config" | "default
  *
  * Precedence:
  *   1. `REMOTE_PI_RELAY` env var (ops/CI escape hatch)
- *   2. `~/.pi/remote/config.json` `relay` field (set via /remote-pi set-relay)
+ *   2. `~/.pi/piper/config.json` `relay` field (set via /remote-pi set-relay)
  *   3. `kDefaultRelayUrl` (community default)
  *
  * Any ws(s):// values found (legacy configs or env overrides) are coerced
@@ -96,7 +96,7 @@ export function resolveRelayUrl(): RelayResolution {
  *
  * Precedence:
  *   1. `REMOTE_PI_ADVERTISE` env var (ops/CI escape hatch)
- *   2. `~/.pi/remote/config.json` `advertise` field (`/remote-pi set-advertise`)
+ *   2. `~/.pi/piper/config.json` `advertise` field (`/remote-pi set-advertise`)
  *   3. the relay URL, rewritten from loopback to this machine's LAN address
  *      (see `lan.ts` / `toPhoneReachableUrl`) — the plan/102 default
  *

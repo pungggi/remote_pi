@@ -39,7 +39,7 @@ import { appendCronLog, readCronLog, type CronResult } from "./cron_log.js";
  *   - Auto-restart crashed children with exponential backoff
  *     (1s, 5s, 30s, 5min). Give up after 4 attempts to avoid log spam
  *     when the agent is misconfigured.
- *   - Listen on `~/.pi/remote/supervisor.sock` for `ControlRequest`s from
+ *   - Listen on `~/.pi/piper/supervisor.sock` for `ControlRequest`s from
  *     the `remote-pi` CLI. Each connection: 1 request → 1 reply → close.
  *   - Graceful shutdown on SIGTERM/SIGINT: stop all children + unlink
  *     the UDS file so a next supervisor can bind cleanly.
@@ -59,8 +59,8 @@ const RESTART_BACKOFFS_MS = [1_000, 5_000, 30_000, 5 * 60_000];
 
 function supervisorSockPath(): string {
   const root = process.env["REMOTE_PI_HOME"] || homedir();
-  // POSIX → ~/.pi/remote/supervisor.sock; Windows → per-user named pipe (plan/40).
-  return ipcAddress("supervisor", join(root, ".pi", "remote", SUPERVISOR_SOCK_NAME));
+  // POSIX → ~/.pi/piper/supervisor.sock; Windows → per-user named pipe (plan/40).
+  return ipcAddress("supervisor", join(root, ".pi", "piper", SUPERVISOR_SOCK_NAME));
 }
 
 /** Thrown by `start()` when another live supervisor already holds the UDS.

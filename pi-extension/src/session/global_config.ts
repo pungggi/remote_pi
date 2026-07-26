@@ -3,9 +3,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ipcAddress, usesNamedPipe } from "./ipc.js";
 
-const HOME_PI_REMOTE = join((process.env["REMOTE_PI_HOME"] || homedir()), ".pi", "remote");
-const SESSIONS_DIR = join(HOME_PI_REMOTE, "sessions");
-const SKILLS_DIR = join(HOME_PI_REMOTE, "skills");
+const HOME_PI_PIPER = join((process.env["REMOTE_PI_HOME"] || homedir()), ".pi", "piper");
+const SESSIONS_DIR = join(HOME_PI_PIPER, "sessions");
+const SKILLS_DIR = join(HOME_PI_PIPER, "skills");
 /**
  * Fixed UDS session name. The local mesh is single per machine — every Pi
  * process on the host shares this broker. Previous versions exposed
@@ -16,7 +16,7 @@ const SKILLS_DIR = join(HOME_PI_REMOTE, "skills");
  */
 export const LOCAL_SESSION_NAME = "local";
 
-/** Ensures the new subdirs exist inside the existing ~/.pi/remote/. */
+/** Ensures the new subdirs exist inside the existing ~/.pi/piper/. */
 export function ensureGlobalDirs(): void {
   mkdirSync(SESSIONS_DIR, { recursive: true });
   mkdirSync(SKILLS_DIR, { recursive: true });

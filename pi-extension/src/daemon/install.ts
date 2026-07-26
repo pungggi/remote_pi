@@ -116,7 +116,7 @@ export const WINDOWS_TASK_NAME = "RemotePiSupervisor";
 
 /** Path of the rendered Task Scheduler XML (input to `schtasks /Create /XML`). */
 export function taskXmlPath(): string {
-  return join(homedir(), ".pi", "remote", "RemotePiSupervisor.xml");
+  return join(homedir(), ".pi", "piper", "RemotePiSupervisor.xml");
 }
 
 /**
@@ -125,17 +125,17 @@ export function taskXmlPath(): string {
  * wrapper is what keeps the supervisor from flashing a console window.
  */
 export function vbsLauncherPath(): string {
-  return join(homedir(), ".pi", "remote", "RemotePiSupervisorLauncher.vbs");
+  return join(homedir(), ".pi", "piper", "RemotePiSupervisorLauncher.vbs");
 }
 
 /**
  * Combined stdout/stderr log for the Windows supervisor. The Task Scheduler
  * launches it hidden via wscript, so without this redirect its output (and the
  * forwarded daemon-child stderr) would vanish — mirrors launchd/systemd, which
- * already log to `~/.pi/remote/supervisord.log`.
+ * already log to `~/.pi/piper/supervisord.log`.
  */
 export function supervisordLogPath(): string {
-  return join(homedir(), ".pi", "remote", "supervisord.log");
+  return join(homedir(), ".pi", "piper", "supervisord.log");
 }
 
 // ── Template rendering ─────────────────────────────────────────────────────

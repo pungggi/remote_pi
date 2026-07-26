@@ -16,7 +16,7 @@ import { daemonIdForCwd } from "./id.js";
 import { defaultAgentName } from "../session/local_config.js";
 
 /** Each test runs against an isolated $HOME-like directory so the registry
- *  writes never touch the developer's real `~/.pi/remote/daemons.json`. */
+ *  writes never touch the developer's real `~/.pi/piper/daemons.json`. */
 let testHome: string;
 
 beforeEach(() => {
@@ -31,7 +31,7 @@ afterEach(() => {
 
 describe("registryPath", () => {
   test("honors REMOTE_PI_HOME env override", () => {
-    expect(registryPath()).toBe(join(testHome, ".pi", "remote", "daemons.json"));
+    expect(registryPath()).toBe(join(testHome, ".pi", "piper", "daemons.json"));
   });
 });
 
@@ -89,14 +89,14 @@ describe("loadRegistry / saveRegistry", () => {
 
   test("malformed JSON tolerated (returns empty)", () => {
     const path = registryPath();
-    mkdirSync(join(testHome, ".pi", "remote"), { recursive: true });
+    mkdirSync(join(testHome, ".pi", "piper"), { recursive: true });
     require("node:fs").writeFileSync(path, "{not-json");
     expect(loadRegistry()).toEqual({ daemons: [] });
   });
 
   test("unknown shape tolerated", () => {
     const path = registryPath();
-    mkdirSync(join(testHome, ".pi", "remote"), { recursive: true });
+    mkdirSync(join(testHome, ".pi", "piper"), { recursive: true });
     require("node:fs").writeFileSync(path, JSON.stringify({ foo: "bar" }));
     expect(loadRegistry()).toEqual({ daemons: [] });
   });

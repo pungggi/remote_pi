@@ -10,7 +10,7 @@ function tmpCwd(): string {
   return mkdtempSync(join(tmpdir(), "pi-cwdlock-"));
 }
 
-/** Redirect the lock dir away from the developer's real `~/.pi/remote/locks`
+/** Redirect the lock dir away from the developer's real `~/.pi/piper/locks`
  *  so running the suite never binds sockets in the live mesh's directory.
  *
  *  Base it on a SHORT root (`/tmp`), NOT `os.tmpdir()`: the lock socket nests

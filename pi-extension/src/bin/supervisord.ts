@@ -9,9 +9,9 @@
  *   node dist/bin/supervisord.js
  *
  * Once running, it:
- *   - Reads `~/.pi/remote/daemons.json`
+ *   - Reads `~/.pi/piper/daemons.json`
  *   - Spawns `pi --mode rpc -e <remote-pi/dist/index.js>` per entry
- *   - Listens on `~/.pi/remote/supervisor.sock` for CLI control requests
+ *   - Listens on `~/.pi/piper/supervisor.sock` for CLI control requests
  *   - Restarts crashed children with exponential backoff
  *
  * Exits cleanly on SIGTERM/SIGINT (used by `remote-pi uninstall`).
@@ -24,8 +24,8 @@ const HELP_TEXT = `pi-supervisord — Remote Pi daemon supervisor
 
 Usage: pi-supervisord
 
-Runs the long-lived supervisor: reads ~/.pi/remote/daemons.json, spawns one
-\`pi --mode rpc\` child per entry, and listens on ~/.pi/remote/supervisor.sock
+Runs the long-lived supervisor: reads ~/.pi/piper/daemons.json, spawns one
+\`pi --mode rpc\` child per entry, and listens on ~/.pi/piper/supervisor.sock
 for control requests from the \`remote-pi\` CLI.
 
 This binary takes NO arguments — it is normally launched by systemd/launchd
@@ -70,7 +70,7 @@ async function main(): Promise<void> {
   const supervisor = new Supervisor({ extensionPath });
   await supervisor.start();
   process.stderr.write(
-    `[pi-supervisord] up — UDS: ~/.pi/remote/supervisor.sock, extension: ${extensionPath}\n`,
+    `[pi-supervisord] up — UDS: ~/.pi/piper/supervisor.sock, extension: ${extensionPath}\n`,
   );
 
   const shutdown = async (signal: string) => {

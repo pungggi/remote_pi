@@ -6,7 +6,7 @@ import { Cron } from "croner";
 
 /**
  * Cron registry: scheduled prompts for daemons, persisted at
- * `~/.pi/remote/cron.json`. Mirrors `registry.ts` (`daemons.json`) — tolerant
+ * `~/.pi/piper/cron.json`. Mirrors `registry.ts` (`daemons.json`) — tolerant
  * load (missing/corrupt → empty), atomic-ish full-file save.
  *
  * Each job targets a daemon by its `daemon_id` (the 8-hex id from
@@ -52,7 +52,7 @@ export interface CronRegistry {
 
 function cronPath(): string {
   const root = process.env["REMOTE_PI_HOME"] || homedir();
-  return join(root, ".pi", "remote", "cron.json");
+  return join(root, ".pi", "piper", "cron.json");
 }
 
 /** Test/diag-only: the on-disk path. */

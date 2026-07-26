@@ -65,7 +65,7 @@ vi.mock("./pairing/storage.js", async (importOriginal) => {
     }),
     listPeers: vi.fn().mockImplementation(async () => [..._knownPeers]),
     // Hermetic: derive owners from the in-memory _knownPeers instead of the
-    // real ~/.pi/remote/peers.json. The unmocked `listOwnerPubkeys` calls the
+    // real ~/.pi/piper/peers.json. The unmocked `listOwnerPubkeys` calls the
     // module-internal (real) `listPeers`, so it would read this dev machine's
     // actual owners → SelfRevoke would HTTP-fetch the production mesh blob and
     // seed real siblings (e.g. "MacMini"), making BrokerRemote emit stray

@@ -14,7 +14,7 @@ import { canonicalizeEd25519PublicKey } from "../mesh/encoding.js";
  * Credential Manager on Windows — DPAPI-backed). When the keyring is
  * unavailable (headless Linux without a D-Bus session, Docker containers,
  * VPS without GNOME Keyring/KWallet running) we fall back to a
- * file-backed store at `~/.pi/remote/identity.json` with `0o600`
+ * file-backed store at `~/.pi/piper/identity.json` with `0o600`
  * permissions and the parent dir at `0o700`.
  *
  * **Migration**: the upstream project used `keytar` against a `*.mac`
@@ -63,7 +63,7 @@ export class KeyringUnavailableError extends Error {
   }
 }
 
-const PI_DIR = join(homedir(), ".pi", "remote");
+const PI_DIR = join(homedir(), ".pi", "piper");
 const IDENTITY_FILE = join(PI_DIR, "identity.json");
 const PEERS_PATH = join(PI_DIR, "peers.json");
 
@@ -195,7 +195,7 @@ async function _writeKeypairToFile(kp: Ed25519Keypair): Promise<void> {
 /**
  * Returns the Pi-secret Ed25519 keypair, generating + persisting one on
  * first call. Resolution order:
- *   1. Existing file `~/.pi/remote/identity.json`, if present — it WINS over
+ *   1. Existing file `~/.pi/piper/identity.json`, if present — it WINS over
  *      the keyring. A file identity is only ever written by the headless/
  *      degraded fallback (step 4) or an explicit `REMOTE_PI_ALLOW_FILE_IDENTITY`
  *      opt-in, so its mere presence means this machine established its identity
@@ -225,7 +225,7 @@ export async function getOrCreateEd25519Keypair(): Promise<Ed25519Keypair> {
   const backend = _getBackend();
 
   // ── Path 0: an existing file-backed identity wins ──────────────────────
-  // `~/.pi/remote/identity.json` is only ever written by the headless/degraded
+  // `~/.pi/piper/identity.json` is only ever written by the headless/degraded
   // fallback below (or an operator who set REMOTE_PI_ALLOW_FILE_IDENTITY=1) —
   // never on a keyring-backed install. So its presence means THIS machine
   // paired against the file key, and the keyring (readable or not, matching or

@@ -5,7 +5,7 @@ import { platform as osPlatform, userInfo } from "node:os";
  *
  * Node's `net` implements local IPC differently per OS:
  *   - **POSIX**: a filesystem Unix-domain socket — a `.sock` path under
- *     `~/.pi/remote/`. The file lingers if the owner crashes (stale-socket
+ *     `~/.pi/piper/`. The file lingers if the owner crashes (stale-socket
  *     cleanup via `unlink` matters).
  *   - **Windows**: a **named pipe** (`\\.\pipe\<name>`). There is NO file —
  *     `existsSync`/`unlink` don't apply, and the pipe vanishes automatically

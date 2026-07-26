@@ -1,5 +1,5 @@
 /**
- * CLI ↔ supervisor IPC contract for `~/.pi/remote/supervisor.sock`.
+ * CLI ↔ supervisor IPC contract for `~/.pi/piper/supervisor.sock`.
  *
  * Framing: one JSON object per line, newline-terminated. The CLI sends a
  * single `ControlRequest`, the supervisor sends a single `ControlReply`,

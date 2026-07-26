@@ -183,7 +183,7 @@ describe("vbsLauncherPath", () => {
     const p = vbsLauncherPath();
     expect(isAbsolute(p)).toBe(true);
     expect(p.endsWith("RemotePiSupervisorLauncher.vbs")).toBe(true);
-    expect(p.endsWith(join(".pi", "remote", "RemotePiSupervisorLauncher.vbs"))).toBe(true);
+    expect(p.endsWith(join(".pi", "piper", "RemotePiSupervisorLauncher.vbs"))).toBe(true);
   });
 });
 

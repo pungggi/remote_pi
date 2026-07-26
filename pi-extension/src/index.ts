@@ -2047,7 +2047,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   _extensionUiBridge?.dispose();
   _extensionUiBridge = createExtensionUiBridge(pi, _broadcastToActive);
 
-  // Plano 19: ensure ~/.pi/remote/{sessions,skills}/ exist and deploy the
+  // Plano 19: ensure ~/.pi/piper/{sessions,skills}/ exist and deploy the
   // agent-network skill on first load. resources_discover lets Pi find it.
   try {
     ensureGlobalDirs();
@@ -3383,7 +3383,7 @@ function _cmdSetAdvertise(arg: string, ctx: Pick<ExtensionContext, "ui">): void 
 /**
  * `/remote-pi create [<cwd>] [--name <name>]`
  *
- * Promotes a folder to a daemon entry in `~/.pi/remote/daemons.json`. The
+ * Promotes a folder to a daemon entry in `~/.pi/piper/daemons.json`. The
  * cwd is **always normalized to an absolute realpath** before storage —
  * `~/Movies`, `./Movies`, `../foo/Movies` all collapse to a single
  * canonical entry. Relative paths resolve against the Pi process's
@@ -3900,7 +3900,7 @@ function _cmdUninstall(ctx: Pick<ExtensionContext, "ui">, opts: { linkCli?: bool
       `[remote-pi] Supervisor service uninstalled (${result.platform}).`,
       `  Unit: ${result.unitPath} (${result.removed ? "removed" : "not present"})`,
       `  Steps:\n${result.log.map((l) => "    " + l).join("\n")}`,
-      `  Note: daemons registry (~/.pi/remote/daemons.json) kept — re-install restores everything.`,
+      `  Note: daemons registry (~/.pi/piper/daemons.json) kept — re-install restores everything.`,
     ];
     if (linkCli) {
       const unlink = unlinkCliBinaries();
@@ -3938,7 +3938,7 @@ function _deployAgentNetworkSkill(): void {
   //   <skillsRoot>/<skill-name>/SKILL.md
   // The skill `name:` frontmatter must equal the parent directory name. We
   // ship the source pre-arranged that way so deploy is a straight copy into
-  // ~/.pi/remote/skills/agent-network/SKILL.md.
+  // ~/.pi/piper/skills/agent-network/SKILL.md.
   const root = _resolveExtensionDir();
   const src1 = join(root, "skills", "agent-network", "SKILL.md");
   const src2 = join(root, "..", "skills", "agent-network", "SKILL.md");
@@ -3949,7 +3949,7 @@ function _deployAgentNetworkSkill(): void {
   try {
     mkdirSync(dstDir, { recursive: true });
     copyFileSync(src, dst);
-    // Cleanup legacy deploy at ~/.pi/remote/skills/agent-network.md (flat
+    // Cleanup legacy deploy at ~/.pi/piper/skills/agent-network.md (flat
     // layout, fails the Pi SDK's name-vs-parent-dir validation).
     const legacy = join(skillsDir(), "agent-network.md");
     if (existsSync(legacy)) {

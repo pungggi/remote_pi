@@ -21,10 +21,10 @@ import { defaultAgentName } from "../session/local_config.js";
  */
 
 /** Resolved at call time so tests can override via `REMOTE_PI_HOME`. The
- *  prod path is always `~/.pi/remote/daemons.json`. */
+ *  prod path is always `~/.pi/piper/daemons.json`. */
 function registryPathInternal(): string {
   const root = process.env["REMOTE_PI_HOME"] || homedir();
-  return join(root, ".pi", "remote", "daemons.json");
+  return join(root, ".pi", "piper", "daemons.json");
 }
 
 export interface DaemonEntry {
@@ -161,7 +161,7 @@ export function migrateRegistryNames(): number {
 
 /** Test/diag-only: returns the on-disk path. Exported so tests can poke
  *  at it (e.g. tmpdir override is done via env, but for now the path is
- *  hardcoded to ~/.pi/remote/daemons.json). */
+ *  hardcoded to ~/.pi/piper/daemons.json). */
 export function registryPath(): string {
   return registryPathInternal();
 }

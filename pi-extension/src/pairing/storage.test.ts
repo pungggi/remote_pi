@@ -316,10 +316,10 @@ describe("getOrCreateEd25519Keypair — locked keyring does NOT regenerate", () 
 // ── Corrupt peer record isolation ────────────────────────────────────────────
 
 describe("peer record corruption isolation", () => {
-  const peersPath = join(_tmpHome, ".pi", "remote", "peers.json");
+  const peersPath = join(_tmpHome, ".pi", "piper", "peers.json");
 
   function writePeers(peers: unknown): void {
-    mkdirSync(join(_tmpHome, ".pi", "remote"), { recursive: true });
+    mkdirSync(join(_tmpHome, ".pi", "piper"), { recursive: true });
     writeFileSync(peersPath, JSON.stringify({ peers }, null, 2));
   }
 
@@ -383,7 +383,7 @@ describe("peer record corruption isolation", () => {
 // ── File identity wins over a READABLE keyring (masking bug) ─────────────────
 //
 // A file-backed/headless install pairs the mobile against the key in
-// `~/.pi/remote/identity.json`. If the platform keyring later becomes readable
+// `~/.pi/piper/identity.json`. If the platform keyring later becomes readable
 // (D-Bus/libsecret installed, a desktop session, a stale entry from another
 // install), consulting it FIRST would mask the file identity — returning a
 // different key, or minting a fresh one over an empty keyring — and break the
@@ -449,14 +449,14 @@ describe("getOrCreateEd25519Keypair — file identity wins over a readable keyri
 
 
 describe("owner snapshot mutation tokens", () => {
-  const peersPath = join(_tmpHome, ".pi", "remote", "peers.json");
+  const peersPath = join(_tmpHome, ".pi", "piper", "peers.json");
   const snapshotStorage = storage as typeof storage & {
     snapshotOwnerPubkeys(): Promise<readonly { rawOwnerPubkey: unknown; token: unknown }[]>;
     conditionalRemovePeer(remoteEpk: string, expectedToken: unknown): Promise<{ outcome: string }>;
   };
 
   function writePeers(peers: unknown): void {
-    mkdirSync(join(_tmpHome, ".pi", "remote"), { recursive: true });
+    mkdirSync(join(_tmpHome, ".pi", "piper"), { recursive: true });
     writeFileSync(peersPath, JSON.stringify({ peers }, null, 2));
   }
 

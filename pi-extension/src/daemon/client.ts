@@ -12,7 +12,7 @@ import { usesNamedPipe } from "../session/ipc.js";
 
 /**
  * Tiny client for the `remote-pi` CLI to call the supervisor over the
- * `~/.pi/remote/supervisor.sock` UDS.
+ * `~/.pi/piper/supervisor.sock` UDS.
  *
  * Each call opens a fresh connection, sends one request line, reads one
  * reply line, closes. No connection pooling — the CLI is short-lived,
