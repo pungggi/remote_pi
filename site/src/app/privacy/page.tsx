@@ -4,7 +4,7 @@ import { LegalShell, LegalSection } from "@/components/legal-shell";
 export const metadata: Metadata = {
   title: "Privacy Policy",
   description:
-    "Privacy Policy for Remote Pi — what little data we touch, why we touch it, and your LGPD rights.",
+    "Privacy Policy for Piper — what little data we touch, why we touch it, and your LGPD rights.",
 };
 
 const CONTACT_EMAIL = "jacob@flutterando.com.br";
@@ -31,7 +31,7 @@ export default function PrivacyPage() {
     >
       <LegalSection id="who" number={1} title="Who We Are (Data Controller)">
         <p>
-          Remote Pi is operated by Flutterando Desenvolvimento de Programas de
+          Piper is operated by Flutterando Desenvolvimento de Programas de
           Computador LTDA, a company incorporated in Brazil (CNPJ
           33.637.582/0001-70), with offices at Rua Clara Nunes, 198, Maringá/PR,
           CEP 87.045-650.
@@ -52,7 +52,7 @@ export default function PrivacyPage() {
           2.1 Data you provide directly
         </h3>
         <p>
-          Remote Pi is designed so that you provide essentially nothing to us on
+          Piper is designed so that you provide essentially nothing to us on
           the relay path. There is no account, no email registration, no
           profile, and no payment information. The pairing flow generates
           cryptographic keys locally on your devices.

@@ -1,6 +1,6 @@
 import { ImageResponse } from "next/og";
 
-export const alt = "Remote Pi — Your coding agents, in your pocket";
+export const alt = "Piper — Your coding agents, in your pocket";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -57,7 +57,7 @@ export default function OpengraphImage() {
               fontWeight: 600,
             }}
           >
-            Remote Pi
+            Piper
           </div>
           <div
             style={{

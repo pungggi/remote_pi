@@ -10,7 +10,7 @@ import { RevealController } from "@/components/landing/reveal-controller";
 export const metadata: Metadata = {
   title: "Getting started",
   description:
-    "Install Remote Pi on Pi, pair your phone, and send your first command to an agent from the app — from install to first prompt.",
+    "Install Piper on Pi, pair your phone, and send your first command to an agent from the app — from install to first prompt.",
 };
 
 export default function GettingStartedTutorial() {
@@ -23,7 +23,7 @@ export default function GettingStartedTutorial() {
               <span className="eyebrow">Tutorial · 1 of 4</span>
               <h1>Getting started</h1>
               <p className="lede">
-                By the end of this guide you&apos;ll have Remote Pi running on
+                By the end of this guide you&apos;ll have Piper running on
                 one machine, your phone paired to it, and your first command
                 sent from the app — the agent runs it and the result streams
                 back to your pocket. Plan on about five minutes.
@@ -39,30 +39,13 @@ export default function GettingStartedTutorial() {
               agent) and <strong className="text-fg">Node 20+</strong> installed.
             </li>
             <li>
-              The <strong className="text-fg">Remote Pi</strong> app on your
-              phone — from the{" "}
-              <a
-                className="text-accent underline"
-                href="https://apps.apple.com/app/remote-pi-coding-agent/id6773499691"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                App Store
-              </a>
-              ,{" "}
-              <a
-                className="text-accent underline"
-                href="https://play.google.com/store/apps/details?id=work.jacobmoura.remotepi"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Google Play
-              </a>
-              , or the{" "}
+              The <strong className="text-fg">Piper</strong> app on your
+              Android phone — the{" "}
               <Link className="text-accent underline" href="/download">
                 Android APK
               </Link>{" "}
-              direct download.
+              direct download. There is no store listing, and iOS is not
+              supported.
             </li>
           </ul>
           <p className="text-sm">
@@ -75,7 +58,7 @@ export default function GettingStartedTutorial() {
 
         <DocsSection id="install" title="1. Install the plugin">
           <p>
-            Remote Pi is a Pi plugin. Add it, run the setup wizard, then show a
+            Piper is a Pi plugin. Add it, run the setup wizard, then show a
             pairing QR:
           </p>
           <InstallTabs />
@@ -128,7 +111,7 @@ export default function GettingStartedTutorial() {
         <DocsSection id="pair" title="2. Pair your phone">
           <p>With the QR on screen:</p>
           <ol className="ml-6 list-decimal space-y-2">
-            <li>Open the Remote Pi app on your phone.</li>
+            <li>Open the Piper app on your phone.</li>
             <li>
               Tap <strong className="text-fg">Pair a device</strong> (or the
               scan button) and point the camera at the QR.
@@ -161,7 +144,7 @@ export default function GettingStartedTutorial() {
             The prompt lands in the Pi session on your machine exactly as if you
             had typed it there. The agent runs, and its response streams back to
             your phone live. That round trip — phone to agent and back — is the
-            whole point of Remote Pi.
+            whole point of Piper.
           </p>
           <p>
             Beyond chatting, the app can drive the session with a few typed

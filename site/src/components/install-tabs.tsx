@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { CodeBlock } from "./code-block";
 
-const CURL = "curl -fsSL https://remote-pi.jacobmoura.work/install.sh | bash";
+const CURL = "curl -fsSL https://raw.githubusercontent.com/pungggi/remote_pi/main/pi-extension/install.sh | bash";
 const HAVE_PI = `pi install npm:remote-pi
 /remote-pi
 /remote-pi pair`;
@@ -37,7 +37,7 @@ export function InstallTabs({ curlReady = true }: InstallTabsProps) {
       code: CURL,
       prompt: true,
       disabled: !curlReady,
-      note: "Installs Pi, the Remote Pi plugin, and the always-on supervisor, then prints the pairing step. No sudo — everything lands in your home directory.",
+      note: "Installs Pi, the Piper plugin, and the always-on supervisor, then prints the pairing step. No sudo — everything lands in your home directory.",
     },
     "Already have Pi": {
       label: "pi — three commands",
@@ -54,7 +54,7 @@ export function InstallTabs({ curlReady = true }: InstallTabsProps) {
 
   return (
     <div className="install-card" style={{ marginTop: 22 }}>
-      <div className="tabs" role="tablist" aria-label="Install Remote Pi">
+      <div className="tabs" role="tablist" aria-label="Install Piper">
         {keys.map((t) => (
           <button
             key={t}

@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { LogoMark, IconDownload } from "@/components/landing/icons";
 
-const GITHUB_URL = "https://github.com/jacobaraujo7/remote_pi";
+const GITHUB_URL = "https://github.com/pungggi/remote_pi";
 
 function HamburgerIcon({ open }: { open: boolean }) {
   return (
@@ -60,11 +60,11 @@ export function SiteHeader() {
   return (
     <header className="nav">
       <div className="wrap nav-inner">
-        <Link className="brand" href="/" aria-label="Remote Pi — home">
+        <Link className="brand" href="/" aria-label="Piper — home">
           <span className="mark">
             <LogoMark />
           </span>
-          Remote Pi
+          Piper
         </Link>
 
         {/* Desktop links */}

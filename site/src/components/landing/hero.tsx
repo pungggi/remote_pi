@@ -10,7 +10,7 @@ import {
   IconStop,
 } from "@/components/landing/icons";
 
-const GITHUB_URL = "https://github.com/jacobaraujo7/remote_pi";
+const GITHUB_URL = "https://github.com/pungggi/remote_pi";
 
 /* ---------- living mesh background ---------- */
 function HeroMesh() {

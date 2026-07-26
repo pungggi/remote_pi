@@ -57,7 +57,7 @@ export default function MeshLocalTutorial() {
             </Link>{" "}
             guide. Open a second terminal in a{" "}
             <strong className="text-fg">different</strong> folder and start
-            Remote Pi there too:
+            Piper there too:
           </p>
           <CodeBlock
             code={`cd ~/code/service-b

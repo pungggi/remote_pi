@@ -13,14 +13,14 @@ import { RevealController } from "@/components/landing/reveal-controller";
 export const metadata: Metadata = {
   title: "Docs",
   description:
-    "Reference for Remote Pi: the relay, protocol & security, the full command reference, configuration files, and troubleshooting.",
+    "Reference for Piper: the relay, protocol & security, the full command reference, configuration files, and troubleshooting.",
 };
 
-const GITHUB_URL = "https://github.com/jacobaraujo7/remote_pi";
+const GITHUB_URL = "https://github.com/pungggi/remote_pi";
 const PI_URL = "https://github.com/earendil-works/pi";
 const RELAY_README_URL =
-  "https://github.com/jacobaraujo7/remote_pi/blob/main/relay/README.md";
-const ISSUES_URL = "https://github.com/jacobaraujo7/remote_pi/issues";
+  "https://github.com/pungggi/remote_pi/blob/main/relay/README.md";
+const ISSUES_URL = "https://github.com/pungggi/remote_pi/issues";
 
 const DOCS_TOC: TocItem[] = [
   { id: "quick-start", label: "Quick start" },
@@ -71,7 +71,7 @@ export default function DocsPage() {
         <div className="wrap">
           <header className="page-head reveal">
             <span className="eyebrow">Documentation</span>
-            <h1>Remote Pi docs</h1>
+            <h1>Piper docs</h1>
             <div className="meta-line">
               <span>Last updated: 2026-05-31</span>
               <span>License: MIT</span>
@@ -128,7 +128,7 @@ export default function DocsPage() {
 
       <DocsSection id="what-it-does" title="What it does">
         <p>
-          Remote Pi adds two independent layers on top of Pi. The{" "}
+          Piper adds two independent layers on top of Pi. The{" "}
           <strong className="text-fg">agent network</strong> lets agents
           discover and message each other — over a local socket on one machine,
           or through the relay across PCs. The{" "}
@@ -160,7 +160,7 @@ export default function DocsPage() {
 
       <DocsSection id="install" title="Install">
         <p>
-          Requirements: Node 20+ and Pi (the host coding agent). Remote Pi
+          Requirements: Node 20+ and Pi (the host coding agent). Piper
           installs as a Pi plugin with{" "}
           <InlineCode>pi install npm:remote-pi</InlineCode>, which self-registers
           the <InlineCode>/remote-pi</InlineCode> slash command and deploys the
@@ -204,7 +204,7 @@ export default function DocsPage() {
       <DocsSection id="pairing" title="Pairing a mobile device">
         <p>
           <InlineCode>/remote-pi pair</InlineCode> prints a QR (and a copy-paste
-          URI); scan it with the Remote Pi app. Pairing is{" "}
+          URI); scan it with the Piper app. Pairing is{" "}
           <strong className="text-fg">per machine</strong> — once a device is
           paired, every Pi process on that machine accepts it. Manage devices
           with <InlineCode>/remote-pi devices</InlineCode> and{" "}
@@ -311,7 +311,7 @@ export default function DocsPage() {
 
       <DocsSection id="relay" title="The relay">
         <p>
-          The relay is the only network-touching piece of Remote Pi. In the
+          The relay is the only network-touching piece of Piper. In the
           current MVP it sees both message payloads (forwarded but never logged
           or inspected by the community operator) and connection metadata: which
           keypair is online, which room/cwd identifiers exist, message timing,
@@ -344,29 +344,46 @@ export default function DocsPage() {
         </p>
         <p>You have two options.</p>
 
-        <DocsSubsection id="community-relay" title="Option A — Use the community relay">
+        <DocsSubsection id="community-relay" title="Option A — Run the relay on your own network">
           <p>
-            <InlineCode>https://relay-rp1.jacobmoura.work</InlineCode> (default).
-            Zero setup. Good for trying things out or for casual use.
-            (Internally the extension uses the WebSocket form{" "}
-            <InlineCode>wss://…</InlineCode> — both schemes point at the same
-            endpoint.)
+            This is the default. The extension talks to{" "}
+            <InlineCode>http://127.0.0.1:3000</InlineCode> over loopback, and the
+            pairing QR advertises the LAN address of that same relay so the phone
+            can reach it. Nothing to type — pair again after switching networks.
+            (Internally both sides use the WebSocket form{" "}
+            <InlineCode>ws://…</InlineCode> — the schemes point at one endpoint.)
           </p>
           <p>Caveats:</p>
           <ul className="ml-6 list-disc space-y-2">
-            <li>Shared infrastructure — availability is best-effort.</li>
             <li>
-              <strong className="text-fg">TLS in transit is the only network protection</strong>
-              {" "}— the relay operator sees plaintext envelopes (payloads,
-              routing metadata, peer pubkeys, timing). Self-host for
-              confidentiality from the operator.
+              Phone and machine must be on the same WLAN. Reaching the machine
+              from outside needs your own public relay, or Tailscale.
             </li>
             <li>
-              <strong className="text-fg">No IP allow-listing or VPN gating</strong>{" "}
-              built in. Anyone with a paired keypair can connect; layer a
-              VPN on top via Option B if you want network-level isolation.
+              <strong className="text-fg">macOS and Windows block port 3000 inbound by default.</strong>{" "}
+              If the relay is up but the phone will not connect, look there first.
             </li>
           </ul>
+        </DocsSubsection>
+
+        <DocsSubsection id="no-shared-relay" title="There is no shared relay">
+          <p>
+            Piper operates no public relay and does not borrow anyone
+            else&apos;s. That is deliberate: whoever runs the relay{" "}
+            <strong className="text-fg">sees plaintext envelopes</strong> —
+            payloads, routing metadata, peer public keys, timing. Transport is
+            protected in transit, but not from the operator. Which machine that
+            is is a privacy decision, and it stays yours.
+          </p>
+          <p>
+            Two consequences worth knowing. There is{" "}
+            <strong className="text-fg">no IP allow-listing or VPN gating</strong>{" "}
+            built in — anyone holding a paired keypair can connect, so use
+            Option B if you want network-level isolation. And the app ships{" "}
+            <strong className="text-fg">without any relay configured</strong>:
+            it learns one from the pairing QR, which is also why pairing again
+            is the fix after moving to a different network.
+          </p>
         </DocsSubsection>
 
         <DocsSubsection id="self-host" title="Option B — Self-host (recommended for privacy)">
@@ -448,7 +465,8 @@ export default function DocsPage() {
             <li><InlineCode>~/.pi/remote/config.json</InlineCode></li>
             <li>
               The built-in default (
-              <InlineCode>https://relay-rp1.jacobmoura.work</InlineCode>)
+              <InlineCode>http://127.0.0.1:3000</InlineCode> — the relay on this
+              machine, reached over loopback)
             </li>
           </ol>
           <p>Verify the active URL and its source with:</p>
@@ -933,7 +951,7 @@ export default function DocsPage() {
           <li>
             Source:{" "}
             <a className="text-accent underline" href={GITHUB_URL} target="_blank" rel="noopener noreferrer">
-              github.com/jacobaraujo7/remote_pi
+              github.com/pungggi/remote_pi
             </a>
           </li>
           <li>
@@ -962,7 +980,7 @@ export default function DocsPage() {
           <li>
             Issues / bugs:{" "}
             <a className="text-accent underline" href={ISSUES_URL} target="_blank" rel="noopener noreferrer">
-              github.com/jacobaraujo7/remote_pi/issues
+              github.com/pungggi/remote_pi/issues
             </a>
           </li>
         </ul>

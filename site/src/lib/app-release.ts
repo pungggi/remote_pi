@@ -1,5 +1,5 @@
 /* ===========================================================
-   Remote Pi App (Android) — release manifest
+   Piper App (Android) — release manifest
    Mirror of src/lib/cockpit-release.ts for the mobile app (plan/44).
    Same `latest.json` schema as the cockpit (plan/43, step 4), but the
    app ships a single artifact: an Android APK (platform "android",
@@ -39,7 +39,7 @@ export type AppManifest = {
  */
 export const APP_MANIFEST_URL =
   process.env.NEXT_PUBLIC_APP_MANIFEST_URL ??
-  "https://rp-s3.jacobmoura.work/downloads/app/latest.json";
+  "https://raw.githubusercontent.com/pungggi/remote_pi/downloads/app/latest.json";
 
 /**
  * Stand-in manifest for development and whenever the live fetch fails. Same
@@ -57,7 +57,7 @@ export const APP_MOCK_MANIFEST: AppManifest = {
       platform: "android",
       arch: "universal",
       format: "apk",
-      url: "https://github.com/jacobaraujo7/remote_pi/releases/download/app-v1.1.0/RemotePi.apk",
+      url: "https://github.com/pungggi/remote_pi/releases/download/app-v1.1.0/RemotePi.apk",
       sha256: "7a1b2c3d4e5f60718293a4b5c6d7e8f900112233445566778899aabbccddeeff",
       size: 53477376,
     },

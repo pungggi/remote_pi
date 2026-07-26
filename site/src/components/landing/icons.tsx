@@ -1,4 +1,4 @@
-/* Line icons + brand glyphs for the Remote Pi landing. Ported from the
+/* Line icons + brand glyphs for the Piper landing. Ported from the
    Claude Design handoff bundle (claude.ai/design). Pure SVG — server-safe. */
 import type { ReactNode } from "react";
 
@@ -30,7 +30,7 @@ function Ic({
   );
 }
 
-/* brand mark — Remote Pi "π" logo with accent dot */
+/* brand mark — Piper "π" logo with accent dot */
 export function LogoMark() {
   return (
     <svg viewBox="255 250 625 545" fill="none" aria-hidden="true">

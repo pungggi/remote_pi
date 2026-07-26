@@ -1,6 +1,6 @@
 import { ImageResponse } from "next/og";
 
-export const alt = "Remote Pi Cockpit: Just a terminal. Until your agents need more.";
+export const alt = "Piper Cockpit: Just a terminal. Until your agents need more.";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -31,7 +31,7 @@ export default function OpengraphImage() {
             fontWeight: 600,
           }}
         >
-          Remote Pi Cockpit
+          Piper Cockpit
         </div>
         <div
           style={{

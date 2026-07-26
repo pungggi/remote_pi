@@ -15,7 +15,7 @@ export const metadata: Metadata = {
 /* ---- example AGENTS.md files (one per folder) ---- */
 const ORCHESTRATOR_MD = `# Orchestrator
 
-You coordinate two teammates over the Remote Pi mesh: \`backend\` and
+You coordinate two teammates over the Piper mesh: \`backend\` and
 \`frontend\`. You don't write app code yourself — you split the work,
 delegate it, and integrate the results.
 
@@ -31,7 +31,7 @@ Keep each message small and explicit: say what you want and what
 
 const BACKEND_MD = `# Backend
 
-You own the server and API in this folder. On the Remote Pi mesh you are
+You own the server and API in this folder. On the Piper mesh you are
 the peer named \`backend\`.
 
 ## How you work
@@ -45,7 +45,7 @@ the peer named \`backend\`.
 
 const FRONTEND_MD = `# Frontend
 
-You own the UI in this folder. On the Remote Pi mesh you are the peer
+You own the UI in this folder. On the Piper mesh you are the peer
 named \`frontend\`.
 
 ## How you work

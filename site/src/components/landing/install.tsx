@@ -11,7 +11,7 @@ type InstallTab = {
   note: ReactNode;
 };
 
-const CURL = "curl -fsSL https://remote-pi.jacobmoura.work/install.sh | bash";
+const CURL = "curl -fsSL https://raw.githubusercontent.com/pungggi/remote_pi/main/pi-extension/install.sh | bash";
 
 const INSTALL_TABS: Record<string, InstallTab> = {
   "No Pi yet": {
@@ -69,7 +69,7 @@ export function Install() {
         </div>
 
         <div className="install-card reveal">
-          <div className="tabs" role="tablist" aria-label="Install Remote Pi">
+          <div className="tabs" role="tablist" aria-label="Install Piper">
             {tabs.map((t) => (
               <button
                 key={t}

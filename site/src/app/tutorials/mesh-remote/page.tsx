@@ -6,7 +6,7 @@ import { Callout } from "@/components/callout";
 import { Pager } from "@/components/pager";
 import { RevealController } from "@/components/landing/reveal-controller";
 
-const GITHUB_URL = "https://github.com/jacobaraujo7/remote_pi";
+const GITHUB_URL = "https://github.com/pungggi/remote_pi";
 
 export const metadata: Metadata = {
   title: "Remote mesh",

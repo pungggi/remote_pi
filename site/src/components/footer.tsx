@@ -1,13 +1,13 @@
 import Link from "next/link";
 
-const GITHUB_URL = "https://github.com/jacobaraujo7/remote_pi";
+const GITHUB_URL = "https://github.com/pungggi/remote_pi";
 
 export function SiteFooter() {
   return (
     <footer className="footer">
       <div className="wrap footer-inner">
         <div className="copy">
-          © {new Date().getFullYear()} <b>Flutterando</b>. Remote Pi is open
+          © {new Date().getFullYear()} <b>Flutterando</b>. Piper is open
           source under the MIT license.
         </div>
         <nav className="footer-links">

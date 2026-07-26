@@ -6,8 +6,6 @@ import {
   IconMesh,
   IconArrow,
   IconAndroid,
-  IconPlay,
-  IconApple,
   IconDownload,
   IconMic,
   IconImage,
@@ -18,7 +16,7 @@ import {
 } from "@/components/landing/icons";
 import type { ReactNode } from "react";
 
-const GITHUB_URL = "https://github.com/jacobaraujo7/remote_pi";
+const GITHUB_URL = "https://github.com/pungggi/remote_pi";
 const PROTOCOL_URL = `${GITHUB_URL}/blob/main/PROTOCOL.md`;
 
 /* ---------------- Pillars ---------------- */
@@ -123,23 +121,10 @@ type Store = {
   external?: boolean;
 };
 
+// No store listings: Apple platforms are out of scope for this fork, and there
+// is no Play listing. Linking the upstream project's entries would send people
+// to a different app. Direct APK is the whole distribution story.
 const STORES: Store[] = [
-  {
-    glyph: <IconApple />,
-    top: "Download on the",
-    name: "App Store",
-    sub: "iOS · iPhone & iPad",
-    href: "https://apps.apple.com/app/remote-pi-coding-agent/id6773499691",
-    external: true,
-  },
-  {
-    glyph: <IconPlay />,
-    top: "Get it on",
-    name: "Google Play",
-    sub: "Android",
-    href: "https://play.google.com/store/apps/details?id=work.jacobmoura.remotepi",
-    external: true,
-  },
   {
     glyph: <IconAndroid />,
     top: "Direct download",
@@ -151,7 +136,7 @@ const STORES: Store[] = [
     glyph: <IconDownload />,
     top: "Desktop app",
     name: "Cockpit",
-    sub: "macOS · Windows · Linux",
+    sub: "Windows · Linux",
     href: "/cockpit",
   },
 ];
@@ -164,9 +149,8 @@ export function GetApp() {
           <span className="eyebrow">Get the app</span>
           <h2>Pair your phone, drive your agents.</h2>
           <p>
-            The authenticator and the remote control. Get it on the App Store or
-            Google Play, grab the Android APK direct, or download the desktop
-            Cockpit.
+            The authenticator and the remote control. Grab the signed Android
+            APK direct, or download the desktop Cockpit.
           </p>
         </div>
         <div className="app-grid">

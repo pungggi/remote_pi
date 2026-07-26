@@ -1,5 +1,5 @@
 /* ===========================================================
-   Remote Pi Cockpit — release manifest
+   Piper Cockpit — release manifest
    The download page reads a `latest.json` published by the release CI
    (plan/43, step 3) to the VPS. The shape below is the CLOSED CONTRACT
    between that CI and this site (plan/43, step 4) — do not drift it on
@@ -39,7 +39,7 @@ export type CockpitManifest = {
  */
 export const MANIFEST_URL =
   process.env.NEXT_PUBLIC_COCKPIT_MANIFEST_URL ??
-  "https://rp-s3.jacobmoura.work/downloads/cockpit/latest.json";
+  "https://raw.githubusercontent.com/pungggi/remote_pi/downloads/cockpit/latest.json";
 
 /**
  * Stand-in manifest used during development and whenever the live fetch
@@ -57,7 +57,7 @@ export const MOCK_MANIFEST: CockpitManifest = {
       platform: "macos",
       arch: "universal",
       format: "dmg",
-      url: "https://remote-pi.jacobmoura.work/downloads/cockpit/1.0.0/RemotePiCockpit-1.0.0-macos-universal.dmg",
+      url: "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.0.0/PiperCockpit-1.0.0-macos-universal.dmg",
       sha256: "9f1c2a7d4e6b8035c1d2e3f405162738a9bbccddeeff00112233445566778899",
       size: 89128960,
     },
@@ -65,7 +65,7 @@ export const MOCK_MANIFEST: CockpitManifest = {
       platform: "windows",
       arch: "x64",
       format: "exe",
-      url: "https://remote-pi.jacobmoura.work/downloads/cockpit/1.0.0/RemotePiCockpit-Setup-1.0.0-windows-x64.exe",
+      url: "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.0.0/PiperCockpit-Setup-1.0.0-windows-x64.exe",
       sha256: "1a2b3c4d5e6f70819203a4b5c6d7e8f9001122334455667788990aabbccddeef",
       size: 44040192,
     },
@@ -73,7 +73,7 @@ export const MOCK_MANIFEST: CockpitManifest = {
       platform: "linux",
       arch: "x64",
       format: "deb",
-      url: "https://remote-pi.jacobmoura.work/downloads/cockpit/1.0.0/remote-pi-cockpit_1.0.0_amd64.deb",
+      url: "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.0.0/remote-pi-cockpit_1.0.0_amd64.deb",
       sha256: "c0ffee11223344556677889900aabbccddeeff00112233445566778899aabbcc",
       size: 39845888,
     },
@@ -81,7 +81,7 @@ export const MOCK_MANIFEST: CockpitManifest = {
       platform: "linux",
       arch: "arm64",
       format: "deb",
-      url: "https://remote-pi.jacobmoura.work/downloads/cockpit/1.0.0/remote-pi-cockpit_1.0.0_arm64.deb",
+      url: "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.0.0/remote-pi-cockpit_1.0.0_arm64.deb",
       sha256: "ba5eba11feedface0011223344556677889900aabbccddeeff0011223344aa55",
       size: 38797312,
     },
@@ -89,7 +89,7 @@ export const MOCK_MANIFEST: CockpitManifest = {
       platform: "linux",
       arch: "x64",
       format: "rpm",
-      url: "https://remote-pi.jacobmoura.work/downloads/cockpit/1.0.0/remote-pi-cockpit-1.0.0.x86_64.rpm",
+      url: "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.0.0/remote-pi-cockpit-1.0.0.x86_64.rpm",
       sha256: "d15ea5e0112233445566778899aabbccddeeff00998877665544332211000fff",
       size: 39845888,
     },
@@ -97,7 +97,7 @@ export const MOCK_MANIFEST: CockpitManifest = {
       platform: "linux",
       arch: "arm64",
       format: "rpm",
-      url: "https://remote-pi.jacobmoura.work/downloads/cockpit/1.0.0/remote-pi-cockpit-1.0.0.aarch64.rpm",
+      url: "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.0.0/remote-pi-cockpit-1.0.0.aarch64.rpm",
       sha256: "f00dcafe9988776655443322110000ffeeddccbbaa00112233445566778899ab",
       size: 38797312,
     },

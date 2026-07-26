@@ -25,21 +25,27 @@ const mono = JetBrains_Mono({
   display: "swap",
 });
 
-const siteTagline = "Remote Pi — Your coding agents, in your pocket";
+const siteTagline = "Piper — Your coding agents, in your pocket";
 const siteDescription =
-  "Pair your phone once, then drive any Pi coding agent from it — keep a fleet running 24/7 and link every machine into one mesh. Open source, self-hostable.";
+  "Pair your phone once, then drive any Pi coding agent from it — keep a fleet running 24/7 and link every machine into one mesh. Open source, relay on your own network.";
+
+/// This fork has no deployed site and therefore no canonical domain. Next needs
+/// a parseable `metadataBase` to resolve relative OG image URLs, so it falls
+/// back to the dev server; whoever deploys sets NEXT_PUBLIC_SITE_URL. Pointing
+/// it at the upstream project's domain would attribute this fork's pages to
+/// someone else.
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://remote-pi.jacobmoura.work"),
+  metadataBase: new URL(siteUrl),
   title: {
     default: siteTagline,
-    template: "%s · Remote Pi",
+    template: "%s · Piper",
   },
   description: siteDescription,
-  applicationName: "Remote Pi",
-  authors: [{ name: "Flutterando", url: "https://flutterando.com.br" }],
+  applicationName: "Piper",
   keywords: [
-    "Remote Pi",
+    "Piper",
     "coding agents",
     "Pi coding agent",
     "mobile agent control",
@@ -49,10 +55,10 @@ export const metadata: Metadata = {
   ],
   openGraph: {
     type: "website",
-    url: "https://remote-pi.jacobmoura.work",
+    url: siteUrl,
     title: siteTagline,
     description: siteDescription,
-    siteName: "Remote Pi",
+    siteName: "Piper",
   },
   twitter: {
     card: "summary_large_image",

@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* ===========================================================
-   Remote Pi — design tokens
+   Piper — design tokens
    Dark, sky-blue accent (#4fc3f7), generous spacing.
    Palette is the canonical one: black bg, white ink, blue accent.
    Fonts are loaded via next/font (see layout.tsx) and exposed as

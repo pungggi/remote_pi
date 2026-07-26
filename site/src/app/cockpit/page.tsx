@@ -14,10 +14,12 @@ export const metadata: Metadata = {
   description: pageDescription,
   openGraph: {
     type: "website",
-    url: "https://remote-pi.jacobmoura.work/cockpit",
+    // Relative — resolved against `metadataBase` in layout.tsx, which this fork
+    // derives from NEXT_PUBLIC_SITE_URL because it has no canonical domain.
+    url: "/cockpit",
     title: pageTitle,
     description: pageDescription,
-    siteName: "Remote Pi",
+    siteName: "Piper",
   },
   twitter: {
     card: "summary_large_image",
@@ -26,7 +28,7 @@ export const metadata: Metadata = {
   },
 };
 
-const GITHUB_URL = "https://github.com/jacobaraujo7/remote_pi";
+const GITHUB_URL = "https://github.com/pungggi/remote_pi";
 
 /* visual-first section: eyebrow + short headline + max one sentence + big shot */
 function Shot({
@@ -66,7 +68,7 @@ export default function CockpitPage() {
         <div className="wrap">
           {/* ---------------- HERO / JUST A TERMINAL ---------------- */}
           <header className="page-head reveal" style={{ maxWidth: 820 }}>
-            <span className="eyebrow">Remote Pi Cockpit</span>
+            <span className="eyebrow">Piper Cockpit</span>
             <h1>Just a terminal. Until your agents need more.</h1>
             <p className="lede">
               A fast, multiplexed terminal, 100% local with no cloud and no
@@ -93,7 +95,7 @@ export default function CockpitPage() {
           <div className="ck-shot reveal">
             <Image
               src="/cockpit/hero-terminals.png"
-              alt="Remote Pi Cockpit as a multiplexed terminal: several real shells split across panes, with a workspace sidebar and file tree."
+              alt="Piper Cockpit as a multiplexed terminal: several real shells split across panes, with a workspace sidebar and file tree."
               width={3456}
               height={2168}
               priority
@@ -263,7 +265,7 @@ cockpit db query --db dev-local --sql "SELECT * FROM orders" --limit 50`}
                 marginTop: 40,
               }}
             >
-              Part of the <Link href="/">Remote Pi ecosystem</Link>, where daemons,
+              Part of the <Link href="/">Piper ecosystem</Link>, where daemons,
               schedules, and the agent mesh live there.
             </p>
           </div>

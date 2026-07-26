@@ -5,7 +5,7 @@ import { Callout } from "@/components/callout";
 import { CodeBlock } from "@/components/code-block";
 import { RevealController } from "@/components/landing/reveal-controller";
 import {
-  IconApple,
+
   IconWindows,
   IconLinux,
   IconAndroid,
@@ -25,7 +25,7 @@ import { loadAppManifest } from "@/lib/app-release";
 export const metadata: Metadata = {
   title: "Download",
   description:
-    "Download Remote Pi — the desktop Cockpit (signed macOS, Windows, Linux) and the Android app (direct APK, no Play Store).",
+    "Download Piper — the desktop Cockpit (signed macOS, Windows, Linux) and the Android app (direct APK, no Play Store).",
 };
 
 const GETTING_STARTED = "/tutorials/getting-started";
@@ -134,31 +134,9 @@ type OsGroup = {
 };
 
 const OS_GROUPS: OsGroup[] = [
-  {
-    id: "macos",
-    name: "macOS",
-    icon: <IconApple />,
-    tagline: "One universal build for Apple Silicon and Intel.",
-    select: (m) => m.artifacts.filter((a) => a.platform === "macos"),
-    instructions: () => (
-      <div className="dl-note">
-        <ol>
-          <li>
-            Open the downloaded <code>.dmg</code>.
-          </li>
-          <li>
-            Drag <strong>Remote Pi Cockpit</strong> into your{" "}
-            <strong>Applications</strong> folder.
-          </li>
-          <li>Launch it from Applications or Spotlight.</li>
-        </ol>
-        <p className="dl-note-foot">
-          The build is signed with a Developer ID and notarized, so it opens
-          without a Gatekeeper prompt.
-        </p>
-      </div>
-    ),
-  },
+  // No macOS group: this fork does not publish a macOS Cockpit build (no
+  // Apple signing identity, so the job left cockpit-release.yml). The old
+  // entry also promised a notarized, Developer-ID-signed dmg — untrue here.
   {
     id: "windows",
     name: "Windows",
@@ -219,7 +197,7 @@ export default async function DownloadPage() {
         <div className="wrap">
           <header className="page-head reveal" style={{ maxWidth: 760 }}>
             <span className="eyebrow">Download</span>
-            <h1>Download Remote Pi</h1>
+            <h1>Download Piper</h1>
             <p className="lede">
               The desktop Cockpit and the phone app, built straight from CI. Grab
               the Cockpit to drive your Pi coding agents from your computer, and
@@ -231,7 +209,7 @@ export default async function DownloadPage() {
           <section className="dl-product reveal" id="cockpit">
             <div className="section-head">
               <span className="eyebrow">Desktop · Cockpit</span>
-              <h2>Remote Pi Cockpit</h2>
+              <h2>Piper Cockpit</h2>
               <p>
                 Pair from your Mac, Windows, or Linux machine, watch live
                 sessions, and manage your 24/7 daemons and schedules from one
@@ -294,7 +272,7 @@ export default async function DownloadPage() {
           <section className="dl-product reveal" id="android">
             <div className="section-head">
               <span className="eyebrow">Mobile · Android</span>
-              <h2>Remote Pi — App (Android)</h2>
+              <h2>Piper — App (Android)</h2>
               <p>
                 The phone app — pair once with a QR, then drive your agents from
                 anywhere. Installed straight from an APK, no Play Store needed.
@@ -349,15 +327,8 @@ export default async function DownloadPage() {
                       </li>
                     </ol>
                     <p className="dl-note-foot">
-                      Prefer a store? Remote Pi is also on{" "}
-                      <a
-                        href="https://play.google.com/store/apps/details?id=work.jacobmoura.remotepi"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        Google Play
-                      </a>
-                      . iOS ships through the App Store.
+                      The APK is the only channel — Piper has no store listing,
+                      and iOS is not supported.
                     </p>
                   </div>
                 </div>
