@@ -276,42 +276,52 @@ Extension 0.6 accepts an old Relay's lowercase 32-hex trusted error ID only as
 a narrow shim for an old Relay or Relay rollback; that shim is not why
 Relay-first is safe.
 
-You have two options:
+Piper runs **no public relay** and does not point at anyone else's. A relay
+sees every envelope in plaintext, so its operator is a single point of trust
+for both routing and content — that role stays yours. You run the relay; the
+only question is how the phone reaches it.
 
-### Option A — Use the community relay
+### Option A — Same Wi-Fi (the default)
 
-`https://relay-rp1.jacobmoura.work` (default). Zero setup. Good for trying
-things out or for casual use. (The extension converts to `wss://…`
-internally when opening the connection — both schemes point at the same
-endpoint.)
+Run the relay next to Pi and leave the config alone. The extension talks to it
+over loopback, the pairing QR advertises this machine's LAN address, and the
+app adopts that on scan. Nothing leaves the network. See
+[`plan/102`](../plan/102-lan-default.md).
 
-Caveats:
+### Option B — Overlay network (for outside the Wi-Fi)
 
-- Shared infrastructure — availability is best-effort.
-- **There is no IP allow-listing or VPN gating**.
+Install [Tailscale](https://tailscale.com) (or [WireGuard](https://www.wireguard.com),
+or your own VPC) on both the machine and the phone. The relay you already run
+picks up a second address on the overlay — with Tailscale a `100.x.y.z` from
+the CGNAT range — that is reachable from anywhere and, unlike a LAN IP, stays
+the same when you change networks.
 
-### Option B — Self-host (recommended for privacy)
+Two properties make this work with no extra moving parts:
 
-Run the relay yourself in Docker and put it behind a VPN like
-[Tailscale](https://tailscale.com), [WireGuard](https://www.wireguard.com),
-or your own VPC. Because the relay's network-level protection is just TLS +
-keypair authentication, layering a VPN on top means **only your devices** can
-even reach the WebSocket port — defense in depth.
+- the relay binds `0.0.0.0`, so the overlay interface is already served
+- a non-loopback relay URL passes into the QR unchanged (see `lan.ts`
+  `toPhoneReachableUrl`), so the advertised address is the overlay one
 
-Quick Docker outline (see the
-[relay README](https://github.com/jacobaraujo7/remote_pi/blob/main/relay/README.md#self-hosted-relay-recommended-for-privacy)
-for the full setup, environment variables, and reverse-proxy guidance):
+So the whole setup is pointing the extension at the overlay address:
 
-```bash
-docker run -d \
-  --name remote-pi-relay \
-  -p 3000:3000 \
-  --restart unless-stopped \
-  ghcr.io/jacobaraujo7/remote-pi-relay:latest
+```text
+/remote-pi set-relay http://100.x.y.z:3000
 ```
 
-Bind the container to your VPN interface, terminate TLS in a reverse proxy,
-and point both your Pi and your phone at the resulting `https://…` URL.
+No port forwarding, no domain, no certificate — the overlay carries its own
+encryption and only your devices can reach the port at all.
+
+The overlay address is never auto-detected: `detectLanIPv4` matches RFC 1918
+only, and Tailscale's `100.64.0.0/10` is deliberately not in that set. Picking
+it silently would move traffic onto a VPN without the user asking, so the
+choice stays explicit.
+
+### Option C — Public address
+
+If you do want the relay on the open internet, terminate TLS in a reverse proxy
+in front of it and point both ends at the resulting `https://…` URL. The relay's
+own protection is keypair authentication only, so the proxy is doing the
+transport security.
 
 ### Pointing Pi at your own relay
 
@@ -331,7 +341,7 @@ order (highest precedence first):
 
 1. `REMOTE_PI_RELAY` environment variable (CI / one-off overrides)
 2. `~/.pi/remote/config.json`
-3. The built-in default (`https://relay-rp1.jacobmoura.work`)
+3. The built-in default (`http://127.0.0.1:3000` — a relay on this machine)
 
 Verify the active URL and its source with:
 

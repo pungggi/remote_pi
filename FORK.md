@@ -271,9 +271,26 @@ Com o relay de pé, o resto é automático:
 Nada de digitar IP no celular, e a cada troca de rede basta parear de novo.
 `REMOTE_PI_RELAY` sobrepõe tudo quando a detecção erra a interface.
 
-Para alcançar o Pi **de fora** da WLAN ainda é preciso um relay público —
-`kPublicRelayUrl` continua apontando pro do upstream. Alternativa que resolve os
-dois casos sem relay público: Tailscale.
+Para alcançar o Pi **de fora** da WLAN, a resposta é rede overlay, não relay
+público. `kPublicRelayUrl` foi removido: apontar um default pro servidor de
+terceiro entregava o papel de ponto único de confiança (roteamento *e* conteúdo,
+já que o relay vê tudo em claro) antes de o usuário escolher qualquer coisa.
+
+Com Tailscale nos dois lados, o relay que já roda ganha um segundo endereço
+(`100.x.y.z`) alcançável de qualquer lugar. Duas propriedades fazem funcionar
+sem código novo: o relay faz bind em `0.0.0.0`, e `toPhoneReachableUrl`
+(`src/lan.ts`) repassa URL não-loopback intacta pro QR. Então basta:
+
+```text
+/remote-pi set-relay http://100.x.y.z:3000
+```
+
+Vantagem sobre o default LAN: o endereço da tailnet é estável entre redes, então
+some o custo de re-parear a cada troca de rede que o plan/102 aceita.
+
+`detectLanIPv4` **não** reconhece `100.64.0.0/10` (CGNAT, faixa da Tailscale) —
+só RFC 1918. É intencional: detectar sozinho moveria tráfego pra dentro de uma
+VPN sem o usuário pedir. A escolha da overlay é sempre explícita.
 
 **Firewall:** macOS e Windows bloqueiam a porta 3000 de entrada por padrão. Se o
 celular não conectar mas o relay estiver de pé, é o primeiro lugar pra olhar.

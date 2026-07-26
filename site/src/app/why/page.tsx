@@ -41,7 +41,7 @@ const highlights = [
   {
     title: "Open source, self-hostable",
     description:
-      "MIT licensed. Run the community relay or host your own; traffic is encrypted in transit, and self-hosting keeps it on infrastructure you control.",
+      "MIT licensed, and there is no relay to trust but your own — Piper runs none. Traffic is encrypted in transit, and the machine forwarding it is yours.",
   },
 ];
 

@@ -5,7 +5,6 @@ import {
   toWebSocketUrl,
   toHttpUrl,
   kDefaultRelayUrl,
-  kPublicRelayUrl,
 } from "./config.js";
 
 describe("isValidRelayUrl (strict http(s):// only)", () => {
@@ -17,7 +16,7 @@ describe("isValidRelayUrl (strict http(s):// only)", () => {
 
   test("accepts https://", () => {
     expect(isValidRelayUrl("https://relay.example.tld")).toBe(true);
-    expect(isValidRelayUrl("https://relay-rp1.jacobmoura.work")).toBe(true);
+    expect(isValidRelayUrl("https://relay.example.com")).toBe(true);
   });
 
   test("rejects ws:// (user must use http:// + auto-convert)", () => {
@@ -98,7 +97,8 @@ describe("kDefaultRelayUrl", () => {
     expect(kDefaultRelayUrl).toBe("http://127.0.0.1:3000");
   });
 
-  test("the public relay stays available as an explicit opt-in", () => {
-    expect(kPublicRelayUrl).toBe("https://relay-rp1.jacobmoura.work");
-  });
+  // There is deliberately no public-relay constant to assert here: this fork
+  // runs no public relay and does not point at anyone else's. Outside-the-WLAN
+  // access goes through an overlay network, with the overlay address set via
+  // REMOTE_PI_RELAY or /remote-pi set-relay.
 });

@@ -39,20 +39,22 @@ Every device authenticates with an Ed25519 keypair during the WebSocket handshak
 
 ---
 
-## Public relay
+## There is no public relay
 
-A shared relay is available at:
+Piper operates no shared relay and ships no default pointing at anyone else's.
+The relay you run is the only one in the picture. That is a deliberate
+divergence from upstream, which offers a community instance — see the trust
+argument below for why this fork does not.
 
-```
-https://relay-rp1.jacobmoura.work
-```
-
-You can use it to get started without any setup. However, be aware of the security
-trade-offs below.
+Reaching your relay from outside your Wi-Fi does not require exposing it: put
+the machine and the phone on the same overlay network ([Tailscale](https://tailscale.com),
+[WireGuard](https://www.wireguard.com), or your own VPC) and point both ends at
+the overlay address. The relay binds `0.0.0.0`, so the overlay interface is
+already served, and the overlay address stays stable when you change networks.
 
 ### Security considerations
 
-Messages are protected in two ways on the public relay:
+Messages are protected in two ways on the wire:
 
 - **TLS (SSL)** — the WebSocket connection is encrypted in transit.
 - **Ed25519 connection key** — challenge-response authenticates possession of the
@@ -71,25 +73,33 @@ or malicious operator could replace or instrument the service to inspect or reta
 traffic. Pi→Pi envelope content is also parsed transiently in the Relay process for
 routing and authorization.
 
-**If you handle sensitive work — private code, credentials, proprietary data — we
-strongly recommend running your own relay.**
+**This is exactly why Piper ships no public relay.** Whoever operates a relay is
+a single point of trust for both routing and content, so a default pointing at
+someone else's server would hand that role to a third party before the user had
+made any choice at all.
 
 ---
 
-## Self-hosted relay (recommended for privacy)
+## Running your own relay
 
-Running your own relay removes the shared Relay operator from the trust path and
-places the TLS endpoint, executable, and storage under infrastructure you control.
+Running the relay yourself keeps the TLS endpoint, executable, and storage on
+infrastructure you control.
 
 ### Docker (quickest)
 
+Build from this repository rather than pulling a published image — the image on
+Docker Hub is upstream's, and running it puts their build back in your trust
+path:
+
 ```bash
+docker build -t piper-relay .
+
 docker run -d \
-  --name remote-pi-relay \
+  --name piper-relay \
   -p 3000:3000 \
-  -v remote-pi-data:/data \
+  -v piper-data:/data \
   --restart unless-stopped \
-  jacobmoura7/remote-pi-relay
+  piper-relay
 ```
 
 The relay listens on a **single port** (`3000` by default) and serves three

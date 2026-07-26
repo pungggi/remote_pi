@@ -36,8 +36,14 @@ Ordem de resolução (precedência):
 2. `~/.pi/remote/config.json` (`{ "relay": "..." }`) — persistido via
    `/remote-pi set-relay <url>`
 3. `kDefaultRelayUrl` (`http://127.0.0.1:3000`) — relay local, o padrão do
-   Piper (plan/102). O relay público do upstream continua exportado como
-   `kPublicRelayUrl` para acesso de fora da WLAN.
+   Piper (plan/102).
+
+**Não existe constante de relay público.** O Piper não opera nenhum e não aponta
+pro de terceiros. Acesso de fora da WLAN se resolve por rede overlay (Tailscale,
+WireGuard): o relay já faz bind em `0.0.0.0`, e uma URL não-loopback passa
+intacta pro QR (`lan.ts` / `toPhoneReachableUrl`), então basta apontar a config
+pro endereço da overlay. `detectLanIPv4` de propósito não reconhece
+`100.64.0.0/10` — a escolha da overlay fica explícita.
 
 Slash commands:
 

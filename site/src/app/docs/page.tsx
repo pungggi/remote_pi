@@ -35,8 +35,9 @@ const DOCS_TOC: TocItem[] = [
     id: "relay",
     label: "The relay",
     sub: [
-      { id: "community-relay", label: "Community relay" },
-      { id: "self-host", label: "Self-host" },
+      { id: "own-network", label: "On your own network" },
+      { id: "no-shared-relay", label: "There is no shared relay" },
+      { id: "self-host", label: "From anywhere, over an overlay" },
       { id: "point-pi", label: "Point Pi at your relay" },
     ],
   },
@@ -344,7 +345,7 @@ export default function DocsPage() {
         </p>
         <p>You have two options.</p>
 
-        <DocsSubsection id="community-relay" title="Option A — Run the relay on your own network">
+        <DocsSubsection id="own-network" title="Option A — Run the relay on your own network">
           <p>
             This is the default. The extension talks to{" "}
             <InlineCode>http://127.0.0.1:3000</InlineCode> over loopback, and the
@@ -356,8 +357,9 @@ export default function DocsPage() {
           <p>Caveats:</p>
           <ul className="ml-6 list-disc space-y-2">
             <li>
-              Phone and machine must be on the same WLAN. Reaching the machine
-              from outside needs your own public relay, or Tailscale.
+              Phone and machine must be on the same WLAN, and the LAN address
+              changes with the network — so you pair again after moving. Option
+              B removes both limits.
             </li>
             <li>
               <strong className="text-fg">macOS and Windows block port 3000 inbound by default.</strong>{" "}
@@ -386,40 +388,64 @@ export default function DocsPage() {
           </p>
         </DocsSubsection>
 
-        <DocsSubsection id="self-host" title="Option B — Self-host (recommended for privacy)">
+        <DocsSubsection id="self-host" title="Option B — Reach it from anywhere over an overlay network">
           <p>
-            Run the relay yourself in Docker and put it behind a VPN like{" "}
+            Put the machine and the phone on the same overlay network —{" "}
             <a className="text-accent underline" href="https://tailscale.com" target="_blank" rel="noopener noreferrer">Tailscale</a>,{" "}
             <a className="text-accent underline" href="https://www.wireguard.com" target="_blank" rel="noopener noreferrer">WireGuard</a>,
-            or your own VPC. Because the relay&apos;s network-level protection
-            is just TLS + keypair authentication, layering a VPN on top means{" "}
-            <strong className="text-fg">only your devices</strong> can even
-            reach the WebSocket port — defense in depth.
+            or your own VPC. The relay you already run picks up a second
+            address on the overlay (with Tailscale a{" "}
+            <InlineCode>100.x.y.z</InlineCode>) that is reachable from anywhere
+            and, unlike a LAN IP,{" "}
+            <strong className="text-fg">stays the same when you change networks</strong>
+            {" "}— so one pairing keeps working at home and on mobile data.
           </p>
           <p>
-            Quick Docker outline (see the{" "}
-            <a className="text-accent underline" href={`${RELAY_README_URL}#self-hosted-relay-recommended-for-privacy`} target="_blank" rel="noopener noreferrer">
-              relay README
-            </a>{" "}
-            for the full setup, environment variables, and reverse-proxy
-            guidance):
+            Nothing else has to change: the relay binds{" "}
+            <InlineCode>0.0.0.0</InlineCode>, so the overlay interface is
+            already served, and a non-loopback relay URL is passed into the
+            pairing QR unchanged. The whole setup is one command:
           </p>
           <CodeBlock
-            code={`docker run -d \\
-  --name remote-pi-relay \\
+            code="/remote-pi set-relay http://100.x.y.z:3000"
+            label="In Pi, on the machine"
+            language="text"
+          />
+          <p>
+            No port forwarding, no domain, no certificate — the overlay carries
+            its own encryption and only your devices can reach the port at all.
+            The overlay address is never auto-detected: LAN discovery matches
+            RFC 1918 only, and Tailscale&apos;s{" "}
+            <InlineCode>100.64.0.0/10</InlineCode> is deliberately excluded, so
+            traffic never moves onto a VPN without you asking.
+          </p>
+          <p>
+            Running the relay on a separate host instead? Build the image from
+            the repo (see the{" "}
+            <a className="text-accent underline" href={RELAY_README_URL} target="_blank" rel="noopener noreferrer">
+              relay README
+            </a>
+            ) and mount a volume at <InlineCode>/data</InlineCode> — that is
+            where <InlineCode>mesh.db</InlineCode> (the Owner-signed mesh blobs)
+            lives. Skip the volume and the table is wiped on every container
+            restart, forcing every client to re-publish.
+          </p>
+          <CodeBlock
+            code={`docker build -t piper-relay .
+
+docker run -d \\
+  --name piper-relay \\
   -p 3000:3000 \\
-  -v remote-pi-data:/data \\
+  -v piper-data:/data \\
   --restart unless-stopped \\
-  jacobmoura7/remote-pi-relay`}
+  piper-relay`}
             label="On your relay host"
             language="bash"
           />
           <p>
-            The <InlineCode>-v remote-pi-data:/data</InlineCode> mount is
-            required — that&apos;s where the relay keeps{" "}
-            <InlineCode>mesh.db</InlineCode> (the Owner-signed mesh blobs).
-            Skip the volume and the table is wiped on every container restart,
-            forcing every client to re-publish.
+            If you put it on a public address instead of an overlay, terminate
+            TLS in a reverse proxy in front of it — the relay&apos;s own
+            protection is keypair authentication, not transport security.
           </p>
           <p>
             The relay serves the WebSocket upgrade,{" "}
@@ -939,7 +965,7 @@ export default function DocsPage() {
           <li>
             Homepage:{" "}
             <Link href="/" className="text-accent underline">
-              remote-pi.jacobmoura.work
+              Piper
             </Link>
           </li>
           <li>

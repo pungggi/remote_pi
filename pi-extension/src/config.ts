@@ -6,15 +6,6 @@ const CONFIG_DIR = path.join(os.homedir(), ".pi", "remote");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 
 /**
- * Upstream's community relay, kept as a documented escape hatch for anyone who
- * wants to reach their Pi from outside the WLAN. Not the default here — see
- * `kDefaultRelayUrl`. The reverse proxy in front of it maps `:443 → :3000`
- * (the WS port), so the URL has no explicit port and the WebSocket upgrade
- * rides on the same TLS connection as the HTTPS mesh endpoints.
- */
-export const kPublicRelayUrl = "https://relay-rp1.jacobmoura.work";
-
-/**
  * Default relay: one running on this machine, reached over loopback.
  *
  * Piper's default topology is phone and Pi on the same WLAN with the relay
@@ -25,6 +16,13 @@ export const kPublicRelayUrl = "https://relay-rp1.jacobmoura.work";
  *
  * The phone cannot use this address. The pairing QR advertises the LAN form
  * instead (see `lan.ts` / `toPhoneReachableUrl`).
+ *
+ * **There is no public relay constant.** Piper operates none, and the one the
+ * upstream project runs used to sit here as an "escape hatch" — which meant the
+ * documented answer to "reach my Pi from outside the WLAN" was a third party's
+ * server, seeing every envelope in plaintext. Outside access is solved by
+ * putting both ends on the same overlay network (Tailscale, WireGuard) and
+ * pointing this at the overlay address, so the relay stays yours.
  *
  * Stored in canonical http(s):// form — conversion to ws(s):// happens at the
  * transport layer (see `toWebSocketUrl`).

@@ -143,18 +143,18 @@ export default function MeshRemoteTutorial() {
             devices authenticate each other with{" "}
             <strong className="text-fg">Ed25519 pairing</strong>. But message
             payloads are <strong className="text-fg">not</strong> encrypted at
-            the application layer — the relay operator could in principle read
-            plaintext in memory while forwarding. If you need confidentiality
-            from the relay operator,{" "}
-            <Link href="/docs#self-host" className="text-accent underline">
-              self-host the relay
-            </Link>{" "}
-            behind a VPN.
+            the application layer — whoever runs the relay could in principle
+            read plaintext in memory while forwarding. This is why Piper ships
+            no public relay and no default pointing at anyone else&apos;s: the
+            relay is yours, so that operator is you.
           </Callout>
           <p className="text-sm">
-            The community relay does not log, persist, or inspect payloads, but
-            self-hosting is the way to get cryptographic-grade isolation. The
-            full trust model is in{" "}
+            To reach it from outside your Wi-Fi without exposing anything, put
+            both ends on an{" "}
+            <Link href="/docs#self-host" className="text-accent underline">
+              overlay network
+            </Link>{" "}
+            such as Tailscale. The full trust model is in{" "}
             <a
               className="text-accent underline"
               href={`${GITHUB_URL}/blob/main/PROTOCOL.md`}

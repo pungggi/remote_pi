@@ -92,12 +92,24 @@ That's the whole setup. The extension reaches it over loopback, the pairing QR
 advertises the LAN address, and the app adopts that address when you scan — no
 IP to type on the phone.
 
-To reach your Pi from **outside** your Wi-Fi you need a relay with a public
-address. Upstream runs a free community one at `wss://relay-rp1.jacobmoura.work`,
-which the app falls back to before it has paired. Be aware that its operator can
-see the content of your messages and is a single point of trust for routing.
-[Tailscale](https://tailscale.com) is the other way to cover both cases without
-exposing anything publicly.
+To reach your Pi from **outside** your Wi-Fi, put both ends on the same overlay
+network instead of exposing anything publicly. With
+[Tailscale](https://tailscale.com) installed on the machine and the phone, the
+relay you already run gets a second address on the tailnet (`100.x.y.z`) that is
+reachable from anywhere and stable across networks. Point the extension at it:
+
+```bash
+/remote-pi set-relay http://100.x.y.z:3000
+```
+
+The pairing QR then advertises that address, the app adopts it on scan, and the
+same pairing works at home and on mobile data — no port forwarding, no domain,
+no certificate. [WireGuard](https://www.wireguard.com) or your own VPC work the
+same way.
+
+Piper runs **no public relay** and does not point at anyone else's. A relay sees
+every envelope in plaintext, so whoever operates it is a single point of trust
+for both routing and content — that role stays yours.
 
 Security trade-offs and the self-hosting guide: **[`relay/README.md`](./relay/README.md)**.
 Design notes for the LAN default: **[`plan/102`](./plan/102-lan-default.md)**.
