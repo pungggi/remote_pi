@@ -141,8 +141,13 @@ class MeshClient {
     return buf.toString();
   }
 
-  Uri _meshUri(String hash) {
+  /// `null` when no relay is configured yet — since plan/102 that is a normal
+  /// state before the first pairing, not an error (see [kDefaultRelayUrl]).
+  /// Without this guard an empty base yields the *relative* URI `/mesh/<hash>`,
+  /// which fails somewhere deeper with a far less obvious message.
+  Uri? _meshUri(String hash) {
     final base = baseUrlProvider();
+    if (base.isEmpty) return null;
     final trimmed = base.endsWith('/') ? base.substring(0, base.length - 1) : base;
     return Uri.parse('$trimmed/mesh/$hash');
   }
@@ -153,6 +158,7 @@ class MeshClient {
   Future<MeshFetchResult> fetch(String hash, {int? since}) async {
     try {
       final uri = _meshUri(hash);
+      if (uri == null) return const MeshFetchFailure('no relay configured');
       final response = await _dio.getUri<Object?>(
         since == null ? uri : uri.replace(queryParameters: {'since': '$since'}),
         options: Options(
@@ -206,6 +212,7 @@ class MeshClient {
   ) async {
     try {
       final uri = _meshUri(hash);
+      if (uri == null) return const MeshPublishFailure('no relay configured');
       final response = await _dio.postUri<Object?>(
         uri,
         data: jsonEncode(envelope.toJson()),

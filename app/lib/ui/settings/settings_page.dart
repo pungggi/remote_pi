@@ -1,5 +1,4 @@
 import 'package:app/data/preferences/preferences.dart';
-import 'package:app/data/transport/relay_config.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/settings/states/settings_state.dart';
@@ -175,7 +174,11 @@ class _RelaySectionState extends State<_RelaySection> {
                     color: colors.muted,
                     fontSize: 12,
                   ),
-                  helperText: 'Current: ${vm.effectiveRelayUrl}',
+                  // Empty is normal before the first pairing — say so, rather
+                  // than rendering a bare "Current: " that reads as a bug.
+                  helperText: vm.effectiveRelayUrl.isEmpty
+                      ? 'Current: none — pairing sets it from the QR'
+                      : 'Current: ${vm.effectiveRelayUrl}',
                   helperStyle: context.typo.mono.copyWith(
                     fontSize: 10,
                     color: colors.muted,
@@ -226,12 +229,18 @@ class _RelaySectionState extends State<_RelaySection> {
                     ),
                     const SizedBox(width: 12),
                     TextButton(
-                      onPressed: () {
-                        _ctrl.text = kDefaultRelayUrl;
-                        _save();
+                      // No "use default" any more — plan/102 left the app
+                      // without one. Clearing is the useful action: the relay
+                      // is per-network, so after changing WLAN the stored one
+                      // is wrong and the next pairing QR should decide.
+                      onPressed: () async {
+                        _ctrl.clear();
+                        await context
+                            .read<SettingsViewModel>()
+                            .clearRelayUrl();
                       },
                       child: Text(
-                        'Use default Relay',
+                        'Clear',
                         style: const TextStyle(
                           fontFamily: kMonoFamily,
                           fontSize: 13,

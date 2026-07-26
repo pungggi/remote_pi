@@ -20,19 +20,24 @@
 
 import 'package:app/data/preferences/preferences.dart';
 
-/// Fallback relay, used only until a real one is known.
+/// **There is no default relay.** Empty on purpose.
 ///
-/// Plan/102 — Piper's default topology is a relay on the user's own machine,
-/// reached over the WLAN. That address is per-network and handed out by DHCP,
-/// so it cannot be a build-time constant: the phone learns it from the pairing
-/// QR (`r`), which PairingViewModel adopts into Preferences.
+/// Plan/102 — Piper's topology is a relay on the user's own machine, reached
+/// over the WLAN. That address is per-network and handed out by DHCP, so it
+/// cannot be a build-time constant: the phone learns it from the pairing QR
+/// (`r`), which PairingViewModel adopts into Preferences.
 ///
-/// This constant is what `resolveRelayUrl` returns before that happens — a
-/// fresh install that has not paired yet, or a QR with no `r`. It points at
-/// upstream's public relay, which still works for reaching a Pi from outside
-/// the WLAN. Hardcoded rather than build-time configurable to keep the
-/// onboarding flow deterministic.
-const String kDefaultRelayUrl = 'https://relay-rp1.jacobmoura.work';
+/// This constant is what `resolveRelayUrl` returns *before* that happens — a
+/// fresh install that has not paired yet, or a QR with no `r`. It used to point
+/// at the upstream project's public relay, which meant every fresh Piper
+/// install talked to a third party's server before its first pairing. This fork
+/// operates no public relay and does not borrow one: reaching a Pi from outside
+/// the WLAN is the user's own call (their own relay, or Tailscale).
+///
+/// Empty is a legitimate state, not an error to paper over — "not paired yet"
+/// and "no relay" are the same condition, and the QR resolves both at once.
+/// [isValidRelayUrl] rejects it, so nothing treats it as connectable.
+const String kDefaultRelayUrl = '';
 
 /// User-facing message returned when [isValidRelayUrl] rejects a value.
 /// Surfaced verbatim by Settings and Onboarding — keep stable for
@@ -47,10 +52,13 @@ const String kRelayUrlInvalidGeneric =
     'Enter a valid URL starting with https:// (or http:// for local '
     'relays).';
 
-/// Returns the effective relay URL the app should connect to.
-/// Falls back to [kDefaultRelayUrl] when no user override is set.
-/// Always returns an `http(s)://` URL — caller is responsible for
-/// applying [toWsRelayUrl] when opening a WebSocket.
+/// Returns the effective relay URL the app should connect to, or the empty
+/// string when none is known yet (see [kDefaultRelayUrl]) — callers that are
+/// about to open a connection should treat empty as "not configured", which
+/// [isValidRelayUrl] reports.
+///
+/// When non-empty it is always an `http(s)://` URL; the caller is responsible
+/// for applying [toWsRelayUrl] when opening a WebSocket.
 String resolveRelayUrl(Preferences prefs) =>
     prefs.relayUrl ?? kDefaultRelayUrl;
 

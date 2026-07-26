@@ -125,8 +125,15 @@ void main() {
       expect(resolveRelayUrl(p), kDefaultRelayUrl);
     });
 
-    test('kDefaultRelayUrl is https://', () {
-      expect(kDefaultRelayUrl, startsWith('https://'));
+    test('there is no default relay — plan/102', () {
+      // The fork operates no public relay and does not borrow the upstream
+      // project's. Empty means "not configured"; the pairing QR supplies it.
+      expect(kDefaultRelayUrl, isEmpty);
+    });
+
+    test('an unconfigured relay never passes as connectable', () {
+      // The guard that keeps "" from being treated as a usable endpoint.
+      expect(isValidRelayUrl(kDefaultRelayUrl), isFalse);
     });
   });
 }

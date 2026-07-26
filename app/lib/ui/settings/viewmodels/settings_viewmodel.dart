@@ -60,13 +60,22 @@ class SettingsViewModel extends ViewModel<SettingsState> {
   /// Effective relay URL the app is connecting to right now.
   String get effectiveRelayUrl => resolveRelayUrl(_prefs);
 
-  /// User-set override for the relay URL. If `null`, the app is using the
-  /// default endpoint [kDefaultRelayUrl].
+  /// User-set relay URL. Empty when none is set — since plan/102 there is no
+  /// default to fall back to ([kDefaultRelayUrl] is `''`); the relay arrives
+  /// with the pairing QR.
   String get relayUrlOverride => _prefs.relayUrl ?? kDefaultRelayUrl;
+
+  /// Drops the stored relay so the next pairing QR decides again. Needed
+  /// because the relay is per-network: after moving to a different WLAN the
+  /// old address is not merely stale, it is wrong.
+  Future<void> clearRelayUrl() async {
+    await _prefs.setRelayUrl(null);
+    notifyListeners();
+  }
 
   Future<String?> saveRelayUrl(String? value) async {
     if (value == null || value.trim().isEmpty) {
-      return 'Enter a URL or clear the field to use the default relay.';
+      return 'Enter a relay URL, or use Clear — pairing sets it from the QR.';
     }
     final trimmed = value.trim();
 

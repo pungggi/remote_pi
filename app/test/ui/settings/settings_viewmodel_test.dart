@@ -4,7 +4,6 @@ import 'dart:typed_data';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/peer_channel.dart';
-import 'package:app/data/transport/relay_config.dart';
 import 'package:app/pairing/pair_request_flow.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/ui/settings/states/settings_state.dart';
@@ -304,25 +303,47 @@ void main() {
     );
 
     test(
-      'relayUrlOverride defaults to kDefaultRelayUrl (pre-fill for the '
-      '"use default" button) and reflects a saved override',
+      'relayUrlOverride is empty until something sets a relay — plan/102',
       () async {
         final prefs = Preferences(_FakeSecureStorage());
         final vm = SettingsViewModel(_FakeStorage([]), prefs, _conn());
         await Future<void>.delayed(Duration.zero);
 
-        // No override yet → the field pre-fills with the default endpoint.
-        expect(vm.relayUrlOverride, kDefaultRelayUrl);
-        expect(vm.effectiveRelayUrl, kDefaultRelayUrl);
-
-        // Saving the default URL explicitly is valid (what the button does).
-        final err = await vm.saveRelayUrl(kDefaultRelayUrl);
-        expect(err, isNull);
-        expect(vm.relayUrlOverride, kDefaultRelayUrl);
-        expect(prefs.relayUrl, kDefaultRelayUrl);
+        // No override and no default to fall back on: the field starts blank
+        // and the app has nowhere to connect until pairing supplies a relay.
+        expect(vm.relayUrlOverride, isEmpty);
+        expect(vm.effectiveRelayUrl, isEmpty);
 
         vm.dispose();
       },
     );
+
+    test('saving an empty relay is rejected, not silently accepted', () async {
+      final prefs = Preferences(_FakeSecureStorage());
+      final vm = SettingsViewModel(_FakeStorage([]), prefs, _conn());
+      await Future<void>.delayed(Duration.zero);
+
+      expect(await vm.saveRelayUrl(''), isNotNull);
+      expect(await vm.saveRelayUrl('   '), isNotNull);
+      expect(prefs.relayUrl, isNull);
+
+      vm.dispose();
+    });
+
+    test('clearRelayUrl drops the stored relay (WLAN changed)', () async {
+      final prefs = Preferences(_FakeSecureStorage());
+      final vm = SettingsViewModel(_FakeStorage([]), prefs, _conn());
+      await Future<void>.delayed(Duration.zero);
+
+      expect(await vm.saveRelayUrl('http://192.168.0.67:3000'), isNull);
+      expect(prefs.relayUrl, 'http://192.168.0.67:3000');
+
+      await vm.clearRelayUrl();
+
+      expect(prefs.relayUrl, isNull);
+      expect(vm.relayUrlOverride, isEmpty);
+
+      vm.dispose();
+    });
   });
 }
