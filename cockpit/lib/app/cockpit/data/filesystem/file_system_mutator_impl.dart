@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:cockpit/app/cockpit/domain/contracts/file_system_mutator.dart';
 import 'package:cockpit/app/core/domain/result.dart';
+import 'package:cockpit/app/core/utils/path_utils.dart';
 
 /// Mutação via `dart:io`; a lixeira no macOS é delegada ao Finder por
 /// `osascript` (move pra Trash, reversível). Erros de IO viram `Failure` com
@@ -91,7 +92,7 @@ class FileSystemMutatorImpl implements FileSystemMutator {
     await target.create(recursive: true);
     await for (final entity in source.list(followLinks: false)) {
       final name = _basename(entity.path);
-      final destPath = '${target.path}/$name';
+      final destPath = joinPath(target.path, name);
       if (entity is Directory) {
         await _copyDirectory(entity, Directory(destPath));
       } else if (entity is File) {
@@ -140,8 +141,11 @@ class FileSystemMutatorImpl implements FileSystemMutator {
       await FileSystemEntity.type(path, followLinks: false) !=
       FileSystemEntityType.notFound;
 
-  String _basename(String path) =>
-      path.split('/').where((p) => p.isNotEmpty).lastOrNull ?? path;
+  /// Aceita os dois separadores: em `_copyDirectory` o nome sai de
+  /// `entity.path`, que no Windows vem com `\` — dividir só por `/` devolvia o
+  /// caminho inteiro como "nome" e a cópia recursiva montava um destino
+  /// inválido.
+  String _basename(String path) => basenameOf(path);
 
   /// Escapa `\` e `"` pra interpolar com segurança numa string AppleScript.
   String _osaEscape(String path) =>

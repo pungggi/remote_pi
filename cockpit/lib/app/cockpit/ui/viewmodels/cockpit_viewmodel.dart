@@ -29,6 +29,7 @@ import 'package:cockpit/app/cockpit/domain/contracts/worktree_manager.dart';
 import 'package:cockpit/app/cockpit/domain/entities/content_search.dart';
 import 'package:cockpit/app/cockpit/domain/entities/file_node.dart';
 import 'package:cockpit/app/cockpit/domain/entities/file_view.dart';
+import 'package:cockpit/app/cockpit/domain/entities/git_commit.dart';
 import 'package:cockpit/app/cockpit/domain/entities/git_file_status.dart';
 import 'package:cockpit/app/cockpit/domain/entities/git_info.dart';
 import 'package:cockpit/app/cockpit/domain/entities/launchable_app.dart';
@@ -42,6 +43,7 @@ import 'package:cockpit/app/core/data/lsp/lsp_server_pool.dart';
 import 'package:cockpit/app/core/data/lsp/lsp_text_edit.dart';
 import 'package:cockpit/app/core/domain/entities/lsp_diagnostic.dart';
 import 'package:cockpit/app/core/domain/result.dart';
+import 'package:cockpit/app/core/utils/path_utils.dart';
 import 'package:cockpit/app/core/utils/user_home.dart';
 import 'package:cockpit/app/cockpit/ui/session/agent_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/diff_viewer_session.dart';
@@ -440,7 +442,7 @@ class CockpitViewModel extends ChangeNotifier {
   /// ou `null` se o caminho está fora de todas (ex.: solto na pasta-mãe).
   String? rootContaining(String projectId, String absolutePath) {
     for (final r in rootsOf(projectId)) {
-      if (absolutePath == r || absolutePath.startsWith('$r/')) return r;
+      if (isUnderPath(absolutePath, r)) return r;
     }
     return null;
   }
@@ -846,19 +848,37 @@ class CockpitViewModel extends ChangeNotifier {
   Map<String, GitFileStatus> changedFilesOfRoot(String rootPath) =>
       git.changedFilesOfRoot(rootPath);
 
+  Map<String, GitFileStatus> stagedFilesOfRoot(String rootPath) =>
+      git.stagedFilesOfRoot(rootPath);
+
+  Map<String, GitFileStatus> unstagedFilesOfRoot(String rootPath) =>
+      git.unstagedFilesOfRoot(rootPath);
+
   /// Caminhos **absolutos** com mudança git do projeto selecionado (exclui
   /// ignorados), varrendo **todas as roots** — alimenta a árvore podada do
   /// modo Source Control (que agrupa por root quando multi-root).
-  List<String> changedAbsolutePaths() {
+  List<String> changedAbsolutePaths() =>
+      _absoluteGitPaths((root) => changedFilesOfRoot(root));
+
+  /// Entradas do index para a seção **Staged Changes**.
+  List<String> stagedAbsolutePaths() =>
+      _absoluteGitPaths((root) => stagedFilesOfRoot(root));
+
+  /// Mudanças pendentes no working tree para a seção **Changes**.
+  List<String> unstagedAbsolutePaths() =>
+      _absoluteGitPaths((root) => unstagedFilesOfRoot(root));
+
+  List<String> _absoluteGitPaths(
+    Map<String, GitFileStatus> Function(String root) filesForRoot,
+  ) {
     final project = selectedProject;
     if (project == null) return const [];
     final out = <String>[];
     for (var root in rootsOf(project.id)) {
       if (root.endsWith('/')) root = root.substring(0, root.length - 1);
-      changedFilesOfRoot(root).forEach((rel, status) {
-        if (status == GitFileStatus.ignored) return;
+      for (final rel in filesForRoot(root).keys) {
         out.add('$root/$rel');
-      });
+      }
     }
     return out;
   }
@@ -1330,7 +1350,7 @@ class CockpitViewModel extends ChangeNotifier {
     final hasExt = dot > 0;
     final stem = hasExt ? name.substring(0, dot) : name;
     final ext = hasExt ? name.substring(dot) : '';
-    for (var i = 1;; i++) {
+    for (var i = 1; ; i++) {
       final suffix = i == 1 ? ' copy' : ' copy $i';
       candidate = _join(dir, '$stem$suffix$ext');
       if (!await _pathExists(candidate)) return candidate;
@@ -1355,19 +1375,12 @@ class CockpitViewModel extends ChangeNotifier {
     return null;
   }
 
-  String _join(String dir, String name) {
-    final base = dir.endsWith('/') ? dir.substring(0, dir.length - 1) : dir;
-    return '$base/$name';
-  }
+  String _join(String dir, String name) => joinPath(dir, name);
 
-  String _parentOf(String path) {
-    final i = path.lastIndexOf('/');
-    return i <= 0 ? path : path.substring(0, i);
-  }
+  String _parentOf(String path) => dirnameOf(path);
 
   /// Um caminho é "sob" [root] se for ele mesmo ou um descendente (`root/...`).
-  bool _isUnder(String path, String root) =>
-      path == root || path.startsWith('$root/');
+  bool _isUnder(String path, String root) => isUnderPath(path, root);
 
   /// Reaponta as abas de viewer afetadas por um rename de [from] → [to]: o
   /// próprio arquivo e, se [from] for pasta, todos os descendentes (troca de
@@ -1958,20 +1971,176 @@ class CockpitViewModel extends ChangeNotifier {
     return _worktreeMgr.isBranchMerged(origin, fork.name);
   }
 
+  /// Comita todas as entradas staged da única root do workspace selecionado.
+  /// Multi-root exige que o usuário comite por arquivo/seção para não criar
+  /// commits implícitos em repositórios diferentes.
+  Future<List<GitCommit>> recentCommits() async {
+    final pid = _selectedProjectId;
+    if (pid == null) return const [];
+    final roots = rootsOf(pid);
+    if (roots.length != 1) return const [];
+    final result = await git.output(roots.single, [
+      'log',
+      '-n',
+      '20',
+      '--format=%H%x1f%s%x1e',
+    ]);
+    if (result.$1 != 0) return const [];
+    return result.$2
+        .split('\u001e')
+        .where((entry) => entry.trim().isNotEmpty)
+        .map((entry) {
+          final parts = entry.trim().split('\u001f');
+          final hash = parts.first;
+          return GitCommit(
+            hash: hash,
+            subject: parts.length > 1 ? parts[1] : hash.substring(0, 7),
+            message: '',
+          );
+        })
+        .toList();
+  }
+
+  Future<String?> commitMessage(String hash) async {
+    final pid = _selectedProjectId;
+    if (pid == null) return null;
+    final roots = rootsOf(pid);
+    if (roots.length != 1) return null;
+    final result = await git.output(roots.single, [
+      'log',
+      '-1',
+      '--format=%B',
+      hash,
+    ]);
+    return result.$1 == 0 ? result.$2.trim() : null;
+  }
+
+  Future<String?> commitStaged(String message, {String? amendHash}) async {
+    final pid = _selectedProjectId;
+    if (pid == null) return 'No workspace selected.';
+    final roots = rootsOf(
+      pid,
+    ).where((root) => stagedFilesOfRoot(root).isNotEmpty).toList();
+    if (roots.isEmpty) return 'There are no staged changes to commit.';
+    if (roots.length > 1) {
+      return 'Stage changes belong to multiple repositories. Commit them separately.';
+    }
+    if (amendHash != null) {
+      final head = (await git.output(roots.single, [
+        'rev-parse',
+        'HEAD',
+      ])).$2.trim();
+      if (head != amendHash) {
+        return 'Only the last commit can be amended directly.';
+      }
+    }
+    final err = await git.collect(roots.single, [
+      'commit',
+      if (amendHash != null) '--amend',
+      '-m',
+      message,
+    ]);
+    unawaited(git.refresh(pid));
+    return err;
+  }
+
+  /// Stage em lote: agrupa os paths por root e executa um único `git add` por
+  /// repositório, evitando um processo + refresh para cada arquivo.
+  Future<String?> stageFiles(List<String> absPaths) =>
+      _setFilesStaged(absPaths, staged: true);
+
+  /// Unstage em lote: um único `git restore --staged` por root.
+  Future<String?> unstageFiles(List<String> absPaths) =>
+      _setFilesStaged(absPaths, staged: false);
+
+  Future<String?> _setFilesStaged(
+    List<String> absPaths, {
+    required bool staged,
+  }) async {
+    final pid = _selectedProjectId;
+    if (pid == null) return 'No workspace selected.';
+    final byRoot = <String, List<String>>{};
+    for (final path in absPaths) {
+      final root = rootContaining(pid, path);
+      if (root == null) return 'File is outside the workspace roots: $path';
+      byRoot.putIfAbsent(root, () => []).add(_subOf(path, root));
+    }
+    for (final entry in byRoot.entries) {
+      final err = await git.collect(entry.key, [
+        if (staged) 'add' else ...['restore', '--staged'],
+        '--',
+        ...entry.value,
+      ]);
+      if (err != null) return err;
+    }
+    await git.refresh(pid);
+    return null;
+  }
+
+  /// Stage (Source Control): adiciona [absPath] ao index da root dona.
+  Future<String?> stageFile(String absPath) async {
+    final pid = _selectedProjectId;
+    if (pid == null) return 'No workspace selected.';
+    final root = rootContaining(pid, absPath);
+    if (root == null) return 'File is outside the workspace roots.';
+    final err = await git.collect(root, ['add', '--', _subOf(absPath, root)]);
+    unawaited(git.refresh(pid));
+    return err;
+  }
+
   /// Unstage (Source Control): `git restore --staged -- <arquivo>` na root
   /// dona do caminho. `null` = sucesso; senão a saída de erro do git.
   Future<String?> unstageFile(String absPath) =>
       _restoreFile(absPath, staged: true);
 
-  /// Discard (Source Control): joga fora a mudança do working tree —
-  /// `git restore -- <arquivo>`; untracked não tem "restore", então vai pra
-  /// lixeira via [deletePath] (reversível no macOS). `null` = sucesso.
+  /// `true` quando [absPath] não existe no HEAD — cobre untracked e arquivos
+  /// novos que já foram adicionados ao index.
+  Future<bool> isNewGitFile(String absPath) async {
+    final pid = _selectedProjectId;
+    if (pid == null) return false;
+    final root = rootContaining(pid, absPath);
+    if (root == null) return false;
+    final rel = _subOf(absPath, root);
+    final result = await git.output(root, ['cat-file', '-e', 'HEAD:$rel']);
+    return result.$1 != 0;
+  }
+
+  /// Discard completo de um arquivo. Arquivo novo é removido do index e vai
+  /// para a lixeira; arquivo rastreado é restaurado do HEAD tanto no index
+  /// quanto no working tree. Assim uma deleção volta a existir no disco.
   Future<String?> discardFile(String absPath) async {
-    if (gitStatusForPath(absPath) == GitFileStatus.untracked) {
+    final pid = _selectedProjectId;
+    if (pid == null) return 'No workspace selected.';
+    final root = rootContaining(pid, absPath);
+    if (root == null) return 'File is outside the workspace roots.';
+    final rel = _subOf(absPath, root);
+    if (await isNewGitFile(absPath)) {
+      if (stagedFilesOfRoot(root).containsKey(rel)) {
+        final err = await git.collect(root, [
+          'rm',
+          '--cached',
+          '-f',
+          '--',
+          rel,
+        ]);
+        if (err != null) return err;
+      }
       final res = await deletePath(absPath);
+      unawaited(git.refresh(pid));
       return res.fold((_) => null, (e) => e);
     }
-    return _restoreFile(absPath, staged: false);
+    final err = await git.collect(root, [
+      'restore',
+      '--source=HEAD',
+      '--staged',
+      '--worktree',
+      '--',
+      rel,
+    ]);
+    unawaited(git.refresh(pid));
+    _fileTreeRevision++;
+    notifyListeners();
+    return err;
   }
 
   /// Commit (Source Control): comita **só** [absPath] com [message], na root
@@ -2159,10 +2328,22 @@ class CockpitViewModel extends ChangeNotifier {
   }
 
   // ---- agent / tab / split operations (projeto ativo) -----------------------
+
+  /// Geração de "reassumir o foco de teclado da aba ativa".
+  ///
+  /// Incrementa a cada [selectTab] / [focus] — inclusive quando a aba (ou a
+  /// pane) já era a ativa. A UI observa isso pra **re-pedir** o foco do
+  /// terminal, já que nesse caso não há transição de `focused` em que se
+  /// pendurar: sem o sinal, clicar na aba já ativa não trazia o foco de volta
+  /// quando ele tinha vazado pra outro widget (árvore, composer, outra pane).
+  int get tabFocusGen => _tabFocusGen;
+  int _tabFocusGen = 0;
+
   void focus(String paneId) {
     final id = _selectedProjectId;
     if (id == null || _focused[id] == paneId) return;
     _focused[id] = paneId;
+    _tabFocusGen++;
     _clearFocusedNotification();
     notifyListeners();
   }
@@ -2174,6 +2355,7 @@ class CockpitViewModel extends ChangeNotifier {
       updateLeaf(tree, paneId, (p) => p.copyWith(active: agentId)),
     );
     _focused[_selectedProjectId!] = paneId;
+    _tabFocusGen++;
     _clearFocusedNotification();
     // Selecionar uma tab de FileView revela o arquivo na árvore: destaca +
     // expande a root e os pais (uma vez, via a geração). Só quando o arquivo é

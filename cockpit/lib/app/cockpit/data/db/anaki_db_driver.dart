@@ -174,7 +174,11 @@ class AnakiDbDriver implements DbDriver {
     required Stopwatch watch,
   }) {
     if (rows.isEmpty) {
-      return DbResult(columns: const [], rows: const [], elapsed: watch.elapsed);
+      return DbResult(
+        columns: const [],
+        rows: const [],
+        elapsed: watch.elapsed,
+      );
     }
     final columns = rows.first.keys.toList();
     final truncated = rows.length > limit;

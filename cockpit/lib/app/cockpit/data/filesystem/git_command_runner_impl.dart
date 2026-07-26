@@ -131,11 +131,12 @@ class GitCommandRunnerImpl implements GitCommandRunner {
   /// `true` se o working tree em [path] tem mudanças (staged ou não).
   Future<bool> _isDirty(String path) async {
     final git = await _gitBinary.resolve();
-    final res = await Process.run(
-      git,
-      ['-C', path, 'status', '--porcelain'],
-      environment: await envWithNodeOnPath(),
-    );
+    final res = await Process.run(git, [
+      '-C',
+      path,
+      'status',
+      '--porcelain',
+    ], environment: await envWithNodeOnPath());
     if (res.exitCode != 0) return false; // não-git → nada a bloquear
     return (res.stdout as String).trim().isNotEmpty;
   }
@@ -152,11 +153,11 @@ class GitCommandRunnerImpl implements GitCommandRunner {
     if (header != null && !controller.isClosed) controller.add(header);
     try {
       final git = await _gitBinary.resolve();
-      final proc = await Process.start(
-        git,
-        ['-C', repoPath, ...args],
-        environment: await envWithNodeOnPath(),
-      );
+      final proc = await Process.start(git, [
+        '-C',
+        repoPath,
+        ...args,
+      ], environment: await envWithNodeOnPath());
       final done = <Future<void>>[];
       for (final stream in [proc.stdout, proc.stderr]) {
         done.add(

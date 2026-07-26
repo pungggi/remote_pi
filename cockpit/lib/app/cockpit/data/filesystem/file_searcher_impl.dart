@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:cockpit/app/cockpit/domain/contracts/file_searcher.dart';
+import 'package:cockpit/app/core/utils/path_utils.dart';
 
 /// Indexa os arquivos de uma pasta (walk recursivo, pulando pastas pesadas) e
 /// filtra por relevância. O índice por raiz é **cacheado** com TTL curto pra não
@@ -90,17 +91,19 @@ class FileSearcherImpl implements FileSearcher {
         continue; // pasta sem permissão etc.
       }
       for (final entity in entries) {
-        final name = entity.path.split('/').last;
+        final name = basenameOf(entity.path);
         if (entity is Directory) {
           if (name.startsWith('.') || _ignored.contains(name)) continue;
           stack.add(entity);
         } else if (entity is File) {
           if (name == '.DS_Store') continue; // lixo do Finder (macOS)
           if (out.length >= _maxFiles) break;
-          final p = entity.path;
-          out.add(
-            p.startsWith('$rootPath/') ? p.substring(rootPath.length + 1) : p,
-          );
+          // Normaliza antes de recortar o prefixo: no Windows `entity.path` vem
+          // com `\` e o `startsWith('$rootPath/')` nunca casava, devolvendo
+          // caminho absoluto onde a UI espera relativo.
+          final p = normalizePath(entity.path);
+          final root = normalizePath(rootPath);
+          out.add(p.startsWith('$root/') ? p.substring(root.length + 1) : p);
         }
       }
     }

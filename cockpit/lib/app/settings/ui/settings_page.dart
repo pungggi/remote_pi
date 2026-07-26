@@ -6,6 +6,8 @@ import 'package:cockpit/app/core/domain/entities/setup_check.dart';
 import 'package:cockpit/app/core/domain/entities/terminal_profile.dart';
 import 'package:cockpit/app/core/ui/widgets/macos_notification_instructions_dialog.dart';
 import 'package:cockpit/app/settings/domain/cron_schedule.dart';
+import 'package:cockpit/app/core/data/diagnostics/diagnostics_log.dart';
+import 'package:cockpit/app/core/ui/widgets/error_report_dialog.dart';
 import 'package:cockpit/app/core/data/lsp/lsp_command.dart';
 import 'package:cockpit/app/core/data/lsp/lsp_launchers.dart';
 import 'package:cockpit/app/core/data/setup/storage_location.dart';
@@ -399,6 +401,7 @@ class _GeneralPanel extends StatelessWidget {
                 ),
               ),
               const _StorageSection(),
+              const _DiagnosticsSection(),
             ],
           ),
         ),
@@ -443,6 +446,73 @@ class _GeneralPanel extends StatelessWidget {
 /// apontar pra outra pasta (ex.: um diretório sincronizado) e oferece um reset
 /// de fábrica. Trocar a pasta ou resetar **exige reiniciar** — a UI informa e
 /// oferece fechar o app na hora.
+/// Diagnóstico: acesso ao log e caminho para reportar um problema sem depender
+/// de um erro estar acontecendo agora — é como o usuário abre issue de um bug
+/// que já passou (o log do dia continua lá).
+class _DiagnosticsSection extends StatelessWidget {
+  const _DiagnosticsSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final dir = DiagnosticsLog.instance.directory;
+    return _Section(
+      label: 'Diagnostics',
+      child: _Card(
+        children: [
+          _Row(
+            title: 'Log file',
+            description:
+                'Errors and startup events are recorded here, kept for '
+                '${DiagnosticsLog.retentionDays} days.'
+                '\n${dir?.path ?? 'unavailable'}',
+            trailing: OutlineButton(
+              onPressed: dir == null ? null : () => _revealFolder(dir.path),
+              child: const Text('Reveal'),
+            ),
+          ),
+          _Row(
+            title: 'Report a problem',
+            description:
+                'Opens a pre-filled issue with your version, OS and recent '
+                'log. Nothing is sent automatically — you review it first.',
+            trailing: OutlineButton(
+              onPressed: () => showErrorReportDialog(
+                context,
+                title: 'Problem report',
+                error: 'Reported manually from Settings.',
+                description:
+                    'Describe what went wrong in the issue. The recent log is '
+                    'included below and in "Copy details".',
+              ),
+              child: const Text('Report…'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Abre a pasta no gerenciador de arquivos do SO.
+  ///
+  /// **Windows**: o Explorer só entende `\` — passar `C:/Users/...` faz ele
+  /// abrir a pasta Documentos em silêncio, sem erro. Como os caminhos internos
+  /// do Cockpit são montados com `/`, a conversão precisa acontecer aqui, na
+  /// fronteira com o SO. (O Explorer também sai com código != 0 mesmo quando dá
+  /// certo, então o exit code é ignorado de propósito.)
+  Future<void> _revealFolder(String path) async {
+    final (command, target) = switch (Platform.operatingSystem) {
+      'macos' => ('open', path),
+      'windows' => ('explorer', path.replaceAll('/', r'\')),
+      _ => ('xdg-open', path),
+    };
+    try {
+      await Process.run(command, [target]);
+    } on ProcessException catch (e) {
+      DiagnosticsLog.instance.logError('settings', e, null);
+    }
+  }
+}
+
 class _StorageSection extends StatefulWidget {
   const _StorageSection();
 
@@ -637,7 +707,12 @@ class _StorageSectionState extends State<_StorageSection> {
               // Encerra abrupto de propósito: descarta escritas pendentes nas
               // boxes antigas (já migradas/apagadas), sem recriar arquivos no
               // caminho velho via o save de window_state no onWindowClose.
-              onPressed: () => exit(0),
+              // Marca saída limpa antes: `exit()` não dispara o
+              // `onExitRequested`, e sem isso o próximo boot acusaria crash.
+              onPressed: () {
+                DiagnosticsLog.instance.markCleanExit();
+                exit(0);
+              },
               child: const Text('Quit Cockpit'),
             ),
           ],

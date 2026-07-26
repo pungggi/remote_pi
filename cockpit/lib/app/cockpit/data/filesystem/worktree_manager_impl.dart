@@ -4,6 +4,7 @@ import 'package:cockpit/app/cockpit/data/filesystem/git_binary.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/worktree_manager.dart';
 import 'package:cockpit/app/cockpit/domain/entities/worktree.dart';
 import 'package:cockpit/app/core/domain/result.dart';
+import 'package:cockpit/app/core/utils/path_utils.dart';
 
 /// Roda o binário `git` pra listar/criar/remover worktrees. O caminho do `git`
 /// vem do [GitBinary] compartilhado (o app macOS **não herda o PATH do shell**).
@@ -245,7 +246,9 @@ class WorktreeManagerImpl implements WorktreeManager {
       var bare = false;
       for (final line in block.split('\n')) {
         if (line.startsWith('worktree ')) {
-          path = line.substring('worktree '.length).trim();
+          // Fronteira: o git no Windows pode emitir o caminho do worktree com
+          // separador nativo; o resto do app compara com `/`.
+          path = normalizePath(line.substring('worktree '.length).trim());
         } else if (line.startsWith('HEAD ')) {
           head = line.substring('HEAD '.length).trim();
         } else if (line.startsWith('branch ')) {

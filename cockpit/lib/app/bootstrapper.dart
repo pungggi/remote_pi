@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'dart:ui' show AppExitResponse;
 
 import 'package:cockpit/app/app_module.dart';
 import 'package:cockpit/app/app_widget.dart';
 import 'package:cockpit/app/cockpit/data/hooks/claude_hook_installer_impl.dart';
 import 'package:cockpit/app/cockpit/data/rpc/pi_process_registry.dart';
+import 'package:cockpit/app/cockpit/data/tasks/task_process_registry.dart';
+import 'package:cockpit/app/core/data/diagnostics/diagnostics_log.dart';
 import 'package:cockpit/app/core/data/lsp/lsp_process_registry.dart';
 import 'package:cockpit/app/core/data/repositories/hive_settings_store.dart';
 import 'package:cockpit/app/core/data/setup/storage_location.dart';
@@ -15,7 +18,9 @@ import 'package:cockpit/app/core/ui/menu/workspace_menu_bridge.dart';
 import 'package:cockpit/app/core/ui/settings_controller.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/bootstrap_error_view.dart';
+import 'package:cockpit/app/core/ui/widgets/error_report_dialog.dart';
 import 'package:cockpit/app/core/ui/widgets/loading_screen.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/confirm_dialog.dart';
 import 'package:cockpit/app/core/utils/login_shell.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -49,12 +54,29 @@ class _CockpitBootstrapperState extends State<CockpitBootstrapper> {
   SettingsController? _settings;
   Box<dynamic>? _winBox;
 
+  AppLifecycleListener? _lifecycle;
+
   @override
   void initState() {
     super.initState();
+    // Saída pela janela/menu conta como limpa — sem isso o boot seguinte
+    // acusaria crash em todo fechamento normal, e o aviso viraria ruído que o
+    // usuário aprende a ignorar.
+    _lifecycle = AppLifecycleListener(
+      onExitRequested: () async {
+        DiagnosticsLog.instance.markCleanExit();
+        return AppExitResponse.exit;
+      },
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initApp();
     });
+  }
+
+  @override
+  void dispose() {
+    _lifecycle?.dispose();
+    super.dispose();
   }
 
   Future<void> _initApp() async {
@@ -96,10 +118,13 @@ class _CockpitBootstrapperState extends State<CockpitBootstrapper> {
         // lê do cache. Ver login_shell.dart / issue #42.
         await resolveLoginShell();
 
-        // Mata `pi --mode rpc` e language servers órfãos do ciclo anterior
-        // antes de qualquer novo spawn (hot restart e crash cobertos).
-        await PiProcessRegistry.cleanOrphans();
-        await LspProcessRegistry.cleanOrphans();
+        // Mata filhos órfãos desta instância ou de instâncias já encerradas,
+        // preservando agents/LSP/tasks de outros Cockpits ainda vivos.
+        await Future.wait([
+          PiProcessRegistry.cleanOrphans(),
+          LspProcessRegistry.cleanOrphans(),
+          TaskProcessRegistry.cleanOrphans(),
+        ]);
 
         // Hooks do Cockpit no ~/.claude/settings.json (idempotente) pra
         // sessões `claude` nas abas reportarem status de turno. Não-fatal.
@@ -123,16 +148,53 @@ class _CockpitBootstrapperState extends State<CockpitBootstrapper> {
           _initialized = true;
         });
       }
+
+      // Sessão anterior morreu sem passar pelo encerramento limpo (SIGPIPE,
+      // segfault, força bruta). Nenhum handler Dart vê isso — só o marcador.
+      // Oferecido depois do boot pra não competir com a tela de loading.
+      final crash = DiagnosticsLog.instance.previousCrash;
+      if (crash != null && mounted) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _offerCrashReport(crash);
+        });
+      }
     } catch (e, stack) {
       // Boundary do bootstrap: qualquer falha (Hive corrompido, config, DI)
       // vira tela de erro com retry em vez de app morto sem feedback.
-      debugPrint('[bootstrap] falhou: $e\n$stack');
+      DiagnosticsLog.instance.logError('bootstrap', e, stack);
       if (mounted) {
         setState(() {
           _error = e;
         });
       }
     }
+  }
+
+  /// Avisa que a sessão anterior morreu e oferece reportar. Discreto de
+  /// propósito: um dialog dispensável, não um bloqueio — o usuário abriu o app
+  /// pra trabalhar, não pra preencher relatório.
+  Future<void> _offerCrashReport(DirtySession crash) async {
+    final ok = await showConfirmDialog(
+      context,
+      title: 'Cockpit closed unexpectedly',
+      message:
+          'The previous session (version ${crash.appVersion}) ended without '
+          'shutting down cleanly. Want to report it? The log is included and '
+          'you can review everything before sending.',
+      confirmLabel: 'Report',
+      cancelLabel: 'Dismiss',
+    );
+    if (!ok || !mounted) return;
+    await showErrorReportDialog(
+      context,
+      title: 'Unexpected shutdown',
+      error:
+          'Session started at ${crash.startedAt.toIso8601String()} '
+          '(pid ${crash.pid}) ended without a clean shutdown.',
+      description:
+          'No error was captured — the app was terminated by the system. The '
+          'log below is from that session and is the most useful part.',
+    );
   }
 
   /// Brilho efetivo pras telas fora do ModularApp (loading/erro): preferência

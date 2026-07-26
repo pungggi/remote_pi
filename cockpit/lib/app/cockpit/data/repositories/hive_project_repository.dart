@@ -1,6 +1,7 @@
 import 'package:cockpit/app/cockpit/domain/contracts/project_repository.dart';
 import 'package:cockpit/app/cockpit/domain/entities/project.dart';
 import 'package:cockpit/app/cockpit/domain/entities/realm.dart';
+import 'package:cockpit/app/core/utils/path_utils.dart';
 import 'package:hive/hive.dart';
 
 /// Persiste projetos numa Box do Hive, um `Map` por id (sem TypeAdapters —
@@ -72,8 +73,14 @@ class HiveProjectRepository implements ProjectRepository {
 
   Project? _fromMap(Map<dynamic, dynamic> map) {
     final id = map['id'];
-    final path = map['path'];
-    if (id is! String || path is! String) return null;
+    final raw = map['path'];
+    if (id is! String || raw is! String) return null;
+    // Migração de dados antigos do Windows: instalações anteriores gravaram a
+    // raiz com `\` (vinha crua do diálogo nativo). Normalizar na leitura basta —
+    // é idempotente, e o próximo `save` já persiste a forma canônica. Sem isso,
+    // a raiz salva não casaria com os filhos da árvore (já normalizados) e
+    // `rootContaining` devolveria null para o workspace inteiro.
+    final path = normalizePath(raw);
     return Project(
       id: id,
       name: map['name'] as String? ?? path,

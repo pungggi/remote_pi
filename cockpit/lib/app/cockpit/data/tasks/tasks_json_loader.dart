@@ -78,8 +78,7 @@ class TasksJsonLoader {
   List<String> _strList(Object? v) =>
       v is List ? v.map((e) => e.toString()).toList() : const [];
 
-  TaskKind _kind(Object? v) =>
-      v == 'watch' ? TaskKind.watch : TaskKind.oneShot;
+  TaskKind _kind(Object? v) => v == 'watch' ? TaskKind.watch : TaskKind.oneShot;
 
   List<TaskProfile> _profiles(Object? v) {
     if (v is! List) return const [];
@@ -101,9 +100,7 @@ class TasksJsonLoader {
 
   Map<String, String> _strMap(Object? v) {
     if (v is! Map) return const {};
-    return {
-      for (final e in v.entries) e.key.toString(): e.value.toString(),
-    };
+    return {for (final e in v.entries) e.key.toString(): e.value.toString()};
   }
 
   List<InteractiveKey> _keys(Object? v) {

@@ -356,8 +356,8 @@ packages:
     dependency: "direct main"
     description:
       path: "packages/flterm"
-      ref: flterm-cockpit-2
-      resolved-ref: "9ea4b01973f87182ed7cac4de73a88cc618d5621"
+      ref: "2822cc2e1c8500b1d0c41a866060b7733068b19f"
+      resolved-ref: "2822cc2e1c8500b1d0c41a866060b7733068b19f"
       url: "https://github.com/jacobaraujo7/libghostty.git"
     source: git
     version: "0.0.4"
@@ -673,8 +673,8 @@ packages:
     dependency: "direct main"
     description:
       path: "packages/libghostty"
-      ref: flterm-cockpit-2
-      resolved-ref: "9ea4b01973f87182ed7cac4de73a88cc618d5621"
+      ref: "45f783033804e2c0e77f4a0867bf42c362ade076"
+      resolved-ref: "45f783033804e2c0e77f4a0867bf42c362ade076"
       url: "https://github.com/jacobaraujo7/libghostty.git"
     source: git
     version: "0.0.11"
@@ -713,10 +713,11 @@ packages:
   media_kit:
     dependency: "direct main"
     description:
-      name: media_kit
-      sha256: ae9e79597500c7ad6083a3c7b7b7544ddabfceacce7ae5c9709b0ec16a5d6643
-      url: "https://pub.dev"
-    source: hosted
+      path: media_kit
+      ref: "44ba261"
+      resolved-ref: "44ba261c463f5e2cef926d35438a95ee63cc5cf9"
+      url: "https://github.com/media-kit/media-kit.git"
+    source: git
     version: "1.2.6"
   media_kit_libs_android_video:
     dependency: transitive

@@ -81,6 +81,16 @@ jobs:
           channel: stable
           cache: true
 
+      # O build hook do libghostty compila a dylib do ghostty (pubspec: hooks >
+      # user_defines > libghostty > source: compile), o que exige Zig. Versão
+      # FIXA de propósito — nunca master/latest: o ghostty declara
+      # minimum_zig_version 0.16.0, e um floating aqui traria de volta a classe
+      # de bug que o `compile` resolve (toolchain divergindo do que suportamos).
+      # Quando o ghostty subir o mínimo, o job quebra alto e a gente atualiza.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
       - name: Prepara Fastforge e Inno Setup
         run: |
           dart pub global activate fastforge
@@ -139,6 +149,16 @@ jobs:
         run: |
           git clone --depth 1 --branch "$FLUTTER_VERSION" https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
           echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+
+      # O build hook do libghostty compila a dylib do ghostty (pubspec: hooks >
+      # user_defines > libghostty > source: compile), o que exige Zig. Versão
+      # FIXA de propósito — nunca master/latest: o ghostty declara
+      # minimum_zig_version 0.16.0, e um floating aqui traria de volta a classe
+      # de bug que o `compile` resolve (toolchain divergindo do que suportamos).
+      # Quando o ghostty subir o mínimo, o job quebra alto e a gente atualiza.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
 
       - name: Deps de sistema (GTK, ninja, rpmbuild, libmpv)
         run: |

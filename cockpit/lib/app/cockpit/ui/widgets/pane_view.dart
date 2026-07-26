@@ -39,6 +39,7 @@ import 'package:flutter_modular/flutter_modular.dart';
 import 'package:cockpit/app/core/ui/widgets/app_tooltip.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:cockpit/app/core/terminal/xterm/xterm.dart';
+import 'package:cockpit/app/core/utils/path_utils.dart';
 
 /// Folha do multiplexador: tab strip + corpo (agente: transcript+composer / empty;
 /// terminal: TerminalView). O foco aparece **só na aba ativa**.
@@ -135,6 +136,7 @@ class PaneView extends StatelessWidget {
       paneId: pane.id,
       focused: focused && tabId == pane.active,
       active: tabId == pane.active,
+      focusGen: vm.tabFocusGen,
       onFillEmpty: (terminal) => onFillEmpty(tabId, terminal),
     );
   }
@@ -1103,6 +1105,7 @@ class _PaneBody extends StatefulWidget {
     required this.paneId,
     required this.focused,
     required this.active,
+    required this.focusGen,
     required this.onFillEmpty,
   });
   final PaneItem item;
@@ -1115,6 +1118,11 @@ class _PaneBody extends StatefulWidget {
   /// foco da pane. Repassado ao viewer A/V, que pausa quando deixa de ser ativa
   /// (o `IndexedStack` mantém todas as abas montadas). Plano 46.
   final bool active;
+
+  /// Geração de "reassumir o teclado" da VM ([CockpitViewModel.tabFocusGen]).
+  /// Muda a cada seleção de aba/pane, inclusive quando a aba já era a ativa —
+  /// é o único gatilho de foco quando não há transição de [focused].
+  final int focusGen;
 
   /// `(terminal)` — qual tipo criar ao preencher a pane vazia.
   final ValueChanged<bool> onFillEmpty;
@@ -1169,26 +1177,38 @@ class _PaneBodyState extends State<_PaneBody> {
   @override
   void initState() {
     super.initState();
-    if (_wantsTerminalFocus && widget.focused) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _terminalFocus.requestFocus();
-      });
-    }
+    if (_wantsTerminalFocus && widget.focused) _requestTerminalFocusSoon();
   }
 
   @override
   void didUpdateWidget(_PaneBody old) {
     super.didUpdateWidget(old);
     if (!_wantsTerminalFocus) return;
-    if (widget.focused && !old.focused) {
-      // Adiar para pós-frame: o requestFocus() síncrono durante onTapDown
-      // interfere com o onTapUp da seleção de tab no mesmo ciclo de gestos.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _terminalFocus.requestFocus();
-      });
+    if (widget.focused && (!old.focused || widget.focusGen != old.focusGen)) {
+      // Também re-pede o foco quando só a *geração* mudou: clicar na aba que
+      // já era a ativa não gera transição de `focused`, mas é um pedido
+      // explícito de teclado (o foco pode ter vazado pra árvore/outra pane).
+      _requestTerminalFocusSoon();
     } else if (!widget.focused && old.focused) {
       _terminalFocus.unfocus();
     }
+  }
+
+  /// Pede o foco do terminal no **pós-frame**: o `requestFocus()` síncrono
+  /// durante o `onTapDown` interfere com o `onTapUp` da seleção de aba no mesmo
+  /// ciclo de gestos.
+  ///
+  /// O guard `widget.focused` na hora de executar é essencial: sem ele, uma
+  /// callback agendada por uma aba que **deixou** de ser a focada (troca rápida
+  /// de abas/panes) roubava o teclado de volta depois — a aba certa aparecia
+  /// selecionada, mas o que era digitado ia pro terminal anterior. O mesmo
+  /// vaivém de foco no mesmo frame também desincroniza o `TextInput` do
+  /// libghostty (só um cliente por vez no Flutter), matando os acentos/IME.
+  void _requestTerminalFocusSoon() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !widget.focused || !_wantsTerminalFocus) return;
+      _terminalFocus.requestFocus();
+    });
   }
 
   @override
@@ -1499,7 +1519,13 @@ class _OpenTabDropTargetState extends State<_OpenTabDropTarget> {
         if (_overExcluded(d.globalPosition)) return;
         for (final f in d.files) {
           if (Directory(f.path).existsSync()) continue; // ignora pastas
-          widget.vm.openFile(f.path, inPane: widget.paneId, isPreview: false);
+          // Fronteira: `desktop_drop` entrega o caminho nativo do SO (`\` no
+          // Windows) — canoniza antes de entrar no app.
+          widget.vm.openFile(
+            normalizePath(f.path),
+            inPane: widget.paneId,
+            isPreview: false,
+          );
         }
       },
       child: Stack(
