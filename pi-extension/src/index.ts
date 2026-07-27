@@ -1133,7 +1133,7 @@ let _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 // re-run every GIT_REFRESH_MS and only re-broadcast when the snapshot
 // changes (JSON-equal). Seeded into the hello roomMeta (so room_announced
 // already carries it) + kept fresh by this interval across the relay session.
-const GIT_REFRESH_MS = 120_000; // 2 min
+const GIT_REFRESH_MS = 60_000; // 1 min — posh-git-style Home tile refresh
 let _gitRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let _lastGitStatus: WireGitStatus | null | undefined = undefined;
 

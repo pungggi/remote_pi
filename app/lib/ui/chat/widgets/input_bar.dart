@@ -39,6 +39,11 @@ enum VoiceHint {
 class InputBar extends StatefulWidget {
   final bool disabled; // offline or no peer
   final bool streaming; // show cancel instead of send
+
+  /// Plan/107c — active model name shown as the composer hint when idle
+  /// (replaces the generic "Send a message…" so the user always sees which
+  /// model a send will use). Null/empty → falls back to "Send a message…".
+  final String? model;
   final void Function(String text) onSend;
   final VoidCallback? onCancel;
   final VoidCallback? onOpenQuickActions;
@@ -99,6 +104,7 @@ class InputBar extends StatefulWidget {
     this.draft,
     this.disabled = false,
     this.streaming = false,
+    this.model,
   });
 
   @override
@@ -467,7 +473,10 @@ class _InputBarState extends State<InputBar> {
                             ? 'Steer current response…'
                             : hasImage
                             ? 'Add a caption…'
-                            : 'Send a message…',
+                            : (widget.model != null &&
+                                    widget.model!.isNotEmpty
+                                ? widget.model!
+                                : 'Send a message…'),
                         hintStyle: TextStyle(
                           color: colors.muted,
                           fontFamily: kMonoFamily,

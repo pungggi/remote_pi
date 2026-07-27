@@ -484,6 +484,7 @@ class ChatPage extends StatelessWidget {
           isPeerOffline ||
           isPresenceOffline,
       streaming: isWorking,
+      model: vm.activeRoom?.model,
       onCancel: cancelId != null ? () => vm.cancel(cancelId) : null,
       onOpenQuickActions: actionsEnabled
           ? () => showQuickActionsSheet(context)
