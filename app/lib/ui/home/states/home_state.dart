@@ -72,11 +72,19 @@ class HomeList extends HomeState {
   /// survives presence/rooms/status re-emits. Default [HomeFilter.online].
   final HomeFilter filter;
 
+  /// Plan/107b — on-demand git status snapshot per session, keyed
+  /// `"${standardB64(epk)}|$roomId"`. Populated by [HomeViewModel] when
+  /// the user lands on the session list (or pulls to refresh); each entry
+  /// rides the existing active-peer-scoped `git_status_request` channel.
+  /// `null` = fetched but not a repo / unavailable; absent = not fetched.
+  final Map<String, GitStatus?> gitByKey;
+
   const HomeList({
     required this.peers,
     this.statusByEpk = const {},
     this.roomsByPeer = const {},
     this.filter = HomeFilter.online,
+    this.gitByKey = const {},
   });
 
   HomeList copyWith({
@@ -84,11 +92,13 @@ class HomeList extends HomeState {
     Map<String, PresenceState>? statusByEpk,
     Map<String, List<RoomInfo>>? roomsByPeer,
     HomeFilter? filter,
+    Map<String, GitStatus?>? gitByKey,
   }) => HomeList(
     peers: peers ?? this.peers,
     statusByEpk: statusByEpk ?? this.statusByEpk,
     roomsByPeer: roomsByPeer ?? this.roomsByPeer,
     filter: filter ?? this.filter,
+    gitByKey: gitByKey ?? this.gitByKey,
   );
 
   /// Flatten to a single ordered list of items: one row per (peer, room).
@@ -152,7 +162,8 @@ class HomeList extends HomeState {
       other.filter == filter &&
       listEquals(other.peers, peers) &&
       mapEquals(other.statusByEpk, statusByEpk) &&
-      mapEquals(other.roomsByPeer, roomsByPeer);
+      mapEquals(other.roomsByPeer, roomsByPeer) &&
+      mapEquals(other.gitByKey, gitByKey);
 
   @override
   int get hashCode => Object.hash(
@@ -164,5 +175,6 @@ class HomeList extends HomeState {
     Object.hashAllUnordered(
       roomsByPeer.entries.map((e) => '${e.key}:${e.value.length}'),
     ),
+    gitByKey.length,
   );
 }

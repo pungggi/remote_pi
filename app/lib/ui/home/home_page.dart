@@ -44,28 +44,32 @@ class HomePage extends StatelessWidget {
     return Scaffold(
       backgroundColor: colors.bg,
       body: SafeArea(
-        child: CustomScrollView(
-          slivers: [
-            _buildLargeTitleBar(context, vm, state),
-            // Plan 44 — Android-only update notice. Sits at the top of the
-            // scroll content (below the title, above the list); shrinks to
-            // zero height when there's nothing to announce, so it's invisible
-            // on iOS and when no newer version exists.
-            const SliverToBoxAdapter(child: UpdateBanner()),
-            switch (state) {
-              HomeLoading() => SliverFillRemaining(
-                hasScrollBody: false,
-                child: Center(
-                  child: CircularProgressIndicator(color: colors.accent),
+        child: RefreshIndicator(
+          onRefresh: vm.refreshGitStatus,
+          color: colors.accent,
+          child: CustomScrollView(
+            slivers: [
+              _buildLargeTitleBar(context, vm, state),
+              // Plan 44 — Android-only update notice. Sits at the top of the
+              // scroll content (below the title, above the list); shrinks to
+              // zero height when there's nothing to announce, so it's invisible
+              // on iOS and when no newer version exists.
+              const SliverToBoxAdapter(child: UpdateBanner()),
+              switch (state) {
+                HomeLoading() => SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: Center(
+                    child: CircularProgressIndicator(color: colors.accent),
+                  ),
                 ),
-              ),
-              HomeNoPeer() => const SliverFillRemaining(
-                hasScrollBody: false,
-                child: _EmptyState(),
-              ),
-              HomeList() => _buildListSlivers(context, vm, state),
-            },
-          ],
+                HomeNoPeer() => const SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: _EmptyState(),
+                ),
+                HomeList() => _buildListSlivers(context, vm, state),
+              },
+            ],
+          ),
         ),
       ),
     );
@@ -362,6 +366,8 @@ class HomePage extends StatelessWidget {
           isWorking: isWorking,
           isSelected: isSelected,
           room: it.room,
+          git: state
+              .gitByKey['${toStandardB64(it.peer.remoteEpk)}|${it.room.roomId}'],
           onOpen: () => _open(context, vm, it.peer, it.room),
           onLongPress: () => _showSessionMenu(context, vm, it, isLive: isLive),
         ),

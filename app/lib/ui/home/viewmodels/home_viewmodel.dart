@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/epk_encoding.dart';
@@ -23,13 +24,20 @@ class HomeViewModel extends ViewModel<HomeState> {
   final PairingStorage _storage;
   final Preferences _prefs;
   final ConnectionManager _conn;
+  final IActionsRepository _actions;
   StreamSubscription<Map<String, PresenceState>>? _presenceSub;
   StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
   StreamSubscription<ConnectionStatus>? _statusSub;
   bool _relayConnected = false;
   bool _disposed = false;
 
-  HomeViewModel(this._storage, this._prefs, this._conn)
+  /// Plan/107b — git snapshots keyed `"${standardB64(epk)}|$roomId"`.
+  /// Only the active session is populated (the action channel is
+  /// active-peer-scoped); other tiles keep their model subtitle.
+  Map<String, GitStatus?> _gitByKey = {};
+  bool _gitBusy = false;
+
+  HomeViewModel(this._storage, this._prefs, this._conn, this._actions)
     : super(const HomeLoading()) {
     _relayConnected = _conn.status is StatusOnline;
     _load();
@@ -85,8 +93,12 @@ class HomeViewModel extends ViewModel<HomeState> {
         peers: peers,
         statusByEpk: _conn.presenceSnapshot,
         roomsByPeer: _conn.roomsSnapshot,
+        gitByKey: _gitByKey,
       ),
     );
+    // Plan/107b — seed the active session's git snapshot now that the
+    // list is live (no-op when offline / no active peer yet).
+    _maybeFetchGit();
   }
 
   void _onPresence(Map<String, PresenceState> snapshot) {
@@ -120,9 +132,52 @@ class HomeViewModel extends ViewModel<HomeState> {
           statusByEpk: s.statusByEpk,
           roomsByPeer: s.roomsByPeer,
           filter: s.filter,
+          gitByKey: _gitByKey,
         ),
       );
     }
+    // Plan/107b — relay just came online: refresh the active session's git.
+    if (next) _maybeFetchGit();
+  }
+
+  /// Plan/107b — refresh the ACTIVE session's git status (the action
+  /// channel is active-peer-scoped, so only the session the user is in /
+  /// last opened can be queried). Stores the snapshot keyed by
+  /// `"${standardB64(epk)}|$roomId"` so [SessionTile] can look it up.
+  /// Never throws: an offline/timeout is recorded as `null` (unavailable).
+  Future<void> refreshGitStatus() async {
+    if (_gitBusy || _disposed) return;
+    final epk = _conn.activePeer?.remoteEpk;
+    if (epk == null) return;
+    final key = '${toStandardB64(epk)}|${_conn.activeRoomId}';
+    _gitBusy = true;
+    try {
+      final status = await _actions.gitStatus();
+      if (_disposed) return;
+      _gitByKey = {..._gitByKey, key: status};
+    } on ActionFailure catch (_) {
+      if (_disposed) return;
+      _gitByKey = {..._gitByKey, key: null};
+    } finally {
+      _gitBusy = false;
+    }
+    _reemitWithGit();
+  }
+
+  /// Auto-fetch hook: seeds git once the list is live AND the relay is
+  /// online AND there's an active peer. Idempotent (guarded by `_gitBusy`
+  /// + the active-peer check). Called from `_load` + `_onStatus`.
+  Future<void> _maybeFetchGit() async {
+    if (_disposed) return;
+    if (_conn.status is! StatusOnline) return;
+    if (_conn.activePeer == null) return;
+    await refreshGitStatus();
+  }
+
+  void _reemitWithGit() {
+    final s = state;
+    if (s is! HomeList) return;
+    emit(s.copyWith(gitByKey: _gitByKey));
   }
 
   /// Plan-38 Fase 3 — switch the presence tab. No reload: it only swaps the
