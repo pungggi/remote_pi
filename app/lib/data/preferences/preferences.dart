@@ -19,6 +19,9 @@ class Preferences extends ChangeNotifier {
   // foreground service. Defaults ON ("stay connected is priority"); the user
   // can opt out in Settings (battery trade-off).
   bool _keepAliveInBackground = true;
+  // Plan 110 — tool calls are collapsed by default; tapping expands them to show
+  // full details. Reduces chat noise when the AI makes many tool calls.
+  bool _collapseToolCalls = true;
 
   Preferences([FlutterSecureStorage? store])
       : _store = store ?? const FlutterSecureStorage();
@@ -29,6 +32,7 @@ class Preferences extends ChangeNotifier {
   static const _kOnboardingCompletedKey = 'prefs.onboarding_completed';
   static const _kThemeModeKey = 'prefs.theme_mode';
   static const _kKeepAliveInBackgroundKey = 'prefs.keep_alive_in_background';
+  static const _kCollapseToolCallsKey = 'prefs.collapse_tool_calls';
 
   /// True → chat hides `ToolEvent` rows (only user/assistant text remain).
   bool get hideToolCalls => _hideToolCalls;
@@ -127,6 +131,14 @@ class Preferences extends ChangeNotifier {
       changed = true;
     }
 
+    // Plan 110 — default true when the key is absent (first launch: collapsed).
+    final collapse = await _store.read(key: _kCollapseToolCallsKey);
+    final collapseBool = collapse == null ? true : collapse == 'true';
+    if (collapseBool != _collapseToolCalls) {
+      _collapseToolCalls = collapseBool;
+      changed = true;
+    }
+
     if (changed) notifyListeners();
   }
 
@@ -208,6 +220,20 @@ class Preferences extends ChangeNotifier {
     _keepAliveInBackground = value;
     await _store.write(
       key: _kKeepAliveInBackgroundKey,
+      value: value.toString(),
+    );
+    notifyListeners();
+  }
+
+  /// Plan 110 — when true, tool calls are collapsed by default in chat.
+  /// Tapping a collapsed card expands it. Default true.
+  bool get collapseToolCalls => _collapseToolCalls;
+
+  Future<void> setCollapseToolCalls(bool value) async {
+    if (_collapseToolCalls == value) return;
+    _collapseToolCalls = value;
+    await _store.write(
+      key: _kCollapseToolCallsKey,
       value: value.toString(),
     );
     notifyListeners();

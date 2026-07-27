@@ -324,6 +324,24 @@ class _DisplaySection extends StatelessWidget {
           value: prefs.hideToolCalls,
           onChanged: (v) => prefs.setHideToolCalls(v),
         ),
+        // Plan 110 — collapse tool calls by default; tapping expands them.
+        SwitchListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 18),
+          activeThumbColor: colors.accent,
+          title: Text(
+            'Collapse tool calls in chat',
+            style: context.typo.sansBody.copyWith(color: colors.text),
+          ),
+          subtitle: Text(
+            'Tap a collapsed tool call to expand it.',
+            style: context.typo.sansBody.copyWith(
+              color: colors.muted,
+              fontSize: 12,
+            ),
+          ),
+          value: prefs.collapseToolCalls,
+          onChanged: (v) => prefs.setCollapseToolCalls(v),
+        ),
         // Plan 103 — Android-only foreground service that keeps the relay
         // connection alive in the background. Off = today's behaviour (the OS
         // freezes the process and the WS drops on focus change).

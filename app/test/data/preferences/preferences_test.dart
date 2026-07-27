@@ -176,5 +176,40 @@ void main() {
       expect(p.selectedPeerEpk, isNull);
       expect(p.selectedRoomRaw, isNull);
     });
+
+    group('collapseToolCalls', () {
+      test('defaults to true before load()', () {
+        final p = Preferences(_FakeSecureStorage());
+        expect(p.collapseToolCalls, isTrue);
+      });
+
+      test('load() hydrates from storage', () async {
+        final store = _FakeSecureStorage();
+        await store.write(
+            key: 'prefs.collapse_tool_calls', value: 'false');
+        final p = Preferences(store);
+        await p.load();
+        expect(p.collapseToolCalls, isFalse);
+      });
+
+      test('load() defaults to true when key is absent', () async {
+        final p = Preferences(_FakeSecureStorage());
+        await p.load();
+        expect(p.collapseToolCalls, isTrue);
+      });
+
+      test('setCollapseToolCalls writes to storage and notifies', () async {
+        final store = _FakeSecureStorage();
+        final p = Preferences(store);
+        var notifs = 0;
+        p.addListener(() => notifs++);
+
+        await p.setCollapseToolCalls(false);
+        expect(p.collapseToolCalls, isFalse);
+        expect(
+            await store.read(key: 'prefs.collapse_tool_calls'), 'false');
+        expect(notifs, 1);
+      });
+    });
   });
 }

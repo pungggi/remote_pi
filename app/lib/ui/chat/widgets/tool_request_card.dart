@@ -1,7 +1,10 @@
+import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:provider/provider.dart';
 
 // Inline tool execution card that appears in the chat flow.
 //
@@ -13,20 +16,46 @@ import 'package:flutter/material.dart';
 // milliseconds before `tool_result` arrived — confusing UX with no real
 // gating. The card is now purely informational.
 //
+// Plan/110 — tool calls are collapsible: by default they show a minimal
+// row (tool name + status icon + chevron); tapping expands to full details.
+// The setting `Preferences.collapseToolCalls` controls the initial state.
+//
 // `onDecide` is kept on the API for forward compat — when the Pi adds a
 // real approval pause we can re-enable the controls. Today it is unused.
 
-class ToolRequestCard extends StatelessWidget {
+class ToolRequestCard extends StatefulWidget {
   final ToolEvent tool;
   final void Function(String toolCallId, ApproveDecision decision)? onDecide;
 
   const ToolRequestCard({super.key, required this.tool, this.onDecide});
 
-  /// Plan/32 — one color drives the whole card so the outcome is unmistakable:
+  @override
+  State<ToolRequestCard> createState() => _ToolRequestCardState();
+}
+
+class _ToolRequestCardState extends State<ToolRequestCard> {
+  late bool _expanded;
+
+  @override
+  void initState() {
+    super.initState();
+    // Initial state: if setting is true (collapse by default), start collapsed;
+    // otherwise start expanded.
+    final prefs = context.read<Preferences>();
+    _expanded = !prefs.collapseToolCalls;
+  }
+
+  void _toggleExpanded() {
+    setState(() {
+      _expanded = !_expanded;
+    });
+  }
+
+  /// Plan/110 — one color drives the whole card so the outcome is unmistakable:
   /// running → blue, done → green, failed → red, denied/expired → grey.
   Color _statusColor(BuildContext context) {
     final colors = context.colors;
-    return switch (tool.status) {
+    return switch (widget.tool.status) {
       ToolEventStatus.pending || ToolEventStatus.allowed => colors.accent,
       ToolEventStatus.completed => colors.success,
       ToolEventStatus.failed => colors.error,
@@ -34,17 +63,73 @@ class ToolRequestCard extends StatelessWidget {
     };
   }
 
+  IconData _statusIcon() {
+    return switch (widget.tool.status) {
+      ToolEventStatus.pending || ToolEventStatus.allowed => LucideIcons.loader2,
+      ToolEventStatus.completed => LucideIcons.check,
+      ToolEventStatus.failed => LucideIcons.x,
+      ToolEventStatus.denied || ToolEventStatus.expired => LucideIcons.ban,
+    };
+  }
+
   @override
   Widget build(BuildContext context) {
     final color = _statusColor(context);
+
     // Dim only the inert states (denied/expired); keep done/failed at full
     // opacity so their green/red read clearly.
     final dimmed =
-        tool.status == ToolEventStatus.denied ||
-        tool.status == ToolEventStatus.expired;
+        widget.tool.status == ToolEventStatus.denied ||
+        widget.tool.status == ToolEventStatus.expired;
 
     return Opacity(
       opacity: dimmed ? 0.65 : 1.0,
+      child: _expanded
+          ? _buildExpandedCard(context, color)
+          : _buildCollapsedRow(context, color),
+    );
+  }
+
+  /// Collapsed view: minimal row with tool name + status icon + chevron.
+  Widget _buildCollapsedRow(
+    BuildContext context,
+    Color color,
+  ) {
+    final colors = context.colors;
+    final typo = context.typo;
+    return GestureDetector(
+      onTap: _toggleExpanded,
+      child: Container(
+        decoration: BoxDecoration(
+          color: colors.surface,
+          border: Border.all(color: color, width: 1),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: ListTile(
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          leading: Icon(_statusIcon(), color: color, size: 18),
+          title: Text(
+            widget.tool.tool,
+            style: typo.mono.copyWith(
+              color: colors.text,
+              fontSize: 13,
+            ),
+          ),
+          trailing: Icon(
+            LucideIcons.chevronRight,
+            color: colors.muted,
+            size: 16,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Expanded view: full card with header, code block, and outcome.
+  Widget _buildExpandedCard(BuildContext context, Color color) {
+    return GestureDetector(
+      onTap: _toggleExpanded,
       child: Container(
         decoration: BoxDecoration(
           color: context.colors.surface,
@@ -63,7 +148,42 @@ class ToolRequestCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            _buildHeader(context, color),
+            Row(
+              children: [
+                CustomPaint(
+                  size: const Size(14, 14),
+                  painter: _TerminalIconPainter(color: color),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    widget.tool.tool.toUpperCase(),
+                    style: TextStyle(
+                      fontFamily: kMonoFamily,
+                      fontSize: 11.5,
+                      color: color,
+                      letterSpacing: 0.6,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  _statusLabel(),
+                  style: TextStyle(
+                    fontFamily: kMonoFamily,
+                    fontSize: 10,
+                    color: color,
+                    letterSpacing: 0.4,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Icon(
+                  LucideIcons.chevronUp,
+                  color: context.colors.muted,
+                  size: 16,
+                ),
+              ],
+            ),
             const SizedBox(height: 10),
             _buildCodeBlock(context),
             const SizedBox(height: 8),
@@ -74,43 +194,14 @@ class ToolRequestCard extends StatelessWidget {
     );
   }
 
-  Widget _buildHeader(BuildContext context, Color color) {
-    final statusLabel = switch (tool.status) {
+  String _statusLabel() {
+    return switch (widget.tool.status) {
       ToolEventStatus.pending || ToolEventStatus.allowed => 'RUNNING',
       ToolEventStatus.completed => 'DONE',
       ToolEventStatus.failed => 'FAILED',
       ToolEventStatus.denied => 'DENIED',
       ToolEventStatus.expired => 'EXPIRED',
     };
-
-    return Row(
-      children: [
-        CustomPaint(
-          size: const Size(14, 14),
-          painter: _TerminalIconPainter(color: color),
-        ),
-        const SizedBox(width: 8),
-        Text(
-          tool.tool.toUpperCase(),
-          style: TextStyle(
-            fontFamily: kMonoFamily,
-            fontSize: 11.5,
-            color: color,
-            letterSpacing: 0.6,
-          ),
-        ),
-        const Spacer(),
-        Text(
-          statusLabel,
-          style: TextStyle(
-            fontFamily: kMonoFamily,
-            fontSize: 10,
-            color: color,
-            letterSpacing: 0.4,
-          ),
-        ),
-      ],
-    );
   }
 
   Widget _buildCodeBlock(BuildContext context) {
@@ -137,9 +228,10 @@ class ToolRequestCard extends StatelessWidget {
   Widget _buildToolSummary(BuildContext context) {
     final colors = context.colors;
     final typo = context.typo;
-    final display = _formatToolDisplay(tool.tool, tool.args);
+    final display = _formatToolDisplay(widget.tool.tool, widget.tool.args);
     if (display == null) {
-      return Text(_formatArgs(tool.tool, tool.args), style: typo.mono);
+      return Text(_formatArgs(widget.tool.tool, widget.tool.args),
+          style: typo.mono);
     }
 
     return Text.rich(
@@ -160,11 +252,11 @@ class ToolRequestCard extends StatelessWidget {
   }
 
   Widget _buildOutcome(Color color) {
-    final text = switch (tool.status) {
+    final text = switch (widget.tool.status) {
       ToolEventStatus.pending || ToolEventStatus.allowed => '⏳ Running…',
       ToolEventStatus.completed => '✓ Done',
-      ToolEventStatus.failed => '✗ ${tool.error ?? "Failed"}',
-      ToolEventStatus.denied => '✗ ${tool.error ?? "Denied"}',
+      ToolEventStatus.failed => '✗ ${widget.tool.error ?? "Failed"}',
+      ToolEventStatus.denied => '✗ ${widget.tool.error ?? "Denied"}',
       ToolEventStatus.expired => '✗ Expired',
     };
     return Text(
