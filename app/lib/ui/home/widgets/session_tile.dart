@@ -1,5 +1,6 @@
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
+import 'package:app/ui/core/git_status_span.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 
@@ -201,7 +202,7 @@ class _TitleBlock extends StatelessWidget {
           builder: (_) {
             if (git != null) {
               return Text.rich(
-                TextSpan(children: _compactGitSpans(git!, colors)),
+                TextSpan(children: gitStatusSpans(git!, colors)),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               );
@@ -229,28 +230,6 @@ class _TitleBlock extends StatelessWidget {
 
 String _truncateModel(String name) =>
     name.length <= 24 ? name : '${name.substring(0, 21)}…';
-
-/// Plan/107b — compact posh-git summary for the Home tile:
-/// `branch ↑ahead ↓behind ×gone ~dirty {stash}`, coloured like the
-/// pi-posh-git footer (branch→accent, ahead→success, behind/gone→error/muted,
-/// dirty/stash→warning).
-List<InlineSpan> _compactGitSpans(GitStatus s, AppColors c) {
-  final base = TextStyle(fontFamily: kMonoFamily, fontSize: 12);
-  TextSpan t(String text, Color color) => TextSpan(
-    text: text,
-    style: base.copyWith(color: color),
-  );
-  final dirty = s.workingAdded + s.workingModified + s.workingDeleted;
-  final spans = <InlineSpan>[
-    t(s.branch.isEmpty ? '(no branch)' : s.branch, c.accent),
-  ];
-  if (s.aheadBy > 0) spans.add(t(' ↑${s.aheadBy}', c.success));
-  if (s.behindBy > 0) spans.add(t(' ↓${s.behindBy}', c.error));
-  if (s.upstreamGone) spans.add(t(' ×', c.muted));
-  if (dirty > 0) spans.add(t(' ~$dirty', c.warning));
-  if (s.stashCount > 0) spans.add(t(' {${s.stashCount}}', c.warning));
-  return spans;
-}
 
 class _Avatar extends StatelessWidget {
   final String name;

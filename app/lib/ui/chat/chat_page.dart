@@ -5,6 +5,7 @@ import 'package:app/data/share/composer_draft.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
+import 'package:app/ui/core/git_status_span.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/chat/quick_actions/widgets/quick_actions_sheet.dart';
 import 'package:app/ui/chat/attachment/states/attachment_state.dart';
@@ -360,47 +361,11 @@ class ChatPage extends StatelessWidget {
     );
   }
 
-  /// Plan/107 — posh-git-style COLORED git status. Mirrors pi-posh-git's
-  /// footer `buildPrompt` color mapping: brackets/`|`/stash/diverged → warning,
-  /// branch/`≡`/`~` → accent, ahead → success, behind/`!`/unstaged → error,
-  /// upstream-gone `×` → muted. Returns a TextSpan for SelectableText.rich.
-  static TextSpan _gitTextSpan(GitStatus s, AppColors c) {
-    final base = TextStyle(fontFamily: kMonoFamily, fontSize: 13);
-    TextSpan t(String text, Color color) =>
-        TextSpan(text: text, style: base.copyWith(color: color));
-    String counts(int a, int m, int d) => '+$a ~$m -$d';
-    final hasIndex = s.indexAdded + s.indexModified + s.indexDeleted > 0;
-    final hasWorking =
-        s.workingAdded + s.workingModified + s.workingDeleted > 0;
-    final spans = <InlineSpan>[
-      t('[', c.warning),
-      t(s.branch, c.accent),
-    ];
-    if (s.upstream != null && s.upstreamGone) {
-      spans.add(t(' ×', c.muted));
-    } else if (s.upstream != null && s.behindBy == 0 && s.aheadBy == 0) {
-      spans.add(t(' ≡', c.accent));
-    } else if (s.upstream != null && s.behindBy > 0 && s.aheadBy > 0) {
-      spans.add(t(' ↓${s.behindBy} ↑${s.aheadBy}', c.warning));
-    } else if (s.upstream != null && s.behindBy > 0) {
-      spans.add(t(' ↓${s.behindBy}', c.error));
-    } else if (s.upstream != null && s.aheadBy > 0) {
-      spans.add(t(' ↑${s.aheadBy}', c.success));
-    }
-    if (hasIndex) {
-      spans.add(t(' ${counts(s.indexAdded, s.indexModified, s.indexDeleted)}', c.success));
-    }
-    if (hasIndex && hasWorking) spans.add(t(' |', c.warning));
-    if (hasWorking) {
-      spans.add(t(' ${counts(s.workingAdded, s.workingModified, s.workingDeleted)}', c.error));
-      spans.add(t(' !', c.error));
-    } else if (hasIndex) {
-      spans.add(t(' ~', c.accent));
-    }
-    if (s.stashCount > 0) spans.add(t(' (${s.stashCount})', c.warning));
-    spans.add(t(']', c.warning));
-    return TextSpan(children: spans);
-  }
+  /// Plan/107 — posh-git-style COLORED git status. Delegates to the shared
+  /// [gitStatusSpans] helper so the dialog + Home tile render identically
+  /// (and match pi-posh-git's footer). Returns a TextSpan for SelectableText.rich.
+  static TextSpan _gitTextSpan(GitStatus s, AppColors c) =>
+      TextSpan(children: gitStatusSpans(s, c, fontSize: 13));
 
   static String _roomDisplayName(
     RoomInfo? room,
