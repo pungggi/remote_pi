@@ -751,6 +751,17 @@ class ListModels extends ClientMessage {
   Map<String, dynamic> toJson() => {'type': 'list_models', 'id': id};
 }
 
+/// Plan/107 — on-demand git status snapshot request. The pi-extension runs
+/// `git status --porcelain=2 --branch` in the session cwd and replies with a
+/// [GitStatusResult] (`status` null when not a git repo).
+class GitStatusRequest extends ClientMessage {
+  final String id;
+  GitStatusRequest({required this.id});
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'git_status_request', 'id': id};
+}
+
 // --- ServerMessage (extension → app) ---
 // 1 pairing = 1 session: no session_id on any message.
 // Sealed: all subtypes in this file — switch exhaustiveness enforced by compiler.
@@ -787,6 +798,8 @@ sealed class ServerMessage {
       'action_ok' => ActionOk.fromJson(json),
       'action_error' => ActionError.fromJson(json),
       'models_list' => ModelsList.fromJson(json),
+      // Plan/107 — git status snapshot reply (session-info dialog).
+      'git_status_result' => GitStatusResult.fromJson(json),
       // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors
       // the SDK's extension_ui_request RPC contract; optional `ask` envelope
       // carries pi-ask's full question so the app renders multi/preview/notes.
@@ -1356,6 +1369,79 @@ class ModelsList extends ServerMessage {
       inReplyTo: j['in_reply_to'] as String,
       models: list,
       current: cur is Map<String, dynamic> ? WireModel.fromJson(cur) : null,
+    );
+  }
+}
+
+/// Plan/107 — parsed git status of the session cwd (mirrors pi-posh-git's
+/// footer data). Surfaced via [GitStatusResult]; rendered as a posh-git-style
+/// summary line in the session-info dialog.
+class GitStatus {
+  final String branch;
+  final String? upstream;
+  final int aheadBy;
+  final int behindBy;
+  final bool upstreamGone;
+  final int indexAdded;
+  final int indexModified;
+  final int indexDeleted;
+  final int indexUnmerged;
+  final int workingAdded;
+  final int workingModified;
+  final int workingDeleted;
+  final int workingUnmerged;
+  final int stashCount;
+
+  const GitStatus({
+    required this.branch,
+    this.upstream,
+    this.aheadBy = 0,
+    this.behindBy = 0,
+    this.upstreamGone = false,
+    this.indexAdded = 0,
+    this.indexModified = 0,
+    this.indexDeleted = 0,
+    this.indexUnmerged = 0,
+    this.workingAdded = 0,
+    this.workingModified = 0,
+    this.workingDeleted = 0,
+    this.workingUnmerged = 0,
+    this.stashCount = 0,
+  });
+
+  factory GitStatus.fromJson(Map<String, dynamic> j) {
+    int n(Object? v) => v is num ? v.toInt() : 0;
+    return GitStatus(
+      branch: (j['branch'] as String?) ?? '',
+      upstream: j['upstream'] as String?,
+      aheadBy: n(j['aheadBy']),
+      behindBy: n(j['behindBy']),
+      upstreamGone: (j['upstreamGone'] as bool?) ?? false,
+      indexAdded: n(j['indexAdded']),
+      indexModified: n(j['indexModified']),
+      indexDeleted: n(j['indexDeleted']),
+      indexUnmerged: n(j['indexUnmerged']),
+      workingAdded: n(j['workingAdded']),
+      workingModified: n(j['workingModified']),
+      workingDeleted: n(j['workingDeleted']),
+      workingUnmerged: n(j['workingUnmerged']),
+      stashCount: n(j['stashCount']),
+    );
+  }
+}
+
+/// Plan/107 — reply to [GitStatusRequest]. `status` is `null` when the cwd
+/// isn't a git repo or git is unavailable (app shows "not a git repo").
+class GitStatusResult extends ServerMessage {
+  final String inReplyTo;
+  final GitStatus? status;
+  GitStatusResult({required this.inReplyTo, required this.status});
+
+  factory GitStatusResult.fromJson(Map<String, dynamic> j) {
+    final s = j['status'];
+    return GitStatusResult(
+      inReplyTo: j['in_reply_to'] as String,
+      status: s is Map<String, dynamic> ? GitStatus.fromJson(s) : null,
     );
   }
 }

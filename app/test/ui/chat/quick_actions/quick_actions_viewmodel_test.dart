@@ -35,6 +35,9 @@ class _FakeActionsRepository implements IActionsRepository {
   ActiveRoomMeta get activeRoomMeta => meta;
 
   @override
+  Future<GitStatus?> gitStatus() async => null;
+
+  @override
   Stream<ActiveRoomMeta> get activeRoomMetaStream =>
       _metaController.stream;
 

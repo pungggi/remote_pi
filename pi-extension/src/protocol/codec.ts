@@ -17,6 +17,8 @@ const SERVER_TYPES = new Set<ServerMessage["type"]>([
   "session_history",
   // Plan/100 — interactive extension prompt (ask_user via pi-ask).
   "extension_ui_request",
+  // Plan/107 — on-demand git status reply for the session-info dialog.
+  "git_status_result",
 ]);
 
 export class DecodeError extends Error {

@@ -84,6 +84,7 @@ import {
   handleListModels,
   type ActionCtx,
 } from "./actions/handlers.js";
+import { handleGitStatus } from "./actions/git_status.js";
 import { ensureModelRegistry } from "./actions/registry.js";
 import {
   ensureGlobalDirs,
@@ -4525,6 +4526,12 @@ export function _routeClientMessageFrom(
       break;
     case "list_models":
       handleListModels(((_lastEventCtx ?? _lastCtx) as ActionCtx | null), ensureModelRegistry(), sender, msg);
+      break;
+    // Plan/107 — on-demand git status snapshot. Runs `git status` in the
+    // session cwd (the one already reported in room_meta) and replies with
+    // git_status_result; the relay forwards it verbatim (no relay change).
+    case "git_status_request":
+      void handleGitStatus(sender, msg, _myRoomMeta?.cwd ?? null);
       break;
   }
 }

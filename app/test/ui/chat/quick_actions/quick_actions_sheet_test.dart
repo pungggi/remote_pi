@@ -33,6 +33,9 @@ class _FakeRepo implements IActionsRepository {
       const Stream<ActiveRoomMeta>.empty();
 
   @override
+  Future<GitStatus?> gitStatus() async => null;
+
+  @override
   Future<void> compact() async {
     compactCalls++;
     if (failCompact) throw const ActionFailure('compact boom');

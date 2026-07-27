@@ -198,6 +198,10 @@ export type ClientMessage =
   | { type: "model_set"; id: string; provider: string; model_id: string }
   | { type: "thinking_set"; id: string; level: ThinkingLevel }
   | { type: "list_models"; id: string }
+  // Plan/107 — on-demand git status snapshot for the session-info dialog.
+  // The Pi runs `git status --porcelain=2 --branch` in the session cwd and
+  // replies with `git_status_result` (status null when not a git repo).
+  | { type: "git_status_request"; id: string }
   // Plan/100 — interactive extension prompt response (ask_user via pi-ask).
   // Mirrors RpcExtensionUIResponse; the optional `ask` envelope carries
   // pi-ask's structured answer so multi/preview/notes survive the round-trip.
@@ -333,6 +337,9 @@ export type ServerMessage =
   | { type: "action_ok"; in_reply_to: string; action: ActionName }
   | { type: "action_error"; in_reply_to: string; action: ActionName; error: string }
   | { type: "models_list"; in_reply_to: string; models: WireModel[]; current?: WireModel }
+  // Plan/107 — Reply to `git_status_request`. `status` is null when the cwd
+  // isn't a git repo or git is unavailable.
+  | { type: "git_status_result"; in_reply_to: string; status: WireGitStatus | null }
   // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors
   // RpcExtensionUIRequest (select/confirm/input/editor/notify); the optional
   // `ask` envelope carries pi-ask's full question so the app renders richly.
@@ -389,6 +396,28 @@ export interface WireModel {
    *  includes `"image"`). The app uses it to enable/disable the attach
    *  button — a text-only model greys out image attachments. */
   vision: boolean;
+}
+
+/**
+ * Plan/107 — Git status snapshot of the session cwd (the same data
+ * pi-posh-git renders in its footer). Computed on demand by the
+ * pi-extension; the app shows it in the session-info dialog.
+ */
+export interface WireGitStatus {
+  branch: string;
+  upstream: string | null;
+  aheadBy: number;
+  behindBy: number;
+  upstreamGone: boolean;
+  indexAdded: number;
+  indexModified: number;
+  indexDeleted: number;
+  indexUnmerged: number;
+  workingAdded: number;
+  workingModified: number;
+  workingDeleted: number;
+  workingUnmerged: number;
+  stashCount: number;
 }
 
 export type ByeReason = "peer_stop" | "session_replaced" | "shutdown";

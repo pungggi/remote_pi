@@ -662,6 +662,9 @@ class SyncService extends Service {
       case ActionOk():
       case ActionError():
       case ModelsList():
+      // Plan/107 — git status replies are owned by ActionsRepository
+      // (session-info dialog), not the message sync.
+      case GitStatusResult():
         break;
     }
   }

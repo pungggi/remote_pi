@@ -1,3 +1,4 @@
+import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/share/shared_text_inbox.dart';
 import 'package:app/data/share/composer_draft.dart';
@@ -257,7 +258,13 @@ class ChatPage extends StatelessWidget {
             onPressed: () {
               final p = vm.activePeer;
               if (p != null) {
-                _showSessionInfo(context, p, vm.activeRoom, roomName);
+                _showSessionInfo(
+                  context,
+                  p,
+                  vm.activeRoom,
+                  roomName,
+                  context.read<IActionsRepository>(),
+                );
               }
             },
           ),
@@ -274,7 +281,11 @@ class ChatPage extends StatelessWidget {
     PeerRecord peer,
     RoomInfo? room,
     String name,
+    IActionsRepository actions,
   ) {
+    // Plan/107 — kick the git-status request off immediately so it's already
+    // in flight when the dialog paints (the row shows "loading…" meanwhile).
+    final gitFuture = actions.gitStatus();
     final owner = (peer.nickname?.isNotEmpty ?? false)
         ? peer.nickname!
         : peer.sessionName.isNotEmpty
@@ -309,10 +320,27 @@ class ChatPage extends StatelessWidget {
               _InfoRow(label: 'Name', value: name),
               _InfoRow(label: 'Path', value: room?.cwd ?? '—'),
               _InfoRow(label: 'Owner', value: owner),
+              _InfoRow(label: 'Relay', value: peer.relayUrl),
               if (model != null && model.isNotEmpty)
                 _InfoRow(label: 'Model', value: model),
               _InfoRow(label: 'Room', value: room?.roomId ?? '—'),
               _InfoRow(label: 'Paired', value: paired),
+              FutureBuilder<GitStatus?>(
+                future: gitFuture,
+                builder: (ctx, snap) {
+                  final String gitValue;
+                  if (snap.connectionState == ConnectionState.waiting) {
+                    gitValue = 'loading…';
+                  } else if (snap.hasError) {
+                    gitValue = 'unavailable';
+                  } else {
+                    gitValue = snap.data != null
+                        ? _formatGitStatus(snap.data!)
+                        : 'not a git repo';
+                  }
+                  return _InfoRow(label: 'Git', value: gitValue);
+                },
+              ),
             ],
           ),
           actions: [
@@ -327,6 +355,36 @@ class ChatPage extends StatelessWidget {
         );
       },
     );
+  }
+
+  /// Plan/107 — posh-git-style one-liner, e.g. `[main ↑3 +1 ~0 -0 | +0 ~2 -0 !]`.
+  static String _formatGitStatus(GitStatus s) {
+    bool has(int a, int m, int d) => a + m + d > 0;
+    String counts(int a, int m, int d) => '+$a ~$m -$d';
+    final hasIndex = has(s.indexAdded, s.indexModified, s.indexDeleted);
+    final hasWorking =
+        has(s.workingAdded, s.workingModified, s.workingDeleted);
+    final parts = <String>[s.branch];
+    if (s.upstream != null && s.upstreamGone) {
+      parts.add('×');
+    } else if (s.upstream != null && s.behindBy == 0 && s.aheadBy == 0) {
+      parts.add('≡');
+    } else {
+      if (s.behindBy > 0) parts.add('↓${s.behindBy}');
+      if (s.aheadBy > 0) parts.add('↑${s.aheadBy}');
+    }
+    if (hasIndex) {
+      parts.add(counts(s.indexAdded, s.indexModified, s.indexDeleted));
+    }
+    if (hasIndex && hasWorking) parts.add('|');
+    if (hasWorking) {
+      parts.add(counts(s.workingAdded, s.workingModified, s.workingDeleted));
+      parts.add('!');
+    } else if (hasIndex) {
+      parts.add('~');
+    }
+    if (s.stashCount > 0) parts.add('(${s.stashCount})');
+    return '[${parts.join(' ')}]';
   }
 
   static String _roomDisplayName(

@@ -1,4 +1,5 @@
 import 'package:app/config/dependencies.dart';
+import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/local/boxes.dart';
 import 'package:app/data/mesh/mesh_sync_service.dart';
@@ -154,6 +155,11 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
         // into a single centered pane on zero-state Home (no Pi / empty).
         ChangeNotifierProvider<ShellLayout>.value(
           value: injector.get<ShellLayout>(),
+        ),
+        // Plan/107 — exposes the actions repo to the chat session-info
+        // dialog (one-off read for gitStatus()). Not a ChangeNotifier.
+        Provider<IActionsRepository>.value(
+          value: injector.get<IActionsRepository>(),
         ),
       ],
       // Theme is reactive: toggling the mode in Settings notifies

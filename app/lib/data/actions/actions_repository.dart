@@ -101,6 +101,11 @@ abstract class IActionsRepository extends Repository {
   /// (peer, room) session if one exists; otherwise hits the Pi.
   Future<ModelsCatalogue> listModels({bool forceRefresh = false});
 
+  /// Plan/107 — on-demand git status of the session cwd (the same data
+  /// pi-posh-git shows in its footer). Returns `null` when the cwd isn't a
+  /// git repo / git unavailable; throws [ActionFailure] on offline/timeout.
+  Future<GitStatus?> gitStatus();
+
   /// Snapshot of the active room's meta. Recomputed on every rooms
   /// snapshot and on every connection-status change.
   ActiveRoomMeta get activeRoomMeta;
@@ -193,6 +198,12 @@ class ActionsRepository extends Repository implements IActionsRepository {
             ModelsCatalogue(models: models, current: current),
           );
         }
+      // Plan/107 — git status snapshot reply (session-info dialog).
+      case GitStatusResult(:final inReplyTo, :final status):
+        final p = _pending.remove(inReplyTo);
+        if (p == null) return;
+        p.timeout.cancel();
+        if (!p.completer.isCompleted) p.completer.complete(status);
       default:
         // All other ServerMessages are owned by SessionRepository.
         break;
@@ -307,6 +318,10 @@ class ActionsRepository extends Repository implements IActionsRepository {
     _modelsCache[_sessionKey()] = result;
     return result;
   }
+
+  @override
+  Future<GitStatus?> gitStatus() =>
+      _dispatch<GitStatus?>((id) => GitStatusRequest(id: id));
 
   Future<T> _dispatch<T>(ClientMessage Function(String id) builder) async {
     final ch = _channel;
