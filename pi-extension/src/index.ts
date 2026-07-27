@@ -85,6 +85,7 @@ import {
   type ActionCtx,
 } from "./actions/handlers.js";
 import { handleGitStatus } from "./actions/git_status.js";
+import { handleOpenTerminal } from "./actions/open_terminal.js";
 import { ensureModelRegistry } from "./actions/registry.js";
 import {
   ensureGlobalDirs,
@@ -4532,6 +4533,12 @@ export function _routeClientMessageFrom(
     // git_status_result; the relay forwards it verbatim (no relay change).
     case "git_status_request":
       void handleGitStatus(sender, msg, _myRoomMeta?.cwd ?? null);
+      break;
+    // Plan/108 — open a new terminal at a project folder (remote `/ps
+    // clone`). Spawns wt.exe / Start-Process in the resolved cwd; replies
+    // open_terminal_result (ok:false on unsupported platform / bad path).
+    case "open_terminal_request":
+      void handleOpenTerminal(sender, msg, _myRoomMeta?.cwd ?? null);
       break;
   }
 }

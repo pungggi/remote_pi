@@ -19,6 +19,8 @@ const SERVER_TYPES = new Set<ServerMessage["type"]>([
   "extension_ui_request",
   // Plan/107 — on-demand git status reply for the session-info dialog.
   "git_status_result",
+  // Plan/108 — terminal-launch reply (remote `/ps clone`).
+  "open_terminal_result",
 ]);
 
 export class DecodeError extends Error {

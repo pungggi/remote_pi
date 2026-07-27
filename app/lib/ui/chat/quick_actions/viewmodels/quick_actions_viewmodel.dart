@@ -55,6 +55,38 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
     await _runVoid(ActionName.sessionNew, _repo.newSession);
   }
 
+  /// Plan/108 — open a terminal at [cwd] (or the session cwd). Returns the
+  /// Pi's outcome so the sheet can toast ok/fail. Throws [ActionFailure] only
+  /// on transport issues (offline / timeout); a launch failure returns ok:false.
+  Future<OpenTerminalResult> openTerminal({
+    String? cwd,
+    bool runPi = true,
+  }) async {
+    _emitIfAlive(QuickActionsBusy(
+      action: ActionName.terminal,
+      currentThinking: state.currentThinking,
+      currentModel: state.currentModel,
+      currentModelName: state.currentModelName,
+    ));
+    try {
+      final result = await _repo.openTerminal(cwd: cwd, runPi: runPi);
+      _emitIfAlive(QuickActionsIdle(
+        currentThinking: state.currentThinking,
+        currentModel: state.currentModel,
+        currentModelName: state.currentModelName,
+      ));
+      return result;
+    } on ActionFailure catch (e) {
+      _emitIfAlive(QuickActionsIdle(
+        currentThinking: state.currentThinking,
+        currentModel: state.currentModel,
+        currentModelName: state.currentModelName,
+      ));
+      _errorController.add(e.message);
+      rethrow;
+    }
+  }
+
   Future<void> setModel(WireModel model) async {
     // Optimistic highlight — flip the current model immediately so the
     // picker row reflects the tap before the round-trip resolves.

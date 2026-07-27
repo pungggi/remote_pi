@@ -202,6 +202,15 @@ export type ClientMessage =
   // The Pi runs `git status --porcelain=2 --branch` in the session cwd and
   // replies with `git_status_result` (status null when not a git repo).
   | { type: "git_status_request"; id: string }
+  // Plan/108 — open a new terminal tab at a project folder (remote `/ps
+  // clone`). `cwd` optional (null/omitted → use the session cwd); `runPi`
+  // default true launches `pi` in the new tab (plain shell when false).
+  | {
+      type: "open_terminal_request";
+      id: string;
+      cwd?: string | null;
+      runPi?: boolean;
+    }
   // Plan/100 — interactive extension prompt response (ask_user via pi-ask).
   // Mirrors RpcExtensionUIResponse; the optional `ask` envelope carries
   // pi-ask's structured answer so multi/preview/notes survive the round-trip.
@@ -340,6 +349,17 @@ export type ServerMessage =
   // Plan/107 — Reply to `git_status_request`. `status` is null when the cwd
   // isn't a git repo or git is unavailable.
   | { type: "git_status_result"; in_reply_to: string; status: WireGitStatus | null }
+  // Plan/108 — Reply to `open_terminal_request`. `ok` is false when the
+  // platform is unsupported, the path is missing, or the launcher failed.
+  // `method` describes what was launched: "wt" (Windows Terminal tab),
+  // "window" (console-window fallback), or "none" (never spawned).
+  | {
+      type: "open_terminal_result";
+      in_reply_to: string;
+      ok: boolean;
+      message: string;
+      method?: "wt" | "window" | "none";
+    }
   // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors
   // RpcExtensionUIRequest (select/confirm/input/editor/notify); the optional
   // `ask` envelope carries pi-ask's full question so the app renders richly.

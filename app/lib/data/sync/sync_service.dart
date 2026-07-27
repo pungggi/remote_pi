@@ -665,6 +665,9 @@ class SyncService extends Service {
       // Plan/107 — git status replies are owned by ActionsRepository
       // (session-info dialog), not the message sync.
       case GitStatusResult():
+      // Plan/108 — terminal-launch replies are owned by ActionsRepository
+      // (quick action / session menu), not the message sync.
+      case OpenTerminalResult():
         break;
     }
   }

@@ -596,7 +596,11 @@ enum ActionName {
   sessionNew('session_new'),
   sessionCompact('session_compact'),
   modelSet('model_set'),
-  thinkingSet('thinking_set');
+  thinkingSet('thinking_set'),
+  // Plan/108 — local-only discriminator for the terminal-launch busy
+  // spinner. Never appears on the wire (open_terminal_result carries no
+  // action name); reuses the enum so QuickActionsBusy keeps one field.
+  terminal('terminal');
 
   final String wire;
   const ActionName(this.wire);
@@ -762,6 +766,25 @@ class GitStatusRequest extends ClientMessage {
   Map<String, dynamic> toJson() => {'type': 'git_status_request', 'id': id};
 }
 
+/// Plan/108 — open a new terminal tab at a project folder on the PC
+/// (remote `/ps clone`). `cwd` null/omitted → the Pi uses its own session
+/// cwd; `runPi` default true launches `pi` in the new tab (plain shell when
+/// false).
+class OpenTerminalRequest extends ClientMessage {
+  final String id;
+  final String? cwd;
+  final bool runPi;
+  OpenTerminalRequest({required this.id, this.cwd, this.runPi = true});
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'type': 'open_terminal_request',
+        'id': id,
+        if (cwd != null) 'cwd': cwd,
+        'runPi': runPi,
+      };
+}
+
 // --- ServerMessage (extension → app) ---
 // 1 pairing = 1 session: no session_id on any message.
 // Sealed: all subtypes in this file — switch exhaustiveness enforced by compiler.
@@ -800,6 +823,8 @@ sealed class ServerMessage {
       'models_list' => ModelsList.fromJson(json),
       // Plan/107 — git status snapshot reply (session-info dialog).
       'git_status_result' => GitStatusResult.fromJson(json),
+      // Plan/108 — terminal-launch reply (quick action / session menu).
+      'open_terminal_result' => OpenTerminalResult.fromJson(json),
       // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors
       // the SDK's extension_ui_request RPC contract; optional `ask` envelope
       // carries pi-ask's full question so the app renders multi/preview/notes.
@@ -1442,6 +1467,41 @@ class GitStatusResult extends ServerMessage {
     return GitStatusResult(
       inReplyTo: j['in_reply_to'] as String,
       status: s is Map<String, dynamic> ? GitStatus.fromJson(s) : null,
+    );
+  }
+}
+
+/// How the terminal was launched, for diagnostics. `none` when the platform
+/// is unsupported, the path was missing, or the launcher failed before spawn.
+enum OpenTerminalMethod { wt, window, none }
+
+/// Plan/108 — reply to [OpenTerminalRequest]. `ok` is false when the platform
+/// is unsupported, the path is missing, or the launcher failed. [method] is
+/// null only for unexpected wire values (a known `none` is still reported).
+class OpenTerminalResult extends ServerMessage {
+  final String inReplyTo;
+  final bool ok;
+  final String message;
+  final OpenTerminalMethod? method;
+  OpenTerminalResult({
+    required this.inReplyTo,
+    required this.ok,
+    required this.message,
+    this.method,
+  });
+
+  factory OpenTerminalResult.fromJson(Map<String, dynamic> j) {
+    final m = j['method'] as String?;
+    return OpenTerminalResult(
+      inReplyTo: j['in_reply_to'] as String,
+      ok: j['ok'] as bool? ?? false,
+      message: (j['message'] as String?) ?? '',
+      method: switch (m) {
+        'wt' => OpenTerminalMethod.wt,
+        'window' => OpenTerminalMethod.window,
+        'none' => OpenTerminalMethod.none,
+        _ => null,
+      },
     );
   }
 }

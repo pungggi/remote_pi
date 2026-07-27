@@ -106,6 +106,12 @@ abstract class IActionsRepository extends Repository {
   /// git repo / git unavailable; throws [ActionFailure] on offline/timeout.
   Future<GitStatus?> gitStatus();
 
+  /// Plan/108 — open a new terminal tab at [cwd] (or the session cwd when
+  /// null) on the paired PC, running `pi` when [runPi]. Returns the Pi's
+  /// outcome (ok/message/method) — never throws on a launch failure, only
+  /// on transport issues (offline / timeout).
+  Future<OpenTerminalResult> openTerminal({String? cwd, bool runPi = true});
+
   /// Snapshot of the active room's meta. Recomputed on every rooms
   /// snapshot and on every connection-status change.
   ActiveRoomMeta get activeRoomMeta;
@@ -204,6 +210,26 @@ class ActionsRepository extends Repository implements IActionsRepository {
         if (p == null) return;
         p.timeout.cancel();
         if (!p.completer.isCompleted) p.completer.complete(status);
+      // Plan/108 — terminal-launch reply (quick action / session menu).
+      case OpenTerminalResult(
+        :final inReplyTo,
+        :final ok,
+        :final message,
+        :final method,
+      ):
+        final p = _pending.remove(inReplyTo);
+        if (p == null) return;
+        p.timeout.cancel();
+        if (!p.completer.isCompleted) {
+          p.completer.complete(
+            OpenTerminalResult(
+              inReplyTo: inReplyTo,
+              ok: ok,
+              message: message,
+              method: method,
+            ),
+          );
+        }
       default:
         // All other ServerMessages are owned by SessionRepository.
         break;
@@ -322,6 +348,12 @@ class ActionsRepository extends Repository implements IActionsRepository {
   @override
   Future<GitStatus?> gitStatus() =>
       _dispatch<GitStatus?>((id) => GitStatusRequest(id: id));
+
+  @override
+  Future<OpenTerminalResult> openTerminal({String? cwd, bool runPi = true}) =>
+      _dispatch<OpenTerminalResult>(
+        (id) => OpenTerminalRequest(id: id, cwd: cwd, runPi: runPi),
+      );
 
   Future<T> _dispatch<T>(ClientMessage Function(String id) builder) async {
     final ch = _channel;

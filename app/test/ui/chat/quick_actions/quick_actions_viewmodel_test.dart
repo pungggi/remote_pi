@@ -38,6 +38,18 @@ class _FakeActionsRepository implements IActionsRepository {
   Future<GitStatus?> gitStatus() async => null;
 
   @override
+  Future<OpenTerminalResult> openTerminal({
+    String? cwd,
+    bool runPi = true,
+  }) async =>
+      OpenTerminalResult(
+        inReplyTo: '',
+        ok: true,
+        message: 'stub',
+        method: OpenTerminalMethod.none,
+      );
+
+  @override
   Stream<ActiveRoomMeta> get activeRoomMetaStream =>
       _metaController.stream;
 
