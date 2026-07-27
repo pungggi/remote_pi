@@ -36,6 +36,9 @@ class ChatViewModel extends ViewModel<ChatState> {
   StreamSubscription<ExtensionUiRequest>? _uiReqSub;
   StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
   StreamSubscription<ConnectionStatus>? _statusSub;
+  // Plan/111 — truncation subscription and state.
+  StreamSubscription<bool>? _truncatedSub;
+  bool _truncated = false;
 
   PeerRecord? _activePeer;
   String _activeRoomId = 'main';
@@ -69,6 +72,8 @@ class ChatViewModel extends ViewModel<ChatState> {
     _queuedSub = _sync.queuedStream.listen(_onQueued);
     _eventSub = _sync.events.listen(_onEvent);
     _uiReqSub = _sync.extensionUiRequestStream.listen(_onExtensionUiRequest);
+    // Plan/111 — track session history truncation state.
+    _truncatedSub = _sync.truncatedStream.listen(_onTruncated);
     _roomsSub = _conn.roomsStream.listen((_) => _recompute());
     _statusSub = _conn.statusStream.listen(_onStatus);
     // ignore: discarded_futures
@@ -244,6 +249,12 @@ class ChatViewModel extends ViewModel<ChatState> {
     _recompute();
   }
 
+  // Plan/111 — truncation state changed (more history available).
+  void _onTruncated(bool truncated) {
+    _truncated = truncated;
+    _recompute();
+  }
+
   /// Plan/100 — interactive extension_ui_request arrived (ask_user via pi-ask).
   ///
   /// A `notify` whose id matches the open request is either:
@@ -308,6 +319,7 @@ class ChatViewModel extends ViewModel<ChatState> {
       queuedMessages: _queuedMessages,
       pendingUiRequest: _pendingUiRequest,
       pendingUiError: _pendingUiError,
+      truncated: _truncated,
     );
   }
 
@@ -331,6 +343,11 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   Future<void> approveTool(String toolCallId, ApproveDecision decision) =>
       _sync.approveTool(toolCallId, decision);
+
+  // Plan/111 — load more history from the Pi (progressive limit increase).
+  Future<void> loadMoreHistory() async {
+    _sync.requestSync(loadMore: true);
+  }
 
   /// Plan/100 — submit (or cancel) an interactive extension_ui_request.
   ///
@@ -381,6 +398,7 @@ class ChatViewModel extends ViewModel<ChatState> {
     _queuedSub?.cancel();
     _eventSub?.cancel();
     _uiReqSub?.cancel();
+    _truncatedSub?.cancel();
     _roomsSub?.cancel();
     _statusSub?.cancel();
     super.dispose();

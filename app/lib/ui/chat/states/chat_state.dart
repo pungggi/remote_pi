@@ -56,6 +56,10 @@ class ChatReady extends ChatState {
   /// dead end when pi-ask rejects an answer.
   final String? pendingUiError;
 
+  // Plan/111 — true when session history is truncated (Pi has more messages
+  /// than returned). The UI shows a "Load more messages" button at the top.
+  final bool truncated;
+
   String? get queuedText =>
       queuedMessages.isEmpty ? null : queuedMessages.first.text;
 
@@ -70,6 +74,7 @@ class ChatReady extends ChatState {
     this.queuedMessages = const [],
     this.pendingUiRequest,
     this.pendingUiError,
+    this.truncated = false,
   });
 
   ChatReady copyWith({
@@ -88,6 +93,7 @@ class ChatReady extends ChatState {
     bool clearPendingUiRequest = false,
     String? pendingUiError,
     bool clearPendingUiError = false,
+    bool? truncated,
   }) =>
       ChatReady(
         messages: messages ?? this.messages,
@@ -100,7 +106,7 @@ class ChatReady extends ChatState {
         peerPresence: peerPresence ?? this.peerPresence,
         isWorking: isWorking ?? this.isWorking,
         queuedMessages: clearQueuedMessages
-            ? const []
+            ? []
             : (queuedMessages ?? this.queuedMessages),
         pendingUiRequest: clearPendingUiRequest
             ? null
@@ -108,6 +114,7 @@ class ChatReady extends ChatState {
         pendingUiError: clearPendingUiError
             ? null
             : (pendingUiError ?? this.pendingUiError),
+        truncated: truncated ?? this.truncated,
       );
 
   @override
@@ -122,7 +129,8 @@ class ChatReady extends ChatState {
       other.isWorking == isWorking &&
       other.queuedMessages == queuedMessages &&
       other.pendingUiRequest == pendingUiRequest &&
-      other.pendingUiError == pendingUiError;
+      other.pendingUiError == pendingUiError &&
+      other.truncated == truncated;
 
   @override
   int get hashCode => Object.hash(
@@ -136,6 +144,7 @@ class ChatReady extends ChatState {
         queuedMessages,
         pendingUiRequest,
         pendingUiError,
+        truncated,
       );
 }
 

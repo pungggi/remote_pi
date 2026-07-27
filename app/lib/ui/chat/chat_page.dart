@@ -447,6 +447,8 @@ class ChatPage extends StatelessWidget {
           messages: visible,
           streaming: streaming,
           onDecide: (id, decision) => vm.approveTool(id, decision),
+          truncated: state.truncated,
+          onLoadMore: vm.loadMoreHistory,
         );
       }(),
     };
@@ -647,16 +649,22 @@ class _MessageList extends StatelessWidget {
   final List<ChatMessage> messages;
   final StreamingMessage? streaming;
   final void Function(String, ApproveDecision) onDecide;
+  final bool truncated;
+  final VoidCallback? onLoadMore;
 
   const _MessageList({
     required this.messages,
     required this.streaming,
     required this.onDecide,
+    required this.truncated,
+    this.onLoadMore,
   });
 
   @override
   Widget build(BuildContext context) {
-    final itemCount = messages.length + (streaming != null ? 1 : 0);
+    final itemCount = messages.length +
+        (streaming != null ? 1 : 0) +
+        (truncated && onLoadMore != null ? 1 : 0);
 
     // `reverse: true` anchors the viewport to the bottom (offset 0 = newest)
     // and keeps it there as content arrives — no manual scroll-to-bottom is
@@ -668,19 +676,31 @@ class _MessageList extends StatelessWidget {
       itemCount: itemCount,
       separatorBuilder: (context, idx) => const SizedBox(height: 14),
       itemBuilder: (_, i) {
-        // Index 0 = bottom = newest. Stable keys are REQUIRED here: when the
-        // streaming bubble appears/disappears at index 0 every other item's
-        // index shifts by 1, and without keys Flutter re-matches elements by
-        // position — briefly painting the wrong message at a slot (the
-        // momentary C/B/A → B/C/A reorder). Keying by message id makes it
-        // match by identity instead.
+        // "Load more" button at the top (index = itemCount - 1)
+        if (truncated && onLoadMore != null && i == itemCount - 1) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Center(
+              child: TextButton.icon(
+                icon: const Icon(LucideIcons.refreshCw, size: 16),
+                label: const Text('Load more messages'),
+                onPressed: onLoadMore,
+              ),
+            ),
+          );
+        }
+        // Streaming bubble at bottom (index 0)
         if (streaming != null && i == 0) {
           return KeyedSubtree(
             key: const ValueKey('streaming'),
             child: StreamingBubble(streaming!),
           );
         }
-        final msgIdx = messages.length - 1 - (i - (streaming != null ? 1 : 0));
+        // Normal messages (adjust indices for streaming + load more)
+        final msgIdx = messages.length -
+            1 -
+            (i - (streaming != null ? 1 : 0) -
+                (truncated && onLoadMore != null && i > (streaming != null ? 1 : 0) ? 1 : 0));
         final msg = messages[msgIdx];
         return KeyedSubtree(
           key: ValueKey(msg.id),

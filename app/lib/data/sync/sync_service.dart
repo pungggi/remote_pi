@@ -71,6 +71,16 @@ class SyncService extends Service {
   bool _pendingSyncRequest = false;
   Timer? _syncDebounce;
 
+  // Plan/111 — track whether session history is truncated (server has more
+  // messages than returned). Streamed to ChatViewModel for "Load more" UI.
+  bool _truncated = false;
+  final StreamController<bool> _truncatedController =
+      StreamController<bool>.broadcast();
+  // Plan/111 — progressive sync limit: start at 100, multiply by 5 on each
+  // "load more" action (100 → 500 → 2500 → 12500). Reset to base on normal sync.
+  static const int _baseSyncLimit = 100;
+  int _currentSyncLimit = _baseSyncLimit;
+
   // Whether the active session's agent is currently producing a reply. Spans
   // the WHOLE turn (send/echo → agent_done), not just the token-streaming
   // window — restoring the old broad "working" signal. Mirrored into the
@@ -132,6 +142,10 @@ class SyncService extends Service {
   /// `cancel` target for the in-flight reply (null when idle).
   String? get workingReplyTo => _workingReplyTo;
 
+  // Plan/111 — session history truncation state and "load more" support.
+  bool get truncated => _truncated;
+  Stream<bool> get truncatedStream => _truncatedController.stream;
+
   String? get activeEpk => _activeEpk;
   String get activeRoomId => _activeRoomId;
 
@@ -149,6 +163,12 @@ class SyncService extends Service {
     // the Pi, and Home keeps showing it via the relay's per-room
     // `meta.working` broadcast.
     _resetTurnState();
+    // Plan/111 — reset truncation state on session switch.
+    if (_truncated) {
+      _truncated = false;
+      _truncatedController.add(false);
+    }
+    _currentSyncLimit = _baseSyncLimit;
     _activeEpk = epk;
     _activeRoomId = room;
     await _loadIndex();
@@ -377,14 +397,26 @@ class SyncService extends Service {
     });
   }
 
-  void requestSync() {
+  /// Plan/111 — request session history with optional "load more" for
+  /// pagination. Normal sync uses base limit (100); loadMore multiplies
+  /// by 5 each tap (100 → 500 → 2500 → ...). The server clamps to its
+  /// env cap (REMOTE_PI_SYNC_LIMIT, default 30).
+  void requestSync({bool loadMore = false}) {
     final ch = _conn.channel;
     if (ch == null || _activeEpk == null) {
       _pendingSyncRequest = true;
       return;
     }
     _pendingSyncRequest = false;
-    ch.send(SessionSync(id: _newId()));
+
+    final limit = loadMore ? _currentSyncLimit * 5 : _baseSyncLimit;
+    if (!loadMore) {
+      _currentSyncLimit = _baseSyncLimit; // Reset on normal sync
+    } else {
+      _currentSyncLimit = limit; // Remember for next "load more"
+    }
+
+    ch.send(SessionSync(id: _newId(), limit: limit));
   }
 
   /// Plan/28 — `session_new` acked: wipe the active session's rows + index.
@@ -397,6 +429,12 @@ class SyncService extends Service {
     _discardStreamingState();
     _setQueuedMessages(const []);
     _setWorking(false);
+    // Plan/111 — reset truncation state on session clear.
+    if (_truncated) {
+      _truncated = false;
+      _truncatedController.add(false);
+    }
+    _currentSyncLimit = _baseSyncLimit;
     await _enqueue(() async {
       if (_activeEpk != epk || _activeRoomId != room) return;
       final box = await _boxes.msgsBox(epk, room);
@@ -702,6 +740,11 @@ class SyncService extends Service {
   Future<void> _applyHistory(SessionHistory h) async {
     final epk = _activeEpk;
     if (epk == null) return;
+    // Plan/111 — track and emit truncation state.
+    if (h.truncated != _truncated) {
+      _truncated = h.truncated;
+      _truncatedController.add(_truncated);
+    }
     final room = _activeRoomId;
     final rows = _convertHistory(h.events);
     final historyIds = {for (final r in rows) _key(r.role, r.id)};
@@ -1192,5 +1235,6 @@ class SyncService extends Service {
     _extensionUiController.close();
     _workingController.close();
     _queuedController.close();
+    _truncatedController.close();
   }
 }
