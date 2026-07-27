@@ -12,6 +12,7 @@ import 'package:app/data/repositories/session_read_repository.dart';
 import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/channel.dart'; // IChannel
 import 'package:app/data/transport/connection_manager.dart';
+import 'package:app/data/transport/keep_alive_controller.dart';
 import 'package:app/data/transport/peer_channel.dart';
 import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/transport/relay_config.dart';
@@ -96,6 +97,13 @@ Future<void> setupDependencies() async {
       factory: _productionConnectionFactory,
       storage: _injector.get<PairingStorage>(),
     ),
+  );
+
+  // Plan 103 — foreground-service controller (Android only; no-op elsewhere).
+  // Attached to ConnectionManager in main() once both are resolvable.
+  // addService so its dispose() (stops the service) runs on teardown.
+  _injector.addService<KeepAliveController>(
+    () => KeepAliveController(_injector.get<Preferences>()),
   );
 
   // Plan 29 — on-device speech-to-text. Singleton: it owns a broadcast

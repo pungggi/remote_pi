@@ -4,6 +4,7 @@ import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/connection_manager.dart';
+import 'package:app/data/transport/keep_alive_controller.dart';
 import 'package:app/pairing/owner_identity_bridge.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/routing/adaptive.dart';
@@ -21,6 +22,12 @@ void main() async {
   // Eagerly construct the SSOT writer so it's consuming the channel from boot
   // (messages can arrive before the chat screen mounts).
   injector.get<SyncService>();
+  // Plan 103 — mirror connection status into the Android foreground service so
+  // the relay WS survives backgrounding. attach() also reflects the current
+  // status (Online at boot → starts the notification).
+  injector
+      .get<KeepAliveController>()
+      .attach(injector.get<ConnectionManager>());
   runApp(const RemotePiApp());
 }
 

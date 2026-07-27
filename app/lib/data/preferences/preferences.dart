@@ -15,6 +15,10 @@ class Preferences extends ChangeNotifier {
   String? _relayUrl;
   bool _onboardingCompleted = false;
   ThemeMode _themeMode = ThemeMode.system;
+  // Plan 103 — keep the relay WebSocket alive in the background via an Android
+  // foreground service. Defaults ON ("stay connected is priority"); the user
+  // can opt out in Settings (battery trade-off).
+  bool _keepAliveInBackground = true;
 
   Preferences([FlutterSecureStorage? store])
       : _store = store ?? const FlutterSecureStorage();
@@ -24,6 +28,7 @@ class Preferences extends ChangeNotifier {
   static const _kRelayUrlKey = 'prefs.relay_url';
   static const _kOnboardingCompletedKey = 'prefs.onboarding_completed';
   static const _kThemeModeKey = 'prefs.theme_mode';
+  static const _kKeepAliveInBackgroundKey = 'prefs.keep_alive_in_background';
 
   /// True → chat hides `ToolEvent` rows (only user/assistant text remain).
   bool get hideToolCalls => _hideToolCalls;
@@ -114,6 +119,14 @@ class Preferences extends ChangeNotifier {
       changed = true;
     }
 
+    // Plan 103 — default true when the key is absent (first launch).
+    final keepAlive = await _store.read(key: _kKeepAliveInBackgroundKey);
+    final keepAliveBool = keepAlive == null ? true : keepAlive == 'true';
+    if (keepAliveBool != _keepAliveInBackground) {
+      _keepAliveInBackground = keepAliveBool;
+      changed = true;
+    }
+
     if (changed) notifyListeners();
   }
 
@@ -183,6 +196,20 @@ class Preferences extends ChangeNotifier {
     if (_themeMode == value) return;
     _themeMode = value;
     await _store.write(key: _kThemeModeKey, value: value.name);
+    notifyListeners();
+  }
+
+  /// Plan 103 — when true, an Android foreground service keeps the relay
+  /// WebSocket alive while the app is backgrounded. Default true.
+  bool get keepAliveInBackground => _keepAliveInBackground;
+
+  Future<void> setKeepAliveInBackground(bool value) async {
+    if (_keepAliveInBackground == value) return;
+    _keepAliveInBackground = value;
+    await _store.write(
+      key: _kKeepAliveInBackgroundKey,
+      value: value.toString(),
+    );
     notifyListeners();
   }
 

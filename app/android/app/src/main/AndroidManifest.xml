@@ -13,6 +13,14 @@
     <!-- Plan 30 — image attachments. CAMERA covers the photo-capture path;
          the gallery uses the Android Photo Picker (no storage permission). -->
     <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- Plan 103 — foreground service that keeps the relay WebSocket alive
+         while the app is backgrounded. dataSync is the canonical type for a
+         persistent data connection (Android 15 caps it at 6 h; the WS then
+         drops and reconnects on next foreground). POST_NOTIFICATIONS is the
+         Android 13+ runtime permission for the required FG notification. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="Piper"
         android:name="${applicationName}"
@@ -40,6 +48,16 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- Plan 103 — foreground "priority anchor" service. Holds the
+             persistent notification that elevates the app process to
+             foreground priority so Android does not freeze it (and the relay
+             WS) on background. The service runs no Dart. -->
+        <service
+            android:name=".KeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
