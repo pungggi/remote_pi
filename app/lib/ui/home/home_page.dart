@@ -1,4 +1,3 @@
-import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart' show RoomInfo;
@@ -381,11 +380,6 @@ class HomePage extends StatelessWidget {
     HomeItem it, {
     required bool isLive,
   }) {
-    // Plan/108 — resolve the pinned terminal folder for this PC (per-peer)
-    // once, before the sheet builds, so the subtitle + edit dialog share it.
-    final prefs = context.read<Preferences>();
-    final epk = it.peer.remoteEpk;
-    final pinFuture = prefs.terminalCwdFor(epk);
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: context.colors.bg,
@@ -404,29 +398,6 @@ class HomePage extends StatelessWidget {
                 onTap: () {
                   Navigator.of(sheetCtx).pop();
                   _promptRename(context, vm, it);
-                },
-              ),
-              ListTile(
-                leading:
-                    Icon(LucideIcons.terminalSquare, color: colors.accent),
-                title: Text(
-                  'Terminal folder',
-                  style: TextStyle(color: colors.text),
-                ),
-                subtitle: FutureBuilder<String?>(
-                  future: pinFuture,
-                  builder: (_, snap) => Text(
-                    snap.connectionState == ConnectionState.waiting
-                        ? '…'
-                        : (snap.data ?? 'Session folder (default)'),
-                    style: TextStyle(color: colors.muted, fontSize: 11),
-                    overflow: TextOverflow.ellipsis,
-                    maxLines: 1,
-                  ),
-                ),
-                onTap: () {
-                  Navigator.of(sheetCtx).pop();
-                  _promptTerminalFolder(context, epk, pinFuture, prefs);
                 },
               ),
               ListTile(
@@ -502,57 +473,6 @@ class HomePage extends StatelessWidget {
     );
     if (result == null) return;
     await vm.renameRoom(it.peer.remoteEpk, it.room.roomId, result);
-  }
-
-  /// Plan/108 — pin/clear the terminal folder for a PC. Empty string clears
-  /// the pin (falls back to the session cwd); Cancel (null) leaves it as-is.
-  Future<void> _promptTerminalFolder(
-    BuildContext context,
-    String epk,
-    Future<String?> currentPinFuture,
-    Preferences prefs,
-  ) async {
-    final current = await currentPinFuture;
-    if (!context.mounted) return;
-    final controller = TextEditingController(text: current ?? '');
-    final result = await showDialog<String?>(
-      context: context,
-      builder: (dCtx) {
-        final colors = dCtx.colors;
-        return AlertDialog(
-          backgroundColor: colors.bg,
-          title:
-          Text('Terminal folder', style: TextStyle(color: colors.text)),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            style: TextStyle(color: colors.text, fontFamily: kMonoFamily),
-            decoration: InputDecoration(
-              hintText: r'C:\path\to\project  (empty = session folder)',
-              hintStyle: TextStyle(color: colors.muted),
-              enabledBorder: OutlineInputBorder(
-                borderSide: BorderSide(color: colors.border),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderSide: BorderSide(color: colors.accent),
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dCtx).pop(null),
-              child: Text('Cancel', style: TextStyle(color: colors.muted)),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(dCtx).pop(controller.text.trim()),
-              child: Text('Save', style: TextStyle(color: colors.accent)),
-            ),
-          ],
-        );
-      },
-    );
-    if (result == null) return; // Cancel — leave the pin untouched.
-    await prefs.setTerminalCwdFor(epk, result); // '' → cleared.
   }
 
   Future<void> _confirmDelete(

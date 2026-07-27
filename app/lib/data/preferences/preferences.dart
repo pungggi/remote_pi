@@ -213,28 +213,6 @@ class Preferences extends ChangeNotifier {
     notifyListeners();
   }
 
-  // Plan/108 — pinned terminal folder per peer (PC). Null → use the session
-  // cwd (pure `/ps clone`). Keyed by remote EPK so multiple PCs each keep
-  // their own. Read/written directly from secure storage (no in-memory
-  // cache — only touched on menu open + edit, so a round-trip is fine).
-  static const _kTerminalCwdPrefix = 'prefs.terminal_cwd.';
-
-  Future<String?> terminalCwdFor(String epk) async {
-    final v = await _store.read(key: '$_kTerminalCwdPrefix$epk');
-    return (v != null && v.isNotEmpty) ? v : null;
-  }
-
-  Future<void> setTerminalCwdFor(String epk, String? cwd) async {
-    final key = '$_kTerminalCwdPrefix$epk';
-    final cleaned = (cwd != null && cwd.isNotEmpty) ? cwd.trim() : null;
-    if (cleaned == null) {
-      await _store.delete(key: key);
-    } else {
-      await _store.write(key: key, value: cleaned);
-    }
-    notifyListeners();
-  }
-
   static ThemeMode _themeModeFromString(String? raw) {
     switch (raw) {
       case 'light':

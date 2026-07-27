@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:app/config/dependencies.dart';
 import 'package:app/data/actions/actions_repository.dart' show ActionFailure;
-import 'package:app/data/preferences/preferences.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/routing/adaptive.dart';
 import 'package:app/ui/core/themes/themes.dart';
@@ -48,7 +47,6 @@ Future<void> showQuickActionsSheet(BuildContext context) {
           child: QuickActionsSheetBody(
             messenger: messenger,
             onSessionReset: chat.clearActiveSession,
-            activePeerEpk: chat.activePeer?.remoteEpk,
           ),
         ),
       );
@@ -67,16 +65,10 @@ class QuickActionsSheetBody extends StatefulWidget {
   /// [ChatViewModel.clearActiveSession].
   final Future<void> Function()? onSessionReset;
 
-  /// Plan/108 — remote EPK of the currently-active peer (the PC the chat
-  /// is bound to). Used to resolve the pinned terminal folder. Null when no
-  /// peer is active (the row still works — it opens at the session cwd).
-  final String? activePeerEpk;
-
   const QuickActionsSheetBody({
     super.key,
     required this.messenger,
     this.onSessionReset,
-    this.activePeerEpk,
   });
 
   @override
@@ -166,7 +158,7 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
               key: const Key('qa-open-terminal'),
               icon: LucideIcons.terminalSquare,
               label: 'Open terminal',
-              subtitle: "New `pi` tab at the pinned folder (or this session's).",
+              subtitle: "New `pi` tab at this session's folder.",
               busy: busyAction == ActionName.terminal,
               onTap: () => _onOpenTerminal(vm),
             ),
@@ -203,19 +195,14 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
     Navigator.of(context).pop();
   }
 
-  /// Plan/108 — open a terminal on the paired PC at the pinned folder (or
-  /// the session cwd when no pin is set). Stays open + toasts the result so
-  /// a bad path surfaces as a clear message; the user can retry or fix the
-  /// pin from the session menu.
+  /// Plan/108 — open a terminal on the paired PC at the session's folder
+  /// (pi's cwd — pure `/ps clone`). No path entry: the project folder is
+  /// already known from the running session. Toasts the result so a failure
+  /// (unsupported platform / missing cwd) surfaces clearly.
   Future<void> _onOpenTerminal(QuickActionsViewModel vm) async {
-    final epk = widget.activePeerEpk;
-    String? cwd;
-    if (epk != null) {
-      cwd = await context.read<Preferences>().terminalCwdFor(epk);
-    }
     final OpenTerminalResult r;
     try {
-      r = await vm.openTerminal(cwd: cwd);
+      r = await vm.openTerminal();
     } catch (_) {
       // Transport failure already toasted via `vm.errors`.
       return;
