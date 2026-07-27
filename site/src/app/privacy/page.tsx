@@ -8,7 +8,7 @@ export const metadata: Metadata = {
     "Privacy Policy for Piper — open-source software with no service behind it. Nobody operates a relay, and there is no account to create.",
 };
 
-const CONTACT_EMAIL = "alessandro@pungitore.ch";
+const CONTACT_EMAIL = "contact@pungitore.ch";
 
 export default function PrivacyPage() {
   return (

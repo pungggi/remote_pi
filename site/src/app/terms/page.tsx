@@ -8,7 +8,7 @@ export const metadata: Metadata = {
     "Terms for Piper — MIT-licensed software provided as is. There is no hosted service, no account, and no relay operated on your behalf.",
 };
 
-const CONTACT_EMAIL = "alessandro@pungitore.ch";
+const CONTACT_EMAIL = "contact@pungitore.ch";
 const GITHUB_URL = "https://github.com/pungggi/remote_pi";
 
 export default function TermsPage() {
