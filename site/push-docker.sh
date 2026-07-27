@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-IMAGE="jacobmoura7/remote-pi-site"
+IMAGE="pungggi/piper-site"
 VERSION="${1:-}"
 PLATFORMS="linux/amd64,linux/arm64"
 BUILDER="multiarch"
