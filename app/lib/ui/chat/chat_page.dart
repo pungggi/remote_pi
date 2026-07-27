@@ -464,6 +464,11 @@ class ChatPage extends StatelessWidget {
       onOpenAttach: actionsEnabled
           ? () => _openAttach(context, context.read<AttachmentViewModel>())
           : null,
+      // Plan/30-followup — paste image from clipboard (long-press field →
+      // "Paste image"). Same channel-availability gate as the attach button.
+      onPasteImage: actionsEnabled
+          ? () => _pasteImage(context, context.read<AttachmentViewModel>())
+          : null,
       onSend: (text) {
         final image = context.read<AttachmentViewModel>().takeImageForSend();
         vm.sendMessage(text, image: image);
@@ -494,6 +499,20 @@ class ChatPage extends StatelessWidget {
     if (hint != null) _handleAttachHint(messenger, hint!);
   }
 
+  /// Plan/30-followup — paste an image from the clipboard (no picker sheet).
+  static Future<void> _pasteImage(
+    BuildContext context,
+    AttachmentViewModel vm,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    AttachHint? hint;
+    final sub = vm.hints.listen((h) => hint = h);
+    await vm.pickFromClipboard();
+    await Future<void>.delayed(Duration.zero); // flush the hint microtask
+    await sub.cancel();
+    if (hint != null) _handleAttachHint(messenger, hint!);
+  }
+
   static void _handleAttachHint(
     ScaffoldMessengerState messenger,
     AttachHint hint,
@@ -518,6 +537,14 @@ class ChatPage extends StatelessWidget {
         messenger.showSnackBar(
           const SnackBar(
             content: Text("Couldn't attach that image."),
+            duration: Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      case AttachHint.noImageInClipboard:
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text('No image in the clipboard.'),
             duration: Duration(seconds: 3),
             behavior: SnackBarBehavior.floating,
           ),

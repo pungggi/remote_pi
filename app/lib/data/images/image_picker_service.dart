@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-import 'package:flutter/services.dart' show PlatformException;
+import 'package:flutter/services.dart' show MethodChannel, PlatformException;
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -18,6 +18,11 @@ abstract class IImagePickerService {
   /// Pick from the gallery (system PHPicker / Photo Picker — no permission).
   /// Returns null if the user cancelled.
   Future<PickedImage?> pickFromGallery();
+
+  /// Plan/30-followup — read an image from the system clipboard (e.g. an
+  /// Android screenshot). Returns null when the clipboard holds no image.
+  /// Default returns null so test fakes / unsupported platforms are unaffected.
+  Future<PickedImage?> pickFromClipboard() async => null;
 }
 
 /// A picked + compressed image ready for preview and sending. Bytes are raw
@@ -63,6 +68,29 @@ class ImagePickerService implements IImagePickerService {
   @override
   Future<PickedImage?> pickFromGallery() =>
       _pickAndCompress(ImageSourceKind.gallery);
+
+  @override
+  Future<PickedImage?> pickFromClipboard() async {
+    // Dedicated channel (MainActivity) reads the Android clipboard's image
+    // URI → bytes. Returns null when there's no image (text-only / empty).
+    const channel = MethodChannel('ch.pungitore.piper/clipboard');
+    try {
+      final res = await channel.invokeMethod<Map>('readImage');
+      if (res == null) return null;
+      final raw = res['data'];
+      if (raw is! Uint8List) return null;
+      // Compress like the other pickers — a screenshot PNG can be several MB.
+      final bytes = await FlutterImageCompress.compressWithList(
+        raw,
+        minWidth: _maxSide,
+        minHeight: _maxSide,
+        quality: _quality,
+      );
+      return PickedImage(bytes: bytes, mime: 'image/jpeg');
+    } on Exception {
+      return null;
+    }
+  }
 
   Future<PickedImage?> _pickAndCompress(ImageSourceKind source) async {
     final path = await _backend.pick(source);

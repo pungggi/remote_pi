@@ -32,6 +32,12 @@ class _FakePicker implements IImagePickerService {
     if (fail) throw Exception('boom');
     return next;
   }
+
+  @override
+  Future<PickedImage?> pickFromClipboard() async {
+    if (fail) throw Exception('boom');
+    return next;
+  }
 }
 
 class _FakeActions implements IActionsRepository {

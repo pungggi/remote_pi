@@ -1,6 +1,7 @@
 package ch.pungitore.piper
 
 import android.Manifest
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -53,6 +54,15 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // Plan/30-followup — clipboard image read for paste-to-attach.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "ch.pungitore.piper/clipboard")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "readImage" -> result.success(readClipboardImage())
+                    else -> result.notImplemented()
+                }
+            }
     }
 
     private fun hasNotificationPermission(): Boolean {
@@ -74,5 +84,23 @@ class MainActivity : FlutterActivity() {
             arrayOf(Manifest.permission.POST_NOTIFICATIONS),
             NOTIF_PERM_REQUEST,
         )
+    }
+
+    // Plan/30-followup — read the image on the system clipboard (e.g. a
+    // screenshot). Returns { data: ByteArray, mime } or null when the
+    // clipboard holds no image (text-only / empty / unreadable).
+    private fun readClipboardImage(): Map<String, Any>? {
+        val cm = getSystemService(ClipboardManager::class.java) ?: return null
+        val clip = cm.primaryClip ?: return null
+        if (clip.itemCount == 0) return null
+        val uri = clip.getItemAt(0).uri ?: return null
+        val mime = contentResolver.getType(uri) ?: return null
+        if (!mime.startsWith("image/")) return null
+        return try {
+            contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                ?.let { mapOf("data" to it, "mime" to mime) }
+        } catch (e: Exception) {
+            null
+        }
     }
 }

@@ -64,4 +64,7 @@ enum AttachHint {
 
   /// Pick/compress failed for some other reason.
   pickFailed,
+
+  /// Clipboard had no image when the user hit "Paste image".
+  noImageInClipboard,
 }

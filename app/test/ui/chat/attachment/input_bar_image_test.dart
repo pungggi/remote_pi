@@ -25,6 +25,8 @@ class _FakePicker implements IImagePickerService {
   Future<PickedImage?> pickFromCamera() async => next;
   @override
   Future<PickedImage?> pickFromGallery() async => next;
+  @override
+  Future<PickedImage?> pickFromClipboard() async => next;
 }
 
 class _FakeActions implements IActionsRepository {

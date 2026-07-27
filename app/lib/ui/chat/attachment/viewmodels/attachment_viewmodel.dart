@@ -42,6 +42,27 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
   Future<void> pickFromCamera() => _pick(_picker.pickFromCamera);
   Future<void> pickFromGallery() => _pick(_picker.pickFromGallery);
 
+  /// Plan/30-followup — paste an image from the clipboard (no picker sheet).
+  /// Distinct from [_pick]: a null result means "no image in the clipboard"
+  /// (not "cancelled"), surfaced as a hint rather than a silent no-op.
+  Future<void> pickFromClipboard() async {
+    if (state is AttachmentPicking) return;
+    final vision = state.visionSupported;
+    emit(AttachmentPicking(visionSupported: vision));
+    try {
+      final img = await _picker.pickFromClipboard();
+      if (img == null) {
+        emit(AttachmentEmpty(visionSupported: vision));
+        if (!_hints.isClosed) _hints.add(AttachHint.noImageInClipboard);
+        return;
+      }
+      emit(AttachmentAttached(image: img, visionSupported: vision));
+    } catch (_) {
+      emit(AttachmentEmpty(visionSupported: vision));
+      if (!_hints.isClosed) _hints.add(AttachHint.pickFailed);
+    }
+  }
+
   Future<void> _pick(Future<PickedImage?> Function() pick) async {
     if (state is AttachmentPicking) return;
     final vision = state.visionSupported;

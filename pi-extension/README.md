@@ -157,9 +157,14 @@ turns it into the SDK's multimodal content (an `ImageContent` followed by the
 caption `TextContent`) and calls `sendUserMessage(content)`, so the model sees
 the picture plus your text.
 
-Whether a model accepts images is surfaced as a `vision` flag on each
-`WireModel` (derived from the SDK's `Model.input` including `"image"`); the app
-greys out the attach button when the active model is text-only.
+Whether a model *declares* image support is surfaced as a `vision` flag on each
+`WireModel` (derived from the SDK's `Model.input` including `"image"`). The app
+**does not** grey out the attach button on a text-only model: runtime packages
+(e.g. `pi-multimodal-proxy`) add image support to text-only models without
+flipping that flag, so the declared `vision` is an unreliable capability
+signal. The attach button is enabled whenever the channel is open and the agent
+isn't mid-turn; if the backend truly can't handle the image, the send fails
+visibly rather than being hidden.
 
 The **relay is unchanged** — the image travels inside the same application
 message container as the text, so there's no binary channel (large files are a

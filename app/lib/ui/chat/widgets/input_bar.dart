@@ -63,6 +63,11 @@ class InputBar extends StatefulWidget {
   /// button (offline/streaming); vision/has-image gating is internal.
   final VoidCallback? onOpenAttach;
 
+  /// Plan/30-followup — paste an image from the clipboard (e.g. a
+  /// screenshot). Wired into the text field's "Paste image" toolbar entry.
+  /// Null hides the entry (offline/streaming).
+  final VoidCallback? onPasteImage;
+
   const InputBar({
     super.key,
     required this.onSend,
@@ -76,6 +81,7 @@ class InputBar extends StatefulWidget {
     this.onVoiceHint,
     this.attachment,
     this.onOpenAttach,
+    this.onPasteImage,
     this.disabled = false,
     this.streaming = false,
   });
@@ -299,16 +305,20 @@ class _InputBarState extends State<InputBar> {
         voiceState is VoiceUnavailable &&
         voiceState.reason == VoiceUnavailableReason.unsupported;
 
-    // Plan/30 — attachment.
+    // Plan/30 — attachment. Plan/103-followup: do NOT hard-disable on the
+    // model's declared `vision` flag. Runtime packages (e.g.
+    // pi-multimodal-proxy) add image support to text-only models WITHOUT
+    // flipping that flag (fallback mode routes images to a vision model),
+    // so the gate was unreliable and hid a working feature. The button now
+    // gates only on channel availability, not streaming, and no image
+    // already attached.
     final hasImage = attachState is AttachmentAttached;
-    final visionBlocked = attachState?.attachBlockedByVision ?? false;
     final hasContent = !_empty || hasImage;
     final attachEnabled =
         widget.onOpenAttach != null &&
         canInteract &&
         !widget.streaming &&
         !showStrip &&
-        !visionBlocked &&
         !hasImage;
 
     final showQuickActions =
@@ -384,6 +394,25 @@ class _InputBarState extends State<InputBar> {
                       maxLines: 6,
                       keyboardType: TextInputType.multiline,
                       textInputAction: TextInputAction.newline,
+                      // Plan/30-followup — add a "Paste image" entry to the
+                      // long-press selection toolbar so a clipboard screenshot
+                      // (or any copied image) attaches directly.
+                      contextMenuBuilder: (context, editableTextState) {
+                        return AdaptiveTextSelectionToolbar.buttonItems(
+                          buttonItems: <ContextMenuButtonItem>[
+                            ...editableTextState.contextMenuButtonItems,
+                            if (widget.onPasteImage != null)
+                              ContextMenuButtonItem(
+                                label: 'Paste image',
+                                onPressed: () {
+                                  editableTextState.hideToolbar();
+                                  widget.onPasteImage!();
+                                },
+                              ),
+                          ],
+                          anchors: editableTextState.contextMenuAnchors,
+                        );
+                      },
                       style: TextStyle(
                         fontFamily: kMonoFamily,
                         fontSize: 13,
@@ -613,8 +642,10 @@ class _InlineStopButton extends StatelessWidget {
 }
 
 /// Plan/30 — the attach (paperclip) button. Always visible; greyed + inert
-/// when [enabled] is false (offline/streaming, a text-only model #9, or an
-/// image is already attached).
+/// when [enabled] is false (offline/streaming, or an image is already
+/// attached). A text-only model no longer greys it — runtime packages (e.g.
+/// pi-multimodal-proxy) can add image support without flipping the declared
+/// vision flag.
 class _AttachButton extends StatelessWidget {
   const _AttachButton({required this.enabled, required this.onTap});
 
