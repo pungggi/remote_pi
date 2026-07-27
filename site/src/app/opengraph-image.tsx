@@ -34,10 +34,11 @@ export default function OpengraphImage() {
         >
           <svg width="280" height="280" viewBox="0 0 1024 1024">
             <rect width="1024" height="1024" fill="#000000" rx="200" />
-            <rect x="290" y="368" width="444" height="68" rx="10" fill="#FFFFFF" />
-            <rect x="345" y="436" width="68" height="320" rx="10" fill="#FFFFFF" />
-            <rect x="611" y="436" width="68" height="320" rx="10" fill="#FFFFFF" />
-            <circle cx="780" cy="332" r="58" fill="#4FC3F7" />
+            <rect x="312" y="272" width="96" height="500" rx="18" fill="#FFFFFF" />
+            <rect x="312" y="272" width="400" height="96" rx="18" fill="#FFFFFF" />
+            <rect x="616" y="272" width="96" height="300" rx="18" fill="#FFFFFF" />
+            <rect x="400" y="476" width="312" height="96" rx="18" fill="#FFFFFF" />
+            <circle cx="512" cy="422" r="46" fill="#4FC3F7" />
           </svg>
         </div>
         <div

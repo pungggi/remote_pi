@@ -30,17 +30,17 @@ function Ic({
   );
 }
 
-/* brand mark — Piper "π" logo with accent dot */
+/* brand mark — Piper "P" logo (pipe-stem + data packet in the bowl) */
 export function LogoMark() {
   return (
-    <svg viewBox="255 250 625 545" fill="none" aria-hidden="true">
+    <svg viewBox="0 0 1024 1024" fill="none" aria-hidden="true">
       <g fill="currentColor">
-        <rect x="290" y="368" width="444" height="68" rx="10" />
-        <rect x="345" y="436" width="68" height="320" rx="10" />
-        <rect x="611" y="436" width="68" height="320" rx="10" />
-        <path d="M 679 720 Q 712 740 720 700 L 720 712 Q 720 756 668 756 L 668 736 Z" />
+        <rect x="312" y="272" width="96" height="500" rx="18" />
+        <rect x="312" y="272" width="400" height="96" rx="18" />
+        <rect x="616" y="272" width="96" height="300" rx="18" />
+        <rect x="400" y="476" width="312" height="96" rx="18" />
       </g>
-      <circle cx="780" cy="332" r="58" fill="var(--green)" />
+      <circle cx="512" cy="422" r="46" fill="var(--green)" />
     </svg>
   );
 }

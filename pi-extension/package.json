@@ -35,18 +35,18 @@
     "extensions": [
       "./dist"
     ],
-    "image": "https://raw.githubusercontent.com/jacobaraujo7/remote_pi/main/branding/banner.png"
+    "image": "https://raw.githubusercontent.com/pungggi/remote_pi/main/branding/banner.png"
   },
-  "author": "Jacob Moura <jacobmoura7@gmail.com>",
+  "author": "Alessandro Pungitore <contact@pungitore.ch>",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jacobaraujo7/remote_pi.git",
+    "url": "git+https://github.com/pungggi/remote_pi.git",
     "directory": "pi-extension"
   },
-  "homepage": "https://remote-pi.jacobmoura.work",
+  "homepage": "https://github.com/pungggi/remote_pi",
   "bugs": {
-    "url": "https://github.com/jacobaraujo7/remote_pi/issues"
+    "url": "https://github.com/pungggi/remote_pi/issues"
   },
   "files": [
     "dist",

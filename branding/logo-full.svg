@@ -1,21 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- Piper — logo full: black tile + white "P" (pipe-stem) + sky-blue data packet in the bowl.
+     1024², content within the Android ~66% safe zone. Canonical single-piece mark. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <!-- Background sólido preto -->
   <rect width="1024" height="1024" fill="#000000"/>
-
-  <!-- Símbolo π (geometric, sem dependência de fonte) -->
-  <!-- Centralizado no canvas, dentro da safe zone Android (~66% do canvas) -->
   <g fill="#FFFFFF">
-    <!-- Barra horizontal superior -->
-    <rect x="290" y="368" width="444" height="68" rx="10"/>
-    <!-- Perna esquerda -->
-    <rect x="345" y="436" width="68" height="320" rx="10"/>
-    <!-- Perna direita -->
-    <rect x="611" y="436" width="68" height="320" rx="10"/>
-    <!-- Curvinha sutil no pé direito (extension à direita) -->
-    <path d="M 679 720 Q 712 740 720 700 L 720 712 Q 720 756 668 756 L 668 736 Z" fill="#FFFFFF"/>
+    <!-- vertical stem = the pipe -->
+    <rect x="312" y="272" width="96" height="500" rx="18"/>
+    <!-- top bar of the bowl -->
+    <rect x="312" y="272" width="400" height="96" rx="18"/>
+    <!-- right side of the bowl -->
+    <rect x="616" y="272" width="96" height="300" rx="18"/>
+    <!-- bowl floor (closes the counter) -->
+    <rect x="400" y="476" width="312" height="96" rx="18"/>
   </g>
-
-  <!-- Bolinha azul característica, posicionada no canto superior direito -->
-  <circle cx="780" cy="332" r="58" fill="#4FC3F7"/>
+  <!-- data packet in the chamber -->
+  <circle cx="512" cy="422" r="46" fill="#4FC3F7"/>
 </svg>
