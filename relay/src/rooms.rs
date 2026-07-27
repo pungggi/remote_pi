@@ -25,6 +25,14 @@ pub struct RoomMeta {
     /// auto-clears. Defaults to `false` until the Pi reports otherwise, and is
     /// always serialized so subscribers can rely on its presence.
     pub working: bool,
+    /// Plan/107b — git status snapshot of the session cwd, forwarded
+    /// OPAQUELY (the relay never inspects the shape — it's an opaque JSON
+    /// blob the Pi-extension produces and the app parses). `None` = not a
+    /// repo / not reported. Carried in `room_announced` +
+    /// `room_meta_updated` so every subscribed app sees the Home-list git
+    /// line without a per-session request round-trip.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git: Option<serde_json::Value>,
     pub started_at: i64,
 }
 
@@ -44,6 +52,9 @@ pub struct RoomMetaPatch {
     /// `None` = field absent (leave current), `Some(b)` = set to `b`. There is
     /// no "clear to null" — `false` *is* the cleared state.
     pub working: Option<bool>,
+    /// Plan/107b — opaque git snapshot (JSON value passthrough). Same
+    /// `Option<Option<_>>` semantics as `model`/`thinking`.
+    pub git: Option<Option<serde_json::Value>>,
 }
 
 impl RoomMetaPatch {
@@ -51,7 +62,10 @@ impl RoomMetaPatch {
     /// otherwise). Used by the registry to skip work when callers send empty
     /// `meta: {}`.
     pub fn is_empty(&self) -> bool {
-        self.model.is_none() && self.thinking.is_none() && self.working.is_none()
+        self.model.is_none()
+            && self.thinking.is_none()
+            && self.working.is_none()
+            && self.git.is_none()
     }
 }
 

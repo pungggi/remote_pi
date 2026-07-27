@@ -287,7 +287,7 @@ impl PeerRegistry {
         room_id: &str,
         patch: RoomMetaPatch,
     ) -> bool {
-        let (current_model, current_thinking, current_working) = {
+        let (current_model, current_thinking, current_working, current_git) = {
             let mut lock = self.senders.lock().unwrap();
             let key = (peer_id.to_string(), room_id.to_string());
             match lock.get_mut(&key) {
@@ -302,6 +302,10 @@ impl PeerRegistry {
                         if let Some(w) = patch.working {
                             meta.working = w;
                         }
+                        // Plan/107b — opaque git snapshot passthrough.
+                        if let Some(ref g) = patch.git {
+                            meta.git = g.clone();
+                        }
                     }
                     // All conns at this key carry the same post-patch state
                     // now; read the first as the canonical snapshot.
@@ -310,6 +314,7 @@ impl PeerRegistry {
                         head.1.model.clone(),
                         head.1.thinking.clone(),
                         head.1.working,
+                        head.1.git.clone(),
                     )
                 }
                 _ => return false,
@@ -336,6 +341,10 @@ impl PeerRegistry {
                 "working".to_string(),
                 serde_json::Value::Bool(current_working),
             );
+            // Plan/107b — opaque git snapshot (only when the Pi reported one).
+            if let Some(g) = &current_git {
+                meta_obj.insert("git".to_string(), g.clone());
+            }
             let msg = serde_json::json!({
                 "type": "room_meta_updated",
                 "peer": peer_id,
@@ -400,6 +409,7 @@ mod tests {
             model: None,
             thinking: None,
             working: false,
+            git: None,
             started_at: 0,
         }
     }

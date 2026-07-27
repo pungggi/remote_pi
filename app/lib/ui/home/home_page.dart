@@ -366,8 +366,9 @@ class HomePage extends StatelessWidget {
           isWorking: isWorking,
           isSelected: isSelected,
           room: it.room,
-          git: state
-              .gitByKey['${toStandardB64(it.peer.remoteEpk)}|${it.room.roomId}'],
+          git: it.room.git ??
+              state.gitByKey[
+                  '${toStandardB64(it.peer.remoteEpk)}|${it.room.roomId}'],
           onOpen: () => _open(context, vm, it.peer, it.room),
           onLongPress: () => _showSessionMenu(context, vm, it, isLive: isLive),
         ),

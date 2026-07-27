@@ -37,6 +37,7 @@ sealed class ControlInbound {
         // or nested under `meta.working`; read both for forward-compat.
         final rawWorking =
             (j['working'] as bool?) ?? (metaJson?['working'] as bool?);
+        final rawGit = j['git'] ?? metaJson?['git'];
         return RoomAnnounced(
           peer: j['peer'] as String,
           roomId: j['room_id'] as String,
@@ -48,6 +49,9 @@ sealed class ControlInbound {
               ? ThinkingLevel.fromWire(rawThinking)
               : null,
           working: rawWorking,
+          git: rawGit is Map<String, dynamic>
+              ? GitStatus.fromJson(rawGit)
+              : null,
         );
       }(),
       'room_ended' => RoomEnded(
@@ -65,7 +69,9 @@ sealed class ControlInbound {
         final meta = j['meta'] as Map<String, dynamic>?;
         final hasModel = meta?.containsKey('model') ?? false;
         final hasThinking = meta?.containsKey('thinking') ?? false;
+        final hasGit = meta?.containsKey('git') ?? false;
         final rawThinking = meta?['thinking'] as String?;
+        final rawGit = meta?['git'];
         return RoomMetaUpdated(
           peer: j['peer'] as String,
           roomId: j['room_id'] as String,
@@ -77,8 +83,12 @@ sealed class ControlInbound {
           // cleared state), so a plain nullable bool models the patch:
           // null = absent (preserve current), true/false = set.
           working: meta?['working'] as bool?,
+          git: rawGit is Map<String, dynamic>
+              ? GitStatus.fromJson(rawGit)
+              : null,
           hasModel: hasModel,
           hasThinking: hasThinking,
+          hasGit: hasGit,
         );
       }(),
       _ => null,
@@ -194,6 +204,11 @@ class RoomInfo {
   /// (idle / not reported yet).
   final bool working;
 
+  /// Plan/107b — git status snapshot the Pi-extension pushes via
+  /// `room_meta.git` (computed from the session cwd). `null` = not a repo /
+  /// not reported yet → the tile falls back to the model subtitle.
+  final GitStatus? git;
+
   const RoomInfo({
     required this.roomId,
     required this.startedAt,
@@ -202,6 +217,7 @@ class RoomInfo {
     this.model,
     this.thinking,
     this.working = false,
+    this.git,
   });
 
   factory RoomInfo.fromJson(Map<String, dynamic> j) {
@@ -216,6 +232,9 @@ class RoomInfo {
           ? ThinkingLevel.fromWire(rawThinking)
           : null,
       working: (j['working'] as bool?) ?? false,
+      git: j['git'] is Map<String, dynamic>
+          ? GitStatus.fromJson(j['git'] as Map<String, dynamic>)
+          : null,
     );
   }
 
@@ -227,6 +246,7 @@ class RoomInfo {
     'model': model,
     if (thinking != null) 'thinking': thinking!.wire,
     'working': working,
+    if (git != null) 'git': git!.toJson(),
   };
 
   RoomInfo copyWith({
@@ -236,6 +256,7 @@ class RoomInfo {
     Object? model = _kRoomInfoUnset,
     Object? thinking = _kRoomInfoUnset,
     bool? working,
+    Object? git = _kRoomInfoUnset,
   }) => RoomInfo(
     roomId: roomId,
     name: name ?? this.name,
@@ -246,6 +267,7 @@ class RoomInfo {
         ? this.thinking
         : thinking as ThinkingLevel?,
     working: working ?? this.working,
+    git: identical(git, _kRoomInfoUnset) ? this.git : git as GitStatus?,
   );
 
   @override
@@ -257,11 +279,12 @@ class RoomInfo {
       other.startedAt == startedAt &&
       other.model == model &&
       other.thinking == thinking &&
-      other.working == working;
+      other.working == working &&
+      other.git == git;
 
   @override
   int get hashCode =>
-      Object.hash(roomId, name, cwd, startedAt, model, thinking, working);
+      Object.hash(roomId, name, cwd, startedAt, model, thinking, working, git);
 }
 
 class RoomAnnounced extends ControlInbound {
@@ -283,6 +306,9 @@ class RoomAnnounced extends ControlInbound {
   /// frame omitted it (legacy relay); the ConnectionManager then keeps
   /// any previously-known value instead of forcing `false`.
   final bool? working;
+
+  /// Plan/107b — git snapshot from `room_meta.git` (flat in room_announced).
+  final GitStatus? git;
   const RoomAnnounced({
     required this.peer,
     required this.roomId,
@@ -292,6 +318,7 @@ class RoomAnnounced extends ControlInbound {
     this.model,
     this.thinking,
     this.working,
+    this.git,
   });
 }
 
@@ -347,14 +374,24 @@ class RoomMetaUpdated extends ControlInbound {
   /// set. No separate `hasWorking` flag is needed because `working` can
   /// never be "explicitly null" on the wire — `false` is the off state.
   final bool? working;
+
+  /// Plan/107b — git snapshot patch from `meta.git`. `null` = the update
+  /// either cleared git or the cwd isn't a repo; [hasGit] distinguishes
+  /// "git key absent" (preserve) from "git present" (apply, even if null).
+  final GitStatus? git;
+
+  /// Plan/107b — `true` when the `meta` envelope carried a `git` key.
+  final bool hasGit;
   const RoomMetaUpdated({
     required this.peer,
     required this.roomId,
     this.model,
     this.thinking,
     this.working,
+    this.git,
     this.hasModel = true,
     this.hasThinking = true,
+    this.hasGit = true,
   });
 }
 
@@ -1453,6 +1490,25 @@ class GitStatus {
       stashCount: n(j['stashCount']),
     );
   }
+
+  /// Plan/107b — round-trip helper so [RoomInfo] can carry a git snapshot
+  /// (mirrors the wire keys `fromJson` reads).
+  Map<String, dynamic> toJson() => {
+    'branch': branch,
+    if (upstream != null) 'upstream': upstream,
+    'aheadBy': aheadBy,
+    'behindBy': behindBy,
+    'upstreamGone': upstreamGone,
+    'indexAdded': indexAdded,
+    'indexModified': indexModified,
+    'indexDeleted': indexDeleted,
+    'indexUnmerged': indexUnmerged,
+    'workingAdded': workingAdded,
+    'workingModified': workingModified,
+    'workingDeleted': workingDeleted,
+    'workingUnmerged': workingUnmerged,
+    'stashCount': stashCount,
+  };
 }
 
 /// Plan/107 — reply to [GitStatusRequest]. `status` is `null` when the cwd

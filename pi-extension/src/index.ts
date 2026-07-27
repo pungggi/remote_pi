@@ -84,7 +84,8 @@ import {
   handleListModels,
   type ActionCtx,
 } from "./actions/handlers.js";
-import { handleGitStatus } from "./actions/git_status.js";
+import { handleGitStatus, getGitStatus } from "./actions/git_status.js";
+import type { WireGitStatus } from "./protocol/types.js";
 import { handleOpenTerminal } from "./actions/open_terminal.js";
 import { ensureModelRegistry } from "./actions/registry.js";
 import {
@@ -228,7 +229,7 @@ let _myRoomId: string | null = null;   // this Pi's room id (derived from cwd)
 // open instead of starting null. The SDK fires `thinking_level_select`
 // on every change (initial load + user toggle), mirrored to room_meta
 // the same way model is — apps subscribe to one channel for both.
-let _myRoomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; working?: boolean } | null = null;
+let _myRoomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; working?: boolean; git?: WireGitStatus | null } | null = null;
 let _currentModel: string | undefined = undefined;  // last-known model name
 let _currentThinking: ThinkingLevel | undefined = undefined;  // last-known thinking level
 
@@ -1124,6 +1125,48 @@ function _getSyncLimit(): number {
 // Backoffs in ms: 1s, 2s, 5s, 10s, 30s, then stays at 30s.
 const RECONNECT_BACKOFFS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
 let _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+// ── Plan/107b — room_meta.git refresh ────────────────────────────────────
+// The pi-extension owns the session cwd, so it computes `git status` and
+// pushes it as room_meta.git so EVERY subscribed app renders the Home-list
+// git line without a per-session request round-trip. NOT realtime: git is
+// re-run every GIT_REFRESH_MS and only re-broadcast when the snapshot
+// changes (JSON-equal). Seeded into the hello roomMeta (so room_announced
+// already carries it) + kept fresh by this interval across the relay session.
+const GIT_REFRESH_MS = 120_000; // 2 min
+let _gitRefreshTimer: ReturnType<typeof setInterval> | null = null;
+let _lastGitStatus: WireGitStatus | null | undefined = undefined;
+
+async function _pushGitStatus(cwd: string): Promise<void> {
+  if (!_relay || !_myRoomId) return;
+  const status = await getGitStatus(cwd);
+  // Suppress no-op broadcasts (unchanged snapshot) to avoid relay churn.
+  if (JSON.stringify(_lastGitStatus) === JSON.stringify(status)) return;
+  _lastGitStatus = status;
+  if (_myRoomMeta) _myRoomMeta = { ..._myRoomMeta, git: status };
+  try {
+    _relay.sendControl({
+      type: "room_meta_update",
+      room_id: _myRoomId,
+      meta: { git: status },
+    });
+  } catch { /* relay tearing down — next interval retries */ }
+}
+
+function _startGitRefresh(): void {
+  _stopGitRefresh();
+  const cwd = _myRoomMeta?.cwd;
+  if (!cwd) return;
+  void _pushGitStatus(cwd); // seed immediately (broadcasts if changed since last session)
+  _gitRefreshTimer = setInterval(() => { void _pushGitStatus(cwd); }, GIT_REFRESH_MS);
+}
+
+function _stopGitRefresh(): void {
+  if (_gitRefreshTimer) {
+    clearInterval(_gitRefreshTimer);
+    _gitRefreshTimer = null;
+  }
+}
 let _reconnectAttempt = 0;
 // Every initial connect/reconnect candidate captures this generation. Stop,
 // relay-off, and an unexpected close invalidate older async continuations.
@@ -1444,6 +1487,7 @@ function _onRelayClose(closedRelay: RelayClient): void {
   _relayLifecycleGeneration += 1;
   _stopAutoListener?.();
   _stopAutoListener = null;
+  _stopGitRefresh(); // Plan/107b — halt room_meta.git polling until reconnect
 
   // Detach every per-owner channel — relay is gone, none can route. The
   // auto-listener re-attaches owners after `_attemptReconnect` succeeds
@@ -1548,6 +1592,7 @@ async function _attemptReconnect(
 
   relay.on("close", () => _onRelayClose(relay));
   _stopAutoListener = _installAutoListener(relay);
+  _startGitRefresh(); // Plan/107b — resume room_meta.git polling
 
   // Plan/25 Wave B/C: relay is back; bring cross-PC routing back online.
   _attachBridgeIfReady();
@@ -2910,10 +2955,14 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
     _currentThinking = _pi?.getThinkingLevel() as ThinkingLevel | undefined;
   } catch { /* defensive — never block /remote-pi start on this */ }
 
-  const roomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel } = { name: sessionName, cwd };
+  const roomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; git?: WireGitStatus | null } = { name: sessionName, cwd };
   const modelName = _currentModelName();
   if (modelName) roomMeta.model = modelName;
   if (_currentThinking) roomMeta.thinking = _currentThinking;
+  // Plan/107b — seed the git snapshot into the hello so room_announced
+  // already carries it (apps render the Home-list git line immediately).
+  roomMeta.git = await getGitStatus(cwd);
+  _lastGitStatus = roomMeta.git ?? null;
   // Persist so _attemptReconnect can replay the same hello payload — without
   // this, reconnect issues a bare hello and the relay creates a "default room"
   // entry that surfaces in the app as a phantom legacy session.
@@ -2972,6 +3021,7 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   relay.on("close", () => _onRelayClose(relay));
 
   _stopAutoListener = _installAutoListener(relay);
+  _startGitRefresh(); // Plan/107b — begin room_meta.git polling
   _refreshFooter(ctx);
 
   // SelfRevoke is the Pi path's single initial topology producer. Its first

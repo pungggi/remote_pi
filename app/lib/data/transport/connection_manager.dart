@@ -600,6 +600,7 @@ class ConnectionManager extends Service {
         :final model,
         :final thinking,
         :final working,
+        :final git,
       ):
         final key = toStandardB64(peer);
         final list = _roomsByPeer[key] ?? <RoomInfo>[];
@@ -617,11 +618,13 @@ class ConnectionManager extends Service {
         // relay that omits it (null) keeps the cached value instead of
         // forcing the room back to idle.
         var preservedWorking = false;
+        GitStatus? preservedGit;
         final existingIdx = list.indexWhere((r) => r.roomId == roomId);
         if (existingIdx >= 0) {
           preservedName = list[existingIdx].name;
           preservedThinking = list[existingIdx].thinking;
           preservedWorking = list[existingIdx].working;
+          preservedGit = list[existingIdx].git;
         }
         final next = RoomInfo(
           roomId: roomId,
@@ -631,6 +634,7 @@ class ConnectionManager extends Service {
           model: model,
           thinking: thinking ?? preservedThinking,
           working: working ?? preservedWorking,
+          git: git ?? preservedGit,
         );
         final liveAlready = _liveRoomIds[key]?.contains(roomId) ?? false;
         final identicalEntry = existingIdx >= 0 && list[existingIdx] == next;
@@ -669,8 +673,10 @@ class ConnectionManager extends Service {
         :final model,
         :final thinking,
         :final working,
+        :final git,
         :final hasModel,
         :final hasThinking,
+        :final hasGit,
       ):
         final key = toStandardB64(peer);
         final list = _roomsByPeer[key];
@@ -691,15 +697,21 @@ class ConnectionManager extends Service {
         // non-null sets it. This is what carries the relay's
         // turn_start/turn_end broadcast to the Home dot for EVERY room.
         final nextWorking = working ?? current.working;
+        // Plan/107b — git snapshot patch: apply only when the meta
+        // envelope carried a `git` key (hasGit), else preserve the cached
+        // snapshot.
+        final nextGit = hasGit ? git : current.git;
         if (current.model == nextModel &&
             current.thinking == nextThinking &&
-            current.working == nextWorking) {
+            current.working == nextWorking &&
+            current.git == nextGit) {
           break; // dedup: nothing actually changed
         }
         list[idx] = current.copyWith(
           model: nextModel,
           thinking: nextThinking,
           working: nextWorking,
+          git: nextGit,
         );
         roomsDirty = true;
         // ignore: unawaited_futures
@@ -717,6 +729,10 @@ class ConnectionManager extends Service {
           // Plan/28 Wave D — same convention as model: keep the
           // previously-known thinking when the snapshot omits it.
           final preservedThinking = r.thinking ?? byId[r.roomId]?.thinking;
+          // Plan/107b — preserve the last-known git snapshot when the
+          // snapshot omits it (the relay's rooms_of carries git, but a
+          // partial snapshot shouldn't blank the tile).
+          final preservedGit = r.git ?? byId[r.roomId]?.git;
           byId[r.roomId] = RoomInfo(
             roomId: r.roomId,
             name: preservedName,
@@ -724,6 +740,7 @@ class ConnectionManager extends Service {
             startedAt: r.startedAt,
             model: preservedModel,
             thinking: preservedThinking,
+            git: preservedGit,
             // Plan/32 — the snapshot is authoritative for live state:
             // `rooms_of` reads the current registry meta, so its
             // `working` reflects the latest turn_start/turn_end.

@@ -37,7 +37,7 @@ function runGit(cwd: string, args: string[]): Promise<string | null> {
   });
 }
 
-async function getGitStatus(cwd: string): Promise<WireGitStatus | null> {
+export async function getGitStatus(cwd: string): Promise<WireGitStatus | null> {
   const statusResult = await runGit(cwd, [
     "status", "--porcelain=2", "--branch", "--no-renames", "-unormal",
   ]);
