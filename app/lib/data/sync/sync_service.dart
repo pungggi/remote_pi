@@ -180,6 +180,7 @@ class SyncService extends Service {
     String text, {
     List<MessageImage>? images,
     UserMessageStreamingBehavior? streamingBehavior,
+    ({String provider, String id})? model,
   }) async {
     final epk = _activeEpk;
     final id = _newId();
@@ -241,6 +242,7 @@ class SyncService extends Service {
         images: (images == null || images.isEmpty)
             ? null
             : images.map((i) => WireImage(data: i.data, mime: i.mime)).toList(),
+        model: model,
       ),
     );
   }

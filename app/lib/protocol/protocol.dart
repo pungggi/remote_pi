@@ -500,11 +500,17 @@ class UserMessage extends ClientMessage {
   /// and stay forward-compatible. Omitted entirely when empty (retro-compat).
   final List<WireImage>? images;
 
+  /// Plan/109 — one-shot model override. When set, the Pi extension switches
+  /// the live model for THIS message only (then reverts on turn_end); the
+  /// session default is never changed. Null on the normal send path.
+  final ({String provider, String id})? model;
+
   UserMessage({
     required this.id,
     required this.text,
     this.streamingBehavior,
     this.images,
+    this.model,
   });
 
   @override
@@ -516,6 +522,8 @@ class UserMessage extends ClientMessage {
       'streaming_behavior': streamingBehavior!.wireValue,
     if (images != null && images!.isNotEmpty)
       'images': images!.map((i) => i.toJson()).toList(),
+    if (model != null)
+      'model': {'provider': model!.provider, 'id': model!.id},
   };
 }
 

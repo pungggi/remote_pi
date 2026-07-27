@@ -485,6 +485,12 @@ class ChatPage extends StatelessWidget {
           isPresenceOffline,
       streaming: isWorking,
       model: vm.activeRoom?.model,
+      // Plan/109 — second send button: pick a scoped model → send this draft
+      // with it as a one-shot override (session default unchanged).
+      onLoadModels: () async =>
+          (await context.read<IActionsRepository>().listModels()).models,
+      onSendWithModel: (text, m) =>
+          vm.sendMessage(text, model: (provider: m.provider, id: m.id)),
       onCancel: cancelId != null ? () => vm.cancel(cancelId) : null,
       onOpenQuickActions: actionsEnabled
           ? () => showQuickActionsSheet(context)

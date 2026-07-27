@@ -4,6 +4,7 @@ import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/share/composer_draft.dart';
 import 'package:app/data/share/shared_text_inbox.dart';
 import 'package:app/domain/session_state.dart';
+import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/attachment/states/attachment_state.dart';
 import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
 import 'package:app/ui/chat/voice/states/voice_input_state.dart';
@@ -86,6 +87,15 @@ class InputBar extends StatefulWidget {
   /// draft survives a session switch. Null in tests.
   final ComposerDraft? draft;
 
+  /// Plan/109 — load the scoped model list for the send-with-model dropdown.
+  final Future<List<WireModel>> Function()? onLoadModels;
+
+  /// Plan/109 — send the draft with a ONE-SHOT model override (the second
+  /// send button). Null disables the dropdown button. The Pi extension
+  /// switches the live model for this message only, then reverts; the
+  /// session default is never changed.
+  final void Function(String text, WireModel model)? onSendWithModel;
+
   const InputBar({
     super.key,
     required this.onSend,
@@ -105,6 +115,8 @@ class InputBar extends StatefulWidget {
     this.disabled = false,
     this.streaming = false,
     this.model,
+    this.onLoadModels,
+    this.onSendWithModel,
   });
 
   @override
@@ -207,6 +219,37 @@ class _InputBarState extends State<InputBar> {
     if (text.isEmpty && !hasImage) return;
     _controller.clear();
     widget.onSend(text);
+  }
+
+  /// Plan/109 — send the current draft with a one-shot model override.
+  void _submitWithModel(WireModel m) {
+    final text = _controller.text.trim();
+    if (text.isEmpty) return;
+    _controller.clear();
+    widget.onSendWithModel?.call(text, m);
+  }
+
+  /// Plan/109 — open the scoped-model dropdown; picking one sends the draft
+  /// with that model for this turn only.
+  Future<void> _openModelSendPicker() async {
+    final loader = widget.onLoadModels;
+    final cb = widget.onSendWithModel;
+    if (loader == null || cb == null) return;
+    if (_controller.text.trim().isEmpty) return;
+    final models = await loader().catchError((_) => <WireModel>[]);
+    if (!mounted || models.isEmpty) return;
+    final picked = await showModalBottomSheet<WireModel>(
+      context: context,
+      backgroundColor: context.colors.bg,
+      barrierColor: Colors.black.withValues(alpha: 0.6),
+      isScrollControlled: true,
+      showDragHandle: false,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => _ModelSendSheet(models: models),
+    );
+    if (picked != null) _submitWithModel(picked);
   }
 
   void _editQueued(QueuedMsg item) {
@@ -376,6 +419,15 @@ class _InputBarState extends State<InputBar> {
         !showStrip &&
         hasQuickActions;
 
+    // Plan/109 — the second (dropdown) send button: send the draft with a
+    // one-shot model override. Only with text + an open channel + callbacks.
+    final canSendWithModel =
+        !_empty &&
+        canInteract &&
+        !widget.streaming &&
+        widget.onSendWithModel != null &&
+        widget.onLoadModels != null;
+
     // During a working turn with typed content, the main action sends steering;
     // keep a compact Stop affordance beside it so cancellation remains reachable.
     final showInlineStop =
@@ -526,6 +578,10 @@ class _InputBarState extends State<InputBar> {
                     onVoiceLongPressEnd: _onVoiceEnd,
                     onVoiceTap: _onVoiceTap,
                   ),
+                  if (canSendWithModel) ...[
+                    const SizedBox(width: 6),
+                    _ModelSendButton(onTap: _openModelSendPicker),
+                  ],
                   if (showInlineStop) ...[
                     const SizedBox(width: 8),
                     _InlineStopButton(onTap: widget.onCancel!),
@@ -686,6 +742,155 @@ class _InlineStopButton extends StatelessWidget {
           border: Border.all(color: colors.error.withValues(alpha: 0.55)),
         ),
         child: Icon(LucideIcons.square600, color: colors.error, size: 18),
+      ),
+    );
+  }
+}
+
+/// Plan/109 — the second send button. Opens the scoped-model dropdown;
+/// picking a model sends the draft with it as a one-shot override.
+class _ModelSendButton extends StatelessWidget {
+  const _ModelSendButton({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Tooltip(
+      message: 'Send with model',
+      child: GestureDetector(
+        key: const Key('input-bar-model-send'),
+        onTap: onTap,
+        child: Container(
+          width: 38,
+          height: 38,
+          decoration: BoxDecoration(
+            color: colors.accent.withValues(alpha: 0.14),
+            borderRadius: BorderRadius.circular(19),
+            border: Border.all(color: colors.accent.withValues(alpha: 0.55)),
+          ),
+          child: Icon(LucideIcons.layers, color: colors.accent, size: 18),
+        ),
+      ),
+    );
+  }
+}
+
+/// Plan/109 — dropdown sheet listing the scoped models. Tapping one returns
+/// it via [Navigator.pop]; the caller sends the draft with it (one-shot).
+class _ModelSendSheet extends StatelessWidget {
+  const _ModelSendSheet({required this.models});
+
+  final List<WireModel> models;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final mq = MediaQuery.of(context);
+    return SafeArea(
+      top: false,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: mq.size.height * 0.7),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 10),
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: colors.border,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Send with model (this message only)',
+                  style: TextStyle(
+                    fontFamily: kMonoFamily,
+                    fontSize: 12,
+                    color: colors.muted,
+                  ),
+                ),
+              ),
+            ),
+            Divider(color: colors.border, height: 1, thickness: 1),
+            Flexible(
+              child: ListView.separated(
+                shrinkWrap: true,
+                padding: const EdgeInsets.only(bottom: 16),
+                itemCount: models.length,
+                separatorBuilder: (_, _) =>
+                    Divider(color: colors.border, height: 1, thickness: 1),
+                itemBuilder: (_, i) {
+                  final m = models[i];
+                  return InkWell(
+                    onTap: () => Navigator.of(context).pop(m),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  m.name,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontFamily: kMonoFamily,
+                                    fontSize: 13,
+                                    color: colors.text,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  '${m.provider} · ${m.id}',
+                                  style: TextStyle(
+                                    fontFamily: kMonoFamily,
+                                    fontSize: 10,
+                                    color: colors.muted,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (m.reasoning)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 1,
+                              ),
+                              decoration: BoxDecoration(
+                                color: colors.accent.withValues(alpha: 0.14),
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                              child: Text(
+                                'reasoning',
+                                style: TextStyle(
+                                  fontFamily: kMonoFamily,
+                                  fontSize: 9,
+                                  color: colors.accent,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
