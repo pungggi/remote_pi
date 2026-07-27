@@ -328,17 +328,20 @@ class ChatPage extends StatelessWidget {
               FutureBuilder<GitStatus?>(
                 future: gitFuture,
                 builder: (ctx, snap) {
-                  final String gitValue;
                   if (snap.connectionState == ConnectionState.waiting) {
-                    gitValue = 'loading…';
-                  } else if (snap.hasError) {
-                    gitValue = 'unavailable';
-                  } else {
-                    gitValue = snap.data != null
-                        ? _formatGitStatus(snap.data!)
-                        : 'not a git repo';
+                    return const _InfoRow(label: 'Git', value: 'loading…');
                   }
-                  return _InfoRow(label: 'Git', value: gitValue);
+                  if (snap.hasError) {
+                    return const _InfoRow(label: 'Git', value: 'unavailable');
+                  }
+                  final s = snap.data;
+                  if (s == null) {
+                    return const _InfoRow(label: 'Git', value: 'not a git repo');
+                  }
+                  return _InfoRow(
+                    label: 'Git',
+                    richValue: _gitTextSpan(s, ctx.colors),
+                  );
                 },
               ),
             ],
@@ -357,34 +360,46 @@ class ChatPage extends StatelessWidget {
     );
   }
 
-  /// Plan/107 — posh-git-style one-liner, e.g. `[main ↑3 +1 ~0 -0 | +0 ~2 -0 !]`.
-  static String _formatGitStatus(GitStatus s) {
-    bool has(int a, int m, int d) => a + m + d > 0;
+  /// Plan/107 — posh-git-style COLORED git status. Mirrors pi-posh-git's
+  /// footer `buildPrompt` color mapping: brackets/`|`/stash/diverged → warning,
+  /// branch/`≡`/`~` → accent, ahead → success, behind/`!`/unstaged → error,
+  /// upstream-gone `×` → muted. Returns a TextSpan for SelectableText.rich.
+  static TextSpan _gitTextSpan(GitStatus s, AppColors c) {
+    final base = TextStyle(fontFamily: kMonoFamily, fontSize: 13);
+    TextSpan t(String text, Color color) =>
+        TextSpan(text: text, style: base.copyWith(color: color));
     String counts(int a, int m, int d) => '+$a ~$m -$d';
-    final hasIndex = has(s.indexAdded, s.indexModified, s.indexDeleted);
+    final hasIndex = s.indexAdded + s.indexModified + s.indexDeleted > 0;
     final hasWorking =
-        has(s.workingAdded, s.workingModified, s.workingDeleted);
-    final parts = <String>[s.branch];
+        s.workingAdded + s.workingModified + s.workingDeleted > 0;
+    final spans = <InlineSpan>[
+      t('[', c.warning),
+      t(s.branch, c.accent),
+    ];
     if (s.upstream != null && s.upstreamGone) {
-      parts.add('×');
+      spans.add(t(' ×', c.muted));
     } else if (s.upstream != null && s.behindBy == 0 && s.aheadBy == 0) {
-      parts.add('≡');
-    } else {
-      if (s.behindBy > 0) parts.add('↓${s.behindBy}');
-      if (s.aheadBy > 0) parts.add('↑${s.aheadBy}');
+      spans.add(t(' ≡', c.accent));
+    } else if (s.upstream != null && s.behindBy > 0 && s.aheadBy > 0) {
+      spans.add(t(' ↓${s.behindBy} ↑${s.aheadBy}', c.warning));
+    } else if (s.upstream != null && s.behindBy > 0) {
+      spans.add(t(' ↓${s.behindBy}', c.error));
+    } else if (s.upstream != null && s.aheadBy > 0) {
+      spans.add(t(' ↑${s.aheadBy}', c.success));
     }
     if (hasIndex) {
-      parts.add(counts(s.indexAdded, s.indexModified, s.indexDeleted));
+      spans.add(t(' ${counts(s.indexAdded, s.indexModified, s.indexDeleted)}', c.success));
     }
-    if (hasIndex && hasWorking) parts.add('|');
+    if (hasIndex && hasWorking) spans.add(t(' |', c.warning));
     if (hasWorking) {
-      parts.add(counts(s.workingAdded, s.workingModified, s.workingDeleted));
-      parts.add('!');
+      spans.add(t(' ${counts(s.workingAdded, s.workingModified, s.workingDeleted)}', c.error));
+      spans.add(t(' !', c.error));
     } else if (hasIndex) {
-      parts.add('~');
+      spans.add(t(' ~', c.accent));
     }
-    if (s.stashCount > 0) parts.add('(${s.stashCount})');
-    return '[${parts.join(' ')}]';
+    if (s.stashCount > 0) spans.add(t(' (${s.stashCount})', c.warning));
+    spans.add(t(']', c.warning));
+    return TextSpan(children: spans);
   }
 
   static String _roomDisplayName(
@@ -796,7 +811,10 @@ class _RevokedBanner extends StatelessWidget {
 class _InfoRow extends StatelessWidget {
   final String label;
   final String value;
-  const _InfoRow({required this.label, required this.value});
+  /// Plan/107 — optional colored value (posh-git-style git status). When
+  /// set, renders as a RichText instead of the plain [value] string.
+  final TextSpan? richValue;
+  const _InfoRow({required this.label, this.value = '', this.richValue});
 
   @override
   Widget build(BuildContext context) {
@@ -816,14 +834,16 @@ class _InfoRow extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 2),
-          SelectableText(
-            value,
-            style: TextStyle(
-              fontFamily: kMonoFamily,
-              fontSize: 13,
-              color: colors.text,
-            ),
-          ),
+          richValue != null
+              ? SelectableText.rich(richValue!)
+              : SelectableText(
+                  value,
+                  style: TextStyle(
+                    fontFamily: kMonoFamily,
+                    fontSize: 13,
+                    color: colors.text,
+                  ),
+                ),
         ],
       ),
     );
