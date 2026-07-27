@@ -472,8 +472,8 @@ class ChatPage extends StatelessWidget {
           : null,
       sharedText: context.read<SharedTextInbox>(),
       onSend: (text) {
-        final image = context.read<AttachmentViewModel>().takeImageForSend();
-        vm.sendMessage(text, image: image);
+        final image = context.read<AttachmentViewModel>().takeImagesForSend();
+        vm.sendMessage(text, images: image);
       },
     );
   }

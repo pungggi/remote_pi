@@ -178,13 +178,17 @@ class SyncService extends Service {
 
   Future<void> sendMessage(
     String text, {
-    MessageImage? image,
+    List<MessageImage>? images,
     UserMessageStreamingBehavior? streamingBehavior,
   }) async {
     final epk = _activeEpk;
     final id = _newId();
     final now = DateTime.now();
     final isSteer = streamingBehavior == UserMessageStreamingBehavior.steer;
+    // Plan/105 — the DB record + preview carry the FIRST image only (the DB
+    // message row is single-image); the wire message carries all of them. The
+    // relay echoes the full set, so the row is replaced with every image on echo.
+    final first = images != null && images.isNotEmpty ? images.first : null;
     // Optimistic pending row (#defaults: optimistic + dedupe by id).
     if (epk != null) {
       await _upsert(
@@ -195,14 +199,14 @@ class SyncService extends Service {
           seq: seq,
           role: MsgRole.user,
           text: text,
-          image: image,
+          image: first,
           ts: now,
           pending: true,
           steering: isSteer,
         ),
       );
       if (!isSteer) {
-        _setWorking(true, preview: _preview(text, image), replyTo: id);
+        _setWorking(true, preview: _preview(text, first), replyTo: id);
       }
       // Arm the no-echo backstop for this row. The timeout is keyed off the
       // row's `ts`, NOT online-ness: an offline "held pending" send is reaped
@@ -228,15 +232,15 @@ class SyncService extends Service {
     if (!isSteer) {
       _emitStreaming(StreamingMessage(inReplyTo: id));
     }
-    debugPrint('[msg-send] id=$id text=${_preview(text, image)}');
+    debugPrint('[msg-send] id=$id text=${_preview(text, first)}');
     await ch.send(
       UserMessage(
         id: id,
         text: text,
         streamingBehavior: streamingBehavior,
-        images: image == null
+        images: (images == null || images.isEmpty)
             ? null
-            : [WireImage(data: image.data, mime: image.mime)],
+            : images.map((i) => WireImage(data: i.data, mime: i.mime)).toList(),
       ),
     );
   }

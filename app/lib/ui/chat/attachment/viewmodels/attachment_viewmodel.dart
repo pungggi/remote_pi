@@ -63,7 +63,7 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
         if (!_hints.isClosed) _hints.add(AttachHint.noImageInClipboard);
         return;
       }
-      emit(AttachmentAttached(image: img, visionSupported: vision));
+      emit(AttachmentAttached(images: [img], visionSupported: vision));
     } catch (_) {
       emit(AttachmentEmpty(visionSupported: vision));
       if (!_hints.isClosed) _hints.add(AttachHint.pickFailed);
@@ -80,7 +80,7 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
         emit(AttachmentEmpty(visionSupported: vision)); // cancelled
         return;
       }
-      emit(AttachmentAttached(image: img, visionSupported: vision));
+      emit(AttachmentAttached(images: [img], visionSupported: vision));
     } on ImagePermissionDeniedException {
       emit(AttachmentEmpty(visionSupported: vision));
       if (!_hints.isClosed) _hints.add(AttachHint.cameraPermissionDenied);
@@ -90,33 +90,50 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
     }
   }
 
-  /// Discard the attached image (the "X" on the preview, #4).
+  /// Discard all attached images (the preview's clear).
   void removeImage() {
     if (state is! AttachmentAttached) return;
     emit(AttachmentEmpty(visionSupported: state.visionSupported));
+  }
+
+  /// Plan/105 — remove a single image (per-thumbnail X). Clears the
+  /// attachment when the last one is removed.
+  void removeImageAt(int index) {
+    final s = state;
+    if (s is! AttachmentAttached) return;
+    if (index < 0 || index >= s.images.length) return;
+    final next = [...s.images]..removeAt(index);
+    if (next.isEmpty) {
+      emit(AttachmentEmpty(visionSupported: s.visionSupported));
+    } else {
+      emit(AttachmentAttached(images: next, visionSupported: s.visionSupported));
+    }
   }
 
   // Plan/104 — shared-image inbound path.
   void _onSharedImage() => _consumeSharedImage();
 
   void _consumeSharedImage() {
-    final img = _inbox.consume();
-    if (img != null) attachExisting(img);
+    final imgs = _inbox.consume();
+    if (imgs.isNotEmpty) attachAll(imgs);
   }
 
-  /// Attach an already-picked image (e.g. one shared into the app), preserving
-  /// the current vision flag.
-  void attachExisting(PickedImage img) {
-    emit(AttachmentAttached(image: img, visionSupported: state.visionSupported));
+  /// Attach already-picked images (e.g. shared into the app — one image, or a
+  /// PDF's pages), preserving the current vision flag.
+  void attachAll(List<PickedImage> imgs) {
+    if (imgs.isEmpty) return;
+    emit(AttachmentAttached(images: imgs, visionSupported: state.visionSupported));
   }
 
-  /// Hand the attached image to the send path as a base64 [MessageImage] and
-  /// reset to empty. Returns null when nothing is attached.
-  MessageImage? takeImageForSend() {
+  /// Hand all attached images to the send path as base64 [MessageImage]s and
+  /// reset to empty. Returns an empty list when nothing is attached.
+  List<MessageImage> takeImagesForSend() {
     final s = state;
-    if (s is! AttachmentAttached) return null;
+    if (s is! AttachmentAttached) return const [];
     emit(AttachmentEmpty(visionSupported: s.visionSupported));
-    return MessageImage(data: base64Encode(s.image.bytes), mime: s.image.mime);
+    return s.images
+        .map((i) => MessageImage(data: base64Encode(i.bytes), mime: i.mime))
+        .toList();
   }
 
   // ---------------------------------------------------------------------------
@@ -156,8 +173,8 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
     emit(switch (state) {
       AttachmentEmpty() => AttachmentEmpty(visionSupported: vision),
       AttachmentPicking() => AttachmentPicking(visionSupported: vision),
-      AttachmentAttached(:final image) => AttachmentAttached(
-        image: image,
+      AttachmentAttached(:final images) => AttachmentAttached(
+        images: images,
         visionSupported: vision,
       ),
     });

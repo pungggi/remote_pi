@@ -378,8 +378,8 @@ class _InputBarState extends State<InputBar> {
             children: [
               if (hasImage)
                 _AttachmentPreview(
-                  image: attachState.image,
-                  onRemove: widget.attachment!.removeImage,
+                  images: attachState.images,
+                  onRemoveAt: widget.attachment!.removeImageAt,
                 ),
               for (final item in widget.queuedMessages)
                 _QueuedMessagePreview(
@@ -701,13 +701,14 @@ class _AttachButton extends StatelessWidget {
   }
 }
 
-/// Plan/30 — the composer image preview: a rounded thumbnail with an "X" to
-/// discard before sending (decision #4).
+/// Plan/30 — the composer image preview: rounded thumbnails with an "X"
+/// each to discard before sending (decision #4). Plan/105: renders N pages
+/// for a shared PDF in a horizontal scroll.
 class _AttachmentPreview extends StatelessWidget {
-  const _AttachmentPreview({required this.image, required this.onRemove});
+  const _AttachmentPreview({required this.images, required this.onRemoveAt});
 
-  final PickedImage image;
-  final VoidCallback onRemove;
+  final List<PickedImage> images;
+  final void Function(int index) onRemoveAt;
 
   @override
   Widget build(BuildContext context) {
@@ -715,44 +716,72 @@ class _AttachmentPreview extends StatelessWidget {
       key: const Key('attach-preview'),
       padding: const EdgeInsets.only(left: 4, bottom: 10),
       child: SizedBox(
-        width: 84,
         height: 84,
-        child: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: Image.memory(
-                image.bytes,
-                width: 72,
-                height: 72,
-                fit: BoxFit.cover,
-                gaplessPlayback: true,
-              ),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              for (var i = 0; i < images.length; i++)
+                _AttachmentThumb(
+                  key: ValueKey('attach-thumb-$i'),
+                  image: images[i],
+                  onRemove: () => onRemoveAt(i),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A single 84×84 thumbnail with a discard "X".
+class _AttachmentThumb extends StatelessWidget {
+  const _AttachmentThumb({super.key, required this.image, required this.onRemove});
+
+  final PickedImage image;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 84,
+      height: 84,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Image.memory(
+              image.bytes,
+              width: 72,
+              height: 72,
+              fit: BoxFit.cover,
+              gaplessPlayback: true,
             ),
-            Positioned(
-              top: -4,
-              right: 8,
-              child: GestureDetector(
-                key: const Key('attach-remove'),
-                onTap: onRemove,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.75),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: context.colors.border),
-                  ),
-                  padding: const EdgeInsets.all(3),
-                  child: Icon(
-                    LucideIcons.x,
-                    size: 13,
-                    color: context.colors.text,
-                  ),
+          ),
+          Positioned(
+            top: -4,
+            right: 8,
+            child: GestureDetector(
+              key: const Key('attach-remove'),
+              onTap: onRemove,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.75),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: context.colors.border),
+                ),
+                padding: const EdgeInsets.all(3),
+                child: Icon(
+                  LucideIcons.x,
+                  size: 13,
+                  color: context.colors.text,
                 ),
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

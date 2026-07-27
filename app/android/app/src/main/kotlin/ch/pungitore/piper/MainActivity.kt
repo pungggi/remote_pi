@@ -74,6 +74,7 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "consumeImage" -> result.success(consumeShareImage())
+                    "consumePdf" -> result.success(consumeSharePdf())
                     "consumeText" -> result.success(consumeShareText())
                     else -> result.notImplemented()
                 }
@@ -148,13 +149,14 @@ class MainActivity : FlutterActivity() {
     // Dart consumes it. ACTION_SEND grants the receiving activity a temporary
     // read grant, so openInputStream works without extra permissions.
     private var pendingShareUri: Uri? = null
+    private var pendingSharePdfUri: Uri? = null
     private var pendingShareText: String? = null
 
     private fun stashShareIntent(intent: Intent?) {
         if (intent?.action != Intent.ACTION_SEND) return
         val type = intent.type ?: return
         when {
-            type.startsWith("image/") || type == "application/pdf" -> {
+            type.startsWith("image/") -> {
                 val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
                 } else {
@@ -163,7 +165,19 @@ class MainActivity : FlutterActivity() {
                 }
                 if (uri != null) {
                     pendingShareUri = uri
-                    Log.d(TAG, "stashed shared $type uri=$uri")
+                    Log.d(TAG, "stashed shared image uri=$uri")
+                }
+            }
+            type == "application/pdf" -> {
+                val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+                }
+                if (uri != null) {
+                    pendingSharePdfUri = uri
+                    Log.d(TAG, "stashed shared pdf uri=$uri")
                 }
             }
             type.startsWith("text/") -> {
@@ -179,12 +193,9 @@ class MainActivity : FlutterActivity() {
     private fun consumeShareImage(): Map<String, Any>? {
         val uri = pendingShareUri ?: return null
         pendingShareUri = null
-        val mime = contentResolver.getType(uri) ?: return null
-        return when {
-            mime.startsWith("image/") -> readImageBytes(uri, mime)
-            mime == "application/pdf" -> renderPdfFirstPage(uri)
-            else -> null
-        }
+        val mime = contentResolver.getType(uri) ?: "image/*"
+        if (!mime.startsWith("image/")) return null
+        return readImageBytes(uri, mime)
     }
 
     private fun readImageBytes(uri: Uri, mime: String): Map<String, Any>? = try {
@@ -195,43 +206,53 @@ class MainActivity : FlutterActivity() {
         null
     }
 
-    // Plan/105 — render a PDF's first page to a PNG via the platform
-    // PdfRenderer (no Dart PDF dependency). The Dart side treats it as a
-    // regular image. Phase-2 (all pages) needs the attachment model to hold
-    // a list; for now page 1 is attached.
-    private fun renderPdfFirstPage(uri: Uri): Map<String, Any>? {
+    // Plan/105 — render up to [maxPages] pages of a shared PDF to PNGs via
+    // the platform PdfRenderer (no Dart PDF dependency). Each page is scaled
+    // to ~1242px wide on a white background (PDFs can be transparent).
+    private fun renderPdfPages(uri: Uri, maxPages: Int): List<Map<String, Any>> {
         var pfd: android.os.ParcelFileDescriptor? = null
         var renderer: PdfRenderer? = null
-        var page: PdfRenderer.Page? = null
+        val out = mutableListOf<Map<String, Any>>()
         try {
-            pfd = contentResolver.openFileDescriptor(uri, "r") ?: return null
+            pfd = contentResolver.openFileDescriptor(uri, "r") ?: return emptyList()
             renderer = PdfRenderer(pfd)
-            if (renderer.pageCount == 0) return null
-            page = renderer.openPage(0)
-            val targetWidth = 1242 // ~phone width @2x; keeps text legible
-            val scale = targetWidth.toFloat() / page.width.toFloat()
-            val width = targetWidth
-            val height = (page.height * scale).toInt()
-            val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            // PDFs can be transparent — paint white so the PNG isn't a black
-            // slab on dark themes.
-            bmp.eraseColor(android.graphics.Color.WHITE)
-            page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-            val bytes = java.io.ByteArrayOutputStream().use { baos ->
-                bmp.compress(Bitmap.CompressFormat.PNG, 100, baos)
-                baos.toByteArray()
+            val count = minOf(renderer.pageCount, maxPages)
+            for (i in 0 until count) {
+                var page: PdfRenderer.Page? = null
+                try {
+                    page = renderer.openPage(i)
+                    val targetWidth = 1242
+                    val scale = targetWidth.toFloat() / page.width.toFloat()
+                    val width = targetWidth
+                    val height = (page.height * scale).toInt()
+                    val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    bmp.eraseColor(android.graphics.Color.WHITE)
+                    page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    val bytes = java.io.ByteArrayOutputStream().use { baos ->
+                        bmp.compress(Bitmap.CompressFormat.PNG, 100, baos)
+                        baos.toByteArray()
+                    }
+                    bmp.recycle()
+                    out.add(mapOf("data" to bytes, "mime" to "image/png"))
+                } finally {
+                    page?.close()
+                }
             }
-            bmp.recycle()
-            Log.d(TAG, "rendered pdf page 1 of ${renderer.pageCount} → ${width}x${height}")
-            return mapOf("data" to bytes, "mime" to "image/png")
+            Log.d(TAG, "rendered pdf $count of ${renderer.pageCount} pages")
         } catch (e: Exception) {
             Log.w(TAG, "pdf render failed: ${e.javaClass.simpleName}: ${e.message}")
-            return null
         } finally {
-            page?.close()
             renderer?.close()
             pfd?.close()
         }
+        return out
+    }
+
+    // Plan/105 — consume the stashed shared PDF: render up to 8 pages.
+    private fun consumeSharePdf(): List<Map<String, Any>> {
+        val uri = pendingSharePdfUri ?: return emptyList()
+        pendingSharePdfUri = null
+        return renderPdfPages(uri, 8)
     }
 
     // Plan/104 — text/plain share (EXTRA_TEXT). Cleared on read.

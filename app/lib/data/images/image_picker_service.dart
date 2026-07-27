@@ -33,6 +33,11 @@ abstract class IImagePickerService {
   /// Returns null when there's no pending text share. Default returns null so
   /// test fakes / unsupported platforms are unaffected.
   Future<String?> consumeSharedText() async => null;
+
+  /// Plan/105 — PDF shared via the Share sheet (application/pdf), rendered to
+  /// one image per page (capped). Null when there's no pending PDF share.
+  /// Default returns null so test fakes / unsupported platforms are unaffected.
+  Future<List<PickedImage>?> consumeSharedPdf() async => null;
 }
 
 /// A picked + compressed image ready for preview and sending. Bytes are raw
@@ -130,6 +135,31 @@ class ImagePickerService implements IImagePickerService {
     const channel = MethodChannel('ch.pungitore.piper/share');
     try {
       return await channel.invokeMethod<String>('consumeText');
+    } on Exception {
+      return null;
+    }
+  }
+
+  @override
+  Future<List<PickedImage>?> consumeSharedPdf() async {
+    const channel = MethodChannel('ch.pungitore.piper/share');
+    try {
+      final res = await channel.invokeMethod<List>('consumePdf');
+      if (res == null) return null;
+      final out = <PickedImage>[];
+      for (final item in res) {
+        final m = item as Map;
+        final raw = m['data'];
+        if (raw is! Uint8List) continue;
+        final bytes = await FlutterImageCompress.compressWithList(
+          raw,
+          minWidth: _maxSide,
+          minHeight: _maxSide,
+          quality: _quality,
+        );
+        out.add(PickedImage(bytes: bytes, mime: 'image/jpeg'));
+      }
+      return out.isEmpty ? null : out;
     } on Exception {
       return null;
     }

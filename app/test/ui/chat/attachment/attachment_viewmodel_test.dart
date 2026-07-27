@@ -43,6 +43,8 @@ class _FakePicker implements IImagePickerService {
   Future<PickedImage?> consumeSharedImage() async => null;
   @override
   Future<String?> consumeSharedText() async => null;
+  @override
+  Future<List<PickedImage>?> consumeSharedPdf() async => null;
 }
 
 class _FakeActions implements IActionsRepository {
@@ -97,7 +99,7 @@ void main() {
     vm.dispose();
   });
 
-  test('takeImageForSend returns base64 MessageImage and resets', () async {
+  test('takeImagesForSend returns base64 MessageImages and resets', () async {
     final picker = _FakePicker()
       ..next = PickedImage(
         bytes: Uint8List.fromList([10, 20, 30]),
@@ -106,12 +108,12 @@ void main() {
     final vm = AttachmentViewModel(picker, _FakeActions());
     await vm.pickFromGallery();
 
-    final msg = vm.takeImageForSend();
-    expect(msg, isNotNull);
-    expect(msg!.mime, 'image/jpeg');
-    expect(base64Decode(msg.data), [10, 20, 30]);
+    final msgs = vm.takeImagesForSend();
+    expect(msgs, hasLength(1));
+    expect(msgs.first.mime, 'image/jpeg');
+    expect(base64Decode(msgs.first.data), [10, 20, 30]);
     expect(vm.state, isA<AttachmentEmpty>());
-    expect(vm.takeImageForSend(), isNull); // nothing left
+    expect(vm.takeImagesForSend(), isEmpty); // nothing left
     vm.dispose();
   });
 

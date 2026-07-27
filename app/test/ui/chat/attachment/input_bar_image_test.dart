@@ -31,6 +31,8 @@ class _FakePicker implements IImagePickerService {
   Future<PickedImage?> consumeSharedImage() async => null;
   @override
   Future<String?> consumeSharedText() async => null;
+  @override
+  Future<List<PickedImage>?> consumeSharedPdf() async => null;
 }
 
 class _FakeActions implements IActionsRepository {
@@ -99,7 +101,7 @@ void main() {
     expect(btn.onPressed, isNotNull);
   });
 
-  testWidgets('vision=false disables the attach button (#9)', (tester) async {
+  testWidgets('vision=false no longer disables the attach button (gate removed)', (tester) async {
     actions.catalogue = ModelsCatalogue(
       models: [_m(false)],
       current: _m(false),
@@ -111,7 +113,10 @@ void main() {
     final btn = tester.widget<IconButton>(
       find.byKey(const Key('input-bar-attach')),
     );
-    expect(btn.onPressed, isNull);
+    // Vision gate removed: runtime packages (pi-multimodal-proxy) add image
+    // support to text-only models without flipping the flag, so the button
+    // stays enabled and lets the channel decide.
+    expect(btn.onPressed, isNotNull);
   });
 
   testWidgets('offline (null onOpenAttach) disables the attach button', (
@@ -164,7 +169,8 @@ void main() {
                 onOpenAttach: () {},
                 onSend: (text) {
                   sentText = text;
-                  sent = vm.takeImageForSend(); // mirrors chat_page wiring
+                  final imgs = vm.takeImagesForSend();
+                  sent = imgs.isEmpty ? null : imgs.first; // mirrors chat_page wiring
                 },
               ),
             ),

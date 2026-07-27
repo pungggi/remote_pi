@@ -40,20 +40,35 @@ final class AttachmentPicking extends AttachmentState {
   int get hashCode => visionSupported.hashCode;
 }
 
-/// An image is attached and previewed in the composer.
+/// An image (or, plan/105, several — a PDF's pages) is attached and previewed
+/// in the composer. [images] is always non-empty in this state.
 final class AttachmentAttached extends AttachmentState {
-  const AttachmentAttached({required this.image, super.visionSupported});
+  const AttachmentAttached({required this.images, super.visionSupported});
 
-  final PickedImage image;
+  /// The attached images: one for camera/gallery/clipboard/image-share, N
+  /// pages for a shared PDF.
+  final List<PickedImage> images;
+
+  /// The first image — e.g. for the optimistic DB row / preview focus.
+  PickedImage get first => images.first;
 
   @override
   bool operator ==(Object other) =>
       other is AttachmentAttached &&
-      identical(other.image, image) &&
+      other.images.length == images.length &&
+      _identicalList(other.images, images) &&
       other.visionSupported == visionSupported;
 
   @override
-  int get hashCode => Object.hash(identityHashCode(image), visionSupported);
+  int get hashCode => Object.hash(Object.hashAll(images), visionSupported);
+
+  // PickedImage has no `==` override, so identity is the right comparison.
+  static bool _identicalList(List<PickedImage> a, List<PickedImage> b) {
+    for (var i = 0; i < a.length; i++) {
+      if (!identical(a[i], b[i])) return false;
+    }
+    return true;
+  }
 }
 
 /// One-shot hints the composer asks the host page to surface (snackbar /

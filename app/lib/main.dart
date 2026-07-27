@@ -34,7 +34,10 @@ void main() async {
   // Plan/104 — if launched via a Share (ACTION_SEND image), pull it now so it
   // waits in the inbox; the router listener routes to the chat once booted.
   final shared = await injector.get<IImagePickerService>().consumeSharedImage();
-  if (shared != null) injector.get<SharedImageInbox>().deposit(shared);
+  if (shared != null) injector.get<SharedImageInbox>().deposit([shared]);
+  final sharedPdf =
+      await injector.get<IImagePickerService>().consumeSharedPdf();
+  if (sharedPdf != null) injector.get<SharedImageInbox>().deposit(sharedPdf);
   final sharedText =
       await injector.get<IImagePickerService>().consumeSharedText();
   if (sharedText != null) injector.get<SharedTextInbox>().deposit(sharedText);
@@ -103,10 +106,12 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
 
   Future<void> _consumeShares() async {
     final img = await injector.get<IImagePickerService>().consumeSharedImage();
-    if (img != null) injector.get<SharedImageInbox>().deposit(img);
+    if (img != null) injector.get<SharedImageInbox>().deposit([img]);
+    final pdf = await injector.get<IImagePickerService>().consumeSharedPdf();
+    if (pdf != null) injector.get<SharedImageInbox>().deposit(pdf);
     final txt = await injector.get<IImagePickerService>().consumeSharedText();
     if (txt != null) injector.get<SharedTextInbox>().deposit(txt);
-    if (img != null || txt != null) await _maybeRouteToChat();
+    if (img != null || pdf != null || txt != null) await _maybeRouteToChat();
   }
 
   Future<void> _maybeRouteToChat() async {
