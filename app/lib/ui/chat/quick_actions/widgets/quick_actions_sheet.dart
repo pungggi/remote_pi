@@ -4,6 +4,7 @@ import 'package:app/config/dependencies.dart';
 import 'package:app/data/actions/actions_repository.dart' show ActionFailure;
 import 'package:app/protocol/protocol.dart';
 import 'package:app/routing/adaptive.dart';
+import 'package:go_router/go_router.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/chat/quick_actions/states/quick_actions_state.dart';
 import 'package:app/ui/chat/quick_actions/viewmodels/quick_actions_viewmodel.dart';
@@ -196,10 +197,13 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
   }
 
   /// Plan/108 — open a terminal on the paired PC at the session's folder
-  /// (pi's cwd — pure `/ps clone`). No path entry: the project folder is
-  /// already known from the running session. Toasts the result so a failure
-  /// (unsupported platform / missing cwd) surfaces clearly.
+  /// (pi's cwd — pure `/ps clone`). On success, head back to the session
+  /// list so the newly-spawned session surfaces there and the user can
+  /// switch to it. On failure, stay put + toast the error.
   Future<void> _onOpenTerminal(QuickActionsViewModel vm) async {
+    // Capture the router before any pop — the sheet's context dies once we
+    // dismiss it, but the router outlives the sheet.
+    final router = GoRouter.of(context);
     final OpenTerminalResult r;
     try {
       r = await vm.openTerminal();
@@ -208,7 +212,12 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
       return;
     }
     if (!mounted) return;
-    _toast(r.message, r.ok ? context.colors.success : context.colors.error);
+    if (r.ok) {
+      Navigator.of(context).pop(); // dismiss the quick-actions sheet
+      router.go('/home'); // back to the session list
+    } else {
+      _toast(r.message, context.colors.error);
+    }
   }
 
   Future<void> _onNewSession(QuickActionsViewModel vm) async {
