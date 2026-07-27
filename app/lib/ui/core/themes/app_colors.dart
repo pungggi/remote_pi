@@ -75,7 +75,7 @@ class AppColors extends ThemeExtension<AppColors> {
   final Color warning;
 
   /// "Working" / in-progress accent (session running a turn). Was the local
-  /// `kWorking = Color(0xFF3FA9F5)` duplicated in session_tile and chat_page.
+  /// `kWorking` (hardcoded azure) duplicated in session_tile and chat_page.
   final Color working;
 
   /// Background of inline/he block code. Was `kCodeBg`.
@@ -104,13 +104,13 @@ class AppColors extends ThemeExtension<AppColors> {
     text: Color(0xFFFFFFFF),
     muted: Color(0xFF6B6B6B),
     muted2: Color(0xFF8A8A8A),
-    accent: Color(0xFF00D4FF),
+    accent: Color(0xFF00FF41),
     onAccent: Color(0xFF000000),
-    highlight: Color(0xFF9FE6FF),
+    highlight: Color(0xFF80FFA0),
     success: Color(0xFF6CD28A),
     error: Color(0xFFE5484D),
     warning: Color(0xFFFFB300),
-    working: Color(0xFF3FA9F5),
+    working: Color(0xFF00E676),
     codeBg: Color(0xFF050505),
     userBubble: Color(0xFF1A1A1A),
     modelBadgeBg: Color(0xFF161616),
@@ -122,7 +122,7 @@ class AppColors extends ThemeExtension<AppColors> {
   /// Light palette — derived from [dark]. Foreground tints are tuned for
   /// WCAG-AA contrast on the white [bg] (≥4.5:1 for body, ≥3:1 for large/UI):
   /// `muted`/`muted2` are dark grays (not the dark-theme mid-grays, which were
-  /// washed out on white), and `accent`/`highlight` are deepened cyans so
+  /// washed out on white), and `accent`/`highlight` are deepened greens so
   /// accent-colored *text* (links, "Use default" buttons) stays legible.
   static const AppColors light = AppColors(
     bg: Color(0xFFFFFFFF),
@@ -131,13 +131,13 @@ class AppColors extends ThemeExtension<AppColors> {
     text: Color(0xFF0A0A0A),
     muted: Color(0xFF565656), // ~7:1 on white (was 0xFF6B6B6B, ~4:1)
     muted2: Color(0xFF424242), // ~9:1 on white
-    accent: Color(0xFF0077A3), // ~4.6:1 on white — legible as text AND fill
+    accent: Color(0xFF00802B), // ~4.6:1 on white — legible as text AND fill
     onAccent: Color(0xFFFFFFFF),
-    highlight: Color(0xFF005F82), // code/paths — deeper for body contrast
+    highlight: Color(0xFF006624), // code/paths — deeper for body contrast
     success: Color(0xFF1E7A41),
     error: Color(0xFFC42026),
     warning: Color(0xFF9A6300),
-    working: Color(0xFF1A6CB0),
+    working: Color(0xFF1B7A40),
     codeBg: Color(0xFFF0F0F0),
     userBubble: Color(0xFFEAEAEC),
     modelBadgeBg: Color(0xFFEDEDEF),

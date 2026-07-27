@@ -17,7 +17,7 @@ export default function OpengraphImage() {
           gap: 28,
           backgroundColor: "#000000",
           backgroundImage:
-            "radial-gradient(circle at 80% 20%, rgba(79,195,247,0.18), transparent 60%)",
+            "radial-gradient(circle at 80% 20%, rgba(0, 255, 65,0.18), transparent 60%)",
           padding: 88,
           fontFamily: "sans-serif",
         }}
@@ -25,7 +25,7 @@ export default function OpengraphImage() {
         <div
           style={{
             fontSize: 28,
-            color: "#4FC3F7",
+            color: "#00ff41",
             letterSpacing: 4,
             textTransform: "uppercase",
             fontWeight: 600,

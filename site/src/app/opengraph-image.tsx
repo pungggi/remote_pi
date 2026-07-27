@@ -18,7 +18,7 @@ export default function OpengraphImage() {
           gap: 64,
           backgroundColor: "#000000",
           backgroundImage:
-            "radial-gradient(circle at 80% 20%, rgba(79,195,247,0.18), transparent 60%)",
+            "radial-gradient(circle at 80% 20%, rgba(0, 255, 65,0.18), transparent 60%)",
           padding: 80,
           fontFamily: "sans-serif",
         }}
@@ -38,7 +38,7 @@ export default function OpengraphImage() {
             <rect x="312" y="272" width="400" height="96" rx="18" fill="#FFFFFF" />
             <rect x="616" y="272" width="96" height="300" rx="18" fill="#FFFFFF" />
             <rect x="400" y="476" width="312" height="96" rx="18" fill="#FFFFFF" />
-            <circle cx="512" cy="422" r="46" fill="#4FC3F7" />
+            <circle cx="512" cy="422" r="46" fill="#00ff41" />
           </svg>
         </div>
         <div
@@ -52,7 +52,7 @@ export default function OpengraphImage() {
           <div
             style={{
               fontSize: 28,
-              color: "#4FC3F7",
+              color: "#00ff41",
               letterSpacing: 4,
               textTransform: "uppercase",
               fontWeight: 600,

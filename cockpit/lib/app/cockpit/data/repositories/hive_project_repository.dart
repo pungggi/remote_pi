@@ -85,7 +85,7 @@ class HiveProjectRepository implements ProjectRepository {
       id: id,
       name: map['name'] as String? ?? path,
       path: path,
-      colorValue: (map['color'] as num?)?.toInt() ?? 0xFF2F6FF0,
+      colorValue: (map['color'] as num?)?.toInt() ?? 0xFF00FF41,
       createdAt: DateTime.fromMillisecondsSinceEpoch(
         (map['createdAt'] as num?)?.toInt() ?? 0,
       ),

@@ -198,10 +198,10 @@ export function IconAndroid() {
 export function IconPlay() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M3.6 2.3 13.5 12 3.6 21.7c-.36-.18-.6-.55-.6-1V3.3c0-.45.24-.82.6-1Z" fill="#4fc3f7" />
-      <path d="m16.8 8.7 3.1 1.7c.8.45.8 1.35 0 1.8l-3.1 1.7L13.5 12l3.3-3.3Z" fill="#4fc3f7" opacity=".8" />
-      <path d="M3.6 2.3 13.5 12l-3.3 3.3L3.6 2.3Z" fill="#4fc3f7" opacity=".5" />
-      <path d="M3.6 21.7 13.5 12l-3.3-3.3L3.6 21.7Z" fill="#4fc3f7" opacity=".65" />
+      <path d="M3.6 2.3 13.5 12 3.6 21.7c-.36-.18-.6-.55-.6-1V3.3c0-.45.24-.82.6-1Z" fill="#00ff41" />
+      <path d="m16.8 8.7 3.1 1.7c.8.45.8 1.35 0 1.8l-3.1 1.7L13.5 12l3.3-3.3Z" fill="#00ff41" opacity=".8" />
+      <path d="M3.6 2.3 13.5 12l-3.3 3.3L3.6 2.3Z" fill="#00ff41" opacity=".5" />
+      <path d="M3.6 21.7 13.5 12l-3.3-3.3L3.6 21.7Z" fill="#00ff41" opacity=".65" />
     </svg>
   );
 }

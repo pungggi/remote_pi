@@ -307,7 +307,7 @@ class CockpitViewModel extends ChangeNotifier {
     0xFF1AA5A0,
     0xFF3FB868,
     0xFFE0A33A,
-    0xFF2F6FF0,
+    0xFF00FF41,
   ];
 
   String _nid(String prefix) => '$prefix${_seq++}';

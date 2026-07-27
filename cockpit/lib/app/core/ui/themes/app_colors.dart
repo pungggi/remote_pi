@@ -1,7 +1,7 @@
 import 'package:flutter/widgets.dart';
 
 /// Tokens de cor do Cockpit — espelham `tokens.css` do design (dark pro-tool,
-/// accent azul Remote Pi). Lidos via `context.colors.<token>`.
+/// accent verde Matrix (Piper)). Lidos via `context.colors.<token>`.
 @immutable
 class AppColors {
   const AppColors({
@@ -43,7 +43,7 @@ class AppColors {
   final Color accent;
   final Color accentSoft;
   final Color accentText;
-  final Color online; // the ONLY green
+  final Color online; // online status (distinct from the Matrix accent)
   final Color ok;
   final Color error;
   final Color warn;
@@ -67,9 +67,9 @@ class AppColors {
     text2: Color(0xFF9B9BA4),
     text3: Color(0xFF6A6A73),
     text4: Color(0xFF46464D),
-    accent: Color(0xFF2F6FF0),
-    accentSoft: Color(0x332F6FF0),
-    accentText: Color(0xFF7FAAFF),
+    accent: Color(0xFF00FF41),
+    accentSoft: Color(0x3300FF41),
+    accentText: Color(0xFF80FFA0),
     online: Color(0xFF3FB868),
     ok: Color(0xFF3FB868),
     error: Color(0xFFE5484D),
@@ -94,9 +94,9 @@ class AppColors {
     text2: Color(0xFF5B5B66),
     text3: Color(0xFF8A8A94),
     text4: Color(0xFFB4B4BC),
-    accent: Color(0xFF2F6FF0),
-    accentSoft: Color(0x222F6FF0),
-    accentText: Color(0xFF1F5FD6),
+    accent: Color(0xFF00802B),
+    accentSoft: Color(0x2200802B),
+    accentText: Color(0xFF006624),
     online: Color(0xFF2E9E54),
     ok: Color(0xFF2E9E54),
     error: Color(0xFFD32F2F),

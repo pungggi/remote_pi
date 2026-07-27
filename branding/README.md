@@ -6,7 +6,7 @@ Identidade visual oficial do fork (Piper). Fonte de verdade: arquivos SVG
 ## O mark
 
 Um **"P" geométrico** cujo traço vertical é um *pipe* (conduto), com um
-**pacote de dados** (bolinha azul) dentro da tigela — "data piped between your
+**pacote de dados** (bolinha verde (Matrix)) dentro da tigela — "data piped between your
 devices". Construído em retângulos arredondados (mesma linguagem geométrica do
 π anterior), peso de traço uniforme, dentro da safe zone Android (~66% central).
 
@@ -16,13 +16,13 @@ devices". Construído em retângulos arredondados (mesma linguagem geométrica d
 |---|---|---|
 | Preto puro | `#000000` | Background (full + adaptive icon bg) |
 | Branco puro | `#FFFFFF` | "P" (foreground principal) |
-| Azul Piper | `#4FC3F7` | Pacote de dados (accent) |
+| Verde Matrix | `#00ff41` | Pacote de dados (accent) |
 
 ## Arquivos
 
 | Arquivo | Conteúdo | Uso recomendado |
 |---|---|---|
-| `logo-full.svg` | Background preto + P branco + pacote azul | Logo single-piece (favicon, README header, site, app store screenshots) |
+| `logo-full.svg` | Background preto + P branco + pacote verde | Logo single-piece (favicon, README header, site, app store screenshots) |
 | `logo-foreground.svg` | P + pacote em fundo transparente | iOS app icon (com background separado), Android adaptive icon foreground layer |
 | `logo-background.svg` | Preto sólido 1024×1024 | Android adaptive icon background layer |
 | `logo-monochrome.svg` | Silhueta branca completa (P + pacote unificados) | Android 13+ themed icon (o sistema colore conforme wallpaper) |

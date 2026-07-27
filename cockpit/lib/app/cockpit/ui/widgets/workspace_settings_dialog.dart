@@ -18,7 +18,7 @@ void _trace(String m) {
 /// Paleta de cores do avatar de workspace.
 const List<int> kWorkspacePalette = <int>[
   0xFF6E56CF,
-  0xFF2F6FF0,
+  0xFF00FF41,
   0xFF1AA5A0,
   0xFF3FB868,
   0xFFE0A33A,

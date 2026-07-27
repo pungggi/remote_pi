@@ -2,8 +2,8 @@
 
 /* ===========================================================
    Piper — design tokens
-   Dark, sky-blue accent (#4fc3f7), generous spacing.
-   Palette is the canonical one: black bg, white ink, blue accent.
+   Dark, Matrix-green accent (#00ff41), generous spacing.
+   Palette is the canonical one: black bg, white ink, Matrix-green accent.
    Fonts are loaded via next/font (see layout.tsx) and exposed as
    --font-display / --font-body / --font-mono.
    =========================================================== */
@@ -11,7 +11,7 @@
   /* canonical palette (kept stable for the rest of the site) */
   --bg: #000000;
   --fg: #ffffff;
-  --accent: #4fc3f7;
+  --accent: #00ff41;
   --muted: #a3a3a3;
   --surface: #0a0a0a;
   --border-soft: rgba(255, 255, 255, 0.1);
@@ -31,12 +31,12 @@
   --faint: #6b6b6b;
 
   /* accent ramp (the var is named --green for parity with the design,
-     but the value is the canonical sky-blue accent) */
-  --green: #4fc3f7;
-  --green-ink: #04222e;
-  --green-dim: rgba(79, 195, 247, 0.13);
-  --green-line: rgba(79, 195, 247, 0.3);
-  --green-glow: rgba(79, 195, 247, 0.22);
+     but the value is the canonical Matrix-green accent) */
+  --green: #00ff41;
+  --green-ink: #042b00;
+  --green-dim: rgba(0, 255, 65, 0.13);
+  --green-line: rgba(0, 255, 65, 0.3);
+  --green-glow: rgba(0, 255, 65, 0.22);
   --ok: #5fd38a;
 
   /* layout + radii */
@@ -88,8 +88,8 @@ body::before {
   pointer-events: none;
   z-index: 0;
   background:
-    radial-gradient(900px 600px at 78% -8%, rgba(79, 195, 247, 0.1), transparent 60%),
-    radial-gradient(700px 500px at 8% 8%, rgba(79, 195, 247, 0.05), transparent 55%);
+    radial-gradient(900px 600px at 78% -8%, rgba(0, 255, 65, 0.1), transparent 60%),
+    radial-gradient(700px 500px at 8% 8%, rgba(0, 255, 65, 0.05), transparent 55%);
 }
 
 a {
@@ -449,7 +449,7 @@ a {
   height: 100%;
   border-radius: 33px;
   background:
-    radial-gradient(120% 80% at 50% 0%, rgba(79, 195, 247, 0.1), transparent 60%),
+    radial-gradient(120% 80% at 50% 0%, rgba(0, 255, 65, 0.1), transparent 60%),
     #050505;
   overflow: hidden;
   display: flex;
@@ -548,7 +548,7 @@ a {
 
 /* tool call card */
 .tool {
-  border: 1px solid rgba(79, 195, 247, 0.42);
+  border: 1px solid rgba(0, 255, 65, 0.42);
   border-radius: 15px;
   padding: 13px 13px 12px;
   animation: pop 0.34s cubic-bezier(0.2, 0.7, 0.3, 1) both;
@@ -615,7 +615,7 @@ a {
 }
 .md-response code {
   color: var(--green);
-  background: rgba(79, 195, 247, 0.1);
+  background: rgba(0, 255, 65, 0.1);
   padding: 1px 5px;
   border-radius: 5px;
   font-size: 11px;
@@ -959,7 +959,7 @@ a {
   font-family: var(--ff-mono);
   font-size: 12.5px;
   color: var(--green);
-  background: rgba(79, 195, 247, 0.1);
+  background: rgba(0, 255, 65, 0.1);
   padding: 1px 5px;
   border-radius: 5px;
 }
@@ -1388,8 +1388,8 @@ a {
   font-family: var(--ff-mono);
   font-size: 0.86em;
   color: var(--green);
-  background: rgba(79, 195, 247, 0.1);
-  border: 1px solid rgba(79, 195, 247, 0.16);
+  background: rgba(0, 255, 65, 0.1);
+  border: 1px solid rgba(0, 255, 65, 0.16);
   padding: 1px 7px;
   border-radius: 7px;
   white-space: nowrap;
@@ -1491,7 +1491,7 @@ a {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--green);
-  background: rgba(79, 195, 247, 0.07);
+  background: rgba(0, 255, 65, 0.07);
   padding: 13px 18px;
   border-bottom: 1px solid var(--green-line);
   white-space: nowrap;
@@ -2234,8 +2234,8 @@ a {
   font-family: var(--ff-mono);
   font-size: 12.5px;
   color: var(--green);
-  background: rgba(79, 195, 247, 0.1);
-  border: 1px solid rgba(79, 195, 247, 0.16);
+  background: rgba(0, 255, 65, 0.1);
+  border: 1px solid rgba(0, 255, 65, 0.16);
   padding: 1px 6px;
   border-radius: 6px;
 }
@@ -2268,8 +2268,8 @@ a {
   font-family: var(--ff-mono);
   font-size: 12.5px;
   color: var(--green);
-  background: rgba(79, 195, 247, 0.1);
-  border: 1px solid rgba(79, 195, 247, 0.16);
+  background: rgba(0, 255, 65, 0.1);
+  border: 1px solid rgba(0, 255, 65, 0.16);
   padding: 1px 6px;
   border-radius: 6px;
 }

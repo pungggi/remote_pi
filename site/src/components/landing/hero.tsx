@@ -35,7 +35,7 @@ function HeroMesh() {
   return (
     <div className="hero-mesh" aria-hidden="true">
       <svg viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid slice">
-        <g stroke="rgba(79,195,247,0.16)" fill="none">
+        <g stroke="rgba(0, 255, 65,0.16)" fill="none">
           {links.map(([a, b], i) => (
             <line
               key={i}
@@ -51,12 +51,12 @@ function HeroMesh() {
         </g>
         {nodes.map((n, i) => (
           <g key={i}>
-            <circle cx={n.x} cy={n.y} r="14" fill="rgba(79,195,247,0.05)" />
+            <circle cx={n.x} cy={n.y} r="14" fill="rgba(0, 255, 65,0.05)" />
             <circle
               cx={n.x}
               cy={n.y}
               r="3.4"
-              fill="#4fc3f7"
+              fill="#00ff41"
               style={{ animation: `pulseNode ${3 + (i % 5) * 0.6}s ease-in-out ${i * 0.4}s infinite` }}
             />
           </g>
