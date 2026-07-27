@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Build
 import android.util.Log
@@ -152,7 +154,7 @@ class MainActivity : FlutterActivity() {
         if (intent?.action != Intent.ACTION_SEND) return
         val type = intent.type ?: return
         when {
-            type.startsWith("image/") -> {
+            type.startsWith("image/") || type == "application/pdf" -> {
                 val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
                 } else {
@@ -161,7 +163,7 @@ class MainActivity : FlutterActivity() {
                 }
                 if (uri != null) {
                     pendingShareUri = uri
-                    Log.d(TAG, "stashed shared image uri=$uri")
+                    Log.d(TAG, "stashed shared $type uri=$uri")
                 }
             }
             type.startsWith("text/") -> {
@@ -177,14 +179,58 @@ class MainActivity : FlutterActivity() {
     private fun consumeShareImage(): Map<String, Any>? {
         val uri = pendingShareUri ?: return null
         pendingShareUri = null
-        val mime = contentResolver.getType(uri) ?: "image/*"
-        if (!mime.startsWith("image/")) return null
-        return try {
-            contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                ?.let { mapOf("data" to it, "mime" to mime) }
+        val mime = contentResolver.getType(uri) ?: return null
+        return when {
+            mime.startsWith("image/") -> readImageBytes(uri, mime)
+            mime == "application/pdf" -> renderPdfFirstPage(uri)
+            else -> null
+        }
+    }
+
+    private fun readImageBytes(uri: Uri, mime: String): Map<String, Any>? = try {
+        contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            ?.let { mapOf("data" to it, "mime" to mime) }
+    } catch (e: Exception) {
+        Log.w(TAG, "share read failed: ${e.javaClass.simpleName}: ${e.message}")
+        null
+    }
+
+    // Plan/105 — render a PDF's first page to a PNG via the platform
+    // PdfRenderer (no Dart PDF dependency). The Dart side treats it as a
+    // regular image. Phase-2 (all pages) needs the attachment model to hold
+    // a list; for now page 1 is attached.
+    private fun renderPdfFirstPage(uri: Uri): Map<String, Any>? {
+        var pfd: android.os.ParcelFileDescriptor? = null
+        var renderer: PdfRenderer? = null
+        var page: PdfRenderer.Page? = null
+        try {
+            pfd = contentResolver.openFileDescriptor(uri, "r") ?: return null
+            renderer = PdfRenderer(pfd)
+            if (renderer.pageCount == 0) return null
+            page = renderer.openPage(0)
+            val targetWidth = 1242 // ~phone width @2x; keeps text legible
+            val scale = targetWidth.toFloat() / page.width.toFloat()
+            val width = targetWidth
+            val height = (page.height * scale).toInt()
+            val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            // PDFs can be transparent — paint white so the PNG isn't a black
+            // slab on dark themes.
+            bmp.eraseColor(android.graphics.Color.WHITE)
+            page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            val bytes = java.io.ByteArrayOutputStream().use { baos ->
+                bmp.compress(Bitmap.CompressFormat.PNG, 100, baos)
+                baos.toByteArray()
+            }
+            bmp.recycle()
+            Log.d(TAG, "rendered pdf page 1 of ${renderer.pageCount} → ${width}x${height}")
+            return mapOf("data" to bytes, "mime" to "image/png")
         } catch (e: Exception) {
-            Log.w(TAG, "share read failed: ${e.javaClass.simpleName}: ${e.message}")
-            null
+            Log.w(TAG, "pdf render failed: ${e.javaClass.simpleName}: ${e.message}")
+            return null
+        } finally {
+            page?.close()
+            renderer?.close()
+            pfd?.close()
         }
     }
 
