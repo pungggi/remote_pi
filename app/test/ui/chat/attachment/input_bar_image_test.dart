@@ -29,6 +29,8 @@ class _FakePicker implements IImagePickerService {
   Future<PickedImage?> pickFromClipboard() async => next;
   @override
   Future<PickedImage?> consumeSharedImage() async => null;
+  @override
+  Future<String?> consumeSharedText() async => null;
 }
 
 class _FakeActions implements IActionsRepository {

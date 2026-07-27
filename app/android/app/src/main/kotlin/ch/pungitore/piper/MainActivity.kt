@@ -72,6 +72,7 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "consumeImage" -> result.success(consumeShareImage())
+                    "consumeText" -> result.success(consumeShareText())
                     else -> result.notImplemented()
                 }
             }
@@ -145,18 +146,31 @@ class MainActivity : FlutterActivity() {
     // Dart consumes it. ACTION_SEND grants the receiving activity a temporary
     // read grant, so openInputStream works without extra permissions.
     private var pendingShareUri: Uri? = null
+    private var pendingShareText: String? = null
 
     private fun stashShareIntent(intent: Intent?) {
         if (intent?.action != Intent.ACTION_SEND) return
-        val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
-        }
-        if (uri != null) {
-            pendingShareUri = uri
-            Log.d(TAG, "stashed shared image uri=$uri")
+        val type = intent.type ?: return
+        when {
+            type.startsWith("image/") -> {
+                val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+                }
+                if (uri != null) {
+                    pendingShareUri = uri
+                    Log.d(TAG, "stashed shared image uri=$uri")
+                }
+            }
+            type.startsWith("text/") -> {
+                val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+                if (!text.isNullOrEmpty()) {
+                    pendingShareText = text
+                    Log.d(TAG, "stashed shared text (${text.length} chars)")
+                }
+            }
         }
     }
 
@@ -172,5 +186,12 @@ class MainActivity : FlutterActivity() {
             Log.w(TAG, "share read failed: ${e.javaClass.simpleName}: ${e.message}")
             null
         }
+    }
+
+    // Plan/104 — text/plain share (EXTRA_TEXT). Cleared on read.
+    private fun consumeShareText(): String? {
+        val t = pendingShareText
+        pendingShareText = null
+        return t
     }
 }

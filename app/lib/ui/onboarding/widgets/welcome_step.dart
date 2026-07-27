@@ -20,7 +20,7 @@ class WelcomeStep extends StatelessWidget {
           Icon(LucideIcons.terminal, color: colors.accent, size: 64),
           const SizedBox(height: 32),
           Text(
-            'Remote Pi',
+            'Piper',
             textAlign: TextAlign.center,
             style: brandTextStyle(
               fontSize: 24,

@@ -127,7 +127,7 @@ class MeshSyncService extends ChangeNotifier {
       final prev = existing[m.remoteEpk];
       final next = PeerRecord(
         remoteEpk: m.remoteEpk,
-        sessionName: prev?.sessionName ?? m.nickname ?? 'remote_pi',
+        sessionName: prev?.sessionName ?? m.nickname ?? 'Piper',
         relayUrl: m.relayUrl,
         pairedAt: m.pairedAt,
         nickname: m.nickname,

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:app/data/images/image_picker_service.dart';
+import 'package:app/data/share/shared_text_inbox.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/attachment/states/attachment_state.dart';
 import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
@@ -68,6 +69,12 @@ class InputBar extends StatefulWidget {
   /// Null hides the entry (offline/streaming).
   final VoidCallback? onPasteImage;
 
+  /// Plan/104 — text shared into the app (Share sheet → ACTION_SEND
+  /// text/plain). When provided, the InputBar consumes any pending text on
+  /// mount + when a deposit arrives, dropping it into the field (replace if
+  /// empty, append on a new line otherwise). Null in tests.
+  final SharedTextInbox? sharedText;
+
   const InputBar({
     super.key,
     required this.onSend,
@@ -82,6 +89,7 @@ class InputBar extends StatefulWidget {
     this.attachment,
     this.onOpenAttach,
     this.onPasteImage,
+    this.sharedText,
     this.disabled = false,
     this.streaming = false,
   });
@@ -113,6 +121,10 @@ class _InputBarState extends State<InputBar> {
     super.initState();
     _controller.addListener(_onTextChange);
     _subscribeTranscripts();
+    // Plan/104 — shared text (Share sheet). Consume any pending text now
+    // (cold-start share) + react to a warm share while the chat is open.
+    widget.sharedText?.addListener(_onSharedText);
+    _onSharedText();
   }
 
   @override
@@ -136,6 +148,19 @@ class _InputBarState extends State<InputBar> {
     _controller.selection = TextSelection.collapsed(offset: text.length);
   }
 
+  // Plan/104 — a shared text (URL/snippet via the Share sheet) lands here.
+  // Replace when the field is empty, append on a new line when it isn't.
+  void _onSharedText() {
+    final inbox = widget.sharedText;
+    if (inbox == null || !mounted) return;
+    final t = inbox.consume();
+    if (t == null || t.isEmpty) return;
+    final existing = _controller.text;
+    _controller.text = existing.isEmpty ? t : '$existing\n$t';
+    _controller.selection =
+        TextSelection.collapsed(offset: _controller.text.length);
+  }
+
   void _onTextChange() {
     final next = _controller.text.isEmpty;
     if (next == _empty) return;
@@ -146,6 +171,7 @@ class _InputBarState extends State<InputBar> {
 
   @override
   void dispose() {
+    widget.sharedText?.removeListener(_onSharedText);
     _transcriptSub?.cancel();
     _controller.removeListener(_onTextChange);
     _controller.dispose();

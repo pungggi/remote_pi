@@ -4,6 +4,7 @@ import 'package:app/data/local/boxes.dart';
 import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/share/shared_image_inbox.dart';
+import 'package:app/data/share/shared_text_inbox.dart';
 import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/keep_alive_controller.dart';
@@ -34,17 +35,20 @@ void main() async {
   // waits in the inbox; the router listener routes to the chat once booted.
   final shared = await injector.get<IImagePickerService>().consumeSharedImage();
   if (shared != null) injector.get<SharedImageInbox>().deposit(shared);
-  runApp(const RemotePiApp());
+  final sharedText =
+      await injector.get<IImagePickerService>().consumeSharedText();
+  if (sharedText != null) injector.get<SharedTextInbox>().deposit(sharedText);
+  runApp(const PiperApp());
 }
 
-class RemotePiApp extends StatefulWidget {
-  const RemotePiApp({super.key});
+class PiperApp extends StatefulWidget {
+  const PiperApp({super.key});
 
   @override
-  State<RemotePiApp> createState() => _RemotePiAppState();
+  State<PiperApp> createState() => _PiperAppState();
 }
 
-class _RemotePiAppState extends State<RemotePiApp> with WidgetsBindingObserver {
+class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
   late final _router = buildRouter(
     injector.get<PairingStorage>(),
     injector.get<ConnectionManager>(),
@@ -84,8 +88,8 @@ class _RemotePiAppState extends State<RemotePiApp> with WidgetsBindingObserver {
         // ignore: unawaited_futures
         meshSync.pullOnDemand();
         // Plan/104 — a warm share (app was backgrounded) is stashed in
-        // onNewIntent; pull it and route to the chat.
-        _consumeSharedImage();
+        // onNewIntent; pull it (image or text) and route to the chat.
+        _consumeShares();
       case AppLifecycleState.inactive:
       case AppLifecycleState.paused:
       case AppLifecycleState.hidden:
@@ -97,16 +101,18 @@ class _RemotePiAppState extends State<RemotePiApp> with WidgetsBindingObserver {
   // Plan/104 — Share-to-attach routing.
   void _onRouteChanged() => _maybeRouteToChat();
 
-  Future<void> _consumeSharedImage() async {
+  Future<void> _consumeShares() async {
     final img = await injector.get<IImagePickerService>().consumeSharedImage();
-    if (img == null) return;
-    injector.get<SharedImageInbox>().deposit(img);
-    await _maybeRouteToChat();
+    if (img != null) injector.get<SharedImageInbox>().deposit(img);
+    final txt = await injector.get<IImagePickerService>().consumeSharedText();
+    if (txt != null) injector.get<SharedTextInbox>().deposit(txt);
+    if (img != null || txt != null) await _maybeRouteToChat();
   }
 
   Future<void> _maybeRouteToChat() async {
-    final inbox = injector.get<SharedImageInbox>();
-    if (!inbox.hasPending) return;
+    final imgInbox = injector.get<SharedImageInbox>();
+    final txtInbox = injector.get<SharedTextInbox>();
+    if (!imgInbox.hasPending && !txtInbox.hasPending) return;
     final loc =
         _router.routerDelegate.currentConfiguration.last.matchedLocation;
     // Skip while still booting, or if a chat is already open (it consumes live).
@@ -117,7 +123,8 @@ class _RemotePiAppState extends State<RemotePiApp> with WidgetsBindingObserver {
       return;
     }
     final peers = await injector.get<PairingStorage>().listPeers();
-    if (peers.isEmpty || !inbox.hasPending) return;
+    final stillPending = imgInbox.hasPending || txtInbox.hasPending;
+    if (peers.isEmpty || !stillPending) return;
     _router.push('/chat');
   }
 
@@ -127,6 +134,9 @@ class _RemotePiAppState extends State<RemotePiApp> with WidgetsBindingObserver {
       providers: [
         ChangeNotifierProvider<Preferences>.value(
           value: injector.get<Preferences>(),
+        ),
+        ChangeNotifierProvider<SharedTextInbox>.value(
+          value: injector.get<SharedTextInbox>(),
         ),
         ChangeNotifierProvider<SessionSelection>.value(
           value: injector.get<SessionSelection>(),
@@ -141,7 +151,7 @@ class _RemotePiAppState extends State<RemotePiApp> with WidgetsBindingObserver {
       // [Preferences] → this Consumer rebuilds → MaterialApp swaps theme.
       child: Consumer<Preferences>(
         builder: (context, prefs, _) => MaterialApp.router(
-          title: 'Remote Pi',
+          title: 'Piper',
           theme: buildLightTheme(),
           darkTheme: buildDarkTheme(),
           themeMode: prefs.themeMode,

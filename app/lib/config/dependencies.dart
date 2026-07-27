@@ -10,6 +10,7 @@ import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/repositories/home_read_repository.dart';
 import 'package:app/data/repositories/session_read_repository.dart';
 import 'package:app/data/share/shared_image_inbox.dart';
+import 'package:app/data/share/shared_text_inbox.dart';
 import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/channel.dart'; // IChannel
 import 'package:app/data/transport/connection_manager.dart';
@@ -59,6 +60,7 @@ Future<void> setupDependencies() async {
   _injector.addInstance<Preferences>(prefs);
   // Plan/104 — global inbox for images shared into the app (consumed by the chat).
   _injector.addInstance<SharedImageInbox>(SharedImageInbox());
+  _injector.addInstance<SharedTextInbox>(SharedTextInbox());
 
   // Plan 31 — local SSOT box facade (boxes already opened + runtime wiped in
   // bootstrap before this runs).

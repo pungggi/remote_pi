@@ -39,10 +39,10 @@ class _SyncRequiredPageState extends State<SyncRequiredPage> {
     final isIOS = Platform.isIOS;
     final requirements = isIOS ? _iosRequirements : _androidRequirements;
     final why = isIOS
-        ? 'Remote Pi keeps your Ed25519 owner key in iCloud Keychain so '
+        ? 'Piper keeps your Ed25519 owner key in iCloud Keychain so '
               'you can switch iPhones or pair your iPad without scanning '
               'a new QR.'
-        : 'Remote Pi keeps your Ed25519 owner key in Google Block Store '
+        : 'Piper keeps your Ed25519 owner key in Google Block Store '
               'so you can restore it on a new device through Google '
               'Backup without losing your paired Pis.';
 

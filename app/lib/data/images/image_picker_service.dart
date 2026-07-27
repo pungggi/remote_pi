@@ -28,6 +28,11 @@ abstract class IImagePickerService {
   /// sheet (ACTION_SEND). Returns null when there's no pending share.
   /// Default returns null so test fakes / unsupported platforms are unaffected.
   Future<PickedImage?> consumeSharedImage() async => null;
+
+  /// Plan/104 — text shared via the Share sheet (ACTION_SEND text/plain).
+  /// Returns null when there's no pending text share. Default returns null so
+  /// test fakes / unsupported platforms are unaffected.
+  Future<String?> consumeSharedText() async => null;
 }
 
 /// A picked + compressed image ready for preview and sending. Bytes are raw
@@ -115,6 +120,16 @@ class ImagePickerService implements IImagePickerService {
         quality: _quality,
       );
       return PickedImage(bytes: bytes, mime: 'image/jpeg');
+    } on Exception {
+      return null;
+    }
+  }
+
+  @override
+  Future<String?> consumeSharedText() async {
+    const channel = MethodChannel('ch.pungitore.piper/share');
+    try {
+      return await channel.invokeMethod<String>('consumeText');
     } on Exception {
       return null;
     }
