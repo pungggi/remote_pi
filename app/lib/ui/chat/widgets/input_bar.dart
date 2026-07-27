@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:app/data/images/image_picker_service.dart';
+import 'package:app/data/share/composer_draft.dart';
 import 'package:app/data/share/shared_text_inbox.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/attachment/states/attachment_state.dart';
@@ -75,6 +76,11 @@ class InputBar extends StatefulWidget {
   /// empty, append on a new line otherwise). Null in tests.
   final SharedTextInbox? sharedText;
 
+  /// Plan/106 — the follow-me composer draft. When provided, the field
+  /// restores its text on mount and writes every edit back, so an unsent
+  /// draft survives a session switch. Null in tests.
+  final ComposerDraft? draft;
+
   const InputBar({
     super.key,
     required this.onSend,
@@ -90,6 +96,7 @@ class InputBar extends StatefulWidget {
     this.onOpenAttach,
     this.onPasteImage,
     this.sharedText,
+    this.draft,
     this.disabled = false,
     this.streaming = false,
   });
@@ -124,6 +131,13 @@ class _InputBarState extends State<InputBar> {
     // Plan/104 — shared text (Share sheet). Consume any pending text now
     // (cold-start share) + react to a warm share while the chat is open.
     widget.sharedText?.addListener(_onSharedText);
+    // Plan/106 — restore the follow-me draft text (survives a session switch).
+    final draft = widget.draft;
+    if (draft != null && draft.text.isNotEmpty) {
+      _controller.text = draft.text;
+      _controller.selection =
+          TextSelection.collapsed(offset: draft.text.length);
+    }
     _onSharedText();
   }
 
@@ -162,6 +176,7 @@ class _InputBarState extends State<InputBar> {
   }
 
   void _onTextChange() {
+    widget.draft?.setText(_controller.text);
     final next = _controller.text.isEmpty;
     if (next == _empty) return;
     setState(() {

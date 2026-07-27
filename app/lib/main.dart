@@ -5,6 +5,7 @@ import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/share/shared_image_inbox.dart';
 import 'package:app/data/share/shared_text_inbox.dart';
+import 'package:app/data/share/composer_draft.dart';
 import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/keep_alive_controller.dart';
@@ -142,6 +143,9 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
         ),
         ChangeNotifierProvider<SharedTextInbox>.value(
           value: injector.get<SharedTextInbox>(),
+        ),
+        ChangeNotifierProvider<ComposerDraft>.value(
+          value: injector.get<ComposerDraft>(),
         ),
         ChangeNotifierProvider<SessionSelection>.value(
           value: injector.get<SessionSelection>(),

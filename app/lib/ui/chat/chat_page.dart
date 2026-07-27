@@ -1,5 +1,6 @@
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/share/shared_text_inbox.dart';
+import 'package:app/data/share/composer_draft.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
@@ -471,6 +472,7 @@ class ChatPage extends StatelessWidget {
           ? () => _pasteImage(context, context.read<AttachmentViewModel>())
           : null,
       sharedText: context.read<SharedTextInbox>(),
+      draft: context.read<ComposerDraft>(),
       onSend: (text) {
         final image = context.read<AttachmentViewModel>().takeImagesForSend();
         vm.sendMessage(text, images: image);

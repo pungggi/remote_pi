@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/images/image_picker_service.dart';
+import 'package:app/data/share/composer_draft.dart';
 import 'package:app/data/share/shared_image_inbox.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/attachment/states/attachment_state.dart';
@@ -15,21 +16,38 @@ import 'package:app/ui/core/viewmodel/viewmodel.dart';
 /// app already fetches for the quick-actions picker (plan 28): cached in
 /// [IActionsRepository], re-resolved whenever the active model changes.
 class AttachmentViewModel extends ViewModel<AttachmentState> {
-  AttachmentViewModel(this._picker, this._actions, [SharedImageInbox? inbox])
-    : _inbox = inbox ?? SharedImageInbox(),
-      super(const AttachmentEmpty()) {
+  AttachmentViewModel(
+    this._picker,
+    this._actions, [
+    SharedImageInbox? inbox,
+    ComposerDraft? draft,
+  ])  : _inbox = inbox ?? SharedImageInbox(),
+        _draft = draft,
+        super(const AttachmentEmpty()) {
     _metaSub = _actions.activeRoomMetaStream.listen((_) => _refreshVision());
     // ignore: discarded_futures
     _refreshVision();
     // Plan/104 — attach a shared image if one is pending, and react to a share
     // arriving while the chat is already on screen.
     _inbox.addListener(_onSharedImage);
+    // Plan/106 — mirror every attachment state change into the follow-me draft
+    // (skips Picking so a pick-in-flight doesn't clobber an existing draft).
+    addListener(_syncDraft);
+    // Restore the draft's attachments first (survives a session switch); a
+    // fresh share consumed below then wins.
+    if (_draft != null && _draft.images.isNotEmpty) {
+      emit(AttachmentAttached(
+        images: _draft.images,
+        visionSupported: state.visionSupported,
+      ));
+    }
     _consumeSharedImage();
   }
 
   final IImagePickerService _picker;
   final IActionsRepository _actions;
   final SharedImageInbox _inbox;
+  final ComposerDraft? _draft;
 
   StreamSubscription<ActiveRoomMeta>? _metaSub;
   bool _resolvingVision = false;
@@ -180,8 +198,20 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
     });
   }
 
+  // Plan/106 — sync the current attachment images into the follow-me draft.
+  // Picking is transient, so it's ignored (don't wipe a draft mid-pick).
+  void _syncDraft() {
+    final List<PickedImage>? imgs = switch (state) {
+      AttachmentAttached(:final images) => images,
+      AttachmentEmpty() => const <PickedImage>[],
+      AttachmentPicking() => null,
+    };
+    if (imgs != null) _draft?.setImages(imgs);
+  }
+
   @override
   void dispose() {
+    removeListener(_syncDraft);
     _inbox.removeListener(_onSharedImage);
     _metaSub?.cancel();
     _hints.close();
