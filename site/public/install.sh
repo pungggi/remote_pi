@@ -3,7 +3,7 @@
 # Remote Pi — zero-to-running bootstrap installer
 # ================================================
 #
-#   curl -fsSL https://remote-pi.jacobmoura.work/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/pungggi/remote_pi/main/site/public/install.sh | bash
 #
 # What it does (all user-space, NO sudo, idempotent):
 #   1. Node      — uses the system Node if it's >= 20.6.0; otherwise installs
@@ -86,7 +86,7 @@ installer inside your WSL shell — it's treated as Linux and works the same:
   wsl --install
 
   ${DIM}# then, inside the WSL (Ubuntu) shell:${RST}
-  curl -fsSL https://remote-pi.jacobmoura.work/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/pungggi/remote_pi/main/site/public/install.sh | bash
 
 EOF
   exit 0
@@ -385,7 +385,7 @@ print_next_steps() {
     3. Scan the QR with the app to pair.
 
     Manage the always-on daemon later with ${BOLD}remote-pi${RST} (now on your PATH).
-    Docs: ${DIM}https://remote-pi.jacobmoura.work${RST}
+    Docs: ${DIM}https://github.com/pungggi/remote_pi${RST}
 
 EOF
   case ":$PATH:" in

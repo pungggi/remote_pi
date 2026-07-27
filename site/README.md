@@ -1,16 +1,16 @@
-# Remote Pi — Site
+# Piper — Site
 
-Landing page for [Remote Pi](https://github.com/jacobaraujo7/remote_pi) — the
-project that lets you control a Pi coding agent from your phone over an
-end-to-end encrypted channel.
+Landing page for [Piper](https://github.com/pungggi/remote_pi) — your coding
+agents, in your pocket.
 
 This package ships three static routes:
 
 - `/` — landing (hero, features, quick start, GitHub CTA)
 - `/terms` — Terms of Service
-- `/privacy` — Privacy Policy (LGPD)
+- `/privacy` — Privacy Policy
 
-Target domain: <https://remote-pi.jacobmoura.work>.
+Source: <https://github.com/pungggi/remote_pi> (no dedicated deployment domain
+in this fork yet).
 
 ## Stack
 
@@ -62,5 +62,6 @@ src/
 
 ## Deploy
 
-Vercel is the expected target (zero-config for Next.js). Domain wiring is
-handled outside this repo.
+No deployment for this fork yet. Next.js builds to static output (SSG), so any
+static host (Vercel, GitHub Pages, a CDN) works; domain wiring is handled
+outside this repo once a domain exists.

@@ -37,9 +37,10 @@ documentação do MVP. **Apenas apresentação — não tem lógica de produto.*
 
 ## Publicação (deploy)
 
-O site roda em produção (`remote-pi.jacobmoura.work`) como **imagem Docker** no
-Docker Hub: `jacobmoura7/remote-pi-site`. O host de produção puxa a tag
-`:latest` — então **publicar = buildar e dar push da imagem**.
+O site **não está em produção** neste fork — sem domínio nem registry próprios
+ainda. Código-fonte: <https://github.com/pungggi/remote_pi>. O fluxo de imagem
+Docker abaixo é herdado do upstream (imagem `jacobmoura7/remote-pi-site`); adaptar
+antes de qualquer publicação real.
 
 ```bash
 ./push-docker.sh            # build multi-plataforma + push, tag :latest
