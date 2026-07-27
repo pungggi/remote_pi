@@ -47,6 +47,14 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Plan/104 — receive a shared image from the Android Share sheet
+                 (Gallery, screenshot Share, Files, browsers). The system
+                 delivers the image URI in EXTRA_STREAM with a read grant. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="image/*"/>
+            </intent-filter>
         </activity>
 
         <!-- Plan 103 — foreground "priority anchor" service. Holds the

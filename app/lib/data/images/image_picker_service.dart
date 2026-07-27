@@ -23,6 +23,11 @@ abstract class IImagePickerService {
   /// Android screenshot). Returns null when the clipboard holds no image.
   /// Default returns null so test fakes / unsupported platforms are unaffected.
   Future<PickedImage?> pickFromClipboard() async => null;
+
+  /// Plan/104 — consume an image shared into the app via Android's Share
+  /// sheet (ACTION_SEND). Returns null when there's no pending share.
+  /// Default returns null so test fakes / unsupported platforms are unaffected.
+  Future<PickedImage?> consumeSharedImage() async => null;
 }
 
 /// A picked + compressed image ready for preview and sending. Bytes are raw
@@ -80,6 +85,29 @@ class ImagePickerService implements IImagePickerService {
       final raw = res['data'];
       if (raw is! Uint8List) return null;
       // Compress like the other pickers — a screenshot PNG can be several MB.
+      final bytes = await FlutterImageCompress.compressWithList(
+        raw,
+        minWidth: _maxSide,
+        minHeight: _maxSide,
+        quality: _quality,
+      );
+      return PickedImage(bytes: bytes, mime: 'image/jpeg');
+    } on Exception {
+      return null;
+    }
+  }
+
+  @override
+  Future<PickedImage?> consumeSharedImage() async {
+    // Dedicated channel (MainActivity) returns the image shared via the
+    // Android Share sheet (ACTION_SEND), then clears its stash. Null = none.
+    const channel = MethodChannel('ch.pungitore.piper/share');
+    try {
+      final res = await channel.invokeMethod<Map>('consumeImage');
+      if (res == null) return null;
+      final raw = res['data'];
+      if (raw is! Uint8List) return null;
+      // Compress like the other pickers — a shared screenshot can be large.
       final bytes = await FlutterImageCompress.compressWithList(
         raw,
         minWidth: _maxSide,

@@ -4,7 +4,9 @@ import android.Manifest
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -16,6 +18,7 @@ class MainActivity : FlutterActivity() {
     private companion object {
         const val CHANNEL = "ch.pungitore.piper/keepalive"
         const val NOTIF_PERM_REQUEST = 10302
+        const val TAG = "PiperClip"
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -63,6 +66,24 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // Plan/104 — consume a shared image (Android Share sheet → ACTION_SEND).
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "ch.pungitore.piper/share")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "consumeImage" -> result.success(consumeShareImage())
+                    else -> result.notImplemented()
+                }
+            }
+
+        // Cold start: the launch intent may itself be a share.
+        stashShareIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        stashShareIntent(intent)
     }
 
     private fun hasNotificationPermission(): Boolean {
@@ -88,18 +109,67 @@ class MainActivity : FlutterActivity() {
 
     // Plan/30-followup — read the image on the system clipboard (e.g. a
     // screenshot). Returns { data: ByteArray, mime } or null when the
-    // clipboard holds no image (text-only / empty / unreadable).
+    // clipboard holds no image. Logged (tag PiperClip) to diagnose quirks.
     private fun readClipboardImage(): Map<String, Any>? {
-        val cm = getSystemService(ClipboardManager::class.java) ?: return null
-        val clip = cm.primaryClip ?: return null
-        if (clip.itemCount == 0) return null
-        val uri = clip.getItemAt(0).uri ?: return null
-        val mime = contentResolver.getType(uri) ?: return null
+        val cm = getSystemService(ClipboardManager::class.java)
+        if (cm == null) { Log.w(TAG, "no ClipboardManager"); return null }
+        val clip = cm.primaryClip
+        if (clip == null) { Log.w(TAG, "primaryClip null (empty)"); return null }
+        val desc = clip.description
+        val mimes = (0 until desc.mimeTypeCount).joinToString(",") { desc.getMimeType(it) }
+        Log.d(TAG, "clip itemCount=${clip.itemCount} mimes=[$mimes]")
+        val advertisesImage = mimes.split(',').any { it.startsWith("image/") }
+        for (i in 0 until clip.itemCount) {
+            val item = clip.getItemAt(i)
+            val uri = item.uri
+            Log.d(TAG, "item[$i] uri=$uri text=${item.text?.toString()?.take(40)} intent=${item.intent != null}")
+            if (uri == null) continue
+            val mime = contentResolver.getType(uri) ?: if (advertisesImage) "image/png" else null
+            if (mime == null) { Log.w(TAG, "item[$i] getType null"); continue }
+            if (!mime.startsWith("image/")) { Log.w(TAG, "item[$i] not image: $mime"); continue }
+            try {
+                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                if (bytes != null) {
+                    Log.d(TAG, "item[$i] read ${bytes.size} bytes ($mime)")
+                    return mapOf("data" to bytes, "mime" to mime)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "item[$i] read failed: ${e.javaClass.simpleName}: ${e.message}")
+            }
+        }
+        Log.w(TAG, "no readable image found")
+        return null
+    }
+
+    // Plan/104 — a shared image URI stashed from onCreate/onNewIntent until
+    // Dart consumes it. ACTION_SEND grants the receiving activity a temporary
+    // read grant, so openInputStream works without extra permissions.
+    private var pendingShareUri: Uri? = null
+
+    private fun stashShareIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND) return
+        val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+        }
+        if (uri != null) {
+            pendingShareUri = uri
+            Log.d(TAG, "stashed shared image uri=$uri")
+        }
+    }
+
+    private fun consumeShareImage(): Map<String, Any>? {
+        val uri = pendingShareUri ?: return null
+        pendingShareUri = null
+        val mime = contentResolver.getType(uri) ?: "image/*"
         if (!mime.startsWith("image/")) return null
         return try {
             contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 ?.let { mapOf("data" to it, "mime" to mime) }
         } catch (e: Exception) {
+            Log.w(TAG, "share read failed: ${e.javaClass.simpleName}: ${e.message}")
             null
         }
     }

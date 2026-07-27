@@ -1,7 +1,9 @@
 import 'package:app/config/dependencies.dart';
+import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/local/boxes.dart';
 import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/preferences/preferences.dart';
+import 'package:app/data/share/shared_image_inbox.dart';
 import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/keep_alive_controller.dart';
@@ -28,6 +30,10 @@ void main() async {
   injector
       .get<KeepAliveController>()
       .attach(injector.get<ConnectionManager>());
+  // Plan/104 — if launched via a Share (ACTION_SEND image), pull it now so it
+  // waits in the inbox; the router listener routes to the chat once booted.
+  final shared = await injector.get<IImagePickerService>().consumeSharedImage();
+  if (shared != null) injector.get<SharedImageInbox>().deposit(shared);
   runApp(const RemotePiApp());
 }
 
@@ -51,10 +57,14 @@ class _RemotePiAppState extends State<RemotePiApp> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Plan/104 — when boot lands past /boot with a pending shared image, route
+    // to the chat (cold-start share). Warm shares are handled on resume.
+    _router.routerDelegate.addListener(_onRouteChanged);
   }
 
   @override
   void dispose() {
+    _router.routerDelegate.removeListener(_onRouteChanged);
     WidgetsBinding.instance.removeObserver(this);
     disposeDependencies();
     super.dispose();
@@ -73,12 +83,42 @@ class _RemotePiAppState extends State<RemotePiApp> with WidgetsBindingObserver {
         meshSync.startPolling();
         // ignore: unawaited_futures
         meshSync.pullOnDemand();
+        // Plan/104 — a warm share (app was backgrounded) is stashed in
+        // onNewIntent; pull it and route to the chat.
+        _consumeSharedImage();
       case AppLifecycleState.inactive:
       case AppLifecycleState.paused:
       case AppLifecycleState.hidden:
       case AppLifecycleState.detached:
         meshSync.stopPolling();
     }
+  }
+
+  // Plan/104 — Share-to-attach routing.
+  void _onRouteChanged() => _maybeRouteToChat();
+
+  Future<void> _consumeSharedImage() async {
+    final img = await injector.get<IImagePickerService>().consumeSharedImage();
+    if (img == null) return;
+    injector.get<SharedImageInbox>().deposit(img);
+    await _maybeRouteToChat();
+  }
+
+  Future<void> _maybeRouteToChat() async {
+    final inbox = injector.get<SharedImageInbox>();
+    if (!inbox.hasPending) return;
+    final loc =
+        _router.routerDelegate.currentConfiguration.last.matchedLocation;
+    // Skip while still booting, or if a chat is already open (it consumes live).
+    if (loc == '/chat' ||
+        loc == '/boot' ||
+        loc.startsWith('/onboarding') ||
+        loc == '/sync-required') {
+      return;
+    }
+    final peers = await injector.get<PairingStorage>().listPeers();
+    if (peers.isEmpty || !inbox.hasPending) return;
+    _router.push('/chat');
   }
 
   @override

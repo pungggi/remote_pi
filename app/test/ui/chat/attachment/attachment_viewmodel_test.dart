@@ -38,6 +38,9 @@ class _FakePicker implements IImagePickerService {
     if (fail) throw Exception('boom');
     return next;
   }
+
+  @override
+  Future<PickedImage?> consumeSharedImage() async => null;
 }
 
 class _FakeActions implements IActionsRepository {

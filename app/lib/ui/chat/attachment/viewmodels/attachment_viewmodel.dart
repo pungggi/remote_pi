@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/images/image_picker_service.dart';
+import 'package:app/data/share/shared_image_inbox.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/attachment/states/attachment_state.dart';
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
@@ -14,15 +15,21 @@ import 'package:app/ui/core/viewmodel/viewmodel.dart';
 /// app already fetches for the quick-actions picker (plan 28): cached in
 /// [IActionsRepository], re-resolved whenever the active model changes.
 class AttachmentViewModel extends ViewModel<AttachmentState> {
-  AttachmentViewModel(this._picker, this._actions)
-    : super(const AttachmentEmpty()) {
+  AttachmentViewModel(this._picker, this._actions, [SharedImageInbox? inbox])
+    : _inbox = inbox ?? SharedImageInbox(),
+      super(const AttachmentEmpty()) {
     _metaSub = _actions.activeRoomMetaStream.listen((_) => _refreshVision());
     // ignore: discarded_futures
     _refreshVision();
+    // Plan/104 — attach a shared image if one is pending, and react to a share
+    // arriving while the chat is already on screen.
+    _inbox.addListener(_onSharedImage);
+    _consumeSharedImage();
   }
 
   final IImagePickerService _picker;
   final IActionsRepository _actions;
+  final SharedImageInbox _inbox;
 
   StreamSubscription<ActiveRoomMeta>? _metaSub;
   bool _resolvingVision = false;
@@ -89,6 +96,20 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
     emit(AttachmentEmpty(visionSupported: state.visionSupported));
   }
 
+  // Plan/104 — shared-image inbound path.
+  void _onSharedImage() => _consumeSharedImage();
+
+  void _consumeSharedImage() {
+    final img = _inbox.consume();
+    if (img != null) attachExisting(img);
+  }
+
+  /// Attach an already-picked image (e.g. one shared into the app), preserving
+  /// the current vision flag.
+  void attachExisting(PickedImage img) {
+    emit(AttachmentAttached(image: img, visionSupported: state.visionSupported));
+  }
+
   /// Hand the attached image to the send path as a base64 [MessageImage] and
   /// reset to empty. Returns null when nothing is attached.
   MessageImage? takeImageForSend() {
@@ -144,6 +165,7 @@ class AttachmentViewModel extends ViewModel<AttachmentState> {
 
   @override
   void dispose() {
+    _inbox.removeListener(_onSharedImage);
     _metaSub?.cancel();
     _hints.close();
     super.dispose();
