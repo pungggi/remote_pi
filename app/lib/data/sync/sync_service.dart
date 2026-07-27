@@ -708,6 +708,10 @@ class SyncService extends Service {
       // Plan/108 — terminal-launch replies are owned by ActionsRepository
       // (quick action / session menu), not the message sync.
       case OpenTerminalResult():
+      // Plan/112 — worktree tracking replies are owned by ActionsRepository
+      // (session-info dialog), not the message sync.
+      case ListWorktreesResult():
+      case RemoveWorktreeResult():
         break;
     }
   }

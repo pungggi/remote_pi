@@ -1,9 +1,12 @@
 /**
- * Plan/108 — open a new terminal at a project folder (remote `/ps clone`).
+ * Plan/108 — open a new terminal in a throwaway git worktree off the base
+ * project (remote `/ps clone` + isolated working copy).
  *
- * The app sends `open_terminal_request`; this handler opens a new Windows
- * Terminal tab (or a console-window fallback) at the resolved cwd, optionally
- * running `pi`, and replies with `open_terminal_result`. Logic ported from
+ * The app sends `open_terminal_request`; this handler first creates a git
+ * worktree off the resolved cwd (branch `work/<stamp>`, sibling
+ * `worktrees/<stamp>` folder), then opens a new Windows Terminal tab (or a
+ * console-window fallback) INSIDE the worktree, optionally running `pi`, and
+ * replies with `open_terminal_result`. Terminal-spawn logic ported from
  * pi-ps `open-tab.ts` (MIT, same author):
  *
  *   - `WT_SESSION` set (we're inside Windows Terminal) → `wt.exe -w 0 new-tab`
@@ -21,13 +24,25 @@
  * launchers are plan 108b; on those the handler replies ok:false "unsupported".
  */
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import type { ClientMessage } from "../protocol/types.js";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import type { ClientMessage, WireWorktree } from "../protocol/types.js";
 import type { ActionReplySender } from "./handlers.js";
+import { addWorktree, forgetWorktree, listWorktrees } from "./worktree_registry.js";
 
 type OpenTerminalRequestMsg = Extract<
   ClientMessage,
   { type: "open_terminal_request" }
+>;
+
+type ListWorktreesRequestMsg = Extract<
+  ClientMessage,
+  { type: "list_worktrees_request" }
+>;
+
+type RemoveWorktreeRequestMsg = Extract<
+  ClientMessage,
+  { type: "remove_worktree_request" }
 >;
 
 export interface OpenTerminalOutcome {
@@ -44,6 +59,92 @@ function cmdQuote(s: string): string {
 /** Escape a string for safe PowerShell single-quoted interpolation. */
 function psSingleQuote(s: string): string {
   return `'${String(s).replace(/'/g, "''")}'`;
+}
+
+/** Compact local timestamp for branch + folder names: YYYYMMDD-HHMMSS. */
+function worktreeStamp(d = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
+    `-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  );
+}
+
+/** Best-effort human-readable message from an exec error (prefer stderr). */
+function errMsg(e: unknown): string {
+  const err = e as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
+  for (const buf of [err.stderr, err.stdout]) {
+    if (!buf) continue;
+    const s = (typeof buf === "string" ? buf : buf.toString("utf8")).trim();
+    if (s) return s;
+  }
+  return String(err.message ?? e).trim();
+}
+
+export interface WorktreeResult {
+  ok: boolean;
+  entry?: WireWorktree;
+  message: string;
+}
+
+/**
+ * Plan/108 (worktree mode) — create a throwaway git worktree off `baseCwd`
+ * (current HEAD) and return its tracked entry. New branch `work/<stamp>`,
+ * worktree placed in a sibling `worktrees/<stamp>` folder next to the base
+ * repo. The entry is recorded in the worktree registry (plan 112).
+ *
+ * Returns ok:false (never throws) when the path isn't a git repo, `git` is
+ * missing, or `git worktree add` fails — the caller surfaces it as a
+ * snackbar. Worktrees are pruned via the app's remove action (git worktree
+ * remove + branch delete + registry forget).
+ */
+export function createWorktree(baseCwd: string): WorktreeResult {
+  const d = new Date();
+  const stamp = worktreeStamp(d);
+  const branch = `work/${stamp}`;
+  const worktreesDir = join(dirname(baseCwd), "worktrees");
+  const worktreePath = join(worktreesDir, stamp);
+
+  // 1. Must be inside a git work tree.
+  try {
+    execFileSync("git", ["-C", baseCwd, "rev-parse", "--is-inside-work-tree"], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+  } catch (e) {
+    return { ok: false, message: `Not a git repository: ${baseCwd} — ${errMsg(e)}` };
+  }
+
+  // 2. Ensure the sibling worktrees/ folder exists.
+  try {
+    mkdirSync(worktreesDir, { recursive: true });
+  } catch (e) {
+    return { ok: false, message: `Cannot create ${worktreesDir}: ${errMsg(e)}` };
+  }
+
+  // 3. Create the worktree on a fresh branch off HEAD.
+  try {
+    execFileSync("git", ["-C", baseCwd, "worktree", "add", "-b", branch, worktreePath], {
+      encoding: "utf8",
+      timeout: 30000,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+  } catch (e) {
+    return { ok: false, message: `git worktree add failed: ${errMsg(e)}` };
+  }
+
+  const entry: WireWorktree = {
+    id: stamp,
+    base: baseCwd,
+    path: worktreePath,
+    branch,
+    created_at: d.toISOString(),
+  };
+  addWorktree(entry);
+  return { ok: true, entry, message: `Created worktree ${branch}` };
 }
 
 let _shellCache: string | null = null;
@@ -210,14 +311,136 @@ export async function handleOpenTerminal(
     return;
   }
 
+  // Plan/112 — reopen: when the request carries a `worktree_path`, skip
+  // creation entirely and open a terminal at that existing worktree.
+  const reopenPath = msg.worktree_path && msg.worktree_path.trim() ? msg.worktree_path.trim() : null;
+
+  let worktreePath: string;
+  let created: WireWorktree | undefined;
+  if (reopenPath) {
+    if (!existsSync(reopenPath)) {
+      sender.send({
+        type: "open_terminal_result",
+        in_reply_to: msg.id,
+        ok: false,
+        message: `Worktree path not found: ${reopenPath}`,
+        method: "none",
+      });
+      return;
+    }
+    worktreePath = reopenPath;
+  } else {
+    // Plan/108 — spawn a throwaway git worktree off the base project at `cwd`
+    // and open the terminal INSIDE it (not the base repo). Each tap creates
+    // an isolated working copy on its own branch `work/<stamp>`. ok:false
+    // (e.g. not a git repo, or worktree add failed) surfaces as a snackbar.
+    const wt = createWorktree(cwd);
+    if (!wt.ok || !wt.entry) {
+      sender.send({
+        type: "open_terminal_result",
+        in_reply_to: msg.id,
+        ok: false,
+        message: wt.message,
+        method: "none",
+      });
+      return;
+    }
+    worktreePath = wt.entry.path;
+    created = wt.entry;
+  }
+
   const runPi = msg.runPi !== false; // default true (matches /ps clone)
-  const outcome = await openTerminalTab(cwd, runPi ? "pi" : undefined);
+  const outcome = await openTerminalTab(worktreePath, runPi ? "pi" : undefined);
 
   sender.send({
     type: "open_terminal_result",
     in_reply_to: msg.id,
     ok: outcome.ok,
-    message: outcome.message,
+    message: outcome.ok && created
+      ? `${outcome.message} (branch ${created.branch})`
+      : outcome.message,
     method: outcome.method,
+    ...(created ? { worktree: created } : {}),
+  });
+}
+
+/**
+ * Plan/112 — replies with `list_worktrees_result`. Returns the reconciled
+ * registry, optionally filtered by base repo path. Always ok:true (an empty
+ * list is a valid answer, not an error).
+ */
+export function handleListWorktrees(
+  sender: ActionReplySender,
+  msg: ListWorktreesRequestMsg,
+): void {
+  const worktrees = listWorktrees(msg.base ?? null);
+  sender.send({
+    type: "list_worktrees_result",
+    in_reply_to: msg.id,
+    ok: true,
+    worktrees,
+  });
+}
+
+/**
+ * Plan/112 — replies with `remove_worktree_result`. Runs
+ * `git worktree remove <path>` (then `git branch -D <branch>`) and prunes the
+ * registry entry. ok:false when the id is unknown or git fails (dirty tree,
+ * etc.) — the entry is left intact so the user can retry or force-remove.
+ */
+export function handleRemoveWorktree(
+  sender: ActionReplySender,
+  msg: RemoveWorktreeRequestMsg,
+): void {
+  const entry = listWorktrees(null).find((w) => w.id === msg.worktree_id);
+  if (!entry) {
+    sender.send({
+      type: "remove_worktree_result",
+      in_reply_to: msg.id,
+      ok: false,
+      message: "Worktree not found (it may already be removed).",
+    });
+    return;
+  }
+
+  // Remove the working tree if it still exists on disk.
+  if (existsSync(join(entry.path, ".git"))) {
+    try {
+      execFileSync("git", ["-C", entry.base, "worktree", "remove", entry.path], {
+        encoding: "utf8",
+        timeout: 30000,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
+    } catch (e) {
+      sender.send({
+        type: "remove_worktree_result",
+        in_reply_to: msg.id,
+        ok: false,
+        message: `git worktree remove failed: ${errMsg(e)}`,
+      });
+      return;
+    }
+  }
+
+  // Delete the branch (worktree remove does NOT delete the branch). Best-effort
+  // — an unmerged branch or a race surfaces as a non-fatal failure.
+  try {
+    execFileSync("git", ["-C", entry.base, "branch", "-D", entry.branch], {
+      encoding: "utf8",
+      timeout: 10000,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+  } catch {
+    /* branch may have unmerged commits or be gone — non-fatal */
+  }
+
+  forgetWorktree(entry.id);
+  sender.send({
+    type: "remove_worktree_result",
+    in_reply_to: msg.id,
+    ok: true,
+    message: `Removed worktree ${entry.branch}`,
   });
 }

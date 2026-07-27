@@ -41,6 +41,7 @@ class _FakeActionsRepository implements IActionsRepository {
   Future<OpenTerminalResult> openTerminal({
     String? cwd,
     bool runPi = true,
+    String? worktreePath,
   }) async =>
       OpenTerminalResult(
         inReplyTo: '',
@@ -48,6 +49,13 @@ class _FakeActionsRepository implements IActionsRepository {
         message: 'stub',
         method: OpenTerminalMethod.none,
       );
+
+  @override
+  Future<List<WireWorktree>> listWorktrees({String? base}) async => const [];
+
+  @override
+  Future<RemoveWorktreeResult> removeWorktree(String worktreeId) async =>
+      RemoveWorktreeResult(inReplyTo: '', ok: true, message: 'stub');
 
   @override
   Stream<ActiveRoomMeta> get activeRoomMetaStream =>

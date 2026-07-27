@@ -345,6 +345,8 @@ class ChatPage extends StatelessWidget {
                   );
                 },
               ),
+              // Plan/112 — tracked worktrees (reopen / remove).
+              _WorktreesSection(actions: actions, base: room?.cwd),
             ],
           ),
           actions: [
@@ -840,4 +842,158 @@ class _InfoRow extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Plan/112 — list of tracked git worktrees for the active session's base
+/// repo. Each row reopens the worktree (opens a terminal there, no new
+/// worktree) on tap and removes it (git worktree remove + branch delete) via
+/// the trailing trash icon. Refreshes after a remove; auto-drops stale entries
+/// (the Pi reconciles the registry against the filesystem on each list).
+class _WorktreesSection extends StatefulWidget {
+  final IActionsRepository actions;
+  final String? base;
+  const _WorktreesSection({required this.actions, required this.base});
+
+  @override
+  State<_WorktreesSection> createState() => _WorktreesSectionState();
+}
+
+class _WorktreesSectionState extends State<_WorktreesSection> {
+  Future<List<WireWorktree>>? _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  void _refresh() {
+    setState(() {
+      _future = widget.actions.listWorktrees(base: widget.base);
+    });
+  }
+
+  Future<void> _reopen(WireWorktree w) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final res = await widget.actions.openTerminal(worktreePath: w.path);
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(res.ok ? res.message : 'Failed: ${res.message}'),
+        ),
+      );
+      if (mounted) Navigator.of(context).pop();
+    } on Object {
+      messenger.showSnackBar(const SnackBar(content: Text('Offline — try again.')));
+    }
+  }
+
+  Future<void> _remove(WireWorktree w) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        content: Text('Remove worktree ${w.branch}?\nThis deletes the folder and branch.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(c).pop(true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      final res = await widget.actions.removeWorktree(w.id);
+      messenger.showSnackBar(
+        SnackBar(content: Text(res.ok ? res.message : 'Failed: ${res.message}')),
+      );
+      if (res.ok) _refresh();
+    } on Object {
+      messenger.showSnackBar(const SnackBar(content: Text('Offline — try again.')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return FutureBuilder<List<WireWorktree>>(
+      future: _future,
+      builder: (ctx, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const _InfoRow(label: 'Worktrees', value: 'loading…');
+        }
+        if (snap.hasError) {
+          return const _InfoRow(label: 'Worktrees', value: 'unavailable');
+        }
+        final value = snap.data ?? const <WireWorktree>[];
+        if (value.isEmpty) {
+          return const _InfoRow(label: 'Worktrees', value: 'none');
+        }
+        return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    'WORKTREES',
+                    style: TextStyle(
+                      fontFamily: kMonoFamily,
+                      fontSize: 10,
+                      color: colors.muted,
+                      letterSpacing: 0.4,
+                    ),
+                  ),
+                ),
+                for (final w in value)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: InkWell(
+                            onTap: () => _reopen(w),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: SelectableText(
+                                '${w.branch}  ·  ${_relativeAge(w.createdAt)}',
+                                style: TextStyle(
+                                  fontFamily: kMonoFamily,
+                                  fontSize: 12,
+                                  color: colors.accent,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          icon: Icon(LucideIcons.trash2, size: 16, color: colors.error),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          onPressed: () => _remove(w),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            );
+      },
+    );
+  }
+}
+
+/// Compact relative age from an ISO timestamp ("just now" / "5m ago" / …).
+String _relativeAge(String iso) {
+  if (iso.isEmpty) return '';
+  final dt = DateTime.tryParse(iso)?.toLocal();
+  if (dt == null) return '';
+  final d = DateTime.now().difference(dt);
+  if (d.inSeconds < 60) return 'just now';
+  if (d.inMinutes < 60) return '${d.inMinutes}m ago';
+  if (d.inHours < 24) return '${d.inHours}h ago';
+  return '${d.inDays}d ago';
 }

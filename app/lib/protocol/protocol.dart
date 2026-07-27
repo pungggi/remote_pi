@@ -814,12 +814,19 @@ class GitStatusRequest extends ClientMessage {
 /// Plan/108 — open a new terminal tab at a project folder on the PC
 /// (remote `/ps clone`). `cwd` null/omitted → the Pi uses its own session
 /// cwd; `runPi` default true launches `pi` in the new tab (plain shell when
-/// false).
+/// false). [worktreePath], when set, reopens an existing tracked worktree
+/// (plan 112) instead of creating a new one.
 class OpenTerminalRequest extends ClientMessage {
   final String id;
   final String? cwd;
   final bool runPi;
-  OpenTerminalRequest({required this.id, this.cwd, this.runPi = true});
+  final String? worktreePath;
+  OpenTerminalRequest({
+    required this.id,
+    this.cwd,
+    this.runPi = true,
+    this.worktreePath,
+  });
 
   @override
   Map<String, dynamic> toJson() => {
@@ -827,6 +834,38 @@ class OpenTerminalRequest extends ClientMessage {
         'id': id,
         if (cwd != null) 'cwd': cwd,
         'runPi': runPi,
+        if (worktreePath != null) 'worktree_path': worktreePath,
+      };
+}
+
+/// Plan/112 — request the list of tracked worktrees, optionally filtered by
+/// base repo path (the session cwd). The Pi reconciles the registry against
+/// the filesystem before replying (stale entries auto-drop).
+class ListWorktreesRequest extends ClientMessage {
+  final String id;
+  final String? base;
+  ListWorktreesRequest({required this.id, this.base});
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'type': 'list_worktrees_request',
+        'id': id,
+        if (base != null) 'base': base,
+      };
+}
+
+/// Plan/112 — request removal of a tracked worktree by id. The Pi runs
+/// `git worktree remove` + `git branch -D` then prunes the registry.
+class RemoveWorktreeRequest extends ClientMessage {
+  final String id;
+  final String worktreeId;
+  RemoveWorktreeRequest({required this.id, required this.worktreeId});
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'type': 'remove_worktree_request',
+        'id': id,
+        'worktree_id': worktreeId,
       };
 }
 
@@ -870,6 +909,9 @@ sealed class ServerMessage {
       'git_status_result' => GitStatusResult.fromJson(json),
       // Plan/108 — terminal-launch reply (quick action / session menu).
       'open_terminal_result' => OpenTerminalResult.fromJson(json),
+      // Plan/112 — worktree tracking replies (list / remove).
+      'list_worktrees_result' => ListWorktreesResult.fromJson(json),
+      'remove_worktree_result' => RemoveWorktreeResult.fromJson(json),
       // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors
       // the SDK's extension_ui_request RPC contract; optional `ask` envelope
       // carries pi-ask's full question so the app renders multi/preview/notes.
@@ -1542,20 +1584,25 @@ enum OpenTerminalMethod { wt, window, none }
 /// Plan/108 — reply to [OpenTerminalRequest]. `ok` is false when the platform
 /// is unsupported, the path is missing, or the launcher failed. [method] is
 /// null only for unexpected wire values (a known `none` is still reported).
+/// [worktree] (plan 112) is the newly-created worktree entry — present only
+/// when a NEW worktree was created (absent on reopen / failure).
 class OpenTerminalResult extends ServerMessage {
   final String inReplyTo;
   final bool ok;
   final String message;
   final OpenTerminalMethod? method;
+  final WireWorktree? worktree;
   OpenTerminalResult({
     required this.inReplyTo,
     required this.ok,
     required this.message,
     this.method,
+    this.worktree,
   });
 
   factory OpenTerminalResult.fromJson(Map<String, dynamic> j) {
     final m = j['method'] as String?;
+    final w = j['worktree'];
     return OpenTerminalResult(
       inReplyTo: j['in_reply_to'] as String,
       ok: j['ok'] as bool? ?? false,
@@ -1566,8 +1613,95 @@ class OpenTerminalResult extends ServerMessage {
         'none' => OpenTerminalMethod.none,
         _ => null,
       },
+      worktree: w is Map<String, dynamic> ? WireWorktree.fromJson(w) : null,
     );
   }
+}
+
+/// Plan/112 — one tracked git worktree created by "Open terminal".
+/// `id` == the stamp == folder name == `work/<id>` branch suffix.
+class WireWorktree {
+  final String id;
+  final String base;
+  final String path;
+  final String branch;
+  final String createdAt;
+
+  const WireWorktree({
+    required this.id,
+    required this.base,
+    required this.path,
+    required this.branch,
+    required this.createdAt,
+  });
+
+  factory WireWorktree.fromJson(Map<String, dynamic> j) => WireWorktree(
+    id: j['id'] as String,
+    base: j['base'] as String,
+    path: j['path'] as String,
+    branch: j['branch'] as String,
+    createdAt: (j['created_at'] as String?) ?? '',
+  );
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'base': base,
+    'path': path,
+    'branch': branch,
+    'created_at': createdAt,
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is WireWorktree && other.id == id && other.path == path;
+
+  @override
+  int get hashCode => Object.hash(id, path);
+}
+
+/// Plan/112 — reply to [ListWorktreesRequest]. The reconciled, optionally
+/// base-filtered list (newest-first). `ok` is always true; an empty list is
+/// a valid answer.
+class ListWorktreesResult extends ServerMessage {
+  final String inReplyTo;
+  final bool ok;
+  final List<WireWorktree> worktrees;
+  ListWorktreesResult({
+    required this.inReplyTo,
+    required this.ok,
+    required this.worktrees,
+  });
+
+  factory ListWorktreesResult.fromJson(Map<String, dynamic> j) =>
+      ListWorktreesResult(
+        inReplyTo: j['in_reply_to'] as String,
+        ok: j['ok'] as bool? ?? false,
+        worktrees: (j['worktrees'] as List<dynamic>? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map(WireWorktree.fromJson)
+            .toList(),
+      );
+}
+
+/// Plan/112 — reply to [RemoveWorktreeRequest]. `ok` is false when the id is
+/// unknown or `git worktree remove` failed (dirty tree); the entry is left
+/// intact so the user can retry.
+class RemoveWorktreeResult extends ServerMessage {
+  final String inReplyTo;
+  final bool ok;
+  final String message;
+  RemoveWorktreeResult({
+    required this.inReplyTo,
+    required this.ok,
+    required this.message,
+  });
+
+  factory RemoveWorktreeResult.fromJson(Map<String, dynamic> j) =>
+      RemoveWorktreeResult(
+        inReplyTo: j['in_reply_to'] as String,
+        ok: j['ok'] as bool? ?? false,
+        message: (j['message'] as String?) ?? '',
+      );
 }
 
 class Bye extends ServerMessage {

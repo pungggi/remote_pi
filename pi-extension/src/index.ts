@@ -86,7 +86,7 @@ import {
 } from "./actions/handlers.js";
 import { handleGitStatus, getGitStatus } from "./actions/git_status.js";
 import type { WireGitStatus } from "./protocol/types.js";
-import { handleOpenTerminal } from "./actions/open_terminal.js";
+import { handleOpenTerminal, handleListWorktrees, handleRemoveWorktree } from "./actions/open_terminal.js";
 import { ensureModelRegistry } from "./actions/registry.js";
 import {
   ensureGlobalDirs,
@@ -4704,6 +4704,14 @@ export function _routeClientMessageFrom(
     // open_terminal_result (ok:false on unsupported platform / bad path).
     case "open_terminal_request":
       void handleOpenTerminal(sender, msg, _myRoomMeta?.cwd ?? null);
+      break;
+    // Plan/112 — worktree tracking: list tracked worktrees (reconciled) and
+    // remove one by id (git worktree remove + branch delete + registry prune).
+    case "list_worktrees_request":
+      handleListWorktrees(sender, msg);
+      break;
+    case "remove_worktree_request":
+      handleRemoveWorktree(sender, msg);
       break;
   }
 }

@@ -210,12 +210,20 @@ export type ClientMessage =
   // Plan/108 — open a new terminal tab at a project folder (remote `/ps
   // clone`). `cwd` optional (null/omitted → use the session cwd); `runPi`
   // default true launches `pi` in the new tab (plain shell when false).
+  // Plan/112 — `worktree_path` reopens an existing tracked worktree (skip
+  // creation, just open a terminal there); mutually exclusive with spawning
+  // a new one.
   | {
       type: "open_terminal_request";
       id: string;
       cwd?: string | null;
       runPi?: boolean;
+      worktree_path?: string | null;
     }
+  // Plan/112 — worktree tracking: list tracked worktrees (optionally
+  // filtered by base repo path) and remove one by id.
+  | { type: "list_worktrees_request"; id: string; base?: string | null }
+  | { type: "remove_worktree_request"; id: string; worktree_id: string }
   // Plan/100 — interactive extension prompt response (ask_user via pi-ask).
   // Mirrors RpcExtensionUIResponse; the optional `ask` envelope carries
   // pi-ask's structured answer so multi/preview/notes survive the round-trip.
@@ -366,6 +374,21 @@ export type ServerMessage =
       ok: boolean;
       message: string;
       method?: "wt" | "window" | "none";
+      /** Plan/112 — the newly-created worktree (absent on reopen / failure). */
+      worktree?: WireWorktree;
+    }
+  // Plan/112 — worktree tracking replies.
+  | {
+      type: "list_worktrees_result";
+      in_reply_to: string;
+      ok: boolean;
+      worktrees: WireWorktree[];
+    }
+  | {
+      type: "remove_worktree_result";
+      in_reply_to: string;
+      ok: boolean;
+      message: string;
     }
   // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors
   // RpcExtensionUIRequest (select/confirm/input/editor/notify); the optional
@@ -445,6 +468,20 @@ export interface WireGitStatus {
   workingDeleted: number;
   workingUnmerged: number;
   stashCount: number;
+}
+
+/**
+ * Plan/112 — one tracked git worktree created by "Open terminal". The
+ * pi-extension persists these in `~/.pi/piper/worktrees.json` so the app
+ * can list / reopen / remove them. `id` == the stamp == the folder name ==
+ * the `work/<id>` branch suffix.
+ */
+export interface WireWorktree {
+  id: string;
+  base: string;
+  path: string;
+  branch: string;
+  created_at: string;
 }
 
 export type ByeReason = "peer_stop" | "session_replaced" | "shutdown";

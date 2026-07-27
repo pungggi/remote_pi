@@ -21,6 +21,9 @@ const SERVER_TYPES = new Set<ServerMessage["type"]>([
   "git_status_result",
   // Plan/108 — terminal-launch reply (remote `/ps clone`).
   "open_terminal_result",
+  // Plan/112 — worktree tracking replies (list / remove).
+  "list_worktrees_result",
+  "remove_worktree_result",
 ]);
 
 export class DecodeError extends Error {

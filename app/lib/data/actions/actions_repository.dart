@@ -110,7 +110,23 @@ abstract class IActionsRepository extends Repository {
   /// null) on the paired PC, running `pi` when [runPi]. Returns the Pi's
   /// outcome (ok/message/method) — never throws on a launch failure, only
   /// on transport issues (offline / timeout).
-  Future<OpenTerminalResult> openTerminal({String? cwd, bool runPi = true});
+  ///
+  /// Plan/112 — [worktreePath] reopens an existing tracked worktree instead
+  /// of creating a new one (skips creation, opens the terminal there).
+  Future<OpenTerminalResult> openTerminal({
+    String? cwd,
+    bool runPi = true,
+    String? worktreePath,
+  });
+
+  /// Plan/112 — list tracked worktrees, optionally filtered by [base] repo
+  /// path. The Pi reconciles the registry against the filesystem (stale
+  /// entries auto-drop). Newest-first.
+  Future<List<WireWorktree>> listWorktrees({String? base});
+
+  /// Plan/112 — remove a tracked worktree by id (git worktree remove +
+  /// branch delete + registry prune). Returns the Pi's ok/message.
+  Future<RemoveWorktreeResult> removeWorktree(String worktreeId);
 
   /// Snapshot of the active room's meta. Recomputed on every rooms
   /// snapshot and on every connection-status change.
@@ -216,6 +232,7 @@ class ActionsRepository extends Repository implements IActionsRepository {
         :final ok,
         :final message,
         :final method,
+        :final worktree,
       ):
         final p = _pending.remove(inReplyTo);
         if (p == null) return;
@@ -227,6 +244,27 @@ class ActionsRepository extends Repository implements IActionsRepository {
               ok: ok,
               message: message,
               method: method,
+              worktree: worktree,
+            ),
+          );
+        }
+      // Plan/112 — worktree list reply (session-info dialog).
+      case ListWorktreesResult(:final inReplyTo, :final worktrees):
+        final p = _pending.remove(inReplyTo);
+        if (p == null) return;
+        p.timeout.cancel();
+        if (!p.completer.isCompleted) p.completer.complete(worktrees);
+      // Plan/112 — worktree remove reply (session-info dialog).
+      case RemoveWorktreeResult(:final inReplyTo, :final ok, :final message):
+        final p = _pending.remove(inReplyTo);
+        if (p == null) return;
+        p.timeout.cancel();
+        if (!p.completer.isCompleted) {
+          p.completer.complete(
+            RemoveWorktreeResult(
+              inReplyTo: inReplyTo,
+              ok: ok,
+              message: message,
             ),
           );
         }
@@ -350,9 +388,30 @@ class ActionsRepository extends Repository implements IActionsRepository {
       _dispatch<GitStatus?>((id) => GitStatusRequest(id: id));
 
   @override
-  Future<OpenTerminalResult> openTerminal({String? cwd, bool runPi = true}) =>
+  Future<OpenTerminalResult> openTerminal({
+    String? cwd,
+    bool runPi = true,
+    String? worktreePath,
+  }) =>
       _dispatch<OpenTerminalResult>(
-        (id) => OpenTerminalRequest(id: id, cwd: cwd, runPi: runPi),
+        (id) => OpenTerminalRequest(
+          id: id,
+          cwd: cwd,
+          runPi: runPi,
+          worktreePath: worktreePath,
+        ),
+      );
+
+  @override
+  Future<List<WireWorktree>> listWorktrees({String? base}) =>
+      _dispatch<List<WireWorktree>>(
+        (id) => ListWorktreesRequest(id: id, base: base),
+      );
+
+  @override
+  Future<RemoveWorktreeResult> removeWorktree(String worktreeId) =>
+      _dispatch<RemoveWorktreeResult>(
+        (id) => RemoveWorktreeRequest(id: id, worktreeId: worktreeId),
       );
 
   Future<T> _dispatch<T>(ClientMessage Function(String id) builder) async {
