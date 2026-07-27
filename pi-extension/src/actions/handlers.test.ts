@@ -10,7 +10,8 @@
  * possible).
  */
 
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { setEnabledModelsForTest, modelInScope } from "./model-scope.js";
 import {
   handleSessionCompact,
   handleSessionNew,
@@ -279,6 +280,11 @@ describe("handleModelSet", () => {
 // ── list_models ────────────────────────────────────────────────────────────
 
 describe("handleListModels", () => {
+  // Plan/109: list_models now scopes by `enabledModels`. These tests pre-date
+  // scoping and expect the whole catalogue, so force "no scope" here.
+  beforeEach(() => setEnabledModelsForTest([]));
+  afterEach(() => setEnabledModelsForTest(undefined));
+
   test("returns wire-shaped catalog with current echo when ctx.getModel is set", () => {
     const reg = fakeRegistry([sampleModel]);
     const ctx: ActionCtx = { getModel: () => sampleModel };
@@ -354,6 +360,19 @@ describe("handleListModels", () => {
       message: expect.stringContaining("models.json malformed"),
     });
   });
+
+  test("Plan/109 — scopes the catalog by enabledModels (provider/modelId + bare id)", () => {
+    const a = { ...sampleModel, id: "glm-5.2", provider: "zai", name: "GLM 5.2" };
+    const b = { ...sampleModel, id: "grok-4.5", provider: "xai", name: "Grok 4.5" };
+    const c = { ...sampleModel, id: "other", provider: "foo", name: "Other" };
+    setEnabledModelsForTest(["zai/glm-5.2", "grok-4.5"]); // exact + bare-id
+    const reg = fakeRegistry([a, b, c]);
+    const sender = makeSender();
+    handleListModels(null, reg, sender, { type: "list_models", id: "r5" });
+    const reply = sender.sent[0];
+    if (reply.type !== "models_list") throw new Error("expected models_list");
+    expect(reply.models.map((m) => m.id).sort()).toEqual(["glm-5.2", "grok-4.5"]);
+  });
 });
 
 // ── wireFromModel ──────────────────────────────────────────────────────────
@@ -379,5 +398,25 @@ describe("wireFromModel", () => {
   test("vision=false when model.input is text-only", () => {
     const textOnly: SdkModelLike = { ...sampleModel, input: ["text"] };
     expect(wireFromModel(textOnly).vision).toBe(false);
+  });
+});
+
+describe("modelInScope (Plan/109)", () => {
+  test("no patterns → everything in scope", () => {
+    expect(modelInScope("any", "model")).toBe(true);
+    expect(modelInScope("any", "model", [])).toBe(true);
+  });
+  test("exact provider/modelId + bare id (case-insensitive)", () => {
+    expect(modelInScope("zai", "glm-5.2", ["zai/glm-5.2"])).toBe(true);
+    expect(modelInScope("zai", "GLM-5.2", ["zai/glm-5.2"])).toBe(true);
+    expect(modelInScope("zai", "glm-5.2", ["glm-5.2"])).toBe(true); // bare id
+    expect(modelInScope("xai", "grok-4.5", ["zai/glm-5.2"])).toBe(false);
+  });
+  test("glob * wildcard", () => {
+    expect(modelInScope("zai", "glm-5.2", ["zai/*"])).toBe(true);
+    expect(modelInScope("xai", "grok-4.5", ["zai/*"])).toBe(false);
+  });
+  test("strips a :thinking suffix", () => {
+    expect(modelInScope("zai", "glm-5.2", ["zai/glm-5.2:high"])).toBe(true);
   });
 });

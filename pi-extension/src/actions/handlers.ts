@@ -21,6 +21,7 @@
  *   - `ModelRegistry.{refresh,getAvailable,find}` — see `registry.ts`
  */
 
+import { modelInScope, readEnabledModels } from "./model-scope.js";
 import type {
   ClientMessage,
   ServerMessage,
@@ -282,7 +283,12 @@ export function handleListModels(
     // Fall back to remote-pi's own disk-backed registry when no ctx exists.
     const liveReg = ctx?.modelRegistry ?? reg;
     liveReg.refresh();
-    const models = liveReg.getAvailable().map(wireFromModel);
+    // Plan/109 — scope to pi's `enabledModels` (same set `/scoped-models`
+    // shows). No patterns configured → whole catalogue (pi's fallback).
+    const patterns = readEnabledModels();
+    const models = liveReg.getAvailable()
+      .filter((m) => modelInScope(m.provider, m.id, patterns))
+      .map(wireFromModel);
     const current = ctx?.getModel?.();
     sender.send({
       type: "models_list",

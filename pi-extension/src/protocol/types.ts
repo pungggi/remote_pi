@@ -182,6 +182,11 @@ export type ClientMessage =
       text: string;
       images?: WireImage[];
       streaming_behavior?: StreamingBehavior;
+      /** Plan/109 — one-shot model override: send THIS message with a
+       *  different model without changing the session default. The Pi
+       *  extension switches the live model, injects the message, then
+       *  reverts on turn_end. Omitted on the normal send path. */
+      model?: { provider: string; id: string };
     }
   | { type: "queued_message_set"; id: string; text: string }
   | { type: "queued_message_clear"; id: string; target_id?: string }
@@ -313,6 +318,8 @@ export type ServerMessage =
       text: string;
       images?: WireImage[];
       streaming_behavior?: StreamingBehavior;
+      /** Plan/109 — echoed so other owners see the one-shot override model. */
+      model?: { provider: string; id: string };
     }
   | { type: "queued_message_state"; id?: string; text?: string; items?: QueuedMessageItem[] }
   | { type: "steer_consumed"; id: string }
