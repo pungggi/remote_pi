@@ -22,6 +22,15 @@ Numeração `00-` é proposital: este arquivo carrega antes dos planos numerados
 | **Relay stateless** | Sem persistência. Encaminha ciphertext entre dois peers identificados por pubkey. ~200 linhas de Rust |
 | **Relay open-source + self-hostável** | Compromisso de credibilidade. Usuário paranoico roda o próprio. Não vira ponto único de comprometimento |
 
+## Background / keep-alive (fechado 2026-07-27 — plano 103)
+
+| Decisão | Razão / nota |
+|---|---|
+| **Keep-alive em background = Android foreground service** | Serviço nativo mínimo (`KeepAliveService`, tipo `dataSync`) atua como *priority anchor*: segura uma notificação persistente que eleva o processo inteiro a *foreground priority*, então o Android não congela o app em background e o isolate Dart raiz (ConnectionManager + WsTransport + pings de 25s) continua rodando — o WebSocket do relay sobrevive à troca de app. O serviço **não roda Dart**; só sustenta a prioridade de processo. Plano 103, commit `a8679d9` |
+| **Firebase-free por escolha** | Nenhum projeto Google, nenhum serviço central de push, nenhuma dependência de wake de terceiros — consistente com o relay self-hosted + open-source. O foreground service resolve "ficar conectado ao trocar de app" sem push; push (FCM/APNs, plano 36) permanece **diferido e não adotado** |
+| **Limites honestos aceitos** | `targetSdk=36` → Android 15/16 impõe o **teto de 6h** no tipo `dataSync` (depois o WS cai e reconecta no próximo foreground) + deep Doze limita rede. Isso é o **teto do Android**, não lacuna a fechar com outro plano: o backoff de retry + reconnect-on-resume recuperam sem perda de dados (relay resincroniza). Sobrevivência "infinita" em background não é perseguida |
+| **Toggle no Settings, default ON** | `Preferences.keepAliveInBackground` (default `true`). Usuário pode desligar pra economizar bateria (comportamento = hoje: cai ao trocar de app). Android-only; no-op nas demais plataformas |
+
 ## Pareamento
 
 | Decisão | Razão / nota |
@@ -128,7 +137,7 @@ Estas decisões foram **propositalmente adiadas**. Quando alguém quiser fechar,
 | Onde hospedar o relay | Plano 06 |
 | Versionamento de protocolo (`v` field) | Quando v2 do protocolo surgir e exigir migração |
 | Conta de usuário opcional | Quando aparecer dor multi-device |
-| Push notifications | v2, após MVP validado |
+| Push notifications | v2, após MVP validado. **(2026-07-27)** Keep-alive em background já resolvido **separadamente** via foreground service (plano 103), Firebase-free — push só voltaria a importar pra *wake-after-kill*, que o fork não persegue |
 | Multi-relay / federação | Provavelmente nunca. Só se relay público virar gargalo |
 | Apps nativos (Swift/Kotlin) em vez de Flutter | Provavelmente nunca. Reconsiderar só se Flutter limitar features críticas (ex: integração profunda iOS Keychain). **Desktop: reconsiderado e mantido Flutter — decidido no plano 37, validado em produção (Cockpit 1.13.0; plano encerrado 2026-07-19)** |
 
