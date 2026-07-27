@@ -87,3 +87,9 @@ pi-extension/test/.pi/
 !.cockpit/tasks.json
 graphify-out
 .cockpit/worktrees/
+
+# Local scratch + runtime artifacts — never commit (machine-specific)
+SESSION-STATUS.md
+*.stackdump
+/data/
+cockpit/test/core/terminal/xterm/src/failures/
