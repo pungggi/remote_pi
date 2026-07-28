@@ -1274,6 +1274,74 @@ describe("multi-channel broadcast (W2D)", () => {
     expect(recipients).toEqual(new Set(["ownerA__1234567890", "ownerB__abcdefghij"]));
   });
 
+  test("show_image broadcasts agent_image with inline base64 to every owner (plan/114)", async () => {
+    await _pairForTest("ownerA__1234567890");
+    await _pairAdditionalForTest("ownerB__abcdefghij", "Android");
+
+    // Capture the show_image tool from a fresh factory run. Its execute uses
+    // module-level _broadcastToActive/_anyPeerActive, already populated by the
+    // pair calls above.
+    type CapturedTool = {
+      name: string;
+      execute: (id: string, p: Record<string, unknown>) => Promise<{
+        content?: { text?: string }[];
+        details?: Record<string, unknown>;
+      }>;
+    };
+    const tools: CapturedTool[] = [];
+    const capturePi = {
+      on: () => undefined,
+      registerCommand: () => undefined,
+      registerTool(t: CapturedTool) { tools.push(t); },
+      registerShortcut: () => undefined,
+      registerFlag: () => undefined, getFlag: () => undefined,
+      registerMessageRenderer: () => undefined,
+      sendMessage: () => undefined, sendUserMessage: () => undefined,
+    } as unknown as ExtensionAPI;
+    (extension as ExtensionFactory)(capturePi);
+    const showImage = tools.find((t) => t.name === "show_image");
+    expect(showImage).toBeDefined();
+
+    // 1×1 RGB PNG in a temp file.
+    const png = Buffer.from(
+      "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de" +
+      "0000000c4944415408d763f8cfc0000000030001cebeb32b0000000049454e44ae426082",
+      "hex",
+    );
+    const imgPath = join(tmpdir(), `pi-show-image-${Date.now()}.png`);
+    writeFileSync(imgPath, png);
+
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+    const result = await showImage!.execute("call-1", { path: imgPath, caption: "a pixel" });
+    rmSync(imgPath, { force: true });
+
+    // shown:true (peer active); tool_result is metadata-only — no base64 anywhere.
+    expect(result.details).toMatchObject({
+      shown: true, path: imgPath, mime: "image/png",
+      width: 1, height: 1, bytes: png.length,
+    });
+    expect(result.details).not.toHaveProperty("data");
+    expect(result.details).not.toHaveProperty("image");
+    expect(JSON.stringify(result)).not.toContain(png.toString("base64"));
+
+    // Broadcast reached every attached owner as agent_image with inline base64.
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt);
+    const imgs = sent.filter((d) => d.inner.type === "agent_image");
+    expect(imgs).toHaveLength(2);
+    expect(new Set(imgs.map((d) => d.peer))).toEqual(new Set(["ownerA__1234567890", "ownerB__abcdefghij"]));
+    const first = imgs[0]!.inner as {
+      id: string; in_reply_to: string; image: { data: string; mime: string };
+      path?: string; caption?: string;
+    };
+    expect(first.image.mime).toBe("image/png");
+    expect(first.image.data).toBe(png.toString("base64"));
+    expect(first.path).toBe(imgPath);
+    expect(first.caption).toBe("a pixel");
+    expect(first.in_reply_to).toBe(""); // no turn seeded
+    expect(typeof first.id).toBe("string");
+  });
+
   test("session_sync from owner A → session_history reply only to A", async () => {
     await _pairForTest("ownerA__1234567890");
     await _pairAdditionalForTest("ownerB__abcdefghij", "Android");
