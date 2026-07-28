@@ -526,11 +526,14 @@ void main() {
       final actions = _RecordingActions();
       final vm = HomeViewModel(storage, prefs, conn, actions);
       await conn.connectTo(_peerA);
-      await Future<void>.delayed(Duration.zero);
+      // Let StatusOnline propagate to the VM's _relayConnected before we
+      // act — the gate below is (samePeer && online).
+      await Future<void>.delayed(const Duration(milliseconds: 10));
 
       await vm.openTerminal(epk: 'epk_A', roomId: 'r1', branch: 'b');
 
-      // Only the seed connect — switchTo is a no-op for the active peer.
+      // Same peer AND online → switchTo's no-op path: only the seed
+      // connect happened.
       expect(connects, ['epk_A']);
       expect(actions.openCalls.single.branch, 'b');
 
@@ -538,6 +541,43 @@ void main() {
       await conn.disconnect();
       conn.dispose();
     });
+
+    test(
+      'still switchTo (reconnect) when the active peer matches but the '
+      'link is offline (review #3)',
+      () async {
+        final storage = _FakeStorage([_peerA]);
+        final connects = <String>[];
+        // Factory always fails → connectTo seeds activePeer=A but the link
+        // never reaches StatusOnline (_relayConnected stays false). The
+        // first retry is 1s out, so it never fires during this test.
+        final conn = ConnectionManager(
+          factory: (peer, _) async {
+            connects.add(peer.remoteEpk);
+            throw Exception('offline');
+          },
+          storage: storage,
+        );
+        final prefs = Preferences(_FakeSecureStorage());
+        final actions = _RecordingActions();
+        final vm = HomeViewModel(storage, prefs, conn, actions);
+        await conn.connectTo(_peerA);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(conn.activePeer?.remoteEpk, 'epk_A');
+
+        await vm.openTerminal(epk: 'epk_A', roomId: 'r1', branch: 'b');
+
+        // The old epk-only check skipped switchTo here and dispatched into
+        // a dead channel. Now we switchTo (reconnect): a second factory
+        // call beyond the seed.
+        expect(connects.length, greaterThanOrEqualTo(2));
+        expect(actions.openCalls.single.branch, 'b');
+
+        vm.dispose();
+        await conn.disconnect();
+        conn.dispose();
+      },
+    );
 
     test('unknown peer throws ActionFailure and dispatches nothing', () async {
       final storage = _FakeStorage([_peerA]);

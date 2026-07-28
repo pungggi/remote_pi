@@ -304,9 +304,13 @@ class HomeViewModel extends ViewModel<HomeState> {
     }
     final peer = match.first!;
     // Route the action to the tapped session's Pi. The action channel
-    // rides the active connection, so switch peer first (idempotent when
-    // already active+online) + room, then dispatch.
-    if (_conn.activePeer?.remoteEpk != epk) {
+    // rides the active connection, so switch peer + room before
+    // dispatching. Match ConnectionManager.switchTo's own no-op gate
+    // (same peer AND online): if the active peer already matches but the
+    // link is offline/connecting, we still switch so switchTo kicks a
+    // reconnect instead of dispatching into a dead channel.
+    final samePeer = _conn.activePeer?.remoteEpk == epk;
+    if (!samePeer || !_relayConnected) {
       await _conn.switchTo(peer);
       if (_disposed) {
         throw const ActionFailure('cancelled');

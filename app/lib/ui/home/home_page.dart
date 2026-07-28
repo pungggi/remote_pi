@@ -513,7 +513,7 @@ class HomePage extends StatelessWidget {
   /// folder (`<project-basename>_<branch>`).
   Future<String?> _promptBranchName(BuildContext context) {
     final controller = TextEditingController();
-    return showDialog<String>(
+    final future = showDialog<String>(
       context: context,
       builder: (dCtx) {
         final colors = dCtx.colors;
@@ -580,6 +580,9 @@ class HomePage extends StatelessWidget {
         );
       },
     );
+    // Dispose the controller once the dialog has settled (popped via
+    // Cancel / Create / barrier) so repeated opens don't leak listeners.
+    return future.whenComplete(controller.dispose);
   }
 
   void _toast(
@@ -587,6 +590,10 @@ class HomePage extends StatelessWidget {
     String message, {
     required bool isError,
   }) {
+    // The action can resolve after the page was disposed (user navigated
+    // away mid-await); showSnackBar throws on a disposed messenger, so
+    // drop the toast silently instead of crashing.
+    if (!messenger.mounted) return;
     final colors = messenger.context.colors;
     messenger.showSnackBar(
       SnackBar(
