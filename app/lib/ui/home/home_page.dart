@@ -208,6 +208,9 @@ class HomePage extends StatelessWidget {
     final colors = context.colors;
     final connected = vm.isRelayConnected;
     final awaitingPairing = state is HomeNoPeer;
+    // Plan 114 (B) — the relay WS is down (retrying/offline) but a peer is
+    // paired: the status is tappable to force a reconnect now.
+    final canReconnect = !connected && !awaitingPairing;
     final Color dotColor;
     final String statusLabel;
     final Color statusColor;
@@ -251,14 +254,22 @@ class HomePage extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 6),
-        Text(
-          statusLabel,
-          style: TextStyle(
-            fontFamily: kMonoFamily,
-            color: statusColor,
-            fontSize: 13,
-          ),
-        ),
+        () {
+          final label = Text(
+            statusLabel,
+            style: TextStyle(
+              fontFamily: kMonoFamily,
+              color: statusColor,
+              fontSize: 13,
+            ),
+          );
+          if (!canReconnect) return label;
+          // Plan 114 (B) — tap "Offline" to reset the backoff and redial now.
+          return Tooltip(
+            message: 'Reconnect now',
+            child: GestureDetector(onTap: vm.reconnect, child: label),
+          );
+        }(),
       ],
     );
   }

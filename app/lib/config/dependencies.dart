@@ -16,6 +16,7 @@ import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/channel.dart'; // IChannel
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/keep_alive_controller.dart';
+import 'package:app/data/transport/network_monitor.dart';
 import 'package:app/data/transport/peer_channel.dart';
 import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/transport/relay_config.dart';
@@ -113,6 +114,11 @@ Future<void> setupDependencies() async {
   _injector.addService<KeepAliveController>(
     () => KeepAliveController(_injector.get<Preferences>()),
   );
+
+  // Plan 114 — network-change detection. Attached to ConnectionManager in
+  // main() (mirrors KeepAliveController); addService so its dispose() cancels
+  // the connectivity subscription at app teardown.
+  _injector.addService<NetworkMonitor>(() => NetworkMonitor());
 
   // Plan 29 — on-device speech-to-text. Singleton: it owns a broadcast
   // sound-level stream that must survive across chat navigations; the

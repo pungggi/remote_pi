@@ -10,6 +10,7 @@ import 'package:app/data/share/composer_draft.dart';
 import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/keep_alive_controller.dart';
+import 'package:app/data/transport/network_monitor.dart';
 import 'package:app/pairing/owner_identity_bridge.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/routing/adaptive.dart';
@@ -32,6 +33,12 @@ void main() async {
   // status (Online at boot → starts the notification).
   injector
       .get<KeepAliveController>()
+      .attach(injector.get<ConnectionManager>());
+  // Plan 114 — react to network changes (Wi-Fi ↔ cellular) and force an
+  // immediate reconnect so recovery starts within ~1s instead of the 30s
+  // backoff ceiling. attach() subscribes to connectivity events.
+  injector
+      .get<NetworkMonitor>()
       .attach(injector.get<ConnectionManager>());
   // Plan/104 — if launched via a Share (ACTION_SEND image), pull it now so it
   // waits in the inbox; the router listener routes to the chat once booted.

@@ -55,6 +55,11 @@ dependencies:
   # Plan 24 — HTTP client for the mesh_versions endpoint on the relay.
   dio: ^5.7.0
 
+  # Plan 114 — network-change detection. On a transition (Wi-Fi ↔
+  # cellular) we nudge ConnectionManager.forceReconnect so recovery starts
+  # within ~1s instead of the 30s backoff ceiling.
+  connectivity_plus: ^6.0.5
+
   # Plan 29 — on-device speech-to-text for voice input. Captures the mic
   # and transcribes in-stream (no audio file is ever written); `onDevice`
   # forces local recognition so audio never leaves the device.

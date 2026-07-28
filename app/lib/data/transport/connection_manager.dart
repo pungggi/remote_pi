@@ -79,6 +79,14 @@ const _kBackoff = [1, 2, 5, 10, 30];
 Duration _backoffFor(int attempt) =>
     Duration(seconds: _kBackoff[attempt.clamp(0, _kBackoff.length - 1)]);
 
+/// Plan 114 (C) — inbound-liveness threshold. The relay pushes a frame at
+/// least every ~25 s (its keep-alive), so a healthy link is never this
+/// quiet. A socket silent beyond this while we believe we're Online is
+/// half-open (the WS-layer ping interval can take *minutes* to notice on
+/// mobile) — the watchdog force-closes it so the retry chain kicks in.
+/// ≥ 2× the ping interval, so a live connection never trips it.
+const _kInboundTimeout = Duration(seconds: 60);
+
 // ---------------------------------------------------------------------------
 // Factory typedef — injectable for tests
 // ---------------------------------------------------------------------------
@@ -141,6 +149,13 @@ class ConnectionManager extends Service {
   List<String> _subscribedEpks = const [];
   int _missedPings = 0;
   int _retryAttempt = 0;
+  // Plan 114 (C) — timestamp of the last inbound frame. The 15 s watchdog
+  // force-closes a socket silent beyond [_kInboundTimeout] while we're
+  // Online. [_lastInboundAt] is reset on every successful connect. [__now]
+  // is injectable so unit tests can advance a virtual clock.
+  late DateTime _lastInboundAt;
+  final DateTime Function() _now;
+  final Duration _watchdogInterval;
   // Tracks the last-running connect token so the watchdog can tell
   // whether a connect is in flight (without poking at the live token).
   bool _connectInFlight = false;
@@ -161,9 +176,14 @@ class ConnectionManager extends Service {
     required ConnectionFactory factory,
     required PairingStorage storage,
     Duration emitDebounce = const Duration(milliseconds: 50),
+    DateTime Function()? now,
+    Duration watchdogInterval = const Duration(seconds: 15),
   }) : _factory = factory,
        _storage = storage,
-       _emitDebounce = emitDebounce {
+       _emitDebounce = emitDebounce,
+       _now = now ?? DateTime.now,
+       _watchdogInterval = watchdogInterval {
+    _lastInboundAt = _now();
     _startWatchdog();
   }
 
@@ -172,10 +192,20 @@ class ConnectionManager extends Service {
   /// fires the actual `_scheduleRetry` when the conditions match.
   void _startWatchdog() {
     _watchdogTimer?.cancel();
-    _watchdogTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+    _watchdogTimer = Timer.periodic(_watchdogInterval, (_) {
       final peer = _activePeer;
       if (peer == null) return;
-      if (_status is StatusOnline) return;
+      if (_status is StatusOnline) {
+        // Plan 114 (C) — inbound-liveness watchdog. The WS-layer ping
+        // interval can take minutes to surface a half-open socket on a
+        // mobile network transition; we detect "silent beyond
+        // [_kInboundTimeout] while we believe we're Online" and force the
+        // existing close-and-retry path so recovery starts now.
+        if (_now().difference(_lastInboundAt) > _kInboundTimeout) {
+          _onChannelLost(peer, (_status as StatusOnline).channel);
+        }
+        return;
+      }
       if (_connectInFlight) return;
       if (_retryTimer != null) return;
       // We SHOULD be reconnecting but nothing's scheduled and no
@@ -415,6 +445,7 @@ class ConnectionManager extends Service {
     }
     _retryAttempt = 0;
     _missedPings = 0;
+    _lastInboundAt = _now();
     _activePeer = peer;
     _emit(StatusOnline(channel));
     _startPing(peer, channel);
@@ -425,6 +456,20 @@ class ConnectionManager extends Service {
 
   // Permanently disconnect and go to NoPeer.
   Future<void> disconnect() => _teardownActive(emitNoPeer: true);
+
+  /// Plan 114 — reset the backoff and dial the active peer *now*. The single
+  /// chokepoint for the three resilience triggers: network-change detection
+  /// (A), the manual Reconnect button (B), and the inbound-liveness watchdog
+  /// (C). Tears down the current (possibly half-open) channel WITHOUT a
+  /// transient [StatusNoPeer], resets [_retryAttempt], and reconnects
+  /// immediately (status → Connecting). No-op if there is no active peer.
+  Future<void> forceReconnect() async {
+    final peer = _activePeer;
+    if (peer == null) return;
+    _retryAttempt = 0;
+    await _teardownActive(emitNoPeer: false);
+    await _connect(peer);
+  }
 
   /// Shared implementation between [disconnect] and [switchTo]. When
   /// [emitNoPeer] is false (switch path), the `_status` is left as-is so
@@ -518,6 +563,7 @@ class ConnectionManager extends Service {
         return;
       }
       _missedPings = 0;
+      _lastInboundAt = _now();
       // Push down the active room to the WS so the outer envelope
       // carries it from frame 1 (factory creates a fresh WsTransport
       // every reconnect — default _activeRoom='main' unless we set).
@@ -1066,6 +1112,7 @@ class ConnectionManager extends Service {
         if (_retryAttempt != 0) {}
         _missedPings = 0;
         _retryAttempt = 0;
+        _lastInboundAt = _now();
       },
       onError: (_) => _onChannelLost(peer, ch),
       onDone: () => _onChannelLost(peer, ch),

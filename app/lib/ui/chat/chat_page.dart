@@ -224,7 +224,7 @@ class ChatPage extends StatelessWidget {
                             : isOnline
                             ? 'online'
                             : 'offline';
-                        return Row(
+                        final pill = Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Container(
@@ -245,6 +245,16 @@ class ChatPage extends StatelessWidget {
                               ),
                             ),
                           ],
+                        );
+                        // Plan 114 (B) — tap the "reconnecting…" pill to
+                        // force a reconnect now (resets the backoff).
+                        if (!isReconnecting) return pill;
+                        return Tooltip(
+                          message: 'Reconnect now',
+                          child: GestureDetector(
+                            onTap: vm.reconnect,
+                            child: pill,
+                          ),
                         );
                       },
                     ),

@@ -61,6 +61,10 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// no fresh signal on any room.
   bool get isRelayConnected => _relayConnected;
 
+  /// Plan 114 (B) — force a reconnect now (resets the backoff and redials
+  /// immediately). Surfaced as the tap target on the Home "Offline" status.
+  Future<void> reconnect() => _conn.forceReconnect();
+
   /// `true` when `(epk, roomId)`'s agent is currently mid-turn. Drives
   /// the blue "working" dot on the Home tile.
   ///

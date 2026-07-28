@@ -385,7 +385,10 @@ class ChatViewModel extends ViewModel<ChatState> {
     // No connecting spinner — keep the current messages on screen and let the
     // status update inline as the connection comes back.
     _recompute();
-    await _conn.switchTo(peer);
+    // Plan 114 (B) — forceReconnect resets the backoff and redials now,
+    // instead of switchTo which (for the same peer while not Online) would
+    // reconnect but leave the retry attempt counter climbing.
+    await _conn.forceReconnect();
   }
 
   @override

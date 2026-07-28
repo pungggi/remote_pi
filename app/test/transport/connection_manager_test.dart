@@ -6,6 +6,8 @@ import 'dart:typed_data';
 
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/connection_manager.dart';
+import 'package:app/data/transport/network_monitor.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/data/transport/peer_channel.dart';
 import 'package:app/pairing/pair_request_flow.dart';
@@ -99,6 +101,10 @@ PlainPeerChannel _makeChannel() {
 void main() {
   // Plan 17 — rooms suite registered alongside the rest.
   _registerRoomsTests();
+  // Plan 114 — network resilience (forceReconnect + liveness watchdog).
+  _registerPlan114Tests();
+  // Plan 114 (A) — NetworkMonitor (connectivity-driven reconnect).
+  _registerNetworkMonitorTests();
 
   group('ConnectionManager', () {
     test('boot() → StatusNoPeer when storage is empty', () async {
@@ -1498,3 +1504,284 @@ void _registerRoomsTests() {
   });
 }
 
+
+// ---------------------------------------------------------------------------
+// Plan 114 — network resilience: forceReconnect() + inbound-liveness
+// watchdog. forceReconnect is the single chokepoint for (A) network-change
+// detection, (B) the manual Reconnect button, and (C) the watchdog itself.
+// ---------------------------------------------------------------------------
+
+void _registerPlan114Tests() {
+  group('ConnectionManager — plan 114 (resilience)', () {
+    test(
+      'forceReconnect tears down the active channel and redials '
+      '(Online → new channel → Online)',
+      () async {
+        final channels = <_ControllableChannel>[];
+        final cm = ConnectionManager(
+          factory: (_, _) async {
+            final ch = _ControllableChannel();
+            channels.add(ch);
+            return ch;
+          },
+          storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
+        );
+        await cm.connectTo(_fakePeer());
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(cm.status, isA<StatusOnline>());
+        expect(channels, hasLength(1));
+        final first = channels.single;
+
+        await cm.forceReconnect();
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        // A fresh channel was adopted and we're back Online.
+        expect(channels, hasLength(2));
+        expect(cm.status, isA<StatusOnline>());
+        expect(cm.channel, same(channels.last));
+        // The old channel was closed by the teardown.
+        expect(first._ctrl.isClosed, isTrue);
+
+        cm.dispose();
+      },
+    );
+
+    test(
+      'forceReconnect cancels a pending backoff and redials immediately '
+      '(Retrying → Connecting without waiting for the timer)',
+      () async {
+        var calls = 0;
+        final cm = ConnectionManager(
+          factory: (_, _) async {
+            calls++;
+            throw Exception('refused');
+          },
+          storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
+        );
+        final states = <ConnectionStatus>[];
+        cm.statusStream.listen(states.add);
+        await cm.connectTo(_fakePeer());
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        // Factory threw → StatusRetrying with a 1s backoff scheduled.
+        expect(cm.status, isA<StatusRetrying>());
+        final callsBefore = calls;
+        final connectingBefore = states.whereType<StatusConnecting>().length;
+
+        await cm.forceReconnect();
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        // Redialed NOW (factory called again, not after the 1s backoff)
+        // and emitted a fresh StatusConnecting on the way.
+        expect(calls, greaterThan(callsBefore));
+        expect(
+          states.whereType<StatusConnecting>().length,
+          greaterThan(connectingBefore),
+          reason: 'forceReconnect must redial immediately (StatusConnecting)',
+        );
+
+        cm.dispose();
+      },
+    );
+
+    test('forceReconnect is a no-op when there is no active peer', () async {
+      var calls = 0;
+      final cm = ConnectionManager(
+        factory: (_, _) async {
+          calls++;
+          return _ControllableChannel();
+        },
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+      );
+      // No connectTo → no active peer.
+      await cm.forceReconnect();
+      expect(calls, 0);
+      cm.dispose();
+    });
+
+    test(
+      'inbound-liveness watchdog force-closes a silent (half-open) '
+      'Online socket',
+      () async {
+        var t = DateTime(2026, 1, 1);
+        final ch = _ControllableChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
+          now: () => t,
+          watchdogInterval: const Duration(milliseconds: 5),
+        );
+        await cm.connectTo(_fakePeer());
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(cm.status, isA<StatusOnline>());
+
+        // Advance the virtual clock past the 60s threshold WITHOUT any
+        // inbound frame, then let the (fast) watchdog tick.
+        t = t.add(const Duration(seconds: 61));
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+
+        // Half-open detected → _onChannelLost → StatusRetrying.
+        expect(cm.status, isA<StatusRetrying>());
+
+        cm.dispose();
+      },
+    );
+
+    test(
+      'inbound frames reset the liveness clock (watchdog does not fire '
+      'while the link is alive)',
+      () async {
+        var t = DateTime(2026, 1, 1);
+        final ch = _ControllableChannel();
+        final cm = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: _FakeStorage([_fakePeer()]),
+          emitDebounce: Duration.zero,
+          now: () => t,
+          watchdogInterval: const Duration(milliseconds: 5),
+        );
+        await cm.connectTo(_fakePeer());
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(cm.status, isA<StatusOnline>());
+
+        // 30s of silence is under the 60s threshold → still Online.
+        t = t.add(const Duration(seconds: 30));
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        expect(cm.status, isA<StatusOnline>());
+
+        // A real inbound frame resets the clock.
+        ch.pushMessage(Pong(inReplyTo: 'x'));
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        t = t.add(const Duration(seconds: 50));
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        expect(
+          cm.status,
+          isA<StatusOnline>(),
+          reason: '50s after a frame is under the 60s threshold',
+        );
+
+        cm.dispose();
+      },
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Plan 114 (A) — NetworkMonitor: connectivity-driven forceReconnect.
+// ---------------------------------------------------------------------------
+
+void _registerNetworkMonitorTests() {
+  group('NetworkMonitor — plan 114 (A)', () {
+    test('transition to a connected network → forceReconnect', () async {
+      final ctrl = StreamController<List<ConnectivityResult>>.broadcast();
+      var connects = 0;
+      final cm = ConnectionManager(
+        factory: (_, _) async {
+          connects++;
+          return _ControllableChannel();
+        },
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+      );
+      final nm = NetworkMonitor(connectivityStream: ctrl.stream);
+      nm.attach(cm);
+      await cm.connectTo(_fakePeer());
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      final connectsBefore = connects;
+
+      ctrl.add([ConnectivityResult.wifi]);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(
+        connects,
+        greaterThan(connectsBefore),
+        reason: 'a connectivity transition should redial',
+      );
+
+      nm.dispose();
+      cm.dispose();
+      await ctrl.close();
+    });
+
+    test('ConnectivityResult.none is ignored (only transitions TO connected)',
+        () async {
+      final ctrl = StreamController<List<ConnectivityResult>>.broadcast();
+      var connects = 0;
+      final cm = ConnectionManager(
+        factory: (_, _) async {
+          connects++;
+          return _ControllableChannel();
+        },
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+      );
+      final nm = NetworkMonitor(connectivityStream: ctrl.stream);
+      nm.attach(cm);
+      await cm.connectTo(_fakePeer());
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      final connectsBefore = connects;
+
+      ctrl.add([ConnectivityResult.none]);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(
+        connects,
+        connectsBefore,
+        reason: 'losing connectivity must not redial',
+      );
+
+      nm.dispose();
+      cm.dispose();
+      await ctrl.close();
+    });
+
+    test('debounce coalesces a burst into one reconnect', () async {
+      var t = DateTime(2026, 1, 1);
+      final ctrl = StreamController<List<ConnectivityResult>>.broadcast();
+      var connects = 0;
+      final cm = ConnectionManager(
+        factory: (_, _) async {
+          connects++;
+          return _ControllableChannel();
+        },
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+      );
+      final nm = NetworkMonitor(connectivityStream: ctrl.stream, now: () => t);
+      nm.attach(cm);
+      await cm.connectTo(_fakePeer());
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      final connectsBefore = connects;
+
+      // Burst of 3 connected events within the 1s window → one reconnect.
+      ctrl.add([ConnectivityResult.wifi]);
+      ctrl.add([ConnectivityResult.mobile]);
+      ctrl.add([ConnectivityResult.wifi]);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(
+        connects - connectsBefore,
+        1,
+        reason: 'burst within the debounce window coalesces to one redial',
+      );
+
+      // After the debounce window, a new event redials again.
+      t = t.add(const Duration(seconds: 2));
+      ctrl.add([ConnectivityResult.mobile]);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(
+        connects - connectsBefore,
+        2,
+        reason: 'an event after the debounce window redials again',
+      );
+
+      nm.dispose();
+      cm.dispose();
+      await ctrl.close();
+    });
+  });
+}
