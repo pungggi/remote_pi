@@ -352,6 +352,28 @@ function _publishWorking(working: boolean): void {
   }
 }
 
+/**
+ * Plan/32 hardening — re-publish the full cached room_meta (incl `working`)
+ * right after a successful relay (re)connect.
+ *
+ * The reconnect `hello` only fans out to subscribers as a `room_announced` on
+ * the FIRST conn for a room; and if the app was itself mid-reconnect at the
+ * same instant (common since plan/114 reacts to network changes on BOTH the
+ * app and the Pi), it can miss that announce. Its cached `working` then stays
+ * stale for the whole turn — the Home session-list dot stays green even though
+ * the agent is mid-turn. An explicit `room_meta_update` here re-syncs EVERY
+ * subscriber regardless of announce timing. Idempotent: the relay dedups
+ * no-op patches, and the app dedups unchanged room_meta too.
+ */
+function _republishRoomMeta(): void {
+  if (!_relay || !_myRoomId || !_myRoomMeta) return;
+  const meta: Record<string, unknown> = { working: _myRoomMeta.working ?? false };
+  if (_myRoomMeta.model) meta.model = _myRoomMeta.model;
+  if (_myRoomMeta.thinking !== undefined) meta.thinking = _myRoomMeta.thinking;
+  if (_myRoomMeta.git !== undefined) meta.git = _myRoomMeta.git;
+  _relay.sendControl({ type: "room_meta_update", room_id: _myRoomId, meta });
+}
+
 function _imageCacheRootDir(): string {
   if (_imageCacheDir) {
     try { mkdirSync(_imageCacheDir, { recursive: true, mode: 0o700 }); } catch {}
@@ -1866,6 +1888,11 @@ async function _attemptReconnect(
 
   // Plan/25 Wave B/C: relay is back; bring cross-PC routing back online.
   _attachBridgeIfReady();
+
+  // Plan/32 — re-sync the cached room_meta (esp. `working`) to subscribers.
+  // Closes the race where a turn_start fired during the disconnect window
+  // (cached locally but never pushed) leaves the Home dot green.
+  _republishRoomMeta();
 
   // _state stays "started"; peer reconnect (if previously paired) flows
   // through _installAutoListener → _findKnownPeer → _promoteToPaired

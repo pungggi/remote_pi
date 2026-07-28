@@ -5850,6 +5850,43 @@ describe("model meta", () => {
     expect(updates[0]!.meta?.working).toBe(false);
   });
 
+  test("plan/32 hardening: working set during a relay drop is re-published on reconnect", async () => {
+    // Reproduces the race behind the Home session-list dot staying green:
+    // turn_start fires while the relay link is DOWN → working is cached
+    // locally but never pushed (no _relay). On reconnect an explicit
+    // room_meta_update must re-sync it to subscribers, or the dot stays
+    // green for the whole turn.
+    vi.useFakeTimers();
+    try {
+      captureHandler("remote-pi");
+      await _connectForTest(makeMockCtx("/tmp/remote-pi-working-republish"));
+      expect(relayInstances).toHaveLength(1);
+
+      // Relay link drops. _relay becomes null; _myRoomMeta is preserved.
+      relayInstances[0]!.emit("close");
+      expect(_getState()).toBe("started");
+
+      // turn_start during the disconnect window: cached, NOT pushed
+      // (the only relay so far is the dead one — assert nothing was sent).
+      const onTurnStart = captureEventHandler("turn_start");
+      onTurnStart({ type: "turn_start", turnIndex: 0, timestamp: 0 });
+      expect(relayInstances[0]!.sendControl).not.toHaveBeenCalled();
+
+      // Reconnect fires → a fresh RelayClient is constructed.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(relayInstances).toHaveLength(2);
+
+      // The new relay must receive a room_meta_update carrying working=true
+      // (the re-publish closes the race).
+      const updates = relayInstances[1]!.sendControl.mock.calls
+        .map((c) => c[0] as { type: string; meta?: { working?: boolean } })
+        .filter((f) => f.type === "room_meta_update" && f.meta?.working === true);
+      expect(updates).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("plan/32: pi.on('session_before_compact') publishes working=true", async () => {
     captureHandler("remote-pi");
     await _connectForTest(makeMockCtx("/tmp/remote-pi-compact-working"));
