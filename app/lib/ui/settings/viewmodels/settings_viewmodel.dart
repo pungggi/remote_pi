@@ -73,6 +73,48 @@ class SettingsViewModel extends ViewModel<SettingsState> {
     notifyListeners();
   }
 
+  // ── Plan 115 — LAN endpoint (optional, auto-filled by the relay) ──────
+
+  /// The current LAN candidate the app will try first at home, or `''`
+  /// when none is set ("Tailscale/primary only" — plan 115 opt-out).
+  /// Shows the first learned LAN endpoint; the full candidate list may
+  /// contain several (relay advertises all its RFC1918 addresses).
+  String get lanUrlOverride =>
+      _prefs.lanEndpoints.isEmpty ? '' : _prefs.lanEndpoints.first;
+
+  /// Set or clear the LAN endpoint override. Empty/blank clears the whole
+  /// LAN list (opt out of LAN — primary/overlay only). On success the
+  /// connection is rebuilt so the new candidate set takes effect now.
+  Future<String?> saveLanUrl(String? value) async {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) {
+      await _prefs.setLanEndpoints(const []);
+      await _conn.disconnect();
+      _conn.boot(preferredEpk: _prefs.selectedPeerEpk);
+      return null;
+    }
+    final reason = relayUrlValidationMessage(trimmed);
+    if (reason != null) return reason;
+    await _prefs.setLanEndpoints([trimmed]);
+    await _conn.disconnect();
+    _conn.boot(preferredEpk: _prefs.selectedPeerEpk);
+    return null;
+  }
+
+  /// Clear every LAN candidate (plan 115 opt-out: dial the primary only).
+  ///
+  /// Rebuilds the connection so the change takes effect immediately — the
+  /// active link may currently be on a LAN endpoint that is no longer a
+  /// candidate, so we drop it and reconnect over the primary/overlay.
+  /// (Mirrors [saveLanUrl]; the VM-level [notifyListeners] refreshes the
+  /// Settings helper text, which reads [lanUrlOverride].)
+  Future<void> clearLanUrl() async {
+    await _prefs.setLanEndpoints(const []);
+    await _conn.disconnect();
+    _conn.boot(preferredEpk: _prefs.selectedPeerEpk);
+    notifyListeners();
+  }
+
   Future<String?> saveRelayUrl(String? value) async {
     if (value == null || value.trim().isEmpty) {
       return 'Enter a relay URL, or use Clear — pairing sets it from the QR.';

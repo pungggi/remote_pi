@@ -21,6 +21,7 @@ import 'package:app/data/transport/network_monitor.dart';
 import 'package:app/data/transport/peer_channel.dart';
 import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/transport/relay_config.dart';
+import 'package:app/data/transport/relay_endpoint.dart';
 import 'package:app/data/transport/ws_transport.dart';
 import 'package:app/data/update/secure_dismissed_update_store.dart';
 import 'package:app/data/update/update_checker_impl.dart';
@@ -45,6 +46,7 @@ import 'package:app/ui/pairing/viewmodels/pairing_viewmodel.dart';
 import 'package:app/ui/settings/viewmodels/settings_viewmodel.dart';
 import 'package:app/ui/update/viewmodels/update_banner_viewmodel.dart';
 import 'package:cryptography/cryptography.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:remote_pi_identity/remote_pi_identity.dart';
@@ -82,12 +84,15 @@ Future<void> setupDependencies() async {
   );
   _injector.addInstance<OwnerIdentityBridge>(ownerBridge);
 
-  // Plan 24 — mesh_versions HTTP client + sync service. Base URL is
-  // the user-configured relay verbatim (always http(s):// per the
-  // post-Wave-2 URL scheme decision — see plan/24-fix-app-url-scheme).
-  // No translation needed: the relay's `/mesh` endpoint shares host +
-  // port with the WebSocket.
-  final meshClient = MeshClient(baseUrlProvider: () => resolveRelayUrl(prefs));
+  // Plan 24 — mesh_versions HTTP client + sync service. Base URL follows
+  // the WS connection's winning endpoint when one is known (plan 115), so
+  // mesh polling at home also bypasses Tailscale instead of always hitting
+  // the (possibly flaky) primary. Falls back to the primary relay URL
+  // before the first successful connect. The relay's `/mesh` endpoint
+  // shares host + port with the WebSocket.
+  final meshClient = MeshClient(
+    baseUrlProvider: () => prefs.lastGoodRelayUrl ?? resolveRelayUrl(prefs),
+  );
   _injector.addInstance<MeshClient>(meshClient);
   final meshSync = MeshSyncService(
     meshClient,
@@ -250,7 +255,22 @@ Future<void> setupDependencies() async {
 // Plan 23: Owner-sk (synced via iCloud Keychain / Block Store) is the
 // challenge-response key. OwnerIdentityBridge.boot() is the router's
 // responsibility; by the time this factory runs, the identity is loaded.
+//
+// Plan 115 — dual relay addressing. Instead of dialling a single relay URL,
+// the factory resolves an ORDERED candidate list (LAN candidates first, then
+// the user's primary/overlay URL), optionally skips LAN on a pure-cellular
+// link, and tries each endpoint in turn with a per-endpoint connect budget.
+// First endpoint to complete the WS + Ed25519 handshake wins; the relay's
+// advertised LAN addresses are persisted and the winner remembered as
+// last-good so the next connect starts from it. All-fail throws so
+// ConnectionManager enters its retry/backoff path.
 // ---------------------------------------------------------------------------
+
+/// Per-endpoint connect budget. LAN gets a short window so an unroutable
+/// home address (cellular, or relay moved networks) fails fast and we move
+/// on to the overlay; the primary gets the full defensive timeout.
+const _kLanConnectTimeout = Duration(milliseconds: 1500);
+const _kPrimaryConnectTimeout = Duration(seconds: 10);
 
 Future<IChannel> _productionConnectionFactory(
   PeerRecord peer,
@@ -260,37 +280,89 @@ Future<IChannel> _productionConnectionFactory(
   final ownerKey = await bridge.requireKeyPair();
   if (cancel.isCancelled) throw _CancelledError();
 
-  // Defensive timeout (plano app-state-normalization): without this the
-  // WebSocket connect + Ed25519 challenge round-trip can hang
-  // indefinitely if the relay is unreachable — ChatViewModel would sit
-  // in `ChatConnecting` forever. Throwing here pushes the manager into
-  // its retry/backoff path, which is observable as `StatusRetrying` and
-  // renders a "reconnecting" banner rather than an empty spinner.
-  const wsConnectTimeout = Duration(seconds: 10);
-  // Resolve the GLOBAL relay URL (plan 14): user override > default.
-  // `peer.relayUrl` is kept on PeerRecord for legacy QR payloads but is
-  // no longer consulted when opening a connection.
-  final relayUrl = resolveRelayUrl(_injector.get<Preferences>());
-  final transport =
-      await WsTransport.connect(
-        relayUrl: relayUrl,
+  final prefs = injector.get<Preferences>();
+  final endpoints = resolveRelayEndpoints(prefs);
+  if (endpoints.isEmpty) {
+    // Nothing configured yet — pair first. Surface as a failure so the
+    // manager enters retry/offline instead of hanging in Connecting.
+    throw TimeoutException('No relay endpoint configured');
+  }
+
+  // Plan 115 (cellular-skip) — on a pure cellular link the home-LAN
+  // address is unroutable; skip the LAN race entirely and go straight to
+  // the overlay. Wi-Fi/Ethernet present (even alongside mobile) keeps LAN,
+  // since the home address can still route. A missing/unavailable probe
+  // (desktop test harness) defaults to "keep LAN" — the short LAN timeout
+  // handles the unroutable case anyway.
+  final skipLan = await _shouldSkipLanEndpoints();
+  final ordered = selectEndpointOrder(
+    endpoints,
+    lastGood: prefs.lastGoodRelayUrl,
+    skipLan: skipLan,
+  );
+
+  // Sequential happy-eyeballs: try each endpoint with its own budget. A
+  // timed-out attempt's underlying socket lingers until the OS/relay
+  // closes it (same behaviour as the previous single-endpoint timeout);
+  // only one _connect is ever in flight per ConnectionManager, so this
+  // never piles up across reconnects.
+  Object? lastError;
+  for (final ep in ordered) {
+    if (cancel.isCancelled) throw _CancelledError();
+    final timeout = ep.kind == EndpointKind.lan
+        ? _kLanConnectTimeout
+        : _kPrimaryConnectTimeout;
+    try {
+      final transport = await WsTransport.connect(
+        relayUrl: ep.url,
         peerPubkey: peer.remoteEpk,
         ed25519Key: ownerKey,
       ).timeout(
-        wsConnectTimeout,
+        timeout,
         onTimeout: () => throw TimeoutException(
-          'WS connect to $relayUrl timed out after '
-          '${wsConnectTimeout.inSeconds}s',
+          'WS connect to ${ep.url} timed out '
+          'after ${timeout.inMilliseconds}ms',
         ),
       );
-
-  if (cancel.isCancelled) {
-    await transport.close();
-    throw _CancelledError();
+      if (cancel.isCancelled) {
+        await transport.close();
+        throw _CancelledError();
+      }
+      // Winner. Persist the relay's advertised LAN candidates (we learn
+      // them even when we came in over the overlay) and remember this
+      // endpoint as last-good. Awaited: last-good directly shapes the next
+      // connect's ordering, so we don't want a read-before-write race.
+      final lan = transport.advertisedLanUrls;
+      if (lan.isNotEmpty) {
+        await prefs.mergeLanEndpoints(lan);
+      }
+      await prefs.setLastGoodRelayUrl(ep.url);
+      return PlainPeerChannel(transport: transport);
+    } catch (e) {
+      if (e is _CancelledError) rethrow;
+      lastError = e;
+      // fall through → next endpoint
+    }
   }
-
-  return PlainPeerChannel(transport: transport);
+  throw lastError ?? TimeoutException('All relay endpoints failed');
 }
+
+/// Plan 115 — returns `true` when LAN candidates should be skipped: a link
+/// with no Wi-Fi/Ethernet path (i.e. pure cellular, where the home address
+/// cannot route). Best-effort — any probe failure defaults to `false`.
+Future<bool> _shouldSkipLanEndpoints() async {
+  try {
+    final results = await Connectivity().checkConnectivity();
+    final hasNonCellular = results.any(
+      (r) => r == ConnectivityResult.wifi ||
+          r == ConnectivityResult.ethernet,
+    );
+    return !hasNonCellular;
+  } catch (_) {
+    return false;
+  }
+}
+
 
 // ---------------------------------------------------------------------------
 // Production PairingTransportFactory — used by PairingViewModel for first pair.

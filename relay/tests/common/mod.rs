@@ -39,6 +39,7 @@ pub async fn start_relay() -> u16 {
         mesh,
         mesh_auth,
         metrics,
+        port,
     };
     let app = build_router(state);
     tokio::spawn(async move {

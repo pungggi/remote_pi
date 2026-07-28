@@ -164,6 +164,20 @@ class WsTransport implements PeerTransport, IControlLink {
       }
       final nonce = _b64Decode(ch['nonce'] as String);
 
+      // Plan 115 — the relay may advertise its local LAN IPv4 candidates
+      // (`lan: ["http://192.168.1.10:3000", ...]`) so the app can bypass
+      // Tailscale on the home VLAN. Old relays omit the field → empty
+      // list, which is a no-op for the caller. Captured here (the only
+      // place the raw challenge frame is visible) and surfaced via
+      // [advertisedLanUrls] for the connection factory to persist.
+      final lanRaw = ch['lan'];
+      if (lanRaw is List) {
+        transport._advertisedLanUrls = lanRaw
+            .whereType<String>()
+            .where((s) => s.isNotEmpty)
+            .toList(growable: false);
+      }
+
       // 3. Auth
       final sig = await Ed25519().sign(nonce, keyPair: ed25519Key);
       ws.sink.add(jsonEncode({
@@ -184,6 +198,13 @@ class WsTransport implements PeerTransport, IControlLink {
 
   String _peerPubkey = '';
   StreamSubscription? _sub;
+
+  /// Plan 115 — LAN candidate URLs the relay advertised in its challenge
+  /// frame (empty when the relay is older than plan 115 or has no usable
+  /// LAN address). Populated during [connect]; read by the connection
+  /// factory to persist into `Preferences.lanEndpoints`.
+  List<String> _advertisedLanUrls = const [];
+  List<String> get advertisedLanUrls => _advertisedLanUrls;
 
   /// Active target room on the Pi side. Plan 17: set via
   /// `setActiveRoom`, defaults to 'main' when unset. The outer envelope

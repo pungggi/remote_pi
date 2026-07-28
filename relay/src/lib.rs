@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod handlers;
 mod identity;
+pub mod lan;
 pub mod mesh;
 pub mod metrics;
 pub mod peers;
@@ -40,6 +41,11 @@ pub struct AppState {
     /// In-process counters for emit/suppress accounting (firehose dedup).
     /// A background task drains and logs them every 10 s.
     pub metrics: Arc<FirehoseMetrics>,
+    /// Plan 115 — the TCP port the relay is bound to, used to build the
+    /// `http://ip:port` LAN candidates advertised in the `challenge` frame.
+    /// (The bind address itself is `0.0.0.0`; the port is what the phone
+    /// needs to dial.)
+    pub port: u16,
 }
 
 // Allows mesh handlers to keep using `State<Arc<MeshStore>>` instead of

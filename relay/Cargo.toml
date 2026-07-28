@@ -9,6 +9,7 @@ axum = { version = "0.7.9", features = ["ws"] }
 base64 = "0.22.1"
 ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 futures-util = "0.3.32"
+if-addrs = "0.7"
 rand = "0.8"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }

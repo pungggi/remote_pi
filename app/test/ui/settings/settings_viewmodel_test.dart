@@ -28,6 +28,7 @@ ConnectionManager _conn({_FakeStorage? storage}) {
 
 class _FakeStorage extends PairingStorage {
   List<PeerRecord> peers;
+  final Map<String, List<PersistedRoom>> _roomsByEpk = {};
   _FakeStorage(this.peers);
 
   @override
@@ -46,6 +47,23 @@ class _FakeStorage extends PairingStorage {
   @override
   Future<void> deletePeerSilent(String epk) async {
     peers = peers.where((p) => p.remoteEpk != epk).toList();
+  }
+
+  // Plan 115 — room-cache stubs so ConnectionManager.boot() (now exercised by
+  // the clearLanUrl reconnect test) never reaches the real FlutterSecureStorage
+  // platform channel. Mirrors the fake in connection_manager_test.dart.
+  @override
+  Future<void> saveRooms(String epk, List<PersistedRoom> rooms) async {
+    _roomsByEpk[epk] = List.of(rooms);
+  }
+
+  @override
+  Future<List<PersistedRoom>> loadRooms(String epk) async =>
+      List.of(_roomsByEpk[epk] ?? const []);
+
+  @override
+  Future<void> deleteRooms(String epk) async {
+    _roomsByEpk.remove(epk);
   }
 }
 
@@ -344,6 +362,97 @@ void main() {
       expect(vm.relayUrlOverride, isEmpty);
 
       vm.dispose();
+    });
+
+    // ── Plan 115 — LAN endpoint field ────────────────────────────────
+    group('plan 115 — lanUrl', () {
+      test('lanUrlOverride is empty until a LAN endpoint is set', () async {
+        final prefs = Preferences(_FakeSecureStorage());
+        final vm = SettingsViewModel(_FakeStorage([]), prefs, _conn());
+        await Future<void>.delayed(Duration.zero);
+        expect(vm.lanUrlOverride, isEmpty);
+        vm.dispose();
+      });
+
+      test('saveLanUrl with a valid URL persists it as the single LAN '
+          'candidate', () async {
+        final prefs = Preferences(_FakeSecureStorage());
+        final vm = SettingsViewModel(_FakeStorage([]), prefs, _conn());
+        await Future<void>.delayed(Duration.zero);
+
+        expect(await vm.saveLanUrl('http://192.168.1.10:3000'), isNull);
+        expect(prefs.lanEndpoints, ['http://192.168.1.10:3000']);
+        expect(vm.lanUrlOverride, 'http://192.168.1.10:3000');
+        vm.dispose();
+      });
+
+      test('saveLanUrl with an invalid URL returns an error and does '
+          'NOT persist', () async {
+        final prefs = Preferences(_FakeSecureStorage());
+        final vm = SettingsViewModel(_FakeStorage([]), prefs, _conn());
+        await Future<void>.delayed(Duration.zero);
+
+        expect(await vm.saveLanUrl('ws://192.168.1.10:3000'), isNotNull);
+        expect(prefs.lanEndpoints, isEmpty);
+        vm.dispose();
+      });
+
+      test('saveLanUrl with blank clears the LAN list (opt out)', () async {
+        final prefs = Preferences(_FakeSecureStorage());
+        final vm = SettingsViewModel(_FakeStorage([]), prefs, _conn());
+        await Future<void>.delayed(Duration.zero);
+
+        await vm.saveLanUrl('http://192.168.1.10:3000');
+        expect(prefs.lanEndpoints, isNotEmpty);
+
+        expect(await vm.saveLanUrl('  '), isNull);
+        expect(prefs.lanEndpoints, isEmpty);
+        expect(vm.lanUrlOverride, isEmpty);
+        vm.dispose();
+      });
+
+      test('clearLanUrl empties the LAN candidate list', () async {
+        final prefs = Preferences(_FakeSecureStorage());
+        final vm = SettingsViewModel(_FakeStorage([]), prefs, _conn());
+        await Future<void>.delayed(Duration.zero);
+
+        await vm.saveLanUrl('http://192.168.1.10:3000');
+        await vm.clearLanUrl();
+        expect(prefs.lanEndpoints, isEmpty);
+        vm.dispose();
+      });
+
+      // Plan 115 review fix — Clear must rebuild the connection so the
+      // change takes effect now (the active link may be on a LAN endpoint
+      // that is no longer a candidate). Mirrors saveLanUrl.
+      test('clearLanUrl rebuilds the connection so it takes effect now',
+          () async {
+        final states = <ConnectionStatus>[];
+        final storage = _FakeStorage([_peerA()]);
+        final conn = _conn(storage: storage);
+        conn.statusStream.listen(states.add);
+        final prefs = Preferences(_FakeSecureStorage());
+        await prefs.setLanEndpoints(['http://192.168.1.10:3000']);
+        final vm = SettingsViewModel(storage, prefs, conn);
+        await Future<void>.delayed(Duration.zero);
+
+        // Bring the connection up so the reconnect is observable.
+        await conn.boot();
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        expect(conn.status, isA<StatusOnline>());
+
+        await vm.clearLanUrl();
+        // boot() is fire-and-forget in clearLanUrl; let its emissions settle.
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        // disconnect() → StatusNoPeer, boot() → StatusConnecting then Online.
+        expect(states.any((s) => s is StatusNoPeer), isTrue);
+        expect(states.any((s) => s is StatusConnecting), isTrue);
+        expect(prefs.lanEndpoints, isEmpty);
+
+        vm.dispose();
+        conn.dispose();
+      });
     });
   });
 }
