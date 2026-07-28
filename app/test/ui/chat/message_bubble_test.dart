@@ -95,6 +95,45 @@ void main() {
     expect(find.text('Copied'), findsOneWidget);
   });
 
+  testWidgets(
+    'AssistantBubble Copy handles clipboard failure (no crash, no "Copied")',
+    (tester) async {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            throw PlatformException(code: 'no-clipboard');
+          }
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: AssistantBubble(AssistantMsg(id: 'a1', text: 'fail me')),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // Tapping must not throw an unhandled async error.
+      await tester.tap(find.byType(CopyButton));
+      await tester.pump();
+
+      // Did NOT flip to the success state…
+      expect(find.text('Copied'), findsNothing);
+      // …and surfaced the failure as a SnackBar instead.
+      expect(find.textContaining("Couldn't copy"), findsOneWidget);
+    },
+  );
+
   testWidgets('AssistantBubble hides Copy when the reply is empty', (
     tester,
   ) async {

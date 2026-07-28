@@ -54,7 +54,18 @@ class _CopyButtonState extends State<CopyButton> {
   }
 
   Future<void> _copy() async {
-    await Clipboard.setData(ClipboardData(text: widget.text));
+    try {
+      await Clipboard.setData(ClipboardData(text: widget.text));
+    } catch (_) {
+      // Locked-down / unsupported environments can reject the write (e.g.
+      // PlatformException / MissingPluginException). Don't claim success and
+      // tell the user instead of letting it surface as an unhandled error.
+      if (!mounted) return;
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        const SnackBar(content: Text("Couldn't copy to clipboard")),
+      );
+      return;
+    }
     if (!mounted) return;
     setState(() => _copied = true);
     _reset?.cancel();
