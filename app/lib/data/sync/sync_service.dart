@@ -529,6 +529,28 @@ class SyncService extends Service {
               ),
         );
 
+      case AgentImage(:final id, :final image, :final path, :final caption):
+        // Plan/114 — agent-pushed image (show_image tool). Persist as an
+        // assistant row carrying an image so it survives app restart; dedup
+        // by the message id guards against rebroadcast. Caption rides in
+        // `text`, the repo path in `imagePath` (viewer title).
+        // ignore: discarded_futures
+        _upsert(
+          MsgRole.assistant,
+          id,
+          (seq, existing) =>
+              existing ??
+              MessageRecord(
+                id: id,
+                seq: seq,
+                role: MsgRole.assistant,
+                text: caption ?? '',
+                image: MessageImage(data: image.data, mime: image.mime),
+                imagePath: path,
+                ts: DateTime.now(),
+              ),
+        );
+
       case QueuedMessageState(:final items):
         _setQueuedMessages([
           for (final item in items)
