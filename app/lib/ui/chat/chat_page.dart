@@ -653,6 +653,27 @@ class ChatPage extends StatelessWidget {
 
 // ---------------------------------------------------------------------------
 
+/// Maps a normal-message slot of the reverse transcript `ListView` to its
+/// index in `messages`.
+///
+/// The list is `reverse: true`, so slot 0 is the bottom (newest). The
+/// streaming bubble occupies slot 0 when [streaming]; the "Load more" tile
+/// occupies the top slot (`itemCount - 1`) — both are handled by their own
+/// branches in the item builder and are never passed here. Real messages
+/// fill the remaining slots contiguously from the bottom, so slot `s` holds
+/// the `(s - streamingOffset)`-th newest message → index
+/// `msgCount - 1 - (s - streamingOffset)`.
+///
+/// Pre-existing bug this fixes: the old inline formula subtracted an extra 1
+/// whenever the load-more tile was present, which duplicated the newest
+/// message and dropped the oldest. Regression test:
+/// `test/ui/chat/message_indexing_test.dart`.
+@visibleForTesting
+int messageIndexForSlot(int slot, int msgCount, {required bool streaming}) {
+  final streamingOffset = streaming ? 1 : 0;
+  return msgCount - 1 - (slot - streamingOffset);
+}
+
 class _MessageList extends StatefulWidget {
   final List<ChatMessage> messages;
   final StreamingMessage? streaming;
@@ -838,17 +859,16 @@ class _MessageListState extends State<_MessageList> {
                   child: StreamingBubble(widget.streaming!),
                 );
               }
-              // Normal messages (adjust indices for streaming + load more)
-              final msgIdx =
-                  widget.messages.length -
-                  1 -
-                  (i -
-                      (widget.streaming != null ? 1 : 0) -
-                      (widget.truncated &&
-                              widget.onLoadMore != null &&
-                              i > (widget.streaming != null ? 1 : 0)
-                          ? 1
-                          : 0));
+              // `reverse: true` → slot 0 is the bottom (newest). The streaming
+              // bubble (slot 0, when present) and the "Load more" tile (the top
+              // slot) are handled by their own branches above; real messages fill
+              // the remaining slots contiguously from the bottom, so a message
+              // slot maps directly via [messageIndexForSlot].
+              final msgIdx = messageIndexForSlot(
+                i,
+                widget.messages.length,
+                streaming: widget.streaming != null,
+              );
               final msg = widget.messages[msgIdx];
               return KeyedSubtree(
                 key: ValueKey(msg.id),

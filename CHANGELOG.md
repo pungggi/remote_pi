@@ -212,6 +212,15 @@ and 27 (see [`plan/`](plan/) directory for design history).
 
 ### Fixed
 
+#### Transcript index bug when more history is loadable (app)
+- In the mobile chat, whenever the "Load more messages" tile was visible
+  (paginated history), the reverse-list slot→message mapping subtracted a
+  stray 1, which **rendered the newest message twice and dropped the oldest**
+  from view. The tile occupies its own top slot (handled by an early return),
+  so it must not shift the real-message slots. Extracted to a tested
+  `messageIndexForSlot` helper with an exhaustive regression test
+  (`test/ui/chat/message_indexing_test.dart`).
+
 #### Self-revoke encoding inconsistency
 - After pairing, the Pi-extension occasionally triggered self-revoke because
   the Owner-pubkey stored in `peers.json` was in standard base64 while the
