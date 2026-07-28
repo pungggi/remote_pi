@@ -949,10 +949,9 @@ class _UserMsgNav extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 4),
               child: Text(
                 '$position/$total',
-                style: TextStyle(
-                  fontFamily: kMonoFamily,
-                  fontSize: 10,
+                style: context.typo.monoSmall.copyWith(
                   color: colors.muted,
+                  fontSize: 10,
                 ),
               ),
             ),
