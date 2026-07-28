@@ -36,6 +36,9 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// active-peer-scoped); other tiles keep their model subtitle.
   Map<String, GitStatus?> _gitByKey = {};
   bool _gitBusy = false;
+  // Plan 116 — sustained-offline → reliability banner (60s threshold).
+  Timer? _sustainedOfflineTimer;
+  bool _reliabilityDismissed = false;
 
   HomeViewModel(this._storage, this._prefs, this._conn, this._actions)
     : super(const HomeLoading()) {
@@ -48,6 +51,8 @@ class HomeViewModel extends ViewModel<HomeState> {
     // PairingStorage; listening here keeps Home in sync without manual
     // notifications between screens.
     _storage.addListener(_onStorageChanged);
+    // Plan 116 — boot may already be offline; arm the banner timer.
+    _reconcileReliability(_relayConnected);
   }
 
   void _onStorageChanged() {
@@ -64,6 +69,47 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// Plan 114 (B) — force a reconnect now (resets the backoff and redials
   /// immediately). Surfaced as the tap target on the Home "Offline" status.
   Future<void> reconnect() => _conn.forceReconnect();
+
+  /// Plan 116 — arm/disarm the sustained-offline banner. When the relay is
+  /// non-Online for > 60 s, surface a card nudging the user to the
+  /// connection-reliability page. The timer is idempotent (re-arm guards on
+  /// null); recovering to Online cancels it and clears the dismiss flag.
+  void _reconcileReliability(bool online) {
+    if (_disposed) return;
+    if (online) {
+      _sustainedOfflineTimer?.cancel();
+      _sustainedOfflineTimer = null;
+      if (_reliabilityDismissed) _reliabilityDismissed = false;
+      _hideReliabilityBanner();
+    } else {
+      _sustainedOfflineTimer ??= Timer(const Duration(seconds: 60), () {
+        if (!_disposed && !_relayConnected && !_reliabilityDismissed) {
+          _showReliabilityBanner();
+        }
+      });
+    }
+  }
+
+  void _showReliabilityBanner() {
+    final s = state;
+    if (s is HomeList && !s.showReliabilityBanner) {
+      emit(s.copyWith(showReliabilityBanner: true));
+    }
+  }
+
+  void _hideReliabilityBanner() {
+    final s = state;
+    if (s is HomeList && s.showReliabilityBanner) {
+      emit(s.copyWith(showReliabilityBanner: false));
+    }
+  }
+
+  /// Plan 116 — user dismissed the banner; don't nag again until the
+  /// connection recovers and drops once more.
+  void dismissReliabilityBanner() {
+    _reliabilityDismissed = true;
+    _hideReliabilityBanner();
+  }
 
   /// `true` when `(epk, roomId)`'s agent is currently mid-turn. Drives
   /// the blue "working" dot on the Home tile.
@@ -119,7 +165,10 @@ class HomeViewModel extends ViewModel<HomeState> {
 
   void _onStatus(ConnectionStatus status) {
     final next = status is StatusOnline;
-    if (next == _relayConnected) return;
+    if (next == _relayConnected) {
+      _reconcileReliability(next);
+      return;
+    }
     _relayConnected = next;
     // Trigger a re-render of any HomeList so tiles re-evaluate dot
     // colour (room-live vs reconnecting).
@@ -142,6 +191,7 @@ class HomeViewModel extends ViewModel<HomeState> {
     }
     // Plan/107b — relay just came online: refresh the active session's git.
     if (next) _maybeFetchGit();
+    _reconcileReliability(next);
   }
 
   /// Plan/107b — refresh the ACTIVE session's git status (the action
@@ -281,6 +331,7 @@ class HomeViewModel extends ViewModel<HomeState> {
     _presenceSub?.cancel();
     _roomsSub?.cancel();
     _statusSub?.cancel();
+    _sustainedOfflineTimer?.cancel();
     _storage.removeListener(_onStorageChanged);
     super.dispose();
   }

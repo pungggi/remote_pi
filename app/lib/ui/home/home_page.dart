@@ -55,6 +55,9 @@ class HomePage extends StatelessWidget {
               // zero height when there's nothing to announce, so it's invisible
               // on iOS and when no newer version exists.
               const SliverToBoxAdapter(child: UpdateBanner()),
+              // Plan 116 — sustained-offline (> 60 s) reliability nudge.
+              if (state is HomeList && state.showReliabilityBanner)
+                SliverToBoxAdapter(child: _ReliabilityBanner(vm: vm)),
               switch (state) {
                 HomeLoading() => SliverFillRemaining(
                   hasScrollBody: false,
@@ -681,6 +684,58 @@ class _EmptyState extends StatelessWidget {
                 label: const Text('Scan QR'),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Plan 116 — proactive nudge shown after the relay has been non-Online for
+/// > 60 s. Tapping opens the connection-reliability page (battery exemption +
+/// Tailscale deep-links); the ✕ dismisses until the connection recovers.
+class _ReliabilityBanner extends StatelessWidget {
+  const _ReliabilityBanner({required this.vm});
+  final HomeViewModel vm;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+      child: Material(
+        color: colors.warning.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          onTap: () => context.push('/settings/reliability'),
+          borderRadius: BorderRadius.circular(10),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: Row(
+              children: [
+                Icon(LucideIcons.wifiOff, size: 18, color: colors.warning),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Text(
+                      'Connection unreliable — improve reliability',
+                      style: TextStyle(
+                        fontFamily: kMonoFamily,
+                        fontSize: 12,
+                        color: colors.text,
+                      ),
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Dismiss',
+                  icon: Icon(LucideIcons.x, size: 16, color: colors.muted2),
+                  visualDensity: VisualDensity.compact,
+                  onPressed: vm.dismissReliabilityBanner,
+                ),
+              ],
+            ),
           ),
         ),
       ),

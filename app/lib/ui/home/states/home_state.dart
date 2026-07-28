@@ -79,12 +79,18 @@ class HomeList extends HomeState {
   /// `null` = fetched but not a repo / unavailable; absent = not fetched.
   final Map<String, GitStatus?> gitByKey;
 
+  /// Plan 116 — shown when the relay has been non-Online for > 60 s,
+  /// nudging the user to the connection-reliability page. Reset to false
+  /// when the connection recovers or the user dismisses it.
+  final bool showReliabilityBanner;
+
   const HomeList({
     required this.peers,
     this.statusByEpk = const {},
     this.roomsByPeer = const {},
     this.filter = HomeFilter.online,
     this.gitByKey = const {},
+    this.showReliabilityBanner = false,
   });
 
   HomeList copyWith({
@@ -93,12 +99,14 @@ class HomeList extends HomeState {
     Map<String, List<RoomInfo>>? roomsByPeer,
     HomeFilter? filter,
     Map<String, GitStatus?>? gitByKey,
+    bool? showReliabilityBanner,
   }) => HomeList(
     peers: peers ?? this.peers,
     statusByEpk: statusByEpk ?? this.statusByEpk,
     roomsByPeer: roomsByPeer ?? this.roomsByPeer,
     filter: filter ?? this.filter,
     gitByKey: gitByKey ?? this.gitByKey,
+    showReliabilityBanner: showReliabilityBanner ?? this.showReliabilityBanner,
   );
 
   /// Flatten to a single ordered list of items: one row per (peer, room).
@@ -160,6 +168,7 @@ class HomeList extends HomeState {
   bool operator ==(Object other) =>
       other is HomeList &&
       other.filter == filter &&
+      other.showReliabilityBanner == showReliabilityBanner &&
       listEquals(other.peers, peers) &&
       mapEquals(other.statusByEpk, statusByEpk) &&
       mapEquals(other.roomsByPeer, roomsByPeer) &&
@@ -168,6 +177,7 @@ class HomeList extends HomeState {
   @override
   int get hashCode => Object.hash(
     filter,
+    showReliabilityBanner,
     Object.hashAll(peers),
     Object.hashAllUnordered(
       statusByEpk.entries.map((e) => '${e.key}:${e.value.runtimeType}'),
