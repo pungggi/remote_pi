@@ -21,6 +21,12 @@ import 'package:app/ui/chat/widgets/tool_request_card.dart';
 import 'package:app/ui/chat/widgets/extension_ui_sheet.dart';
 import 'package:app_settings/app_settings.dart';
 import 'package:flutter/material.dart';
+// Plan/jumpusermsg — ScrollCacheExtent (pixels) for the transcript's larger
+// build cache, so prev/next user-message targets stay mounted for
+// ensureVisible. material.dart only `show`s TextSelectionHandleType from
+// rendering, so we import the symbol directly (same as the SDK's own
+// scroll_view.dart).
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
@@ -647,7 +653,28 @@ class ChatPage extends StatelessWidget {
 
 // ---------------------------------------------------------------------------
 
-class _MessageList extends StatelessWidget {
+/// Maps a normal-message slot of the reverse transcript `ListView` to its
+/// index in `messages`.
+///
+/// The list is `reverse: true`, so slot 0 is the bottom (newest). The
+/// streaming bubble occupies slot 0 when [streaming]; the "Load more" tile
+/// occupies the top slot (`itemCount - 1`) — both are handled by their own
+/// branches in the item builder and are never passed here. Real messages
+/// fill the remaining slots contiguously from the bottom, so slot `s` holds
+/// the `(s - streamingOffset)`-th newest message → index
+/// `msgCount - 1 - (s - streamingOffset)`.
+///
+/// Pre-existing bug this fixes: the old inline formula subtracted an extra 1
+/// whenever the load-more tile was present, which duplicated the newest
+/// message and dropped the oldest. Regression test:
+/// `test/ui/chat/message_indexing_test.dart`.
+@visibleForTesting
+int messageIndexForSlot(int slot, int msgCount, {required bool streaming}) {
+  final streamingOffset = streaming ? 1 : 0;
+  return msgCount - 1 - (slot - streamingOffset);
+}
+
+class _MessageList extends StatefulWidget {
   final List<ChatMessage> messages;
   final StreamingMessage? streaming;
   final void Function(String, ApproveDecision) onDecide;
@@ -663,57 +690,298 @@ class _MessageList extends StatelessWidget {
   });
 
   @override
+  State<_MessageList> createState() => _MessageListState();
+}
+
+/// Plan/jumpusermsg — prev/next navigation between **user** messages.
+///
+/// The list is a `reverse: true` ListView (offset 0 = newest, at the
+/// bottom). To jump to a given [UserMsg] we keep one [GlobalKey] per user
+/// message id and drive [Scrollable.ensureVisible] on its context. A
+/// generous [scrollCacheExtent] keeps the neighbour user messages mounted so
+/// the step target is always reachable.
+class _MessageListState extends State<_MessageList> {
+  final ScrollController _scroll = ScrollController();
+
+  /// One [GlobalKey] per user message id → its BuildContext feeds
+  /// [Scrollable.ensureVisible]. Lazily created in build; pruned in
+  /// [didUpdateWidget] when a message leaves the list (history reload /
+  /// dedup).
+  final Map<String, GlobalKey> _userKeys = {};
+
+  /// Index (oldest → newest) of the user message we last jumped to. `-1` =
+  /// not navigating → the next jump re-anchors to whatever user message sits
+  /// at the top of the viewport. Reset on a user-driven flick so a manual
+  /// scroll re-anchors instead of stepping from a stale position.
+  int _navIndex = -1;
+
+  /// User messages in conversation order (oldest first). `messages` itself is
+  /// oldest → newest, so this preserves that order.
+  List<UserMsg> get _userMsgs => [
+    for (final m in widget.messages)
+      if (m is UserMsg) m,
+  ];
+
+  GlobalKey _keyFor(UserMsg m) => _userKeys.putIfAbsent(m.id, GlobalKey.new);
+
+  @override
+  void didUpdateWidget(_MessageList old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.messages, widget.messages)) {
+      final live = <String>{};
+      for (final m in widget.messages) {
+        if (m is UserMsg) live.add(m.id);
+      }
+      _userKeys.removeWhere((id, _) => !live.contains(id));
+      // History replaced (session switch / load-more / dedup) → the guided
+      // pointer is no longer valid. Re-anchor on the next press.
+      _navIndex = -1;
+    }
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  /// Index of the topmost user message overlapping the viewport — the natural
+  /// "where am I" anchor for the first jump. Falls back to the newest user
+  /// message when none is on screen.
+  int _anchorIndex(List<UserMsg> userMsgs) {
+    // The State's own render box is the Stack, which fills the Expanded
+    // transcript area — same rect as the scroll viewport.
+    final vp = context.findRenderObject() as RenderBox?;
+    if (vp == null || !vp.hasSize) return userMsgs.length - 1;
+    final vpTop = vp.localToGlobal(Offset.zero).dy;
+    final vpBottom = vpTop + vp.size.height;
+    int best = -1;
+    double bestTop = double.infinity;
+    for (var i = 0; i < userMsgs.length; i++) {
+      final rb =
+          _userKeys[userMsgs[i].id]?.currentContext?.findRenderObject()
+              as RenderBox?;
+      if (rb == null || !rb.hasSize) continue;
+      final top = rb.localToGlobal(Offset.zero).dy;
+      final bottom = top + rb.size.height;
+      if (bottom <= vpTop || top >= vpBottom) continue; // off-screen
+      if (top < bestTop) {
+        bestTop = top;
+        best = i;
+      }
+    }
+    return best >= 0 ? best : userMsgs.length - 1;
+  }
+
+  void _jump({required bool older}) {
+    final userMsgs = _userMsgs;
+    final n = userMsgs.length;
+    if (n < 2) return;
+    // Defense-in-depth: didUpdateWidget already resets on history change,
+    // but clamp anyway so a stale index can never range-error.
+    final hasIdx = _navIndex >= 0 && _navIndex < n;
+    final from = hasIdx ? _navIndex : _anchorIndex(userMsgs);
+    final target = older ? from - 1 : from + 1;
+    if (target < 0 || target >= n) return;
+    final ctx = _userKeys[userMsgs[target].id]?.currentContext;
+    if (ctx == null) return; // beyond cache — no-op; scroll closer first
+    // alignment 0.5 = center: unambiguous in a reverse-anchored list, and
+    // keeps the user message + the start of its answer on screen.
+    Scrollable.ensureVisible(
+      ctx,
+      alignment: 0.5,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+    );
+    setState(() => _navIndex = target);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final itemCount = messages.length +
-        (streaming != null ? 1 : 0) +
-        (truncated && onLoadMore != null ? 1 : 0);
+    final userMsgs = _userMsgs;
+    final n = userMsgs.length;
+    final showNav = n >= 2;
+    // While navigating we know our index → disable at the bounds. Before that
+    // (just anchored) both are enabled; the press clamps to a bound.
+    final canOlder = _navIndex >= 0 ? _navIndex > 0 : true;
+    final canNewer = _navIndex >= 0 ? _navIndex < n - 1 : true;
+
+    final itemCount =
+        widget.messages.length +
+        (widget.streaming != null ? 1 : 0) +
+        (widget.truncated && widget.onLoadMore != null ? 1 : 0);
 
     // `reverse: true` anchors the viewport to the bottom (offset 0 = newest)
     // and keeps it there as content arrives — no manual scroll-to-bottom is
     // needed. The previous animateTo-on-every-rebuild fought this and caused
     // overlapping animations (flicker / runaway scroll) during streaming.
-    return ListView.separated(
-      reverse: true,
-      padding: const EdgeInsets.fromLTRB(16, 18, 16, 12),
-      itemCount: itemCount,
-      separatorBuilder: (context, idx) => const SizedBox(height: 14),
-      itemBuilder: (_, i) {
-        // "Load more" button at the top (index = itemCount - 1)
-        if (truncated && onLoadMore != null && i == itemCount - 1) {
-          return Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Center(
-              child: TextButton.icon(
-                icon: const Icon(LucideIcons.refreshCw, size: 16),
-                label: const Text('Load more messages'),
-                onPressed: onLoadMore,
+    return Stack(
+      children: [
+        NotificationListener<ScrollNotification>(
+          // A user-driven flick abandons the guided pointer so the next jump
+          // re-anchors to the new viewport.
+          onNotification: (notif) {
+            if (notif is UserScrollNotification && _navIndex != -1 && mounted) {
+              setState(() => _navIndex = -1);
+            }
+            return false;
+          },
+          child: ListView.separated(
+            controller: _scroll,
+            reverse: true,
+            // Keep ~1.5 screens of slack built above the viewport so the
+            // prev/next user message (usually a few hundred px away) is
+            // already mounted for ensureVisible to target.
+            scrollCacheExtent: ScrollCacheExtent.pixels(1500),
+            padding: const EdgeInsets.fromLTRB(16, 18, 16, 12),
+            itemCount: itemCount,
+            separatorBuilder: (context, idx) => const SizedBox(height: 14),
+            itemBuilder: (_, i) {
+              // "Load more" button at the top (index = itemCount - 1)
+              if (widget.truncated &&
+                  widget.onLoadMore != null &&
+                  i == itemCount - 1) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Center(
+                    child: TextButton.icon(
+                      icon: const Icon(LucideIcons.refreshCw, size: 16),
+                      label: const Text('Load more messages'),
+                      onPressed: widget.onLoadMore,
+                    ),
+                  ),
+                );
+              }
+              // Streaming bubble at bottom (index 0)
+              if (widget.streaming != null && i == 0) {
+                return KeyedSubtree(
+                  key: const ValueKey('streaming'),
+                  child: StreamingBubble(widget.streaming!),
+                );
+              }
+              // `reverse: true` → slot 0 is the bottom (newest). The streaming
+              // bubble (slot 0, when present) and the "Load more" tile (the top
+              // slot) are handled by their own branches above; real messages fill
+              // the remaining slots contiguously from the bottom, so a message
+              // slot maps directly via [messageIndexForSlot].
+              final msgIdx = messageIndexForSlot(
+                i,
+                widget.messages.length,
+                streaming: widget.streaming != null,
+              );
+              final msg = widget.messages[msgIdx];
+              return KeyedSubtree(
+                key: ValueKey(msg.id),
+                child: switch (msg) {
+                  // Plan/jumpusermsg — tag the bubble so we can scroll to it.
+                  UserMsg() => UserBubble(msg, key: _keyFor(msg)),
+                  AssistantMsg() => AssistantBubble(msg),
+                  ToolEvent() => ToolRequestCard(
+                    tool: msg,
+                    onDecide: widget.onDecide,
+                  ),
+                  CompactionMsg() => CompactionBubble(msg),
+                },
+              );
+            },
+          ),
+        ),
+        if (showNav)
+          Positioned(
+            top: 8,
+            right: 10,
+            child: _UserMsgNav(
+              canOlder: canOlder,
+              canNewer: canNewer,
+              position: _navIndex >= 0 ? _navIndex + 1 : null,
+              total: n,
+              onOlder: () => _jump(older: true),
+              onNewer: () => _jump(older: false),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// Floating prev/next (older/newer user message) control — a compact vertical
+/// pill pinned top-right of the transcript. Shows a `k/total` counter while a
+/// guided jump is in progress; hides entirely until there are ≥ 2 user
+/// messages.
+class _UserMsgNav extends StatelessWidget {
+  final bool canOlder;
+  final bool canNewer;
+  final int? position;
+  final int total;
+  final VoidCallback onOlder;
+  final VoidCallback onNewer;
+
+  const _UserMsgNav({
+    required this.canOlder,
+    required this.canNewer,
+    required this.position,
+    required this.total,
+    required this.onOlder,
+    required this.onNewer,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      decoration: BoxDecoration(
+        color: colors.bg.withValues(alpha: 0.85),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: colors.border),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _button(
+            context,
+            LucideIcons.chevronUp,
+            onOlder,
+            canOlder,
+            'Previous question',
+          ),
+          if (position != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Text(
+                '$position/$total',
+                style: context.typo.monoSmall.copyWith(
+                  color: colors.muted,
+                  fontSize: 10,
+                ),
               ),
             ),
-          );
-        }
-        // Streaming bubble at bottom (index 0)
-        if (streaming != null && i == 0) {
-          return KeyedSubtree(
-            key: const ValueKey('streaming'),
-            child: StreamingBubble(streaming!),
-          );
-        }
-        // Normal messages (adjust indices for streaming + load more)
-        final msgIdx = messages.length -
-            1 -
-            (i - (streaming != null ? 1 : 0) -
-                (truncated && onLoadMore != null && i > (streaming != null ? 1 : 0) ? 1 : 0));
-        final msg = messages[msgIdx];
-        return KeyedSubtree(
-          key: ValueKey(msg.id),
-          child: switch (msg) {
-            UserMsg() => UserBubble(msg),
-            AssistantMsg() => AssistantBubble(msg),
-            ToolEvent() => ToolRequestCard(tool: msg, onDecide: onDecide),
-            CompactionMsg() => CompactionBubble(msg),
-          },
-        );
-      },
+          _button(
+            context,
+            LucideIcons.chevronDown,
+            onNewer,
+            canNewer,
+            'Next question',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _button(
+    BuildContext context,
+    IconData icon,
+    VoidCallback onTap,
+    bool enabled,
+    String tooltip,
+  ) {
+    final colors = context.colors;
+    return IconButton(
+      icon: Icon(icon, size: 18, color: enabled ? colors.text : colors.muted2),
+      tooltip: tooltip,
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+      padding: EdgeInsets.zero,
+      onPressed: enabled ? onTap : null,
     );
   }
 }

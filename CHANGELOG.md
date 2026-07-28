@@ -161,6 +161,14 @@ and 27 (see [`plan/`](plan/) directory for design history).
   copy control is now a shared widget (`CopyButton`), reused by both the
   reply bubble and the fenced code-block header.
 
+#### User-message navigation — jumpusermsg (app)
+- New prev/next control in the mobile chat lets you jump between **your own
+  messages** (the questions) instead of scrolling: a compact ▲/▼ pill pinned
+  top-right of the transcript scrolls to the previous/next user message and
+  shows a `k/total` counter while navigating. Anchors to the topmost visible
+  question on first tap, re-anchors after a manual flick, and disables at the
+  oldest/newest bounds. Appears once a conversation has ≥ 2 user messages.
+
 ### Changed
 
 #### Relay control-frame deduplication
@@ -203,6 +211,15 @@ and 27 (see [`plan/`](plan/) directory for design history).
   historical reference.
 
 ### Fixed
+
+#### Transcript index bug when more history is loadable (app)
+- In the mobile chat, whenever the "Load more messages" tile was visible
+  (paginated history), the reverse-list slot→message mapping subtracted a
+  stray 1, which **rendered the newest message twice and dropped the oldest**
+  from view. The tile occupies its own top slot (handled by an early return),
+  so it must not shift the real-message slots. Extracted to a tested
+  `messageIndexForSlot` helper with an exhaustive regression test
+  (`test/ui/chat/message_indexing_test.dart`).
 
 #### Self-revoke encoding inconsistency
 - After pairing, the Pi-extension occasionally triggered self-revoke because
