@@ -1,6 +1,7 @@
+import 'package:app/data/actions/actions_repository.dart' show ActionFailure;
 import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/pairing/storage.dart';
-import 'package:app/protocol/protocol.dart' show RoomInfo;
+import 'package:app/protocol/protocol.dart' show RoomInfo, OpenTerminalResult;
 import 'package:app/routing/adaptive.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/home/states/home_state.dart';
@@ -407,6 +408,26 @@ class HomePage extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Plan/108 — open a terminal for THIS session straight from
+              // the list (same worktree+pi flow as the Quick Actions sheet).
+              ListTile(
+                leading: Icon(
+                  LucideIcons.terminalSquare,
+                  color: colors.accent,
+                ),
+                title: Text(
+                  'Open terminal',
+                  style: TextStyle(color: colors.text),
+                ),
+                subtitle: Text(
+                  'New pi tab in a worktree off this folder.',
+                  style: TextStyle(color: colors.muted, fontSize: 11),
+                ),
+                onTap: () {
+                  Navigator.of(sheetCtx).pop();
+                  _openTerminal(context, vm, it);
+                },
+              ),
               ListTile(
                 leading: Icon(LucideIcons.pencil, color: colors.accent),
                 title: Text(
@@ -445,6 +466,149 @@ class HomePage extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+
+  /// Plan/108 — open a terminal (worktree + `pi` tab) for a specific
+  /// session from the Home list. Prompts for the new worktree's branch
+  /// name (the Pi validates it), routes the action to that session's Pi,
+  /// and toasts the Pi's outcome. Mirrors the Quick Actions flow but
+  /// targets the tapped tile's (peer, room, cwd).
+  Future<void> _openTerminal(
+    BuildContext context,
+    HomeViewModel vm,
+    HomeItem it,
+  ) async {
+    // Capture the messenger before any dialog — dialogs run on the root
+    // navigator and we want the toast to survive regardless.
+    final messenger = ScaffoldMessenger.of(context);
+    final branch = await _promptBranchName(context);
+    if (!context.mounted || branch == null) return; // cancelled
+    if (branch.isEmpty) {
+      _toast(messenger, 'Enter a branch name', isError: true);
+      return;
+    }
+    final OpenTerminalResult r;
+    try {
+      r = await vm.openTerminal(
+        epk: it.peer.remoteEpk,
+        roomId: it.room.roomId,
+        cwd: it.room.cwd,
+        branch: branch,
+      );
+    } on ActionFailure catch (e) {
+      _toast(messenger, e.message, isError: true);
+      return;
+    } catch (_) {
+      _toast(messenger, 'Could not open terminal', isError: true);
+      return;
+    }
+    if (!context.mounted) return;
+    _toast(messenger, r.message, isError: !r.ok);
+  }
+
+  /// Plan/112b — prompts for the new worktree's git branch name. Returns
+  /// null on cancel, an empty string on Create-with-no-input (caller
+  /// validates), or the trimmed name. The branch also names the worktree
+  /// folder (`<project-basename>_<branch>`).
+  Future<String?> _promptBranchName(BuildContext context) {
+    final controller = TextEditingController();
+    final future = showDialog<String>(
+      context: context,
+      builder: (dCtx) {
+        final colors = dCtx.colors;
+        return AlertDialog(
+          backgroundColor: colors.bg,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+            side: BorderSide(color: colors.border),
+          ),
+          title: Text(
+            'New worktree',
+            style: TextStyle(
+              fontFamily: kMonoFamily,
+              fontSize: 15,
+              color: colors.text,
+            ),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Creates a git worktree off this project on a new branch, '
+                'then opens a terminal running pi inside it.',
+                style: TextStyle(fontSize: 12, color: colors.muted),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                textInputAction: TextInputAction.done,
+                style: TextStyle(
+                  fontFamily: kMonoFamily,
+                  fontSize: 14,
+                  color: colors.text,
+                ),
+                decoration: InputDecoration(
+                  hintText: 'branch name',
+                  hintStyle: TextStyle(
+                    fontFamily: kMonoFamily,
+                    color: colors.muted,
+                  ),
+                ),
+                onSubmitted: (v) => Navigator.of(dCtx).pop(v.trim()),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dCtx).pop(null),
+              child: Text(
+                'Cancel',
+                style: TextStyle(fontFamily: kMonoFamily, color: colors.muted),
+              ),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dCtx).pop(controller.text.trim()),
+              child: Text(
+                'Create',
+                style: TextStyle(fontFamily: kMonoFamily, color: colors.accent),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+    // Dispose the controller once the dialog has settled (popped via
+    // Cancel / Create / barrier) so repeated opens don't leak listeners.
+    return future.whenComplete(controller.dispose);
+  }
+
+  void _toast(
+    ScaffoldMessengerState messenger,
+    String message, {
+    required bool isError,
+  }) {
+    // The action can resolve after the page was disposed (user navigated
+    // away mid-await); showSnackBar throws on a disposed messenger, so
+    // drop the toast silently instead of crashing.
+    if (!messenger.mounted) return;
+    final colors = messenger.context.colors;
+    messenger.showSnackBar(
+      SnackBar(
+        backgroundColor: colors.surface,
+        behavior: SnackBarBehavior.floating,
+        content: Text(
+          message,
+          style: TextStyle(
+            fontFamily: kMonoFamily,
+            fontSize: 12,
+            color: isError ? colors.error : colors.accent,
+          ),
+        ),
+        duration: const Duration(seconds: 3),
+      ),
     );
   }
 

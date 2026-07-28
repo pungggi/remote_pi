@@ -275,6 +275,51 @@ class HomeViewModel extends ViewModel<HomeState> {
   Future<void> deleteRoom(String epk, String roomId) =>
       _conn.deleteCachedRoom(epk, roomId);
 
+  /// Plan/108 — open a terminal (worktree + `pi` tab) for a specific
+  /// session straight from the Home list. The action channel is
+  /// active-peer-scoped, so this first routes the connection to the
+  /// tapped session's peer (a no-op `switchTo` when it is already the
+  /// active+online one) and room, then dispatches
+  /// [IActionsRepository.openTerminal] at that room's cwd. Unlike
+  /// [openSession], it does NOT touch [Preferences] — switching here is
+  /// just routing for this one action; the user's next chat open is
+  /// unchanged.
+  ///
+  /// Throws [ActionFailure] on transport issues (offline / timeout / peer
+  /// not found); a launch failure comes back as `ok:false` in the result.
+  Future<OpenTerminalResult> openTerminal({
+    required String epk,
+    required String roomId,
+    String? cwd,
+    bool runPi = true,
+    String? branch,
+  }) async {
+    final peers = await _storage.listPeers();
+    if (_disposed) {
+      throw const ActionFailure('cancelled');
+    }
+    final match = peers.where((p) => p.remoteEpk == epk).cast<PeerRecord?>();
+    if (match.isEmpty) {
+      throw const ActionFailure('peer not found');
+    }
+    final peer = match.first!;
+    // Route the action to the tapped session's Pi. The action channel
+    // rides the active connection, so switch peer + room before
+    // dispatching. Match ConnectionManager.switchTo's own no-op gate
+    // (same peer AND online): if the active peer already matches but the
+    // link is offline/connecting, we still switch so switchTo kicks a
+    // reconnect instead of dispatching into a dead channel.
+    final samePeer = _conn.activePeer?.remoteEpk == epk;
+    if (!samePeer || !_relayConnected) {
+      await _conn.switchTo(peer);
+      if (_disposed) {
+        throw const ActionFailure('cancelled');
+      }
+    }
+    _conn.switchRoom(roomId);
+    return _actions.openTerminal(cwd: cwd, runPi: runPi, branch: branch);
+  }
+
   @override
   void dispose() {
     _disposed = true;

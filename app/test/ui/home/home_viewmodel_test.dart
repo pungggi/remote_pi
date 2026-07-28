@@ -153,6 +153,40 @@ class _FakeActions implements IActionsRepository {
 
 _FakeActions _fakeActions() => _FakeActions();
 
+/// Plan/108 — records `openTerminal` calls so the session-list routing
+/// test can assert the tapped (cwd, branch) reached the repo. Everything
+/// else is noSuchMethod'd — these tests never exercise the wire.
+class _OpenCall {
+  final String? cwd;
+  final bool runPi;
+  final String? branch;
+  _OpenCall({this.cwd, required this.runPi, this.branch});
+}
+
+class _RecordingActions implements IActionsRepository {
+  final List<_OpenCall> openCalls = [];
+  OpenTerminalResult nextResult = OpenTerminalResult(
+    inReplyTo: 'x',
+    ok: true,
+    message: 'opened',
+    method: OpenTerminalMethod.wt,
+  );
+  @override
+  Future<GitStatus?> gitStatus() async => null;
+  @override
+  Future<OpenTerminalResult> openTerminal({
+    String? cwd,
+    bool runPi = true,
+    String? worktreePath,
+    String? branch,
+  }) async {
+    openCalls.add(_OpenCall(cwd: cwd, runPi: runPi, branch: branch));
+    return nextResult;
+  }
+  @override
+  dynamic noSuchMethod(Invocation i) => super.noSuchMethod(i);
+}
+
 ConnectionManager _conn({_FakeStorage? storage}) {
   return ConnectionManager(
     factory: (_, _) async => _channel(),
@@ -430,6 +464,142 @@ void main() {
       expect(vm.visibleItems, isEmpty);
 
       vm.dispose();
+    });
+  });
+
+  group('HomeViewModel.openTerminal (plan/108 — session-list entry)', () {
+    test(
+      'routes to the tapped peer when it is NOT active: switchTo + '
+      'openTerminal with the room cwd/branch',
+      () async {
+        final storage = _FakeStorage([_peerA, _peerB]);
+        final connects = <String>[];
+        final conn = ConnectionManager(
+          factory: (peer, _) async {
+            connects.add(peer.remoteEpk);
+            return _channel();
+          },
+          storage: storage,
+        );
+        final prefs = Preferences(_FakeSecureStorage());
+        final actions = _RecordingActions();
+        final vm = HomeViewModel(storage, prefs, conn, actions);
+        // Seed the active peer as A so the call below has to switch.
+        await conn.connectTo(_peerA);
+        await Future<void>.delayed(Duration.zero);
+        expect(conn.activePeer?.remoteEpk, 'epk_A');
+
+        final r = await vm.openTerminal(
+          epk: 'epk_B',
+          roomId: 'r1',
+          cwd: '/home/me/proj',
+          branch: 'feat',
+        );
+
+        // switchTo B landed on the connection (factory saw B after A).
+        expect(connects, ['epk_A', 'epk_B']);
+        expect(conn.activePeer?.remoteEpk, 'epk_B');
+        // The tapped cwd + branch reached the action repo, verbatim.
+        expect(actions.openCalls.length, 1);
+        expect(actions.openCalls.single.cwd, '/home/me/proj');
+        expect(actions.openCalls.single.branch, 'feat');
+        expect(actions.openCalls.single.runPi, isTrue);
+        expect(r.ok, isTrue);
+
+        vm.dispose();
+        await conn.disconnect();
+        conn.dispose();
+      },
+    );
+
+    test('does NOT switchTo when the tapped peer is already active', () async {
+      final storage = _FakeStorage([_peerA]);
+      final connects = <String>[];
+      final conn = ConnectionManager(
+        factory: (peer, _) async {
+          connects.add(peer.remoteEpk);
+          return _channel();
+        },
+        storage: storage,
+      );
+      final prefs = Preferences(_FakeSecureStorage());
+      final actions = _RecordingActions();
+      final vm = HomeViewModel(storage, prefs, conn, actions);
+      await conn.connectTo(_peerA);
+      // Let StatusOnline propagate to the VM's _relayConnected before we
+      // act — the gate below is (samePeer && online).
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      await vm.openTerminal(epk: 'epk_A', roomId: 'r1', branch: 'b');
+
+      // Same peer AND online → switchTo's no-op path: only the seed
+      // connect happened.
+      expect(connects, ['epk_A']);
+      expect(actions.openCalls.single.branch, 'b');
+
+      vm.dispose();
+      await conn.disconnect();
+      conn.dispose();
+    });
+
+    test(
+      'still switchTo (reconnect) when the active peer matches but the '
+      'link is offline (review #3)',
+      () async {
+        final storage = _FakeStorage([_peerA]);
+        final connects = <String>[];
+        // Factory always fails → connectTo seeds activePeer=A but the link
+        // never reaches StatusOnline (_relayConnected stays false). The
+        // first retry is 1s out, so it never fires during this test.
+        final conn = ConnectionManager(
+          factory: (peer, _) async {
+            connects.add(peer.remoteEpk);
+            throw Exception('offline');
+          },
+          storage: storage,
+        );
+        final prefs = Preferences(_FakeSecureStorage());
+        final actions = _RecordingActions();
+        final vm = HomeViewModel(storage, prefs, conn, actions);
+        await conn.connectTo(_peerA);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(conn.activePeer?.remoteEpk, 'epk_A');
+
+        await vm.openTerminal(epk: 'epk_A', roomId: 'r1', branch: 'b');
+
+        // The old epk-only check skipped switchTo here and dispatched into
+        // a dead channel. Now we switchTo (reconnect): a second factory
+        // call beyond the seed.
+        expect(connects.length, greaterThanOrEqualTo(2));
+        expect(actions.openCalls.single.branch, 'b');
+
+        vm.dispose();
+        await conn.disconnect();
+        conn.dispose();
+      },
+    );
+
+    test('unknown peer throws ActionFailure and dispatches nothing', () async {
+      final storage = _FakeStorage([_peerA]);
+      final conn = ConnectionManager(
+        factory: (_, _) async => _channel(),
+        storage: storage,
+      );
+      final prefs = Preferences(_FakeSecureStorage());
+      final actions = _RecordingActions();
+      final vm = HomeViewModel(storage, prefs, conn, actions);
+      await conn.connectTo(_peerA);
+      await Future<void>.delayed(Duration.zero);
+
+      await expectLater(
+        vm.openTerminal(epk: 'epk_X', roomId: 'r1', branch: 'b'),
+        throwsA(isA<ActionFailure>()),
+      );
+      expect(actions.openCalls, isEmpty);
+
+      vm.dispose();
+      await conn.disconnect();
+      conn.dispose();
     });
   });
 }
