@@ -36,6 +36,12 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// active-peer-scoped); other tiles keep their model subtitle.
   Map<String, GitStatus?> _gitByKey = {};
   bool _gitBusy = false;
+  // Plan 116 — sustained-offline → reliability banner (60s threshold).
+  Timer? _sustainedOfflineTimer;
+  bool _reliabilityDismissed = false;
+  // Intent that survives a HomeLoading → HomeList transition: set when the
+  // 60s timer fires, applied to every emitted HomeList via _emitHome.
+  bool _reliabilityBannerWanted = false;
 
   HomeViewModel(this._storage, this._prefs, this._conn, this._actions)
     : super(const HomeLoading()) {
@@ -48,6 +54,8 @@ class HomeViewModel extends ViewModel<HomeState> {
     // PairingStorage; listening here keeps Home in sync without manual
     // notifications between screens.
     _storage.addListener(_onStorageChanged);
+    // Plan 116 — boot may already be offline; arm the banner timer.
+    _reconcileReliability(_relayConnected);
   }
 
   void _onStorageChanged() {
@@ -64,6 +72,52 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// Plan 114 (B) — force a reconnect now (resets the backoff and redials
   /// immediately). Surfaced as the tap target on the Home "Offline" status.
   Future<void> reconnect() => _conn.forceReconnect();
+
+  /// Plan 116 — arm/disarm the sustained-offline banner. When the relay is
+  /// non-Online for > 60 s, set [_reliabilityBannerWanted]; recovering to
+  /// Online clears it. The intent survives a HomeLoading → HomeList
+  /// transition because every HomeList is emitted via [_emitHome], which
+  /// derives `showReliabilityBanner` from the wanted flag (review #5).
+  void _reconcileReliability(bool online) {
+    if (_disposed) return;
+    if (online) {
+      _sustainedOfflineTimer?.cancel();
+      _sustainedOfflineTimer = null;
+      _reliabilityDismissed = false;
+      _reliabilityBannerWanted = false;
+      _reemitHomeList();
+    } else {
+      _sustainedOfflineTimer ??= Timer(const Duration(seconds: 60), () {
+        if (!_disposed && !_relayConnected && !_reliabilityDismissed) {
+          _reliabilityBannerWanted = true;
+          _reemitHomeList();
+        }
+      });
+    }
+  }
+
+  /// Emits a HomeList with the reliability-banner flag derived from
+  /// [_reliabilityBannerWanted]. Single chokepoint so the banner is correct
+  /// no matter which path produced the HomeList (review #5).
+  void _emitHome(HomeList s) {
+    final want = _reliabilityBannerWanted && !_reliabilityDismissed;
+    if (s.showReliabilityBanner != want) {
+      s = s.copyWith(showReliabilityBanner: want);
+    }
+    emit(s);
+  }
+
+  void _reemitHomeList() {
+    final s = state;
+    if (s is HomeList) _emitHome(s);
+  }
+
+  /// Plan 116 — user dismissed the banner; don't nag again until the
+  /// connection recovers and drops once more.
+  void dismissReliabilityBanner() {
+    _reliabilityDismissed = true;
+    _reemitHomeList();
+  }
 
   /// `true` when `(epk, roomId)`'s agent is currently mid-turn. Drives
   /// the blue "working" dot on the Home tile.
@@ -92,7 +146,7 @@ class HomeViewModel extends ViewModel<HomeState> {
     // subscribe also covers rooms (plan 17 — replay block in
     // ConnectionManager sends both presence and rooms subscribes).
     _conn.subscribeToPeers(peers.map((p) => p.remoteEpk).toList());
-    emit(
+    _emitHome(
       HomeList(
         peers: peers,
         statusByEpk: _conn.presenceSnapshot,
@@ -108,18 +162,21 @@ class HomeViewModel extends ViewModel<HomeState> {
   void _onPresence(Map<String, PresenceState> snapshot) {
     final s = state;
     if (s is! HomeList) return;
-    emit(s.copyWith(statusByEpk: snapshot));
+    _emitHome(s.copyWith(statusByEpk: snapshot));
   }
 
   void _onRooms(Map<String, List<RoomInfo>> snapshot) {
     final s = state;
     if (s is! HomeList) return;
-    emit(s.copyWith(roomsByPeer: snapshot));
+    _emitHome(s.copyWith(roomsByPeer: snapshot));
   }
 
   void _onStatus(ConnectionStatus status) {
     final next = status is StatusOnline;
-    if (next == _relayConnected) return;
+    if (next == _relayConnected) {
+      _reconcileReliability(next);
+      return;
+    }
     _relayConnected = next;
     // Trigger a re-render of any HomeList so tiles re-evaluate dot
     // colour (room-live vs reconnecting).
@@ -130,7 +187,7 @@ class HomeViewModel extends ViewModel<HomeState> {
       // Preserve `filter` — otherwise a status flip would silently reset
       // the user's tab back to the Online default (and, because the new
       // object would then differ, actually fire that reset).
-      emit(
+      _emitHome(
         HomeList(
           peers: s.peers,
           statusByEpk: s.statusByEpk,
@@ -142,6 +199,7 @@ class HomeViewModel extends ViewModel<HomeState> {
     }
     // Plan/107b — relay just came online: refresh the active session's git.
     if (next) _maybeFetchGit();
+    _reconcileReliability(next);
   }
 
   /// Plan/107b — refresh the ACTIVE session's git status (the action
@@ -181,7 +239,7 @@ class HomeViewModel extends ViewModel<HomeState> {
   void _reemitWithGit() {
     final s = state;
     if (s is! HomeList) return;
-    emit(s.copyWith(gitByKey: _gitByKey));
+    _emitHome(s.copyWith(gitByKey: _gitByKey));
   }
 
   /// Plan-38 Fase 3 — switch the presence tab. No reload: it only swaps the
@@ -191,7 +249,7 @@ class HomeViewModel extends ViewModel<HomeState> {
     final s = state;
     if (s is! HomeList) return;
     if (s.filter == filter) return;
-    emit(s.copyWith(filter: filter));
+    _emitHome(s.copyWith(filter: filter));
   }
 
   /// `true` when `(epk, roomId)` is live on the relay AND the relay itself
@@ -326,6 +384,7 @@ class HomeViewModel extends ViewModel<HomeState> {
     _presenceSub?.cancel();
     _roomsSub?.cancel();
     _statusSub?.cancel();
+    _sustainedOfflineTimer?.cancel();
     _storage.removeListener(_onStorageChanged);
     super.dispose();
   }

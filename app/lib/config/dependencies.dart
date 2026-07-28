@@ -16,6 +16,7 @@ import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/channel.dart'; // IChannel
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/keep_alive_controller.dart';
+import 'package:app/data/device/reliability_service.dart';
 import 'package:app/data/transport/network_monitor.dart';
 import 'package:app/data/transport/peer_channel.dart';
 import 'package:app/data/images/image_picker_service.dart';
@@ -119,6 +120,12 @@ Future<void> setupDependencies() async {
   // main() (mirrors KeepAliveController); addService so its dispose() cancels
   // the connectivity subscription at app teardown.
   _injector.addService<NetworkMonitor>(() => NetworkMonitor());
+
+  // Plan 116 — connection reliability: one-tap battery exemption + Tailscale
+  // deep-links. Read by the reliability page + the proactive Home banner.
+  // Constructor ref (auto-resolves Preferences) — same form as
+  // OnboardingViewModel above.
+  _injector.addService<ReliabilityService>(ReliabilityService.new);
 
   // Plan 29 — on-device speech-to-text. Singleton: it owns a broadcast
   // sound-level stream that must survive across chat navigations; the

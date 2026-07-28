@@ -8,6 +8,8 @@ import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -80,6 +82,29 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+        // Plan 116 — connection reliability: one-tap self battery-optimization
+        // exemption + deep-links to the Tailscale app-info (battery) and system
+        // VPN (always-on) screens. No-op-safe: every call degrades gracefully
+        // (returns false / does nothing) on older Android or when Tailscale is
+        // not installed.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "ch.pungitore.piper/reliability")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "isBatteryOptimized" -> result.success(isBatteryOptimized())
+                    "requestBatteryExemption" -> {
+                        requestBatteryExemption()
+                        result.success(null)
+                    }
+                    "openTailscaleBatterySettings" ->
+                        result.success(openTailscaleBatterySettings())
+                    "openVpnSettings" -> {
+                        openVpnSettings()
+                        result.success(null)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
         // Cold start: the launch intent may itself be a share.
         stashShareIntent(intent)
     }
@@ -109,6 +134,67 @@ class MainActivity : FlutterActivity() {
             arrayOf(Manifest.permission.POST_NOTIFICATIONS),
             NOTIF_PERM_REQUEST,
         )
+    }
+
+    // Plan 116 — battery-optimization + Tailscale reliability helpers.
+
+    // true = the app is currently subject to doze/app-standby (i.e. NOT on
+    // the whitelist). Below API 23 doze doesn't exist, so it's never optimized.
+    private fun isBatteryOptimized(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false
+        val pm = getSystemService(POWER_SERVICE) as? PowerManager ?: return false
+        return !pm.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    // Shows the system "Allow Piper to always run in background?" dialog.
+    // The user must confirm — we cannot silently exempt ourselves.
+    private fun requestBatteryExemption() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        try {
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                .setData(Uri.parse("package:$packageName"))
+            startActivity(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "battery exemption request failed: ${e.message}")
+        }
+    }
+
+    // Deep-links to Tailscale's app-info screen (user then taps Battery →
+    // Unrestricted). Returns false if Tailscale isn't installed so Dart can
+    // hide the row. NOTE: Piper cannot flip Tailscale's setting itself.
+    private fun openTailscaleBatterySettings(): Boolean {
+        val pkg = "com.tailscale.ipn"
+        if (!isPackageInstalled(pkg)) return false
+        return try {
+            startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.parse("package:$pkg"))
+            )
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "open tailscale settings failed: ${e.message}")
+            false
+        }
+    }
+
+    // Deep-links to the system VPN list (user enables Always-on for Tailscale).
+    private fun openVpnSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_VPN_SETTINGS))
+        } catch (e: Exception) {
+            Log.w(TAG, "open vpn settings failed: ${e.message}")
+        }
+    }
+
+    private fun isPackageInstalled(pkg: String): Boolean = try {
+        packageManager.getPackageInfo(pkg, 0)
+        true
+    } catch (e: Exception) {
+        // NameNotFoundException = not installed; SecurityException and
+        // other failures can occur on some OEM ROMs. This channel is
+        // documented as no-op-safe, so degrade to "not available" rather
+        // than crash. Review #6.
+        false
     }
 
     // Plan/30-followup — read the image on the system clipboard (e.g. a

@@ -1,4 +1,5 @@
 import 'package:app/config/dependencies.dart';
+import 'package:app/data/device/reliability_service.dart';
 import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/connection_manager.dart';
@@ -18,6 +19,7 @@ import 'package:app/ui/onboarding/viewmodels/onboarding_viewmodel.dart';
 import 'package:app/ui/pairing/pairing_page.dart';
 import 'package:app/ui/pairing/viewmodels/pairing_viewmodel.dart';
 import 'package:app/ui/settings/settings_page.dart';
+import 'package:app/ui/settings/connection_reliability_page.dart';
 import 'package:app/ui/settings/viewmodels/settings_viewmodel.dart';
 import 'package:app/ui/sync_required/sync_required_page.dart';
 import 'package:app/ui/update/viewmodels/update_banner_viewmodel.dart';
@@ -374,6 +376,17 @@ GoRouter buildRouter(
         path: '/settings',
         builder: (ctx, st) =>
             ViewmodelProvider<SettingsViewModel>(child: const SettingsPage()),
+      ),
+
+      // Plan 116 — connection reliability (battery exemption + Tailscale
+      // deep-links). Provided to the page via Provider so the UI doesn't
+      // import config/ directly (review #4) and stays widget-testable.
+      GoRoute(
+        path: '/settings/reliability',
+        builder: (ctx, st) => Provider<ReliabilityService>.value(
+          value: injector.get<ReliabilityService>(),
+          child: const ConnectionReliabilityPage(),
+        ),
       ),
     ],
   );

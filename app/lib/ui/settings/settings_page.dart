@@ -53,6 +53,10 @@ class SettingsPage extends StatelessWidget {
           Divider(color: colors.border, height: 1),
           const _DisplaySection(),
           Divider(color: colors.border, height: 1),
+          // Plan 116 — connection reliability (battery exemption + Tailscale
+          // deep-links). Most relevant after a network switch drops Piper.
+          const _ReliabilityEntry(),
+          Divider(color: colors.border, height: 1),
           const _SectionHeader('Pairings'),
           switch (state) {
             SettingsLoading() => Padding(
@@ -75,6 +79,36 @@ class SettingsPage extends StatelessWidget {
           const _AddPairingButton(),
         ],
       ),
+    );
+  }
+}
+
+class _ReliabilityEntry extends StatelessWidget {
+  const _ReliabilityEntry();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return ListTile(
+      leading: Icon(LucideIcons.shieldCheck, size: 20, color: colors.text),
+      title: Text(
+        'Connection reliability',
+        style: const TextStyle(fontFamily: kMonoFamily, fontSize: 14),
+      ),
+      subtitle: Text(
+        'Keep Piper alive across network changes',
+        style: TextStyle(
+          fontFamily: kMonoFamily,
+          fontSize: 12,
+          color: colors.muted,
+        ),
+      ),
+      trailing: Icon(
+        LucideIcons.chevronRight,
+        size: 18,
+        color: colors.muted2,
+      ),
+      onTap: () => context.push('/settings/reliability'),
     );
   }
 }
