@@ -164,9 +164,12 @@ export function createWorktree(
 
   // 3. Plan/112 #2 — write local config so the worktree's `pi` session skips
   //    the first-run wizard and auto-connects to the relay (new room derived
-  //    from the worktree cwd). Non-fatal if unwritable.
+  //    from the worktree cwd). The agent_name is the ORIGINAL project folder
+  //    name so the worktree shows up on the phone under the project it
+  //    belongs to (the branch/folder still disambiguates it elsewhere).
+  //    Non-fatal if unwritable.
   try {
-    saveLocalConfig(worktreePath, { agent_name: branch, auto_start_relay: true });
+    saveLocalConfig(worktreePath, { agent_name: basename(baseCwd), auto_start_relay: true });
   } catch {
     /* best-effort — worktree works, just won't auto-connect */
   }
