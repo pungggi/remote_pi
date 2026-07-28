@@ -189,7 +189,11 @@ class MainActivity : FlutterActivity() {
     private fun isPackageInstalled(pkg: String): Boolean = try {
         packageManager.getPackageInfo(pkg, 0)
         true
-    } catch (e: PackageManager.NameNotFoundException) {
+    } catch (e: Exception) {
+        // NameNotFoundException = not installed; SecurityException and
+        // other failures can occur on some OEM ROMs. This channel is
+        // documented as no-op-safe, so degrade to "not available" rather
+        // than crash. Review #6.
         false
     }
 

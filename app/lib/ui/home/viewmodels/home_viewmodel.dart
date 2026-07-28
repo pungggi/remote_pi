@@ -39,6 +39,9 @@ class HomeViewModel extends ViewModel<HomeState> {
   // Plan 116 — sustained-offline → reliability banner (60s threshold).
   Timer? _sustainedOfflineTimer;
   bool _reliabilityDismissed = false;
+  // Intent that survives a HomeLoading → HomeList transition: set when the
+  // 60s timer fires, applied to every emitted HomeList via _emitHome.
+  bool _reliabilityBannerWanted = false;
 
   HomeViewModel(this._storage, this._prefs, this._conn, this._actions)
     : super(const HomeLoading()) {
@@ -71,44 +74,49 @@ class HomeViewModel extends ViewModel<HomeState> {
   Future<void> reconnect() => _conn.forceReconnect();
 
   /// Plan 116 — arm/disarm the sustained-offline banner. When the relay is
-  /// non-Online for > 60 s, surface a card nudging the user to the
-  /// connection-reliability page. The timer is idempotent (re-arm guards on
-  /// null); recovering to Online cancels it and clears the dismiss flag.
+  /// non-Online for > 60 s, set [_reliabilityBannerWanted]; recovering to
+  /// Online clears it. The intent survives a HomeLoading → HomeList
+  /// transition because every HomeList is emitted via [_emitHome], which
+  /// derives `showReliabilityBanner` from the wanted flag (review #5).
   void _reconcileReliability(bool online) {
     if (_disposed) return;
     if (online) {
       _sustainedOfflineTimer?.cancel();
       _sustainedOfflineTimer = null;
-      if (_reliabilityDismissed) _reliabilityDismissed = false;
-      _hideReliabilityBanner();
+      _reliabilityDismissed = false;
+      _reliabilityBannerWanted = false;
+      _reemitHomeList();
     } else {
       _sustainedOfflineTimer ??= Timer(const Duration(seconds: 60), () {
         if (!_disposed && !_relayConnected && !_reliabilityDismissed) {
-          _showReliabilityBanner();
+          _reliabilityBannerWanted = true;
+          _reemitHomeList();
         }
       });
     }
   }
 
-  void _showReliabilityBanner() {
-    final s = state;
-    if (s is HomeList && !s.showReliabilityBanner) {
-      emit(s.copyWith(showReliabilityBanner: true));
+  /// Emits a HomeList with the reliability-banner flag derived from
+  /// [_reliabilityBannerWanted]. Single chokepoint so the banner is correct
+  /// no matter which path produced the HomeList (review #5).
+  void _emitHome(HomeList s) {
+    final want = _reliabilityBannerWanted && !_reliabilityDismissed;
+    if (s.showReliabilityBanner != want) {
+      s = s.copyWith(showReliabilityBanner: want);
     }
+    emit(s);
   }
 
-  void _hideReliabilityBanner() {
+  void _reemitHomeList() {
     final s = state;
-    if (s is HomeList && s.showReliabilityBanner) {
-      emit(s.copyWith(showReliabilityBanner: false));
-    }
+    if (s is HomeList) _emitHome(s);
   }
 
   /// Plan 116 — user dismissed the banner; don't nag again until the
   /// connection recovers and drops once more.
   void dismissReliabilityBanner() {
     _reliabilityDismissed = true;
-    _hideReliabilityBanner();
+    _reemitHomeList();
   }
 
   /// `true` when `(epk, roomId)`'s agent is currently mid-turn. Drives
@@ -138,7 +146,7 @@ class HomeViewModel extends ViewModel<HomeState> {
     // subscribe also covers rooms (plan 17 — replay block in
     // ConnectionManager sends both presence and rooms subscribes).
     _conn.subscribeToPeers(peers.map((p) => p.remoteEpk).toList());
-    emit(
+    _emitHome(
       HomeList(
         peers: peers,
         statusByEpk: _conn.presenceSnapshot,
@@ -154,13 +162,13 @@ class HomeViewModel extends ViewModel<HomeState> {
   void _onPresence(Map<String, PresenceState> snapshot) {
     final s = state;
     if (s is! HomeList) return;
-    emit(s.copyWith(statusByEpk: snapshot));
+    _emitHome(s.copyWith(statusByEpk: snapshot));
   }
 
   void _onRooms(Map<String, List<RoomInfo>> snapshot) {
     final s = state;
     if (s is! HomeList) return;
-    emit(s.copyWith(roomsByPeer: snapshot));
+    _emitHome(s.copyWith(roomsByPeer: snapshot));
   }
 
   void _onStatus(ConnectionStatus status) {
@@ -179,7 +187,7 @@ class HomeViewModel extends ViewModel<HomeState> {
       // Preserve `filter` — otherwise a status flip would silently reset
       // the user's tab back to the Online default (and, because the new
       // object would then differ, actually fire that reset).
-      emit(
+      _emitHome(
         HomeList(
           peers: s.peers,
           statusByEpk: s.statusByEpk,
@@ -231,7 +239,7 @@ class HomeViewModel extends ViewModel<HomeState> {
   void _reemitWithGit() {
     final s = state;
     if (s is! HomeList) return;
-    emit(s.copyWith(gitByKey: _gitByKey));
+    _emitHome(s.copyWith(gitByKey: _gitByKey));
   }
 
   /// Plan-38 Fase 3 — switch the presence tab. No reload: it only swaps the
@@ -241,7 +249,7 @@ class HomeViewModel extends ViewModel<HomeState> {
     final s = state;
     if (s is! HomeList) return;
     if (s.filter == filter) return;
-    emit(s.copyWith(filter: filter));
+    _emitHome(s.copyWith(filter: filter));
   }
 
   /// `true` when `(epk, roomId)` is live on the relay AND the relay itself

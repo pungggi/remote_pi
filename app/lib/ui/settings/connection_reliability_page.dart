@@ -1,9 +1,9 @@
-import 'package:app/config/dependencies.dart';
 import 'package:app/data/device/reliability_service.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:provider/provider.dart';
 
 /// Plan 116 — brings the phone settings that keep Piper alive across network
 /// changes (battery exemption + Tailscale always-on/battery) within 1–2 taps.
@@ -27,7 +27,9 @@ class _ConnectionReliabilityPageState extends State<ConnectionReliabilityPage> {
   @override
   void initState() {
     super.initState();
-    _svc = injector.get<ReliabilityService>();
+    // Provided by the route via Provider<ReliabilityService>.value (review
+    // #4) — keeps the UI decoupled from config/ and widget-testable.
+    _svc = context.read<ReliabilityService>();
     _tailscaleRelay = _svc.isTailscaleRelay;
     _refresh();
   }

@@ -87,8 +87,12 @@ bool isTailscaleCgnat(String url) {
   if (host.isEmpty) return false;
   final parts = host.split('.');
   if (parts.length != 4) return false;
-  final a = int.tryParse(parts[0]);
-  final b = int.tryParse(parts[1]);
-  if (a == null || b == null) return false;
+  // Validate ALL four octets are integers in 0–255 before classifying —
+  // otherwise a non-IPv4 host like "100.70.foo.bar" would slip through
+  // (only octets 1–2 were checked before). Review #2.
+  final octets = [for (final p in parts) int.tryParse(p)];
+  if (octets.any((o) => o == null || o < 0 || o > 255)) return false;
+  final a = octets[0]!;
+  final b = octets[1]!;
   return a == 100 && b >= 64 && b <= 127;
 }

@@ -1,4 +1,5 @@
 import 'package:app/config/dependencies.dart';
+import 'package:app/data/device/reliability_service.dart';
 import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/connection_manager.dart';
@@ -378,10 +379,14 @@ GoRouter buildRouter(
       ),
 
       // Plan 116 — connection reliability (battery exemption + Tailscale
-      // deep-links).
+      // deep-links). Provided to the page via Provider so the UI doesn't
+      // import config/ directly (review #4) and stays widget-testable.
       GoRoute(
         path: '/settings/reliability',
-        builder: (ctx, st) => const ConnectionReliabilityPage(),
+        builder: (ctx, st) => Provider<ReliabilityService>.value(
+          value: injector.get<ReliabilityService>(),
+          child: const ConnectionReliabilityPage(),
+        ),
       ),
     ],
   );

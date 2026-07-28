@@ -25,7 +25,17 @@ void main() {
       expect(isTailscaleCgnat('not a url'), isFalse);
     });
 
-    test('wss scheme is handled the same (host is what matters)', () {
+    test('non-IPv4 hosts in the 100.6x range are NOT Tailscale (review #2)', () {
+      // Only octets 1–2 being in range must NOT be enough — all four
+      // octets must be valid 0–255 integers.
+      expect(isTailscaleCgnat('http://100.70.foo.bar'), isFalse);
+      expect(isTailscaleCgnat('http://100.70.1'), isFalse);
+      expect(isTailscaleCgnat('http://100.75.300.1'), isFalse); // octet > 255
+      expect(isTailscaleCgnat('http://100.75.-1.1'), isFalse); // negative
+    });
+
+    test('scheme-agnostic: the host is what matters (http/https/ws/wss)', () {
+      expect(isTailscaleCgnat('http://100.75.161.17:3000'), isTrue);
       expect(isTailscaleCgnat('https://100.75.161.17:3000'), isTrue);
     });
   });

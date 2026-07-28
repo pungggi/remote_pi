@@ -123,9 +123,9 @@ Future<void> setupDependencies() async {
 
   // Plan 116 — connection reliability: one-tap battery exemption + Tailscale
   // deep-links. Read by the reliability page + the proactive Home banner.
-  _injector.addService<ReliabilityService>(
-    () => ReliabilityService(_injector.get<Preferences>()),
-  );
+  // Constructor ref (auto-resolves Preferences) — same form as
+  // OnboardingViewModel above.
+  _injector.addService<ReliabilityService>(ReliabilityService.new);
 
   // Plan 29 — on-device speech-to-text. Singleton: it owns a broadcast
   // sound-level stream that must survive across chat navigations; the
