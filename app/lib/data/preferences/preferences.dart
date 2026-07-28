@@ -248,11 +248,14 @@ class Preferences extends ChangeNotifier {
   /// Merge [urls] into the LAN candidate list (union, preserving existing
   /// order, deduped). Used when the relay advertises its LAN addresses at
   /// handshake — we keep what the user already had and add any new ones
-  /// the relay knows about.
+  /// the relay knows about. Inputs are normalised the same way as
+  /// [setLanEndpoints] (trimmed, empties dropped) so a dirty advertised
+  /// URL can't sneak in untrimmed and later fail to dedupe/connect.
   Future<void> mergeLanEndpoints(Iterable<String> urls) async {
     final merged = <String>[..._lanEndpoints];
     final seen = merged.toSet();
-    for (final u in urls) {
+    for (final raw in urls) {
+      final u = raw.trim();
       if (u.isNotEmpty && seen.add(u)) merged.add(u);
     }
     if (_listEquals(merged, _lanEndpoints)) return;

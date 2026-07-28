@@ -240,6 +240,25 @@ void main() {
         ]);
       });
 
+      // Plan 115 review fix — merge must normalise dirty advertised input
+      // the same way setLanEndpoints does, otherwise a whitespace-padded
+      // URL sneaks in untrimmed and later fails to dedupe / connect.
+      test('mergeLanEndpoints trims, drops empties, and dedupes dirty input',
+          () async {
+        final p = Preferences(_FakeSecureStorage());
+        await p.setLanEndpoints(['http://192.168.1.10:3000']);
+        await p.mergeLanEndpoints([
+          '  http://192.168.1.10:3000  ', // dirty dup of existing
+          '   ', // whitespace-only → dropped
+          '', // empty → dropped
+          ' http://192.168.1.11:3000 ', // dirty new → trimmed, kept
+        ]);
+        expect(p.lanEndpoints, [
+          'http://192.168.1.10:3000',
+          'http://192.168.1.11:3000',
+        ]);
+      });
+
       test('mergeLanEndpoints is a no-op when nothing new', () async {
         final store = _FakeSecureStorage();
         final p = Preferences(store);

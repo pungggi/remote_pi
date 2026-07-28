@@ -102,8 +102,16 @@ class SettingsViewModel extends ViewModel<SettingsState> {
   }
 
   /// Clear every LAN candidate (plan 115 opt-out: dial the primary only).
+  ///
+  /// Rebuilds the connection so the change takes effect immediately — the
+  /// active link may currently be on a LAN endpoint that is no longer a
+  /// candidate, so we drop it and reconnect over the primary/overlay.
+  /// (Mirrors [saveLanUrl]; the VM-level [notifyListeners] refreshes the
+  /// Settings helper text, which reads [lanUrlOverride].)
   Future<void> clearLanUrl() async {
     await _prefs.setLanEndpoints(const []);
+    await _conn.disconnect();
+    _conn.boot(preferredEpk: _prefs.selectedPeerEpk);
     notifyListeners();
   }
 

@@ -28,6 +28,7 @@ ConnectionManager _conn({_FakeStorage? storage}) {
 
 class _FakeStorage extends PairingStorage {
   List<PeerRecord> peers;
+  final Map<String, List<PersistedRoom>> _roomsByEpk = {};
   _FakeStorage(this.peers);
 
   @override
@@ -46,6 +47,23 @@ class _FakeStorage extends PairingStorage {
   @override
   Future<void> deletePeerSilent(String epk) async {
     peers = peers.where((p) => p.remoteEpk != epk).toList();
+  }
+
+  // Plan 115 — room-cache stubs so ConnectionManager.boot() (now exercised by
+  // the clearLanUrl reconnect test) never reaches the real FlutterSecureStorage
+  // platform channel. Mirrors the fake in connection_manager_test.dart.
+  @override
+  Future<void> saveRooms(String epk, List<PersistedRoom> rooms) async {
+    _roomsByEpk[epk] = List.of(rooms);
+  }
+
+  @override
+  Future<List<PersistedRoom>> loadRooms(String epk) async =>
+      List.of(_roomsByEpk[epk] ?? const []);
+
+  @override
+  Future<void> deleteRooms(String epk) async {
+    _roomsByEpk.remove(epk);
   }
 }
 
@@ -402,6 +420,38 @@ void main() {
         await vm.clearLanUrl();
         expect(prefs.lanEndpoints, isEmpty);
         vm.dispose();
+      });
+
+      // Plan 115 review fix — Clear must rebuild the connection so the
+      // change takes effect now (the active link may be on a LAN endpoint
+      // that is no longer a candidate). Mirrors saveLanUrl.
+      test('clearLanUrl rebuilds the connection so it takes effect now',
+          () async {
+        final states = <ConnectionStatus>[];
+        final storage = _FakeStorage([_peerA()]);
+        final conn = _conn(storage: storage);
+        conn.statusStream.listen(states.add);
+        final prefs = Preferences(_FakeSecureStorage());
+        await prefs.setLanEndpoints(['http://192.168.1.10:3000']);
+        final vm = SettingsViewModel(storage, prefs, conn);
+        await Future<void>.delayed(Duration.zero);
+
+        // Bring the connection up so the reconnect is observable.
+        await conn.boot();
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        expect(conn.status, isA<StatusOnline>());
+
+        await vm.clearLanUrl();
+        // boot() is fire-and-forget in clearLanUrl; let its emissions settle.
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        // disconnect() → StatusNoPeer, boot() → StatusConnecting then Online.
+        expect(states.any((s) => s is StatusNoPeer), isTrue);
+        expect(states.any((s) => s is StatusConnecting), isTrue);
+        expect(prefs.lanEndpoints, isEmpty);
+
+        vm.dispose();
+        conn.dispose();
       });
     });
   });
