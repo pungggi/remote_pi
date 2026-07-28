@@ -901,6 +901,10 @@ sealed class ServerMessage {
       'queued_message_state' => QueuedMessageState.fromJson(json),
       'steer_consumed' => SteerConsumed.fromJson(json),
       'agent_message' => AgentMessage.fromJson(json),
+      // Plan/114 — image the agent pushes to the user from a file in the repo
+      // (show_image tool). Inline base64; rendered as a tappable assistant-side
+      // bubble that opens the full-screen viewer.
+      'agent_image' => AgentImage.fromJson(json),
       // Plan/32 — Pi-extension emits this when a context compaction finishes.
       'compaction' => Compaction.fromJson(json),
       'session_history' => SessionHistory.fromJson(json),
@@ -1228,6 +1232,42 @@ class AgentMessage extends ServerMessage {
     usage: j['usage'] != null
         ? Usage.fromJson(j['usage'] as Map<String, dynamic>)
         : null,
+  );
+}
+
+/// Plan/114 — image the agent shows to the user (via the `show_image` tool).
+/// Carries inline base64 bytes that render as a tappable assistant-side
+/// bubble; tapping opens `ImageViewerPage`. `inReplyTo` anchors the bubble to
+/// the turn (empty when the tool ran outside any turn). Not replayed via
+/// `session_history` — the bubble is persisted locally (plan/31 DB) so it
+/// survives app restarts but not a local-DB wipe (plan/114 risk #2).
+class AgentImage extends ServerMessage {
+  final String id;
+  final String inReplyTo;
+  final WireImage image;
+  final String? path;
+  final String? caption;
+  final int? width;
+  final int? height;
+
+  AgentImage({
+    required this.id,
+    required this.inReplyTo,
+    required this.image,
+    this.path,
+    this.caption,
+    this.width,
+    this.height,
+  });
+
+  factory AgentImage.fromJson(Map<String, dynamic> j) => AgentImage(
+    id: j['id'] as String,
+    inReplyTo: (j['in_reply_to'] as String?) ?? '',
+    image: WireImage.fromJson(j['image'] as Map<String, dynamic>),
+    path: j['path'] as String?,
+    caption: j['caption'] as String?,
+    width: (j['width'] as num?)?.toInt(),
+    height: (j['height'] as num?)?.toInt(),
   );
 }
 

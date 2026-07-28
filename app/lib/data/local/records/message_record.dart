@@ -19,6 +19,11 @@ class MessageRecord {
 
   /// Tool request+result collapsed into one row (tool messages only).
   final ToolEventData? tool;
+
+  /// Plan/114 — original repo path of an agent-pushed image (viewer title).
+  /// Null for every other row.
+  final String? imagePath;
+
   final DateTime ts;
 
   /// Optimistic: sent locally, not yet echoed by the Pi.
@@ -37,6 +42,7 @@ class MessageRecord {
     this.text = '',
     this.image,
     this.tool,
+    this.imagePath,
     required this.ts,
     this.pending = false,
     this.steering = false,
@@ -48,6 +54,7 @@ class MessageRecord {
     String? text,
     MessageImage? image,
     ToolEventData? tool,
+    String? imagePath,
     bool? pending,
     bool? steering,
   }) => MessageRecord(
@@ -57,6 +64,7 @@ class MessageRecord {
     text: text ?? this.text,
     image: image ?? this.image,
     tool: tool ?? this.tool,
+    imagePath: imagePath ?? this.imagePath,
     ts: ts,
     pending: pending ?? this.pending,
     steering: steering ?? this.steering,
@@ -70,6 +78,7 @@ class MessageRecord {
     'text': text,
     if (image != null) 'image': {'data': image!.data, 'mime': image!.mime},
     if (tool != null) 'tool': tool!.toJson(),
+    if (imagePath != null) 'image_path': imagePath,
     'ts': ts.millisecondsSinceEpoch,
     'pending': pending,
     if (steering) 'steering': true,
@@ -96,6 +105,7 @@ class MessageRecord {
       tool: toolRaw is Map
           ? ToolEventData.fromJson(toolRaw.cast<String, dynamic>())
           : null,
+      imagePath: (j['image_path'] as String?) ?? (j['path'] as String?),
       ts: DateTime.fromMillisecondsSinceEpoch((j['ts'] as num).toInt()),
       pending: (j['pending'] as bool?) ?? false,
       steering: (j['steering'] as bool?) ?? false,
@@ -115,6 +125,18 @@ class MessageRecord {
           image: image,
         );
       case MsgRole.assistant:
+        // Plan/114 — an assistant row carrying an image is an agent-pushed
+        // image (show_image tool), rendered as a tappable viewer bubble.
+        // Local-promote `image`: Dart can't promote a nullable instance field.
+        final agentImage = image;
+        if (agentImage != null) {
+          return AgentImageMsg(
+            id: id,
+            image: agentImage,
+            path: imagePath,
+            caption: text,
+          );
+        }
         return AssistantMsg(id: id, text: text);
       case MsgRole.tool:
         final t = tool;

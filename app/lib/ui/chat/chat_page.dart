@@ -14,6 +14,7 @@ import 'package:app/ui/chat/states/chat_state.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
 import 'package:app/ui/chat/voice/viewmodels/voice_input_viewmodel.dart';
 import 'package:app/ui/chat/widgets/attach_sheet.dart';
+import 'package:app/ui/chat/widgets/agent_image_bubble.dart';
 import 'package:app/ui/chat/widgets/input_bar.dart';
 import 'package:app/ui/chat/widgets/message_bubble.dart';
 import 'package:app/ui/chat/widgets/streaming_bubble.dart';
@@ -886,6 +887,9 @@ class _MessageListState extends State<_MessageList> {
                   // Plan/jumpusermsg — tag the bubble so we can scroll to it.
                   UserMsg() => UserBubble(msg, key: _keyFor(msg)),
                   AssistantMsg() => AssistantBubble(msg),
+                  // Plan/114 — agent-pushed image (show_image tool): tappable
+                  // bubble that opens the full-screen viewer.
+                  AgentImageMsg() => AgentImageBubble(msg),
                   ToolEvent() => ToolRequestCard(
                     tool: msg,
                     onDecide: widget.onDecide,

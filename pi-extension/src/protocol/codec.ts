@@ -8,6 +8,8 @@ const SERVER_TYPES = new Set<ServerMessage["type"]>([
   "agent_chunk",
   "agent_done",
   "agent_message",
+  // Plan/114 — image the agent pushes to the user (show_image tool).
+  "agent_image",
   "tool_request",
   "tool_result",
   "error",

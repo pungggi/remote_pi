@@ -120,6 +120,35 @@ class AssistantMsg extends ChatMessage {
   int get hashCode => Object.hash(id, text);
 }
 
+/// Plan/114 — an image the agent pushed to the user from a file in the repo
+/// (via the `show_image` tool). Rendered as a left-aligned, tappable bubble
+/// that opens [ImageViewerPage] (full-screen pinch-zoom). Unlike [UserMsg]'s
+/// static thumbnail, this one is interactive. [caption] (possibly empty) shows
+/// under the image; [path] is the original repo path used as the viewer title.
+class AgentImageMsg extends ChatMessage {
+  final MessageImage image;
+  final String? path;
+  final String caption;
+
+  const AgentImageMsg({
+    required super.id,
+    required this.image,
+    this.path,
+    this.caption = '',
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      other is AgentImageMsg &&
+      other.id == id &&
+      other.image == image &&
+      other.path == path &&
+      other.caption == caption;
+
+  @override
+  int get hashCode => Object.hash(id, image, path, caption);
+}
+
 class ToolEvent extends ChatMessage {
   final String toolCallId;
   final String tool;

@@ -91,6 +91,12 @@ waiting for another agent's content reply. Use `agent_send`, continue the
 current turn, and receive any later reply through the inbox/turn flow with
 `re` correlating it to the original message id.
 
+`show_image` (plan/114) is a display tool, not a networking one: the LLM
+calls it to push an image file from the repo to the paired mobile app, which
+opens a full-screen viewer (pinch-zoom, save, share). It returns only metadata
+(`path`, `mime`, dimensions, size) — the image bytes go straight to the app
+over the relay and never enter the model context. JPEG/PNG/WebP/GIF up to 4 MiB.
+
 Peers on the same machine talk over a Unix domain socket at
 `~/.pi/remote/sessions/<session-name>/broker.sock`. When sibling PCs are paired,
 a leader-capable Extension or MCP participant bridges the opaque cross-PC

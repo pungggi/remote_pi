@@ -338,6 +338,26 @@ export type ServerMessage =
   | { type: "agent_chunk"; in_reply_to: string; delta: string }
   | { type: "agent_done"; in_reply_to: string; usage?: Usage }
   | { type: "agent_message"; in_reply_to: string; text: string; usage?: Usage }
+  // Plan/114 — image the agent pushes to the user from a file in the repo.
+  // Triggered by the `show_image` tool (see src/index.ts `_registerShowImageTool`).
+  // The bytes travel inline base64 to every connected owner so each device
+  // renders the same bubble + viewer; the tool_result back to the model carries
+  // ONLY metadata (never bytes) — same context-hygiene discipline as plan/49.
+  // Relay is unchanged (opaque `ct`); `agent_image` is a live broadcast, not
+  // replayed via `session_history` (plan/114 risk #2). Anchored to the turn via
+  // `in_reply_to` like `agent_chunk`/`agent_done`.
+  | {
+      type: "agent_image";
+      id: string;
+      in_reply_to: string;
+      image: WireImage;
+      /** Repo path the agent read from (display only). */
+      path?: string;
+      /** Optional caption shown under the bubble and as the viewer title. */
+      caption?: string;
+      width?: number;
+      height?: number;
+    }
   // Plan/32: pushed after a context compaction (live, and replayed on history
   // re-sync). `tokens_before` is the pre-compaction token count.
   | { type: "compaction"; summary: string; tokens_before: number; ts?: number }

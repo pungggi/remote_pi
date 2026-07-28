@@ -30,6 +30,7 @@
  *   for integration tests.
  */
 
+import { Type } from "typebox";
 import { createHash, randomUUID } from "node:crypto";
 import type {
   ExtensionAPI,
@@ -112,7 +113,7 @@ import { runSetupWizard, type WizardUI } from "./session/setup_wizard.js";
 import { updateFooter, type FooterState } from "./ui/footer.js";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chmodSync, mkdtempSync, mkdirSync, copyFileSync, existsSync, unlinkSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, copyFileSync, existsSync, unlinkSync, readFileSync, statSync, writeFileSync, realpathSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { spawnSync } from "node:child_process";
 import { hostname, tmpdir } from "node:os";
@@ -179,6 +180,12 @@ let _peerShort = "";  // shortid of the most recently attached peer (UX hint onl
 
 const REMOTE_PI_RECEIVED_IMAGE_TYPE = "remote-pi:received-image";
 const RECEIVED_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+
+// Plan/114 — hard cap on a raw image file the agent may push to the user via
+// `show_image`. Bounds the inline base64 payload on the wire (double-base64
+// ≈ +77%). Server-side resize (sharp) + a binary relay channel are deferred
+// follow-ups; until then oversized files are rejected with a clear message.
+const SHOW_IMAGE_MAX_BYTES = 4 * 1024 * 1024;
 
 type ReceivedImageDetails = {
   messageId: string;
@@ -573,6 +580,249 @@ async function _emitReceivedImagePreviews(
 ): Promise<void> {
   const previews = await _collectReceivedImagePreviews(msg);
   for (const preview of previews) _sendReceivedImagePreview(preview, delivery);
+}
+
+// ── Plan/114 — show_image tool (agent → user image) ───────────────────────
+// The agent calls `show_image({path, caption?})` to push an image file from
+// the repo to the paired mobile app (full-screen viewer). The handler reads
+// + validates the file (MIME whitelist via magic bytes, hard 4 MiB cap),
+// broadcasts an `agent_image` ServerMessage with inline base64 to every
+// connected owner, and returns ONLY metadata to the model — the image bytes
+// never enter the model context (same discipline as plan/49). The
+// `agent_image` is a live broadcast (not a persisted SDK message and not
+// added to `_messageBuffer`), so it naturally never reaches a provider request
+// and is not replayed via `session_history` (gap noted in plan/114 risk #2).
+
+interface ShowImageResult {
+  shown: boolean;
+  path: string;
+  mime?: string;
+  width?: number;
+  height?: number;
+  bytes?: number;
+  reason?: string;
+  error?: string;
+}
+
+/** Sniff the image MIME from magic bytes. Returns undefined for non-images or
+ *  truncated headers. */
+function _sniffImageMime(bytes: Buffer): string | undefined {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 &&
+    bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+  if (
+    bytes.length >= 6 &&
+    bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 &&
+    bytes[3] === 0x38 && (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61
+  ) {
+    return "image/gif";
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  return undefined;
+}
+
+/** Resolve MIME from the file extension, then trust magic bytes when present
+ *  (extensions can lie). Rejects anything outside the image whitelist. */
+function _mimeFromPathAndMagic(absPath: string, bytes: Buffer): string | undefined {
+  const ext = absPath.toLowerCase().split(".").pop() ?? "";
+  let byExt: string | undefined;
+  switch (ext) {
+    case "jpg": case "jpeg": byExt = "image/jpeg"; break;
+    case "png": byExt = "image/png"; break;
+    case "gif": byExt = "image/gif"; break;
+    case "webp": byExt = "image/webp"; break;
+    default: byExt = undefined;
+  }
+  const mime = _sniffImageMime(bytes) ?? byExt;
+  return mime && _imageExtension(mime) ? mime : undefined;
+}
+
+/** Best-effort PNG/JPEG dimension read. WebP/GIF return undefined (the viewer
+ *  doesn't need dims; InteractiveViewer sizes from the decoded bytes). */
+function _imageDimensions(
+  bytes: Buffer,
+  mime: string,
+): { width: number; height: number } | undefined {
+  try {
+    if (mime === "image/png" && bytes.length >= 24) {
+      // IHDR: width (4 BE) at offset 16, height (4 BE) at offset 20.
+      const width = bytes.readUInt32BE(16);
+      const height = bytes.readUInt32BE(20);
+      if (width > 0 && height > 0) return { width, height };
+    }
+    if (mime === "image/jpeg") {
+      return _jpegDimensions(bytes);
+    }
+  } catch {
+    // best-effort — viewer works without dims
+  }
+  return undefined;
+}
+
+/** Scan JPEG segments for a SOF (Start Of Frame) marker and read its dims. */
+function _jpegDimensions(bytes: Buffer): { width: number; height: number } | undefined {
+  let i = 2; // skip SOI (FF D8)
+  while (i + 1 < bytes.length) {
+    if (bytes[i] !== 0xff) break;
+    const marker = bytes[i + 1];
+    // Standalone markers (no length payload): RSTn, TEM, SOI, EOI.
+    if (marker === 0xd8 || marker === 0xd9 || marker === 0x01 ||
+        (marker >= 0xd0 && marker <= 0xd7)) {
+      i += 2;
+      continue;
+    }
+    if (i + 3 >= bytes.length) break;
+    const segLen = bytes.readUInt16BE(i + 2);
+    const isSof = marker >= 0xc0 && marker <= 0xcf &&
+      marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+    if (isSof) {
+      // [marker(2)] [len(2)] [precision(1)] [height(2 BE)] [width(2 BE)]
+      if (i + 9 <= bytes.length) {
+        const height = bytes.readUInt16BE(i + 5);
+        const width = bytes.readUInt16BE(i + 7);
+        if (width > 0 && height > 0) return { width, height };
+      }
+      return undefined;
+    }
+    if (segLen < 2) break; // malformed — avoid infinite loop
+    i += 2 + segLen;
+  }
+  return undefined;
+}
+
+/** Build a `shown:false` tool_result for a failure. The `path` argument MUST be
+ *  the agent-supplied `rawPath` (never the resolved `absPath`) so absolute
+ *  filesystem paths never leak into model context — see plan/114 review. */
+function _showImageError(
+  error: string,
+  path: string,
+): { content: { type: "text"; text: string }[]; details: ShowImageResult } {
+  return {
+    content: [{ type: "text", text: `show_image failed: ${error}` }],
+    details: { shown: false, path, error },
+  };
+}
+
+/** Core handler for the `show_image` tool: read, validate, broadcast, reply. */
+function _handleShowImage(
+  params: { path: string; caption?: string },
+): { content: { type: "text"; text: string }[]; details: ShowImageResult } {
+  const rawPath = typeof params.path === "string" ? params.path.trim() : "";
+  const caption = typeof params.caption === "string" ? params.caption.trim() : "";
+  if (!rawPath) {
+    return _showImageError("missing image path", "");
+  }
+
+  let absPath: string;
+  try {
+    absPath = resolve(rawPath);
+  } catch {
+    return _showImageError(`invalid path: ${rawPath}`, rawPath);
+  }
+
+  let size: number;
+  let bytes: Buffer;
+  try {
+    const s = statSync(absPath);
+    if (!s.isFile()) {
+      return _showImageError(`not a regular file: ${rawPath}`, rawPath);
+    }
+    if (s.size > SHOW_IMAGE_MAX_BYTES) {
+      return _showImageError(
+        `file too large (${s.size} bytes; max ${SHOW_IMAGE_MAX_BYTES})`,
+        rawPath,
+      );
+    }
+    bytes = readFileSync(absPath);
+    size = s.size;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return _showImageError(`cannot read ${rawPath}: ${msg}`, rawPath);
+  }
+
+  const mime = _mimeFromPathAndMagic(absPath, bytes);
+  if (!mime) {
+    return _showImageError(
+      `unsupported image type (use jpeg/png/webp/gif): ${rawPath}`,
+      rawPath,
+    );
+  }
+
+  const dims = _imageDimensions(bytes, mime);
+  const data = bytes.toString("base64");
+
+  // Broadcast to every connected owner — the app opens the viewer. Best-effort:
+  // when no peer is attached the image is dropped (surfaced to the agent below).
+  // `in_reply_to` anchors the bubble to the current turn (empty when the tool
+  // is invoked outside any turn — rare).
+  _broadcastToActive({
+    type: "agent_image",
+    id: `img_${randomUUID()}`,
+    in_reply_to: _currentTurnId ?? "",
+    image: { data, mime },
+    path: rawPath,
+    ...(caption ? { caption } : {}),
+    ...(dims ? { width: dims.width, height: dims.height } : {}),
+  });
+
+  const shown = _anyPeerActive();
+  const details: ShowImageResult = {
+    shown,
+    path: rawPath,
+    mime,
+    bytes: size,
+    ...(dims ? { width: dims.width, height: dims.height } : {}),
+    ...(!shown ? { reason: "no active peer (no paired device connected)" } : {}),
+  };
+  const text = shown
+    ? `Showing image to user: ${rawPath} (${mime}${dims ? `, ${dims.width}×${dims.height}` : ""}, ${size} bytes).`
+    : `Image prepared (${rawPath}) but no paired device is connected right now — it was not displayed.`;
+  return { content: [{ type: "text", text }], details };
+}
+
+function _registerShowImageTool(pi: ExtensionAPI): void {
+  const ShowImageParams = Type.Object({
+    path: Type.String({
+      description:
+        "Path to an image file in the repo, relative to the session cwd (or absolute). " +
+        "Supported: JPEG, PNG, WebP, GIF. Hard cap 4 MiB.",
+    }),
+    caption: Type.Optional(Type.String({
+      description:
+        "Optional caption shown as a subtitle under the image bubble. " +
+        "The repo path is used as the full-screen viewer title.",
+    })),
+  });
+
+  pi.registerTool<typeof ShowImageParams, ShowImageResult>({
+    name: "show_image",
+    label: "Show image to user",
+    description:
+      "Display an image file from the repo to the user on their paired mobile app " +
+      "(opens a full-screen viewer with pinch-zoom). Use when the user asks to " +
+      "see/show an image, or when you want to present a chart, screenshot, or " +
+      "diagram. The image bytes go directly to the app out-of-band; this tool " +
+      "returns only metadata (path, mime, dimensions, size) — never the image " +
+      "data — so it does not bloat the model context.",
+    promptSnippet:
+      "show_image({path, caption?}): display an image file from disk to the user on their phone (full-screen viewer). Returns metadata only.",
+    parameters: ShowImageParams,
+    execute: async (_toolCallId, params) =>
+      _handleShowImage(params as { path: string; caption?: string }),
+  });
 }
 
 function _registerReceivedImageRenderer(pi: ExtensionAPI): void {
@@ -2131,6 +2381,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // session network natively. Getter captures `_meshNode` live so the
   // tool always sees the current state.
   registerAgentTools(pi, () => _meshNode?.peer() ?? null);
+  _registerShowImageTool(pi);
   _registerReceivedImageRenderer(pi);
 
   // Received-image preview entries are for local TUI display only. Pi's custom
