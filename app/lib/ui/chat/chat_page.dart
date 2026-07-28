@@ -866,6 +866,9 @@ class _MessageListState extends State<_MessageList> {
 
   /// Post-frame auto-scroll policy (scheduled once per build).
   void _applyScrollPolicy() {
+    // The post-frame callback is registered in build and can fire after this
+    // State has been unmounted — bail before touching a disposed `_scroll`.
+    if (!mounted) return;
     if (!_scroll.hasClients) {
       _grow = TranscriptGrow.none;
       return;
@@ -891,7 +894,18 @@ class _MessageListState extends State<_MessageList> {
           // reverse list would otherwise drift the viewport toward the newest;
           // offset by exactly the bottom growth so the same content stays put.
           final delta = p.maxScrollExtent - _prevMaxExtent;
-          if (delta.abs() > 0.5) p.jumpTo(p.pixels + delta);
+          if (delta.abs() > 0.5) {
+            // Clamp the target: a net shrink at the bottom (e.g. the streaming
+            // bubble replaced by a shorter finalized message) makes `delta < 0`,
+            // which could push the target outside [min, max]ScrollExtent.
+            double target = p.pixels + delta;
+            if (target < p.minScrollExtent) {
+              target = p.minScrollExtent;
+            } else if (target > p.maxScrollExtent) {
+              target = p.maxScrollExtent;
+            }
+            p.jumpTo(target);
+          }
         }
         break;
       case TranscriptGrow.top:
