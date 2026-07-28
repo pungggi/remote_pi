@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gal/gal.dart';
@@ -41,8 +39,8 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
   @override
   void dispose() {
     _controller.dispose();
-    // Restore default system UI on leave (viewer forces light icons on black).
-    SystemChrome.setSystemUiOverlayStyle(const SystemUiOverlayStyle());
+    // System UI is restored automatically: the AnnotatedRegion<SystemUiOverlayStyle>
+    // wrapping the page resets the previous style when the route is popped.
     super.dispose();
   }
 
@@ -62,13 +60,15 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
       _zoomed = false;
       return;
     }
+    // Zoom-to-point: T(pos) · S(scale) · T(-pos). Built with non-deprecated
+    // Matrix4 factories (Matrix4.translate/scale are deprecated in vector_math).
     final m = Matrix4.identity();
     if (pos != null) {
-      m.translate(pos.dx, pos.dy);
-      m.scale(_doubleTapScale);
-      m.translate(-pos.dx, -pos.dy);
+      m.multiply(Matrix4.translationValues(pos.dx, pos.dy, 0));
+      m.multiply(Matrix4.diagonal3Values(_doubleTapScale, _doubleTapScale, 1));
+      m.multiply(Matrix4.translationValues(-pos.dx, -pos.dy, 0));
     } else {
-      m.scale(_doubleTapScale);
+      m.multiply(Matrix4.diagonal3Values(_doubleTapScale, _doubleTapScale, 1));
     }
     _controller.value = m;
     _zoomed = true;
@@ -93,10 +93,10 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
     if (_busy) return;
     setState(() => _busy = true);
     try {
-      await Share.shareXFiles(
-        [XFile.fromData(widget.bytes, mimeType: widget.mime)],
+      await SharePlus.instance.share(ShareParams(
+        files: [XFile.fromData(widget.bytes, mimeType: widget.mime)],
         fileNameOverrides: [_fileName()],
-      );
+      ));
     } catch (_) {
       _toast('Share failed');
     } finally {
@@ -168,7 +168,7 @@ class _ImageViewerPageState extends State<ImageViewerPage> {
                     child: Image.memory(
                       widget.bytes,
                       gaplessPlayback: true,
-                      errorBuilder: (_, __, ___) => const Icon(
+                      errorBuilder: (_, _, _) => const Icon(
                         Icons.broken_image_outlined,
                         color: Colors.white54,
                         size: 48,

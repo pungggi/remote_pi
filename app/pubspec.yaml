@@ -74,7 +74,7 @@ dependencies:
   # gal saves to the system gallery; share_plus opens the platform share
   # sheet (Android-only fork — iOS plist keys not required here).
   gal: ^2.0.0
-  share_plus: ^13.3.0
+  share_plus: ^12.0.2
 
   # Plan 32b — render the agent's Markdown replies (GFM + code blocks),
   # optimized for LLM output. `url_launcher` opens links tapped in the

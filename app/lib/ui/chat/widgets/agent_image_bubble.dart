@@ -67,13 +67,13 @@ class _AgentImageBubbleState extends State<AgentImageBubble> {
         barrierColor: Colors.black,
         transitionDuration: const Duration(milliseconds: 200),
         reverseTransitionDuration: const Duration(milliseconds: 150),
-        pageBuilder: (_, __, ___) => ImageViewerPage(
+        pageBuilder: (_, _, _) => ImageViewerPage(
           bytes: bytes,
           heroTag: _heroTag,
           title: widget.message.path ?? _title,
           mime: widget.message.image.mime,
         ),
-        transitionsBuilder: (_, animation, __, child) =>
+        transitionsBuilder: (_, animation, _, child) =>
             FadeTransition(opacity: animation, child: child),
       ),
     );
@@ -110,7 +110,7 @@ class _AgentImageBubbleState extends State<AgentImageBubble> {
                             bytes,
                             fit: BoxFit.cover,
                             gaplessPlayback: true,
-                            errorBuilder: (_, __, ___) => _broken(context),
+                            errorBuilder: (_, _, _) => _broken(context),
                           ),
                   ),
                 ),

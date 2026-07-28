@@ -127,10 +127,12 @@ class MessageRecord {
       case MsgRole.assistant:
         // Plan/114 — an assistant row carrying an image is an agent-pushed
         // image (show_image tool), rendered as a tappable viewer bubble.
-        if (image != null) {
+        // Local-promote `image`: Dart can't promote a nullable instance field.
+        final agentImage = image;
+        if (agentImage != null) {
           return AgentImageMsg(
             id: id,
-            image: image,
+            image: agentImage,
             path: imagePath,
             caption: text,
           );
