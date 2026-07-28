@@ -1,10 +1,7 @@
-import 'dart:async';
-
+import 'package:app/ui/chat/widgets/copy_button.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
-import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 /// Plan/32b — renders the agent's Markdown reply (GFM + code) themed to the
@@ -94,7 +91,11 @@ class _CodeBlock extends StatelessWidget {
                     ),
                   ),
                 ),
-                _CopyButton(code: code),
+                CopyButton(
+                  key: const Key('code-copy'),
+                  text: code,
+                  tooltip: 'Copy code',
+                ),
               ],
             ),
           ),
@@ -112,50 +113,4 @@ class _CodeBlock extends StatelessWidget {
   }
 }
 
-class _CopyButton extends StatefulWidget {
-  const _CopyButton({required this.code});
 
-  final String code;
-
-  @override
-  State<_CopyButton> createState() => _CopyButtonState();
-}
-
-class _CopyButtonState extends State<_CopyButton> {
-  bool _copied = false;
-  Timer? _reset;
-
-  @override
-  void dispose() {
-    _reset?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _copy() async {
-    await Clipboard.setData(ClipboardData(text: widget.code));
-    if (!mounted) return;
-    setState(() => _copied = true);
-    _reset?.cancel();
-    _reset = Timer(const Duration(milliseconds: 1500), () {
-      if (mounted) setState(() => _copied = false);
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.colors;
-    return IconButton(
-      key: const Key('code-copy'),
-      padding: EdgeInsets.zero,
-      visualDensity: VisualDensity.compact,
-      iconSize: 15,
-      splashRadius: 16,
-      tooltip: 'Copy code',
-      onPressed: _copy,
-      icon: Icon(
-        _copied ? LucideIcons.check : LucideIcons.copy,
-        color: _copied ? colors.success : colors.muted,
-      ),
-    );
-  }
-}

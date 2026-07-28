@@ -3,8 +3,10 @@
 
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/agent_markdown.dart';
+import 'package:app/ui/chat/widgets/copy_button.dart';
 import 'package:app/ui/chat/widgets/message_bubble.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -48,6 +50,102 @@ void main() {
     await tester.pump();
     // AgentMarkdown wraps the reply in a SelectionArea when selectable.
     expect(find.byType(SelectionArea), findsOneWidget);
+  });
+
+  testWidgets('AssistantBubble shows a Copy button that copies the reply', (
+    tester,
+  ) async {
+    final calls = <MethodCall>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') calls.add(call);
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: AssistantBubble(AssistantMsg(id: 'a1', text: 'copy me!')),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    // The copy affordance is present and labeled.
+    expect(find.byType(CopyButton), findsOneWidget);
+    expect(find.text('Copy'), findsOneWidget);
+
+    await tester.tap(find.byType(CopyButton));
+    await tester.pump();
+
+    // The whole reply lands on the clipboard.
+    expect(calls, isNotEmpty, reason: 'Clipboard.setData was invoked');
+    final text = (calls.first.arguments as Map)['text'] as String;
+    expect(text, 'copy me!');
+
+    // Feedback label flips to "Copied".
+    expect(find.text('Copied'), findsOneWidget);
+  });
+
+  testWidgets(
+    'AssistantBubble Copy handles clipboard failure (no crash, no "Copied")',
+    (tester) async {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            throw PlatformException(code: 'no-clipboard');
+          }
+          return null;
+        },
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: AssistantBubble(AssistantMsg(id: 'a1', text: 'fail me')),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // Tapping must not throw an unhandled async error.
+      await tester.tap(find.byType(CopyButton));
+      await tester.pump();
+
+      // Did NOT flip to the success state…
+      expect(find.text('Copied'), findsNothing);
+      // …and surfaced the failure as a SnackBar instead.
+      expect(find.textContaining("Couldn't copy"), findsOneWidget);
+    },
+  );
+
+  testWidgets('AssistantBubble hides Copy when the reply is empty', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: AssistantBubble(AssistantMsg(id: 'a1', text: '')),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byType(CopyButton), findsNothing);
   });
 
   testWidgets('UserBubble text is selectable (copyable)', (tester) async {
