@@ -219,6 +219,10 @@ export type ClientMessage =
       cwd?: string | null;
       runPi?: boolean;
       worktree_path?: string | null;
+      /** Plan/112b — name for the new worktree's git branch. Validated with
+       *  `git check-ref-format`; also drives the worktree folder name
+       *  (`<basename>_<sanitized>`). Falls back to `work/<stamp>` when null. */
+      branch?: string | null;
     }
   // Plan/112 — worktree tracking: list tracked worktrees (optionally
   // filtered by base repo path) and remove one by id.

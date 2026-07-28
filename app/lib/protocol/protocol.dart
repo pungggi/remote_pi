@@ -821,11 +821,13 @@ class OpenTerminalRequest extends ClientMessage {
   final String? cwd;
   final bool runPi;
   final String? worktreePath;
+  final String? branch;
   OpenTerminalRequest({
     required this.id,
     this.cwd,
     this.runPi = true,
     this.worktreePath,
+    this.branch,
   });
 
   @override
@@ -835,6 +837,7 @@ class OpenTerminalRequest extends ClientMessage {
         if (cwd != null) 'cwd': cwd,
         'runPi': runPi,
         if (worktreePath != null) 'worktree_path': worktreePath,
+        if (branch != null) 'branch': branch,
       };
 }
 

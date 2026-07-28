@@ -105,5 +105,11 @@ tap reopens (terminal in the worktree, no new worktree); trash removes it
 
 ## Next
 
-- **112b** — worktree name prompt (custom branch name instead of timestamp).
+- ~~**112b** — worktree name prompt (custom branch name instead of timestamp).~~
+  **DONE** — tapping "Open terminal" now prompts for a branch name; the
+  worktree folder is `<project>_<branch>` (sibling of the base repo), and a
+  `<worktree>/.pi/remote-pi/config.json` with `auto_start_relay:true` is
+  written so the new `pi` session skips the first-run wizard and
+  auto-connects to the relay as a new room (distinct cwd → distinct room,
+  coexists with the base session).
 - **112c** — show uncommitted-changes indicator per worktree row.

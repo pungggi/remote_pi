@@ -24,11 +24,12 @@
  * launchers are plan 108b; on those the handler replies ok:false "unsupported".
  */
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import type { ClientMessage, WireWorktree } from "../protocol/types.js";
 import type { ActionReplySender } from "./handlers.js";
 import { addWorktree, forgetWorktree, listWorktrees } from "./worktree_registry.js";
+import { saveLocalConfig } from "../session/local_config.js";
 
 type OpenTerminalRequestMsg = Extract<
   ClientMessage,
@@ -87,23 +88,54 @@ export interface WorktreeResult {
   message: string;
 }
 
+/** Sanitize a git branch name into a safe filesystem folder segment
+ *  (Windows-invalid chars + whitespace → `_`). `feature/login` → `feature_login`. */
+function sanitizeFolderName(s: string): string {
+  const cleaned = s
+    .replace(/[\\/:*?"<>|\s]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^[._]+/, "")
+    .replace(/[._]+$/, "");
+  return cleaned || "worktree";
+}
+
 /**
  * Plan/108 (worktree mode) — create a throwaway git worktree off `baseCwd`
- * (current HEAD) and return its tracked entry. New branch `work/<stamp>`,
- * worktree placed in a sibling `worktrees/<stamp>` folder next to the base
- * repo. The entry is recorded in the worktree registry (plan 112).
+ * (current HEAD) and return its tracked entry.
  *
- * Returns ok:false (never throws) when the path isn't a git repo, `git` is
- * missing, or `git worktree add` fails — the caller surfaces it as a
- * snackbar. Worktrees are pruned via the app's remove action (git worktree
- * remove + branch delete + registry forget).
+ * - `branch` (plan 112b): the git branch to create. Validated with
+ *   `git check-ref-format`. Falls back to `work/<stamp>` when omitted.
+ * - Folder (plan 112b): `<basename(base)>_<sanitized branch>` as a SIBLING of
+ *   the base repo — so `remote_pi` + `login` → `remote_pi_login`.
+ * - Plan 112: the entry is recorded in the worktree registry.
+ * - Plan 112 (#2): a `<worktree>/.pi/remote-pi/config.json` with
+ *   `auto_start_relay:true` is written so the worktree's `pi` session skips
+ *   the first-run wizard and auto-connects to the relay as a NEW room.
+ *
+ * Returns ok:false (never throws) on a bad branch name, a non-git path, a
+ * missing `git`, or a failed `git worktree add`.
  */
-export function createWorktree(baseCwd: string): WorktreeResult {
+export function createWorktree(
+  baseCwd: string,
+  branchInput?: string | null,
+): WorktreeResult {
   const d = new Date();
   const stamp = worktreeStamp(d);
-  const branch = `work/${stamp}`;
-  const worktreesDir = join(dirname(baseCwd), "worktrees");
-  const worktreePath = join(worktreesDir, stamp);
+  const branch = branchInput && branchInput.trim() ? branchInput.trim() : `work/${stamp}`;
+  const folderName = `${basename(baseCwd)}_${sanitizeFolderName(branch)}`;
+  const worktreePath = join(dirname(baseCwd), folderName);
+
+  // 0. Validate the branch name format.
+  try {
+    execFileSync("git", ["-C", baseCwd, "check-ref-format", "--branch", branch], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+  } catch (e) {
+    return { ok: false, message: `Invalid branch name "${branch}": ${errMsg(e)}` };
+  }
 
   // 1. Must be inside a git work tree.
   try {
@@ -117,14 +149,8 @@ export function createWorktree(baseCwd: string): WorktreeResult {
     return { ok: false, message: `Not a git repository: ${baseCwd} — ${errMsg(e)}` };
   }
 
-  // 2. Ensure the sibling worktrees/ folder exists.
-  try {
-    mkdirSync(worktreesDir, { recursive: true });
-  } catch (e) {
-    return { ok: false, message: `Cannot create ${worktreesDir}: ${errMsg(e)}` };
-  }
-
-  // 3. Create the worktree on a fresh branch off HEAD.
+  // 2. Create the worktree on a fresh branch off HEAD (`git worktree add`
+  //    creates the destination path + parent dirs).
   try {
     execFileSync("git", ["-C", baseCwd, "worktree", "add", "-b", branch, worktreePath], {
       encoding: "utf8",
@@ -134,6 +160,15 @@ export function createWorktree(baseCwd: string): WorktreeResult {
     });
   } catch (e) {
     return { ok: false, message: `git worktree add failed: ${errMsg(e)}` };
+  }
+
+  // 3. Plan/112 #2 — write local config so the worktree's `pi` session skips
+  //    the first-run wizard and auto-connects to the relay (new room derived
+  //    from the worktree cwd). Non-fatal if unwritable.
+  try {
+    saveLocalConfig(worktreePath, { agent_name: branch, auto_start_relay: true });
+  } catch {
+    /* best-effort — worktree works, just won't auto-connect */
   }
 
   const entry: WireWorktree = {
@@ -334,7 +369,7 @@ export async function handleOpenTerminal(
     // and open the terminal INSIDE it (not the base repo). Each tap creates
     // an isolated working copy on its own branch `work/<stamp>`. ok:false
     // (e.g. not a git repo, or worktree add failed) surfaces as a snackbar.
-    const wt = createWorktree(cwd);
+    const wt = createWorktree(cwd, msg.branch);
     if (!wt.ok || !wt.entry) {
       sender.send({
         type: "open_terminal_result",

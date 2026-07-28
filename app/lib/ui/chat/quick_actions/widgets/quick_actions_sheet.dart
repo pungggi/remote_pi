@@ -204,9 +204,17 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
     // Capture the router before any pop — the sheet's context dies once we
     // dismiss it, but the router outlives the sheet.
     final router = GoRouter.of(context);
+    // Plan/112b — prompt for the new worktree's git branch name (also drives
+    // the worktree folder name). The Pi validates it (git check-ref-format).
+    final branch = await _promptBranchName();
+    if (!mounted || branch == null) return; // cancelled
+    if (branch.isEmpty) {
+      _toast('Enter a branch name', widget.messenger.context.colors.error);
+      return;
+    }
     final OpenTerminalResult r;
     try {
-      r = await vm.openTerminal();
+      r = await vm.openTerminal(branch: branch);
     } catch (_) {
       // Transport failure already toasted via `vm.errors`.
       return;
@@ -218,6 +226,63 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
     } else {
       _toast(r.message, context.colors.error);
     }
+  }
+
+  /// Plan/112b — prompts for the new worktree's git branch name. Returns null
+  /// on cancel, an empty string on Create-with-no-input (caller validates),
+  /// or the trimmed name. The branch also names the worktree folder
+  /// (`<project-basename>_<branch>`).
+  Future<String?> _promptBranchName() {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (dCtx) {
+        final colors = dCtx.colors;
+        return AlertDialog(
+          backgroundColor: colors.bg,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+            side: BorderSide(color: colors.border),
+          ),
+          title: Text(
+            'New worktree',
+            style: TextStyle(fontFamily: kMonoFamily, fontSize: 15, color: colors.text),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Creates a git worktree off this project on a new branch, then opens a terminal running pi inside it.',
+                style: TextStyle(fontSize: 12, color: colors.muted),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                textInputAction: TextInputAction.done,
+                style: TextStyle(fontFamily: kMonoFamily, fontSize: 14, color: colors.text),
+                decoration: InputDecoration(
+                  hintText: 'branch name',
+                  hintStyle: TextStyle(fontFamily: kMonoFamily, color: colors.muted),
+                ),
+                onSubmitted: (v) => Navigator.of(dCtx).pop(v.trim()),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dCtx).pop(null),
+              child: Text('Cancel', style: TextStyle(fontFamily: kMonoFamily, color: colors.muted)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dCtx).pop(controller.text.trim()),
+              child: Text('Create', style: TextStyle(fontFamily: kMonoFamily, color: colors.accent)),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> _onNewSession(QuickActionsViewModel vm) async {

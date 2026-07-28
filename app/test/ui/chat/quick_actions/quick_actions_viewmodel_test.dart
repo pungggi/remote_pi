@@ -42,6 +42,7 @@ class _FakeActionsRepository implements IActionsRepository {
     String? cwd,
     bool runPi = true,
     String? worktreePath,
+    String? branch,
   }) async =>
       OpenTerminalResult(
         inReplyTo: '',

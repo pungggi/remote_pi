@@ -113,10 +113,13 @@ abstract class IActionsRepository extends Repository {
   ///
   /// Plan/112 — [worktreePath] reopens an existing tracked worktree instead
   /// of creating a new one (skips creation, opens the terminal there).
+  ///
+  /// Plan/112b — [branch] names the new worktree's git branch (and folder).
   Future<OpenTerminalResult> openTerminal({
     String? cwd,
     bool runPi = true,
     String? worktreePath,
+    String? branch,
   });
 
   /// Plan/112 — list tracked worktrees, optionally filtered by [base] repo
@@ -392,6 +395,7 @@ class ActionsRepository extends Repository implements IActionsRepository {
     String? cwd,
     bool runPi = true,
     String? worktreePath,
+    String? branch,
   }) =>
       _dispatch<OpenTerminalResult>(
         (id) => OpenTerminalRequest(
@@ -399,6 +403,7 @@ class ActionsRepository extends Repository implements IActionsRepository {
           cwd: cwd,
           runPi: runPi,
           worktreePath: worktreePath,
+          branch: branch,
         ),
       );
 

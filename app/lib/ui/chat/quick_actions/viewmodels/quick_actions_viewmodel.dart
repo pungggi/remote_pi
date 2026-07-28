@@ -61,6 +61,7 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
   Future<OpenTerminalResult> openTerminal({
     String? cwd,
     bool runPi = true,
+    String? branch,
   }) async {
     _emitIfAlive(QuickActionsBusy(
       action: ActionName.terminal,
@@ -69,7 +70,11 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
       currentModelName: state.currentModelName,
     ));
     try {
-      final result = await _repo.openTerminal(cwd: cwd, runPi: runPi);
+      final result = await _repo.openTerminal(
+        cwd: cwd,
+        runPi: runPi,
+        branch: branch,
+      );
       _emitIfAlive(QuickActionsIdle(
         currentThinking: state.currentThinking,
         currentModel: state.currentModel,
