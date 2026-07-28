@@ -315,6 +315,41 @@ aceito nesta fatia por usar imagem comprimida (~150–400 KB). Histórico/
 
 ---
 
+## Imagens do agente (plan/114)
+
+Direção oposta da plan/30: o **agente mostra ao usuário** uma imagem que está
+no disco (no repo), em vez do app enviar uma foto. O agente chama a tool
+`show_image({ path, caption? })`; a pi-extension lê/valida o arquivo (whitelist
+`jpeg/png/webp/gif`, **teto bruto 4 MiB**), faz broadcast de um `agent_image`
+ServerMessage com **inline base64** a todos os owners, e devolve ao modelo
+**só metadados** (`{ shown, path, mime, width, height, bytes }`) — os bytes
+**nunca** entram no contexto do modelo (mesma disciplina do plan/49). O app
+renderiza um balão tappable que abre um viewer full-screen (pinch-zoom, salvar,
+compartilhar).
+
+### Wire
+ServerMessage `agent_image` (broadcast ao vivo, **não** replayed via
+`session_history`):
+
+```jsonc
+{ "type": "agent_image",
+  "id": "img_<uuid>",
+  "in_reply_to": "<turn-id ou \"\" se fora de turn>",
+  "image": { "data": "<base64>", "mime": "image/png" },
+  "path": "assets/diagram.png",
+  "caption": "arquitetura v2",
+  "width": 1920, "height": 1080 }
+```
+
+### Transporte
+Mesmo `ct` opaco do plan/30; relay **inalterado**. Double-base64 (~+77%)
+aceito pelo teto de 4 MiB. Sem resize server-side nem canal binário no MVP
+(follow-ups: `sharp` + Trilha 2). Persistência é **local no app** (DB plan/31):
+sobrevive a restart do app, mas não a re-sync depois de um wipe local (gap
+vs decisão #8 do plan/30 — risco #2 do plan/114).
+
+---
+
 ## Mensagem enfileirada durante turn ativo
 
 Fila curta **Pi-side, em memória**, de propriedade do Android: enquanto há turn
