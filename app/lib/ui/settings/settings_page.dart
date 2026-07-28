@@ -150,18 +150,22 @@ class _RelaySection extends StatefulWidget {
 
 class _RelaySectionState extends State<_RelaySection> {
   late final TextEditingController _ctrl;
+  late final TextEditingController _lanCtrl;
   String? _error;
+  String? _lanError;
 
   @override
   void initState() {
     super.initState();
     final vm = context.read<SettingsViewModel>();
     _ctrl = TextEditingController(text: vm.relayUrlOverride);
+    _lanCtrl = TextEditingController(text: vm.lanUrlOverride);
   }
 
   @override
   void dispose() {
     _ctrl.dispose();
+    _lanCtrl.dispose();
     super.dispose();
   }
 
@@ -176,6 +180,27 @@ class _RelaySectionState extends State<_RelaySection> {
         const SnackBar(
           content: Text(
             'Relay updated',
+            style: TextStyle(fontFamily: kMonoFamily),
+          ),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  // Plan 115 — save the optional LAN endpoint (auto-filled by the relay,
+  // user-editable). Empty clears it (= primary/Tailscale only).
+  Future<void> _saveLan() async {
+    final vm = context.read<SettingsViewModel>();
+    final messenger = ScaffoldMessenger.of(context);
+    final err = await vm.saveLanUrl(_lanCtrl.text);
+    if (!mounted) return;
+    setState(() => _lanError = err);
+    if (err == null) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text(
+            'LAN relay updated',
             style: TextStyle(fontFamily: kMonoFamily),
           ),
           duration: Duration(seconds: 2),
@@ -274,6 +299,105 @@ class _RelaySectionState extends State<_RelaySection> {
                         await context
                             .read<SettingsViewModel>()
                             .clearRelayUrl();
+                      },
+                      child: Text(
+                        'Clear',
+                        style: const TextStyle(
+                          fontFamily: kMonoFamily,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Plan 115 — optional LAN endpoint. At home the app dials this
+              // first so traffic bypasses Tailscale entirely (the flaky layer
+              // on Android). Auto-filled from the relay's handshake
+              // advertisement; clearing it opts out (primary/overlay only).
+              const SizedBox(height: 18),
+              Text(
+                'LAN relay (optional)',
+                style: context.typo.sansBody.copyWith(
+                  fontSize: 12.5,
+                  color: colors.text,
+                ),
+              ),
+              const SizedBox(height: 6),
+              TextField(
+                controller: _lanCtrl,
+                keyboardType: TextInputType.url,
+                style: context.typo.mono.copyWith(
+                  fontSize: 13,
+                  color: colors.text,
+                ),
+                decoration: InputDecoration(
+                  isDense: true,
+                  hintText: 'http://192.168.1.10:3000',
+                  hintStyle: context.typo.mono.copyWith(
+                    color: colors.muted,
+                    fontSize: 12,
+                  ),
+                  helperText: vm.lanUrlOverride.isEmpty
+                      ? 'Auto-filled by the relay — leave empty for '
+                            'primary/Tailscale only'
+                      : 'Tried first at home; clears to use primary only',
+                  helperStyle: context.typo.mono.copyWith(
+                    fontSize: 10,
+                    color: colors.muted,
+                  ),
+                  errorText: _lanError,
+                  errorStyle: context.typo.mono.copyWith(
+                    fontSize: 10,
+                    color: colors.error,
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 10,
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderSide: BorderSide(color: colors.border),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderSide: BorderSide(color: colors.accent),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    FilledButton(
+                      onPressed: _saveLan,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: colors.accent,
+                        foregroundColor: colors.onAccent,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 18,
+                          vertical: 10,
+                        ),
+                        shape: const RoundedRectangleBorder(
+                          borderRadius:
+                              BorderRadius.all(Radius.circular(6)),
+                        ),
+                      ),
+                      child: Text(
+                        'Save LAN',
+                        style: const TextStyle(
+                          fontFamily: kMonoFamily,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    TextButton(
+                      onPressed: () async {
+                        _lanCtrl.clear();
+                        await context
+                            .read<SettingsViewModel>()
+                            .clearLanUrl();
                       },
                       child: Text(
                         'Clear',

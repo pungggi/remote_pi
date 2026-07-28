@@ -20,10 +20,19 @@ pub enum ClientAuthMsg {
 }
 
 /// Messages that the relay sends during the auth handshake.
+///
+/// Plan 115 — `Challenge` optionally carries `lan`: the relay's local
+/// RFC1918 IPv4 candidate URLs (`http://ip:port`). The field is omitted
+/// entirely when empty (backwards compatible with apps older than plan
+/// 115, which simply never see it).
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerAuthMsg {
-    Challenge { nonce: String },
+    Challenge {
+        nonce: String,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        lan: Vec<String>,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -66,9 +75,13 @@ pub fn parse_hello(line: &str) -> Result<VerifyingKey, AuthError> {
 }
 
 /// Serialises the challenge message to a JSONL string (no trailing newline).
-pub fn challenge_line(nonce_b64: &str) -> String {
+///
+/// Plan 115 — [lan] is the relay's advertised LAN candidate URLs; pass an
+/// empty slice to omit the field entirely (the pre-plan-115 wire format).
+pub fn challenge_line(nonce_b64: &str, lan: &[String]) -> String {
     serde_json::to_string(&ServerAuthMsg::Challenge {
         nonce: nonce_b64.to_owned(),
+        lan: lan.to_vec(),
     })
     .expect("ServerAuthMsg serialisation is infallible")
 }

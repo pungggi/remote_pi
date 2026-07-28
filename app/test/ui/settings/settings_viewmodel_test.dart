@@ -345,5 +345,64 @@ void main() {
 
       vm.dispose();
     });
+
+    // ── Plan 115 — LAN endpoint field ────────────────────────────────
+    group('plan 115 — lanUrl', () {
+      test('lanUrlOverride is empty until a LAN endpoint is set', () async {
+        final prefs = Preferences(_FakeSecureStorage());
+        final vm = SettingsViewModel(_FakeStorage([]), prefs, _conn());
+        await Future<void>.delayed(Duration.zero);
+        expect(vm.lanUrlOverride, isEmpty);
+        vm.dispose();
+      });
+
+      test('saveLanUrl with a valid URL persists it as the single LAN '
+          'candidate', () async {
+        final prefs = Preferences(_FakeSecureStorage());
+        final vm = SettingsViewModel(_FakeStorage([]), prefs, _conn());
+        await Future<void>.delayed(Duration.zero);
+
+        expect(await vm.saveLanUrl('http://192.168.1.10:3000'), isNull);
+        expect(prefs.lanEndpoints, ['http://192.168.1.10:3000']);
+        expect(vm.lanUrlOverride, 'http://192.168.1.10:3000');
+        vm.dispose();
+      });
+
+      test('saveLanUrl with an invalid URL returns an error and does '
+          'NOT persist', () async {
+        final prefs = Preferences(_FakeSecureStorage());
+        final vm = SettingsViewModel(_FakeStorage([]), prefs, _conn());
+        await Future<void>.delayed(Duration.zero);
+
+        expect(await vm.saveLanUrl('ws://192.168.1.10:3000'), isNotNull);
+        expect(prefs.lanEndpoints, isEmpty);
+        vm.dispose();
+      });
+
+      test('saveLanUrl with blank clears the LAN list (opt out)', () async {
+        final prefs = Preferences(_FakeSecureStorage());
+        final vm = SettingsViewModel(_FakeStorage([]), prefs, _conn());
+        await Future<void>.delayed(Duration.zero);
+
+        await vm.saveLanUrl('http://192.168.1.10:3000');
+        expect(prefs.lanEndpoints, isNotEmpty);
+
+        expect(await vm.saveLanUrl('  '), isNull);
+        expect(prefs.lanEndpoints, isEmpty);
+        expect(vm.lanUrlOverride, isEmpty);
+        vm.dispose();
+      });
+
+      test('clearLanUrl empties the LAN candidate list', () async {
+        final prefs = Preferences(_FakeSecureStorage());
+        final vm = SettingsViewModel(_FakeStorage([]), prefs, _conn());
+        await Future<void>.delayed(Duration.zero);
+
+        await vm.saveLanUrl('http://192.168.1.10:3000');
+        await vm.clearLanUrl();
+        expect(prefs.lanEndpoints, isEmpty);
+        vm.dispose();
+      });
+    });
   });
 }

@@ -59,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
         mesh,
         mesh_auth,
         metrics,
+        port,
     };
     let app = relay::build_router(state);
 

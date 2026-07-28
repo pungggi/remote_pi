@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -13,6 +15,15 @@ class Preferences extends ChangeNotifier {
   bool _hideToolCalls = false;
   String? _selectedPeerEpk;
   String? _relayUrl;
+  // Plan 115 — LAN candidate URLs for the global relay, learned from the
+  // relay's handshake advertisement (and editable in Settings). LAN is
+  // dialled first so home use bypasses Tailscale entirely.
+  List<String> _lanEndpoints = const [];
+  // Plan 115 — the endpoint that last connected successfully. The next
+  // connect starts from it (preference bias) before falling through the
+  // full candidate list. Also drives the mesh HTTP client so it follows
+  // the live path instead of always the (possibly flaky) primary.
+  String? _lastGoodRelayUrl;
   bool _onboardingCompleted = false;
   ThemeMode _themeMode = ThemeMode.system;
   // Plan 103 — keep the relay WebSocket alive in the background via an Android
@@ -29,6 +40,8 @@ class Preferences extends ChangeNotifier {
   static const _kHideToolCallsKey = 'prefs.hide_tool_calls';
   static const _kSelectedPeerEpkKey = 'prefs.selected_peer_epk';
   static const _kRelayUrlKey = 'prefs.relay_url';
+  static const _kLanEndpointsKey = 'prefs.lan_endpoints';
+  static const _kLastGoodRelayUrlKey = 'prefs.last_good_relay_url';
   static const _kOnboardingCompletedKey = 'prefs.onboarding_completed';
   static const _kThemeModeKey = 'prefs.theme_mode';
   static const _kKeepAliveInBackgroundKey = 'prefs.keep_alive_in_background';
@@ -106,6 +119,22 @@ class Preferences extends ChangeNotifier {
     final relayCleaned = (relay != null && relay.isNotEmpty) ? relay : null;
     if (relayCleaned != _relayUrl) {
       _relayUrl = relayCleaned;
+      changed = true;
+    }
+
+    // Plan 115 — hydrate LAN candidates (JSON array) + last-good winner.
+    final lanRaw = await _store.read(key: _kLanEndpointsKey);
+    final lanList = _decodeLanEndpoints(lanRaw);
+    if (!_listEquals(lanList, _lanEndpoints)) {
+      _lanEndpoints = lanList;
+      changed = true;
+    }
+
+    final lastGood = await _store.read(key: _kLastGoodRelayUrlKey);
+    final lastGoodCleaned =
+        (lastGood != null && lastGood.isNotEmpty) ? lastGood : null;
+    if (lastGoodCleaned != _lastGoodRelayUrl) {
+      _lastGoodRelayUrl = lastGoodCleaned;
       changed = true;
     }
 
@@ -192,6 +221,68 @@ class Preferences extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ── Plan 115 — LAN endpoints + last-good winner ───────────────────────
+
+  /// LAN candidate URLs for the global relay (home VLAN addresses the
+  /// relay advertised at handshake, plus anything the user typed in
+  /// Settings). Dialled first so home use skips the overlay.
+  List<String> get lanEndpoints => List.unmodifiable(_lanEndpoints);
+
+  /// Replace the whole LAN candidate list. Pass an empty list to opt out
+  /// of LAN entirely ("Tailscale only"). Dedupes + drops empties.
+  Future<void> setLanEndpoints(List<String> urls) async {
+    final cleaned = _normalizeLanEndpoints(urls);
+    if (_listEquals(cleaned, _lanEndpoints)) return;
+    _lanEndpoints = cleaned;
+    if (cleaned.isEmpty) {
+      await _store.delete(key: _kLanEndpointsKey);
+    } else {
+      await _store.write(
+        key: _kLanEndpointsKey,
+        value: jsonEncode(cleaned),
+      );
+    }
+    notifyListeners();
+  }
+
+  /// Merge [urls] into the LAN candidate list (union, preserving existing
+  /// order, deduped). Used when the relay advertises its LAN addresses at
+  /// handshake — we keep what the user already had and add any new ones
+  /// the relay knows about.
+  Future<void> mergeLanEndpoints(Iterable<String> urls) async {
+    final merged = <String>[..._lanEndpoints];
+    final seen = merged.toSet();
+    for (final u in urls) {
+      if (u.isNotEmpty && seen.add(u)) merged.add(u);
+    }
+    if (_listEquals(merged, _lanEndpoints)) return;
+    _lanEndpoints = List.unmodifiable(merged);
+    await _store.write(
+      key: _kLanEndpointsKey,
+      value: jsonEncode(merged),
+    );
+    notifyListeners();
+  }
+
+  /// The endpoint that last connected successfully, or `null` before the
+  /// first successful connect. The next connect starts from it.
+  String? get lastGoodRelayUrl => _lastGoodRelayUrl;
+
+  /// Record the winning endpoint after a successful connect. `null` /
+  /// empty clears it.
+  Future<void> setLastGoodRelayUrl(String? value) async {
+    final cleaned = (value != null && value.isNotEmpty) ? value : null;
+    if (cleaned == _lastGoodRelayUrl) return;
+    _lastGoodRelayUrl = cleaned;
+    if (cleaned == null) {
+      await _store.delete(key: _kLastGoodRelayUrlKey);
+    } else {
+      await _store.write(key: _kLastGoodRelayUrlKey, value: cleaned);
+    }
+    // No notifyListeners() — last-good is internal transport bookkeeping,
+    // not UI state. Avoids a rebuild storm on every reconnect.
+  }
+
   Future<void> setOnboardingCompleted(bool value) async {
     if (_onboardingCompleted == value) return;
     _onboardingCompleted = value;
@@ -248,5 +339,47 @@ class Preferences extends ChangeNotifier {
       default:
         return ThemeMode.system;
     }
+  }
+
+  // ── Plan 115 — LAN endpoint JSON helpers ─────────────────────────────
+
+  /// Decode a persisted LAN endpoints blob (JSON array of strings) into a
+  /// normalised, deduped list. Tolerates a missing/blank/corrupt value by
+  /// returning an empty list — a corrupt blob must never block boot.
+  static List<String> _decodeLanEndpoints(String? raw) {
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return const [];
+      return _normalizeLanEndpoints(
+        decoded.whereType<String>(),
+      );
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// Drop empties + dedupe while preserving first-seen order. Returns an
+  /// unmodifiable list so the field can be compared by identity safely.
+  static List<String> _normalizeLanEndpoints(Iterable<String> urls) {
+    final out = <String>[];
+    final seen = <String>{};
+    for (final u in urls) {
+      final t = u.trim();
+      if (t.isNotEmpty && seen.add(t)) out.add(t);
+    }
+    return List.unmodifiable(out);
+  }
+
+  /// Reference equality is wrong for [List]; deep compare so the loaders
+  /// and setters can short-circuit no-op writes (and skip a redundant
+  /// [notifyListeners]).
+  static bool _listEquals(List<String> a, List<String> b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 }

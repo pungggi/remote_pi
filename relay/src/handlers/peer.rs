@@ -15,6 +15,7 @@ use crate::AppState;
 use crate::auth::challenge::{
     HELLO_TIMEOUT_MS, challenge_line, gen_nonce, parse_hello, verify_auth,
 };
+use crate::lan::lan_candidate_urls;
 use crate::protocol::outer::{OuterEnvelope, parse_line};
 use crate::rooms::{RoomMeta, RoomMetaPatch};
 
@@ -56,9 +57,15 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
     };
 
     // ── 2. Send challenge ─────────────────────────────────────────────────
+    // Plan 115 — advertise the relay's local RFC1918 IPv4 candidates so the
+    // phone can dial LAN first at home (bypassing Tailscale). Collected
+    // fresh per connection (DHCP may have changed the address since boot);
+    // failures yield an empty list, which `challenge_line` omits entirely
+    // (backwards compatible).
     let (nonce, nonce_b64) = gen_nonce();
+    let lan = lan_candidate_urls(state.port);
     if sink
-        .send(Message::Text(challenge_line(&nonce_b64)))
+        .send(Message::Text(challenge_line(&nonce_b64, &lan)))
         .await
         .is_err()
     {
