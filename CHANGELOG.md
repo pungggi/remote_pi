@@ -154,6 +154,13 @@ and 27 (see [`plan/`](plan/) directory for design history).
   own bubble as `pending` and promote to `confirmed` when the echo arrives;
   other devices insert the message as `confirmed` directly.
 
+#### Copy agent replies (app)
+- The assistant bubble in the mobile chat gained a one-tap **Copy** button
+  that puts the whole reply on the clipboard with a "Copied" confirmation.
+  The reply stays selectable as before — the button is the quick path. The
+  copy control is now a shared widget (`CopyButton`), reused by both the
+  reply bubble and the fenced code-block header.
+
 ### Changed
 
 #### Relay control-frame deduplication

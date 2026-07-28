@@ -1,5 +1,6 @@
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/agent_markdown.dart';
+import 'package:app/ui/chat/widgets/copy_button.dart';
 import 'package:app/ui/chat/widgets/image_bubble.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
@@ -201,7 +202,20 @@ class AssistantBubble extends StatelessWidget {
     // capped. Selectable so prose/code can be copied.
     return SizedBox(
       width: double.infinity,
-      child: AgentMarkdown(message.text, selectable: true),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AgentMarkdown(message.text, selectable: true),
+          // One-tap copy of the whole reply. Hidden when empty (a finalized
+          // turn that produced no text has nothing to copy).
+          if (message.text.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: CopyButton(text: message.text, label: 'Copy'),
+            ),
+        ],
+      ),
     );
   }
 }
