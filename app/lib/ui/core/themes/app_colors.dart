@@ -110,7 +110,7 @@ class AppColors extends ThemeExtension<AppColors> {
     success: Color(0xFF6CD28A),
     error: Color(0xFFE5484D),
     warning: Color(0xFFFFB300),
-    working: Color(0xFF00E676),
+    working: Color(0xFF3FA9F5), // azure — distinct from the green success/live dot
     codeBg: Color(0xFF050505),
     userBubble: Color(0xFF1A1A1A),
     modelBadgeBg: Color(0xFF161616),
@@ -137,7 +137,7 @@ class AppColors extends ThemeExtension<AppColors> {
     success: Color(0xFF1E7A41),
     error: Color(0xFFC42026),
     warning: Color(0xFF9A6300),
-    working: Color(0xFF1B7A40),
+    working: Color(0xFF1A6CB0), // azure — distinct from the green success/live dot
     codeBg: Color(0xFFF0F0F0),
     userBubble: Color(0xFFEAEAEC),
     modelBadgeBg: Color(0xFFEDEDEF),
