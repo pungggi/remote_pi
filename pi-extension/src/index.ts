@@ -703,6 +703,9 @@ function _jpegDimensions(bytes: Buffer): { width: number; height: number } | und
   return undefined;
 }
 
+/** Build a `shown:false` tool_result for a failure. The `path` argument MUST be
+ *  the agent-supplied `rawPath` (never the resolved `absPath`) so absolute
+ *  filesystem paths never leak into model context — see plan/114 review. */
 function _showImageError(
   error: string,
   path: string,
@@ -735,26 +738,26 @@ function _handleShowImage(
   try {
     const s = statSync(absPath);
     if (!s.isFile()) {
-      return _showImageError(`not a regular file: ${rawPath}`, absPath);
+      return _showImageError(`not a regular file: ${rawPath}`, rawPath);
     }
     if (s.size > SHOW_IMAGE_MAX_BYTES) {
       return _showImageError(
         `file too large (${s.size} bytes; max ${SHOW_IMAGE_MAX_BYTES})`,
-        absPath,
+        rawPath,
       );
     }
     bytes = readFileSync(absPath);
     size = s.size;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return _showImageError(`cannot read ${rawPath}: ${msg}`, absPath || rawPath);
+    return _showImageError(`cannot read ${rawPath}: ${msg}`, rawPath);
   }
 
   const mime = _mimeFromPathAndMagic(absPath, bytes);
   if (!mime) {
     return _showImageError(
       `unsupported image type (use jpeg/png/webp/gif): ${rawPath}`,
-      absPath,
+      rawPath,
     );
   }
 
@@ -798,7 +801,9 @@ function _registerShowImageTool(pi: ExtensionAPI): void {
         "Supported: JPEG, PNG, WebP, GIF. Hard cap 4 MiB.",
     }),
     caption: Type.Optional(Type.String({
-      description: "Optional caption shown under the image and as the viewer title.",
+      description:
+        "Optional caption shown as a subtitle under the image bubble. " +
+        "The repo path is used as the full-screen viewer title.",
     })),
   });
 

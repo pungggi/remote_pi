@@ -12,7 +12,7 @@
 import { describe, expect, test, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 
 const indexModule = await import("./index.js");
@@ -161,5 +161,23 @@ describe("show_image tool (plan/114)", () => {
 
     expect(result.details?.shown).toBe(false);
     expect(result.details?.error as string).toContain("missing image path");
+  });
+
+  // Plan/114 review: failure paths must echo the agent-supplied `rawPath` in
+  // details.path (never the resolved absolute form) so absolute filesystem
+  // paths don't leak into model context. The other tests pass absolute temp
+  // paths, so they can't catch this — exercise a relative path here.
+  test("error never leaks the resolved absolute path into details.path", async () => {
+    const tool = captureShowImageTool();
+    const rel = join("definitely", "missing", "pixel.png");
+    const resolved = resolve(rel);
+
+    const result = await tool.execute("call-leak", { path: rel });
+
+    expect(result.details?.shown).toBe(false);
+    // Echoes the agent-supplied path verbatim...
+    expect(result.details?.path).toBe(rel);
+    // ...and the resolved absolute form never reaches the model-visible result.
+    expect(JSON.stringify(result)).not.toContain(resolved);
   });
 });
