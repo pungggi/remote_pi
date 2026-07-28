@@ -685,6 +685,69 @@ int messageIndexForSlot(int slot, int msgCount, {required bool streaming}) {
   return msgCount - 1 - (slot - streamingOffset);
 }
 
+/// Plan/fixusrmsgscrolling — how the transcript changed on a single update.
+/// Drives the auto-scroll policy in [_MessageListState._applyScrollPolicy].
+@visibleForTesting
+enum TranscriptGrow {
+  /// No change since last frame.
+  none,
+  /// Content grew at the bottom (newest): the streaming bubble grew, a message
+  /// was finalized/appended, or only the streaming bubble moved.
+  bottom,
+  /// Content grew at the top (oldest): "Load more" prepended older messages.
+  top,
+  /// Wholesale replace: open, session switch, reconnect re-sync, compaction.
+  replace,
+}
+
+/// Classifies how the transcript changed between two builds so the scroll
+/// policy knows whether to re-pin (replace), follow the bottom (bottom
+/// growth), or leave the viewport alone (top growth / none).
+///
+/// `messages` is oldest → newest; `reverse: true` puts the newest at the
+/// bottom (index 0). So items appended at the *back* of the list grow the
+/// bottom, while items prepended at the *front* (load-more) grow the top.
+/// [streamChanged] flags a move of the bottom streaming bubble (the only thing
+/// that can change while the message list is otherwise identical). Regression
+/// test: `test/ui/chat/transcript_grow_test.dart`.
+@visibleForTesting
+TranscriptGrow classifyTranscriptGrow(
+  List<ChatMessage> oldMsgs,
+  List<ChatMessage> newMsgs,
+  bool streamChanged,
+) {
+  if (identical(oldMsgs, newMsgs)) {
+    return streamChanged ? TranscriptGrow.bottom : TranscriptGrow.none;
+  }
+  if (oldMsgs.isEmpty) return TranscriptGrow.replace; // open / switch in
+  if (newMsgs.length < oldMsgs.length) return TranscriptGrow.replace; // compaction
+  if (newMsgs.length == oldMsgs.length) {
+    for (var i = 0; i < oldMsgs.length; i++) {
+      if (oldMsgs[i].id != newMsgs[i].id) return TranscriptGrow.replace;
+    }
+    return TranscriptGrow.bottom; // same ids → only streaming moved
+  }
+  // newMsgs is longer: added at the back (newest = bottom) or front (oldest = top)?
+  final added = newMsgs.length - oldMsgs.length;
+  var prefix = true; // old is a prefix of new → appended at the back (bottom)
+  for (var i = 0; i < oldMsgs.length; i++) {
+    if (oldMsgs[i].id != newMsgs[i].id) {
+      prefix = false;
+      break;
+    }
+  }
+  if (prefix) return TranscriptGrow.bottom;
+  var suffix = true; // old is a suffix of new → prepended at the front (top)
+  for (var i = 0; i < oldMsgs.length; i++) {
+    if (oldMsgs[i].id != newMsgs[i + added].id) {
+      suffix = false;
+      break;
+    }
+  }
+  if (suffix) return TranscriptGrow.top;
+  return TranscriptGrow.replace;
+}
+
 class _MessageList extends StatefulWidget {
   final List<ChatMessage> messages;
   final StreamingMessage? streaming;
@@ -726,6 +789,28 @@ class _MessageListState extends State<_MessageList> {
   /// scroll re-anchors instead of stepping from a stale position.
   int _navIndex = -1;
 
+  /// Plan/fixusrmsgscrolling — whether the viewport is pinned to the bottom
+  /// (newest). `reverse: true` makes the bottom = offset
+  /// [ScrollPosition.minScrollExtent], so we're "pinned" while within
+  /// [_bottomEpsilon] of it. Drives the auto-scroll policy in
+  /// [_applyScrollPolicy]: pinned → new content keeps us at the bottom (and a
+  /// history reload re-lands us there); unpinned → the viewport is held fixed
+  /// while we read older history, and only resumes following the bottom once
+  /// the user scrolls back to the end.
+  bool _pinnedToBottom = true;
+
+  /// How the transcript changed on the last [didUpdateWidget] — decides what
+  /// [_applyScrollPolicy] does in the post-frame callback.
+  TranscriptGrow _grow = TranscriptGrow.none;
+
+  /// Previous frame's [ScrollPosition.maxScrollExtent], used to measure how
+  /// much the content grew at the bottom so an unpinned viewport can be held
+  /// in place instead of drifting toward the newest message.
+  double _prevMaxExtent = 0;
+
+  /// Tolerance (scroll px) within which we still count as "at the bottom".
+  static const double _bottomEpsilon = 48;
+
   /// User messages in conversation order (oldest first). `messages` itself is
   /// oldest → newest, so this preserves that order.
   List<UserMsg> get _userMsgs => [
@@ -736,9 +821,31 @@ class _MessageListState extends State<_MessageList> {
   GlobalKey _keyFor(UserMsg m) => _userKeys.putIfAbsent(m.id, GlobalKey.new);
 
   @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(_onScroll);
+  }
+
+  /// Tracks [_pinnedToBottom] from the live position. Fires on every change —
+  /// gesture OR programmatic — so the flag stays correct whether the user
+  /// flicks up, we jump-to-bottom, or a guided jump scrolls away from the end.
+  void _onScroll() {
+    if (!_scroll.hasClients) return;
+    final p = _scroll.position;
+    _pinnedToBottom = p.pixels <= p.minScrollExtent + _bottomEpsilon;
+  }
+
+  @override
   void didUpdateWidget(_MessageList old) {
     super.didUpdateWidget(old);
-    if (!identical(old.messages, widget.messages)) {
+    final changed = !identical(old.messages, widget.messages) ||
+        old.streaming != widget.streaming;
+    if (changed) {
+      _grow = classifyTranscriptGrow(
+        old.messages,
+        widget.messages,
+        old.streaming != widget.streaming,
+      );
       final live = <String>{};
       for (final m in widget.messages) {
         if (m is UserMsg) live.add(m.id);
@@ -752,8 +859,62 @@ class _MessageListState extends State<_MessageList> {
 
   @override
   void dispose() {
+    _scroll.removeListener(_onScroll);
     _scroll.dispose();
     super.dispose();
+  }
+
+  /// Post-frame auto-scroll policy (scheduled once per build).
+  void _applyScrollPolicy() {
+    // The post-frame callback is registered in build and can fire after this
+    // State has been unmounted — bail before touching a disposed `_scroll`.
+    if (!mounted) return;
+    if (!_scroll.hasClients) {
+      _grow = TranscriptGrow.none;
+      return;
+    }
+    final p = _scroll.position;
+    switch (_grow) {
+      case TranscriptGrow.replace:
+        // History reloaded (open / session switch / compaction) → land at the
+        // newest, like opening a fresh chat.
+        _pinnedToBottom = true;
+        if ((p.pixels - p.minScrollExtent).abs() > 0.5) {
+          p.jumpTo(p.minScrollExtent);
+        }
+        break;
+      case TranscriptGrow.bottom:
+        if (_pinnedToBottom) {
+          // Following the live reply — stay glued to the newest.
+          if ((p.pixels - p.minScrollExtent).abs() > 0.5) {
+            p.jumpTo(p.minScrollExtent);
+          }
+        } else {
+          // Reading older history while new content grows at the bottom. A
+          // reverse list would otherwise drift the viewport toward the newest;
+          // offset by exactly the bottom growth so the same content stays put.
+          final delta = p.maxScrollExtent - _prevMaxExtent;
+          if (delta.abs() > 0.5) {
+            // Clamp the target: a net shrink at the bottom (e.g. the streaming
+            // bubble replaced by a shorter finalized message) makes `delta < 0`,
+            // which could push the target outside [min, max]ScrollExtent.
+            double target = p.pixels + delta;
+            if (target < p.minScrollExtent) {
+              target = p.minScrollExtent;
+            } else if (target > p.maxScrollExtent) {
+              target = p.maxScrollExtent;
+            }
+            p.jumpTo(target);
+          }
+        }
+        break;
+      case TranscriptGrow.top:
+        break; // load-more keeps the viewport; nothing to do.
+      case TranscriptGrow.none:
+        break;
+    }
+    _prevMaxExtent = p.maxScrollExtent;
+    _grow = TranscriptGrow.none;
   }
 
   /// Index of the topmost user message overlapping the viewport — the natural
@@ -822,10 +983,13 @@ class _MessageListState extends State<_MessageList> {
         (widget.streaming != null ? 1 : 0) +
         (widget.truncated && widget.onLoadMore != null ? 1 : 0);
 
-    // `reverse: true` anchors the viewport to the bottom (offset 0 = newest)
-    // and keeps it there as content arrives — no manual scroll-to-bottom is
-    // needed. The previous animateTo-on-every-rebuild fought this and caused
-    // overlapping animations (flicker / runaway scroll) during streaming.
+    // `reverse: true` anchors the viewport to the bottom (offset 0 = newest).
+    // Auto-scroll is driven explicitly by [_applyScrollPolicy] (scheduled
+    // post-frame): pin to the bottom while the user is there, hold the
+    // viewport fixed while they read older history, and re-pin on a history
+    // reload. We never animate-on-every-rebuild — that fought reverse:true and
+    // caused overlapping animations (flicker / runaway scroll) during streaming.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _applyScrollPolicy());
     return Stack(
       children: [
         NotificationListener<ScrollNotification>(
@@ -1279,3 +1443,4 @@ String _relativeAge(String iso) {
   if (d.inHours < 24) return '${d.inHours}h ago';
   return '${d.inDays}d ago';
 }
+
