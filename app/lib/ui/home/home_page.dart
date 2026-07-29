@@ -4,6 +4,7 @@ import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart' show RoomInfo, OpenTerminalResult;
 import 'package:app/routing/adaptive.dart';
 import 'package:app/ui/core/themes/themes.dart';
+import 'package:app/ui/core/widgets/branch_name_dialog.dart';
 import 'package:app/ui/home/states/home_state.dart';
 import 'package:app/ui/settings/settings_sheet.dart';
 import 'package:app/ui/home/viewmodels/home_viewmodel.dart';
@@ -515,77 +516,14 @@ class HomePage extends StatelessWidget {
   /// validates), or the trimmed name. The branch also names the worktree
   /// folder (`<project-basename>_<branch>`).
   Future<String?> _promptBranchName(BuildContext context) {
-    final controller = TextEditingController();
-    final future = showDialog<String>(
+    // BranchNameDialog owns its TextEditingController in State (disposed
+    // during element teardown, after the EditableText unsubscribes) — the
+    // old `whenComplete(controller.dispose)` disposed it too early, before
+    // the deferred focus teardown, which crashed under the switchTo storm.
+    return showDialog<String>(
       context: context,
-      builder: (dCtx) {
-        final colors = dCtx.colors;
-        return AlertDialog(
-          backgroundColor: colors.bg,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-            side: BorderSide(color: colors.border),
-          ),
-          title: Text(
-            'New worktree',
-            style: TextStyle(
-              fontFamily: kMonoFamily,
-              fontSize: 15,
-              color: colors.text,
-            ),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Creates a git worktree off this project on a new branch, '
-                'then opens a terminal running pi inside it.',
-                style: TextStyle(fontSize: 12, color: colors.muted),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: controller,
-                autofocus: true,
-                textInputAction: TextInputAction.done,
-                style: TextStyle(
-                  fontFamily: kMonoFamily,
-                  fontSize: 14,
-                  color: colors.text,
-                ),
-                decoration: InputDecoration(
-                  hintText: 'branch name',
-                  hintStyle: TextStyle(
-                    fontFamily: kMonoFamily,
-                    color: colors.muted,
-                  ),
-                ),
-                onSubmitted: (v) => Navigator.of(dCtx).pop(v.trim()),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dCtx).pop(null),
-              child: Text(
-                'Cancel',
-                style: TextStyle(fontFamily: kMonoFamily, color: colors.muted),
-              ),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(dCtx).pop(controller.text.trim()),
-              child: Text(
-                'Create',
-                style: TextStyle(fontFamily: kMonoFamily, color: colors.accent),
-              ),
-            ),
-          ],
-        );
-      },
+      builder: (_) => const BranchNameDialog(),
     );
-    // Dispose the controller once the dialog has settled (popped via
-    // Cancel / Create / barrier) so repeated opens don't leak listeners.
-    return future.whenComplete(controller.dispose);
   }
 
   void _toast(
