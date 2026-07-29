@@ -23,6 +23,14 @@ export interface LocalConfig {
    * configs without this field are treated as `true` for backward compat.
    */
   auto_start_relay?: boolean;
+  /**
+   * Plan/120 — override the relay room id. When set, `_cmdStart` uses this
+   * verbatim instead of the cwd-derived `roomIdFor(cwd, name)`. Used by the
+   * supervisor's device daemon so it connects in a fixed `"device"` room
+   * (independent of any project cwd) and can receive offline terminal-open
+   * requests from the phone. Absent → current behaviour (cwd-derived room).
+   */
+  room_id?: string;
   // `workspace?`/`worktree?` were removed (plan/38, reescrito 2026-06-08): the
   // mesh identity is `(cwd, nome)`, with `cwd` subsuming folder + worktree
   // disambiguation. Neither axis is derived anymore, so the config fields are
@@ -97,6 +105,7 @@ function parseLocalConfig(raw: string): LocalConfig | null {
     if (migrated) cfg.agent_name = migrated;
   }
   if (typeof src["auto_start_relay"] === "boolean") cfg.auto_start_relay = src["auto_start_relay"];
+  if (typeof src["room_id"] === "string" && src["room_id"].length > 0) cfg.room_id = src["room_id"];
   return cfg;
 }
 
@@ -115,12 +124,16 @@ export function localConfigExists(cwd: string): boolean {
   return directConfig() !== null || existsSync(pathFor(cwd));
 }
 
-export function loadLocalConfig(cwd: string): LocalConfig {
-  // Precedence: inline `REMOTE_PI_DIRECT_CONFIG` env wins over the file. An
-  // unset/empty/malformed env falls through to the on-disk config.json.
-  const direct = directConfig();
-  if (direct) return direct;
-
+/**
+ * File-only loader: parses `<cwd>/.pi/remote-pi/config.json`. Returns {} when
+ * absent/unreadable. Deliberately does NOT consult `REMOTE_PI_DIRECT_CONFIG` —
+ * `saveLocalConfig` merges against THIS so an ephemeral env override (e.g. the
+ * plan/120 device daemon's `room_id:"device"`) is never persisted to a config
+ * file. Without this guard, a worktree created from inside the device daemon
+ * inherits `room_id:"device"` (the env wins in `loadLocalConfig`), sending the
+ * worktree's session to the phone-filtered "device" room.
+ */
+function loadLocalConfigFile(cwd: string): LocalConfig {
   const p = pathFor(cwd);
   if (!existsSync(p)) return {};
   try {
@@ -130,9 +143,22 @@ export function loadLocalConfig(cwd: string): LocalConfig {
   }
 }
 
+export function loadLocalConfig(cwd: string): LocalConfig {
+  // Precedence: inline `REMOTE_PI_DIRECT_CONFIG` env wins over the file. An
+  // unset/empty/malformed env falls through to the on-disk config.json.
+  const direct = directConfig();
+  if (direct) return direct;
+  return loadLocalConfigFile(cwd);
+}
+
 export function saveLocalConfig(cwd: string, patch: Partial<LocalConfig>): void {
   const p = pathFor(cwd);
-  const current = loadLocalConfig(cwd);
+  // Merge against the ON-DISK file only — never the `REMOTE_PI_DIRECT_CONFIG`
+  // env override. The env is an ephemeral process identity (e.g. the device
+  // daemon's `room_id:"device"`), not something to persist; merging it would
+  // leak those env-only fields into config files written for a foreign cwd
+  // (worktrees created by the device daemon). See `loadLocalConfigFile`.
+  const current = loadLocalConfigFile(cwd);
   const next: LocalConfig = { ...current, ...patch };
   // Always persist auto_start_relay explicitly (default true) so future reads
   // never need to guess. Backward-compat: legacy files without the field
