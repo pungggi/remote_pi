@@ -9,19 +9,19 @@
  * replies with `open_terminal_result`. Terminal-spawn logic ported from
  * pi-ps `open-tab.ts` (MIT, same author):
  *
- *   - `WT_SESSION` set (we're inside Windows Terminal) → `wt.exe -w 0 new-tab`
- *     adds a tab to the most-recently-used window.
- *   - otherwise → `Start-Process` opens a fresh console window.
+ *   - `wt.exe` on PATH → `wt.exe -w 0 new-tab` adds a tab to the MRU window.
+ *     Works headless too (the plan/120 device daemon): `-w 0` reaches the
+ *     session's running WT instance by IPC, not via the caller's own window.
+ *   - otherwise (no Windows Terminal) → `Start-Process` opens a fresh console
+ *     window (unreliable from a hidden/headless caller — last resort only).
  *
  * On-demand (not pushed): only fires when the user taps "Open terminal". The
  * handler replies on every path — including failure (ok:false) — so the app
  * never hits the 15s action timeout; a misconfigured path surfaces as a
  * snackbar, not a hang.
  *
- * Platform guard: only Windows is supported for now. The paired daemon runs
- * in the user's session (local socket supervisor — plan 40, NOT a Session-0
- * Windows Service), so it can open a visible desktop window. Mac/Linux
- * launchers are plan 108b; on those the handler replies ok:false "unsupported".
+ * Platform guard: only Windows is supported for now. Mac/Linux launchers are
+ * plan 108b; on those the handler replies ok:false "unsupported".
  */
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -213,6 +213,34 @@ function resolveShell(): string {
   return _shellCache;
 }
 
+let _wtExe: string | null | undefined; // undefined = not yet resolved
+
+/**
+ * Resolve the Windows Terminal CLI once per process: `where wt` → first hit
+ * (the App Execution Alias under %LOCALAPPDATA%\Microsoft\WindowsApps).
+ * Cached because the path never changes during a session. Returns null when
+ * WT isn't installed → caller falls back to the `Start-Process` window.
+ *
+ * Plan/120 — the device daemon is headless (no `WT_SESSION`), but `wt.exe
+ * -w 0 new-tab` still reaches the session's running WT instance, so we prefer
+ * it whenever it's on PATH rather than gating on `WT_SESSION`.
+ */
+function resolveWt(): string | null {
+  if (_wtExe !== undefined) return _wtExe;
+  try {
+    const out = execFileSync("where", ["wt"], {
+      encoding: "utf8",
+      timeout: 2000,
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    }).trim();
+    _wtExe = out.split(/\r?\n/)[0] || null;
+  } catch {
+    _wtExe = null; // `wt` not on PATH → Windows Terminal not installed.
+  }
+  return _wtExe;
+}
+
 interface ChildHandle {
   on(event: "error", cb: (err: Error) => void): unknown;
   on(event: "close", cb: (code: number | null) => void): unknown;
@@ -239,7 +267,6 @@ export function openTerminalTab(
       return;
     }
 
-    const inWindowsTerminal = Boolean(process.env.WT_SESSION);
     const shellExe = resolveShell();
     const cmdSuffix = command
       ? ` -NoExit -Command ${cmdQuote(command)}`
@@ -255,7 +282,13 @@ export function openTerminalTab(
       resolve(r);
     };
 
-    if (inWindowsTerminal) {
+    // Plan/120 — prefer Windows Terminal whenever its CLI is on PATH, even when
+    // the caller is headless (the device daemon, spawned hidden by the
+    // supervisor, has no WT_SESSION). `wt.exe -w 0 new-tab` reaches the
+    // session's running WT instance by IPC, so the tab lands on the interactive
+    // desktop regardless of the caller's own window context. Only fall back to
+    // Start-Process when WT isn't installed.
+    if (resolveWt()) {
       // ── Windows Terminal: open a real new tab in the MRU window ──
       const argsLine = `-w 0 new-tab -d ${cmdQuote(cwd)} ${cmdQuote(shellExe)}${cmdSuffix}`;
       const okMessage = `Opened terminal tab at: ${cwd}${withCmd}`;
@@ -269,7 +302,18 @@ export function openTerminalTab(
         child.on("error", (err) =>
           done({ ok: false, message: `Failed to open: ${err.message}`, method: "wt" }),
         );
-        child.on("close", () => done({ ok: true, message: okMessage, method: "wt" }));
+        // wt.exe exits quickly with a meaningful code once it has handed the
+        // new-tab request to the running WT (or started one). Trust that over
+        // the blind 2s safety net below — a non-zero exit (e.g. bad args)
+        // surfaces as ok:false instead of a false "opened".
+        child.on("close", (code) =>
+          code === 0
+            ? done({ ok: true, message: okMessage, method: "wt" })
+            : done({ ok: false, message: `wt.exe exited with code ${code}`, method: "wt" }),
+        );
+        // Safety net: wt.exe should close in well under 1s. If it hasn't by
+        // 2s (e.g. it had to boot a fresh WT instance and is still handing
+        // off), assume the tab was created — the request is fire-and-forget.
         timer = setTimeout(() => done({ ok: true, message: okMessage, method: "wt" }), 2000);
         child.unref();
       } catch (e) {
