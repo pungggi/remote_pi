@@ -370,6 +370,35 @@ export type ServerMessage =
       width?: number;
       height?: number;
     }
+  // Plan/125 — a document the agent pushes to the user from a file in the repo
+  // (Markdown / text / PDF / HTML). Triggered by the `show_file` tool (see
+  // src/index.ts `_registerShowFileTool`). Same discipline as `agent_image`:
+  // inline base64 `data` to every connected owner, tool_result carries ONLY
+  // metadata, live broadcast (not replayed via `session_history`), anchored to
+  // the turn via `in_reply_to`. `kind` drives which viewer the app opens.
+  // `allow_network` is HTML-only: when true the WebView sandbox permits remote
+  // resources; default (absent/false) blocks all network (JS still runs inline).
+  | {
+      type: "agent_file";
+      id: string;
+      in_reply_to: string;
+      kind: "markdown" | "text" | "pdf" | "html";
+      /** Base64-encoded raw file bytes. Text kinds are valid UTF-8. */
+      data: string;
+      /** Original MIME for display/save (text/markdown, text/plain, text/html,
+       *  application/pdf). */
+      mime?: string;
+      /** Repo path the agent read from (display / save name). */
+      path?: string;
+      /** Optional caption shown under the bubble and as the viewer title. */
+      caption?: string;
+      /** Raw file size in bytes. */
+      size?: number;
+      /** HTML only: when true the app's WebView allows remote resources
+       *  (scripts/images/fetch/ws). Absent/false = sandboxed (JS runs, network
+       *  blocked). Ignored for non-html kinds. */
+      allow_network?: boolean;
+    }
   // Plan/32: pushed after a context compaction (live, and replayed on history
   // re-sync). `tokens_before` is the pre-compaction token count.
   | { type: "compaction"; summary: string; tokens_before: number; ts?: number }

@@ -190,6 +190,14 @@ const RECEIVED_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 // follow-ups; until then oversized files are rejected with a clear message.
 const SHOW_IMAGE_MAX_BYTES = 4 * 1024 * 1024;
 
+// Plan/125 — hard caps on raw DOCUMENT files the agent may push to the user via
+// `show_file` (markdown / text / code / html / pdf). Text-y kinds are bounded
+// small (exceeding 1 MiB is unusual and a 1 MiB single text blob janks the
+// viewer); PDFs are allowed larger but pay the same double-base64 wire tax
+// (risk #1). As with `show_image`, no server-side resize/transcode in the MVP.
+const SHOW_FILE_TEXT_MAX_BYTES = 1 * 1024 * 1024;
+const SHOW_FILE_PDF_MAX_BYTES = 10 * 1024 * 1024;
+
 type ReceivedImageDetails = {
   messageId: string;
   index: number;
@@ -870,6 +878,290 @@ function _registerShowImageTool(pi: ExtensionAPI): void {
     parameters: ShowImageParams,
     execute: async (_toolCallId, params) =>
       _handleShowImage(params as { path: string; caption?: string }),
+  });
+}
+
+// ── Plan/125 — show_file tool (agent → user document: md/text/pdf/html) ───
+// Mirrors `show_image` for non-image files. The agent calls
+// `show_file({ path, caption?, kind?, allowNetwork? })`; the handler detects
+// the kind (markdown/text/pdf/html) by extension (explicit `kind` overrides),
+// validates per-kind size caps + UTF-8 for text kinds, broadcasts an
+// `agent_file` ServerMessage with inline base64 to every connected owner, and
+// returns ONLY metadata to the model (same context-hygiene discipline as
+// plan/49/114). HTML carries an `allow_network` flag so the app knows whether
+// the WebView sandbox should permit remote resources (default: blocked).
+
+type ShowFileKind = "markdown" | "text" | "pdf" | "html";
+
+interface ShowFileResult {
+  shown: boolean;
+  kind?: ShowFileKind;
+  path: string;
+  mime?: string;
+  bytes?: number;
+  reason?: string;
+  error?: string;
+}
+
+/** Extensions rendered as plain text/code in the TextViewer. Anything not in
+ *  this set (and not md/markdown/html/pdf) is rejected by `show_file` rather
+ *  than guessed — the agent passes `kind=` to force a rendering when needed. */
+const SHOW_FILE_TEXT_EXTENSIONS = new Set<string>([
+  "txt", "log", "csv", "tsv", "json", "json5", "yaml", "yml", "toml", "ini",
+  "conf", "cfg", "env", "properties", "xml", "svg",
+  // code
+  "dart", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "rs", "go", "java",
+  "kt", "kts", "swift", "c", "h", "cpp", "hpp", "cc", "hh", "cs", "rb", "php",
+  "sh", "bash", "zsh", "fish", "ps1", "psm1", "bat", "cmd", "sql", "graphql",
+  "gql", "lua", "pl", "r", "scala", "clj", "cljs", "edn", "ex", "exs", "erl",
+  "hs", "ml", "fs", "nim", "v", "zig", "gradle", "groovy", "sass", "scss",
+  "css", "less", "vue", "svelte", "proto", "makefile", "dockerfile",
+]);
+
+/** Basenames treated as text when there's no extension (case-insensitive). */
+const SHOW_FILE_TEXT_BASENAMES = new Set<string>([
+  "readme", "license", "licence", "authors", "contributors", "changelog",
+  "makefile", "dockerfile", "gemfile", "rakefile", "procfile", "editorconfig",
+  "gitignore", "gitattributes", "npmrc", "yarnrc",
+]);
+
+/** Lowercased extension (chars after the last `.`), or "" when none. */
+function _extOf(absPath: string): string {
+  const base = absPath.toLowerCase().split(/[\\/]/).pop() ?? "";
+  const dot = base.lastIndexOf(".");
+  return dot <= 0 ? "" : base.slice(dot + 1);
+}
+
+/** MIME that matches each kind — used for the wire `mime` + save/share type. */
+function _mimeForFileKind(kind: ShowFileKind): string {
+  switch (kind) {
+    case "markdown": return "text/markdown";
+    case "text": return "text/plain";
+    case "html": return "text/html";
+    case "pdf": return "application/pdf";
+  }
+}
+
+/** Detect the viewer kind from the path. Extension first; then dotfile /
+ *  extension-less basenames. A leading-dot file (`.env`, `.gitignore`,
+ *  `.editorconfig`) has no real extension so `_extOf` returns "" — fall back to
+ *  the dot-stripped stem and the common-text basename allowlist
+ *  (Makefile, Dockerfile, README, ...). PDF is accepted by extension regardless
+ *  of magic bytes (a truncated/corrupt PDF still renders as an error in the
+ *  viewer, which is more useful than refusing). Returns undefined when the
+ *  name is unknown — the agent can pass `kind=` to force it. */
+function _detectFileKind(absPath: string): ShowFileKind | undefined {
+  const ext = _extOf(absPath);
+  if (ext === "md" || ext === "markdown") return "markdown";
+  if (ext === "html" || ext === "htm" || ext === "xhtml") return "html";
+  if (ext === "pdf") return "pdf";
+  if (SHOW_FILE_TEXT_EXTENSIONS.has(ext)) return "text";
+  const base = (absPath.toLowerCase().split(/[\\/]/).pop() ?? "");
+  // Dotfiles have an empty extension — strip the leading dot and match the
+  // stem against the extension + basename allowlists (`.env`→`env`,
+  // `.gitignore`→`gitignore`, `.editorconfig`→`editorconfig`).
+  const stem = base.startsWith(".") ? base.slice(1) : base;
+  if (SHOW_FILE_TEXT_EXTENSIONS.has(stem) ||
+      SHOW_FILE_TEXT_BASENAMES.has(stem) ||
+      SHOW_FILE_TEXT_BASENAMES.has(base)) {
+    return "text";
+  }
+  return undefined;
+}
+
+/** Strict UTF-8 validity check. Node's `Buffer.toString("utf8")` silently
+ *  replaces bad bytes with U+FFFD, so we validate ourselves to reject binary
+ *  files pushed as a text/markdown/html kind (the viewer would show garbage). */
+function _isValidUtf8(bytes: Buffer): boolean {
+  let i = 0;
+  const len = bytes.length;
+  while (i < len) {
+    const b0 = bytes[i++];
+    if (b0 < 0x80) continue; // ASCII
+    let n: number;
+    let min: number;
+    if ((b0 & 0xe0) === 0xc0) { n = 1; min = 0x80; }
+    else if ((b0 & 0xf0) === 0xe0) { n = 2; min = 0x800; }
+    else if ((b0 & 0xf8) === 0xf0) { n = 3; min = 0x10000; }
+    else return false; // invalid lead byte
+    if (i + n > len) return false; // truncated sequence
+    let cp = b0 & (0x7f >> n);
+    for (let k = 0; k < n; k++) {
+      const b = bytes[i++];
+      if ((b & 0xc0) !== 0x80) return false; // not a continuation byte
+      cp = (cp << 6) | (b & 0x3f);
+    }
+    if (cp < min) return false; // overlong encoding
+    if (cp >= 0xd800 && cp <= 0xdfff) return false; // UTF-16 surrogate
+    if (cp > 0x10ffff) return false; // out of range
+  }
+  return true;
+}
+
+/** Build a `shown:false` tool_result for a failure. As with `show_image`, the
+ *  `path` argument MUST be the agent-supplied `rawPath` (never the resolved
+ *  `absPath`) so absolute filesystem paths never leak into model context. */
+function _showFileError(
+  error: string,
+  path: string,
+): { content: { type: "text"; text: string }[]; details: ShowFileResult } {
+  return {
+    content: [{ type: "text", text: `show_file failed: ${error}` }],
+    details: { shown: false, path, error },
+  };
+}
+
+/** Core handler for the `show_file` tool: detect kind, read, validate, cap,
+ *  broadcast, reply. Bytes never reach the model context (metadata only). */
+function _handleShowFile(
+  params: { path: string; caption?: string; kind?: ShowFileKind; allowNetwork?: boolean },
+): { content: { type: "text"; text: string }[]; details: ShowFileResult } {
+  const rawPath = typeof params.path === "string" ? params.path.trim() : "";
+  const caption = typeof params.caption === "string" ? params.caption.trim() : "";
+  const overrideKind = params.kind;
+  const allowNetwork = params.allowNetwork === true;
+  if (!rawPath) {
+    return _showFileError("missing file path", "");
+  }
+
+  let absPath: string;
+  try {
+    absPath = resolve(rawPath);
+  } catch {
+    return _showFileError(`invalid path: ${rawPath}`, rawPath);
+  }
+
+  let size: number;
+  try {
+    const s = statSync(absPath);
+    if (!s.isFile()) {
+      return _showFileError(`not a regular file: ${rawPath}`, rawPath);
+    }
+    size = s.size;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return _showFileError(`cannot read ${rawPath}: ${msg}`, rawPath);
+  }
+
+  // Determine kind: explicit override wins; else detect by extension (path
+  // only — no bytes needed, so this runs before the file is read into memory).
+  const kind: ShowFileKind | undefined = overrideKind ?? _detectFileKind(absPath);
+  if (!kind) {
+    return _showFileError(
+      `unsupported/unknown file type — pass kind= explicitly, or use a known extension ` +
+        `(md/markdown, txt/json/yaml/dart/ts/py/... code, html/htm, pdf): ${rawPath}`,
+      rawPath,
+    );
+  }
+
+  // Per-kind size cap (PDF may be large; text-y kinds small). Checked from
+  // stat size BEFORE reading the file, so an oversized file is rejected
+  // without ever being loaded into memory (mirrors show_image).
+  const cap = kind === "pdf" ? SHOW_FILE_PDF_MAX_BYTES : SHOW_FILE_TEXT_MAX_BYTES;
+  if (size > cap) {
+    return _showFileError(
+      `file too large (${size} bytes; max ${cap} for kind ${kind})`,
+      rawPath,
+    );
+  }
+
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(absPath);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return _showFileError(`cannot read ${rawPath}: ${msg}`, rawPath);
+  }
+
+  // Text-y kinds must decode as valid UTF-8 (reject binary pushed as text).
+  if (kind !== "pdf" && !_isValidUtf8(bytes)) {
+    return _showFileError(
+      `${kind} file is not valid UTF-8 (binary) — use show_image for images or pass a different path: ${rawPath}`,
+      rawPath,
+    );
+  }
+
+  const mime = _mimeForFileKind(kind);
+  const data = bytes.toString("base64");
+
+  // Broadcast to every connected owner — the app opens the right viewer.
+  // `allow_network` is carried only for HTML (ignored by the app otherwise).
+  _broadcastToActive({
+    type: "agent_file",
+    id: `doc_${randomUUID()}`,
+    in_reply_to: _currentTurnId ?? "",
+    kind,
+    data,
+    mime,
+    path: rawPath,
+    size,
+    ...(caption ? { caption } : {}),
+    ...(kind === "html" && allowNetwork ? { allow_network: true } : {}),
+  });
+
+  const shown = _anyPeerActive();
+  const details: ShowFileResult = {
+    shown,
+    kind,
+    path: rawPath,
+    mime,
+    bytes: size,
+    ...(!shown ? { reason: "no active peer (no paired device connected)" } : {}),
+  };
+  const netNote = kind === "html" ? (allowNetwork ? ", network allowed" : ", network blocked") : "";
+  const text = shown
+    ? `Showing ${kind} file to user: ${rawPath} (${mime}${netNote}, ${size} bytes).`
+    : `File prepared (${rawPath}) but no paired device is connected right now — it was not displayed.`;
+  return { content: [{ type: "text", text }], details };
+}
+
+function _registerShowFileTool(pi: ExtensionAPI): void {
+  const ShowFileParams = Type.Object({
+    path: Type.String({
+      description:
+        "Path to a file in the repo, relative to the session cwd (or absolute). " +
+        "Markdown (.md/.markdown), plain text or code (.txt/.json/.yaml/.dart/.ts/.py/...), " +
+        "PDF (.pdf), or HTML (.html/.htm). Size caps: 1 MiB for text/markdown/html, 10 MiB for PDF.",
+    }),
+    caption: Type.Optional(Type.String({
+      description:
+        "Optional subtitle shown under the bubble. The repo path is used as the viewer title.",
+    })),
+    kind: Type.Optional(Type.Union(
+      [Type.Literal("markdown"), Type.Literal("text"), Type.Literal("pdf"), Type.Literal("html")],
+      { description: "Override auto-detection and force this viewer kind." },
+    )),
+    allowNetwork: Type.Optional(Type.Boolean({
+      description:
+        "HTML+JS only (kind=html). Default false: JavaScript runs but ALL network is blocked " +
+        "(remote <script>/<img>/css, fetch, XHR, websockets) — a safe sandbox. Set true to allow " +
+        "remote resources for trusted content. Ignored for non-html kinds.",
+    })),
+  });
+
+  pi.registerTool<typeof ShowFileParams, ShowFileResult>({
+    name: "show_file",
+    label: "Show file to user",
+    description:
+      "Display a document file from the repo to the user on their paired mobile app — " +
+      "Markdown, plain text/code, PDF, or HTML (with JavaScript). Each opens the right " +
+      "full-screen viewer. Use when the user asks to see/read/open a file that is not an " +
+      "image (use show_image for images). The file bytes go directly to the app out-of-band; " +
+      "this tool returns only metadata (kind, path, mime, size) — never the content — so it " +
+      "does not bloat the model context. For HTML, JavaScript always runs; network is blocked " +
+      "unless you pass allowNetwork:true.",
+    promptSnippet:
+      "show_file({path, caption?, kind?, allowNetwork?}): display a Markdown/text/PDF/HTML file " +
+      "from disk to the user on their phone (full-screen viewer). HTML runs JS; network blocked " +
+      "unless allowNetwork. Returns metadata only.",
+    parameters: ShowFileParams,
+    execute: async (_toolCallId, params) =>
+      _handleShowFile(params as {
+        path: string;
+        caption?: string;
+        kind?: ShowFileKind;
+        allowNetwork?: boolean;
+      }),
   });
 }
 
@@ -2435,6 +2727,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // tool always sees the current state.
   registerAgentTools(pi, () => _meshNode?.peer() ?? null);
   _registerShowImageTool(pi);
+  _registerShowFileTool(pi);
   _registerReceivedImageRenderer(pi);
 
   // Received-image preview entries are for local TUI display only. Pi's custom
