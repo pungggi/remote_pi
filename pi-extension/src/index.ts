@@ -89,6 +89,7 @@ import {
 import { handleGitStatus, getGitStatus } from "./actions/git_status.js";
 import type { WireGitStatus } from "./protocol/types.js";
 import { handleOpenTerminal, handleListWorktrees, handleRemoveWorktree } from "./actions/open_terminal.js";
+import { handleStartSession } from "./actions/start_session.js";
 import { handleListProjects } from "./projects/handlers.js";
 import { ensureModelRegistry } from "./actions/registry.js";
 import {
@@ -5081,6 +5082,13 @@ export function _routeClientMessageFrom(
     // no live pi). Spawn-from-project reuses open_terminal_request.
     case "list_projects_request":
       handleListProjects(sender, msg);
+      break;
+    // Plan/124 — bring an offline session back to life in its own cwd: the
+    // device daemon asks the supervisor for a transient `pi --mode rpc
+    // --continue` spawn (resumes the existing conversation, re-announces the
+    // same room). No new worktree, no pin.
+    case "start_session_request":
+      handleStartSession(sender, msg);
       break;
   }
 }

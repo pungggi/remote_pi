@@ -233,6 +233,13 @@ export type ClientMessage =
   // list with no live pi). The chosen project is then spawned as a worktree
   // via open_terminal_request.
   | { type: "list_projects_request"; id: string }
+  // Plan/124 — bring an offline session back to life in its OWN cwd (no new
+  // worktree, no pin). The device daemon asks the supervisor to spawn a
+  // transient `pi --mode rpc --continue` at `cwd`; `--continue` resumes the
+  // existing conversation and the room re-announces, flipping the tile live.
+  // `name` scopes the room for custom-named sessions (omit/default → legacy
+  // cwd-only room).
+  | { type: "start_session_request"; id: string; cwd: string; name?: string | null }
   // Plan/100 — interactive extension prompt response (ask_user via pi-ask).
   // Mirrors RpcExtensionUIResponse; the optional `ask` envelope carries
   // pi-ask's structured answer so multi/preview/notes survive the round-trip.
@@ -426,6 +433,17 @@ export type ServerMessage =
       in_reply_to: string;
       ok: boolean;
       projects: WireProject[];
+      message?: string;
+    }
+  // Plan/124 — reply to start_session_request. `room_id` is the room the
+  // spawned pi will (re)announce = roomIdFor(cwd, name); the app can sanity-
+  // check it against the tapped tile's room. `ok:false` (with `message`)
+  // when the supervisor is offline or the cwd is invalid.
+  | {
+      type: "start_session_result";
+      in_reply_to: string;
+      ok: boolean;
+      room_id?: string;
       message?: string;
     }
   // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors

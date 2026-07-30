@@ -41,6 +41,12 @@ export type ControlRequest =
   | { op: "send"; id: string; text: string }
   | { op: "register"; cwd: string }
   | { op: "unregister"; id: string }
+  // ── Plan/124 — bring an offline session to life (transient spawn) ──
+  // Like `register` but does NOT persist to daemons.json: the child runs
+  // until it crashes (auto-restarted w/ backoff) or the supervisor stops,
+  // and is NOT resurrected at boot. `name` scopes the room for custom-
+  // named sessions (omitted/default → legacy cwd-only room).
+  | { op: "start_transient"; cwd: string; name?: string }
   // ── cron (plan/39) ──
   | { op: "cron_add"; daemon_id: string; schedule: string; prompt: string; tz?: string; skip_if_busy?: boolean; wake?: boolean; catchup?: boolean }
   | { op: "cron_list" }
@@ -70,6 +76,10 @@ export interface ControlReplyShapes {
   send: { id: string; delivered: boolean };
   register: { id: string; cwd: string };
   unregister: { removed: boolean; cwd?: string };
+  // ── Plan/124 — transient spawn reply. `room_id` = roomIdFor(cwd, name)
+  // so the caller knows which room will (re)announce. `started` is false
+  // when a child for that cwd was already running/starting (idempotent).
+  start_transient: { id: string; cwd: string; room_id: string; started: boolean };
   // ── cron (plan/39) ──
   cron_add: { job: CronJobView };
   cron_list: { jobs: CronJobView[] };
