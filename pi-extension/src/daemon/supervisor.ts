@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { addDaemon, listDaemons, migrateRegistryNames, removeDaemon } from "./registry.js";
 import { daemonIdForCwd } from "./id.js";
 import { defaultAgentName, type LocalConfig } from "../session/local_config.js";
+import { DEVICE_ROOM } from "../rooms.js";
 import { ipcAddress, usesNamedPipe } from "../session/ipc.js";
 import { EXIT_DAEMON_FRESH_SESSION, RpcChild, type RpcChildExitEvent, type RpcChildOptions } from "./rpc_child.js";
 import {
@@ -29,6 +30,14 @@ import {
   type NewJobInput,
 } from "./cron_registry.js";
 import { appendCronLog, readCronLog, type CronResult } from "./cron_log.js";
+
+/**
+ * Plan/120 — the supervisor always spawns this system daemon alongside the
+ * user's per-project daemons. It connects to the relay in [DEVICE_ROOM] so the
+ * phone can route offline terminal-open requests to it even when no project
+ * session is live. Its cwd is the user home (it doesn't own a project folder).
+ */
+const DEVICE_DAEMON_ID = DEVICE_ROOM; // "device"
 
 /**
  * Central process that owns the daemon fleet (plan/26).
@@ -141,6 +150,8 @@ export class Supervisor {
     migrateRegistryNames();
     await this._bindUds();
     this._spawnAllFromRegistry();
+    // Plan/120 — always-on device daemon (handles offline terminal-open).
+    this._spawnDeviceDaemon();
     // Cron (plan/39): schedule all enabled jobs, then run any missed catchup.
     this._reconcileCron();
     this._runCatchup();
@@ -259,7 +270,7 @@ export class Supervisor {
 
   private _listInfo(): DaemonInfo[] {
     const registry = listDaemons();
-    return registry.map((entry) => {
+    const out: DaemonInfo[] = registry.map((entry) => {
       const slot = this.children.get(entry.id);
       const name = entry.name ?? defaultAgentName(entry.cwd);
       const info: DaemonInfo = {
@@ -275,6 +286,22 @@ export class Supervisor {
       }
       return info;
     });
+    // Plan/120 — append the always-on device daemon (not in the registry).
+    const devSlot = this.children.get(DEVICE_DAEMON_ID);
+    if (devSlot) {
+      out.push({
+        id: DEVICE_DAEMON_ID,
+        cwd: devSlot.cwd,
+        name: "device",
+        state: devSlot.child.state,
+        ...(devSlot.child.pid !== undefined ? { pid: devSlot.child.pid } : {}),
+        ...(devSlot.child.uptimeMs !== undefined
+          ? { uptime_s: Math.floor(devSlot.child.uptimeMs / 1000) }
+          : {}),
+        restart_count: devSlot.child.restartCount,
+      });
+    }
+    return out;
   }
 
   private _opStartAll(): ControlReply<unknown> {
@@ -556,6 +583,41 @@ export class Supervisor {
     for (const entry of listDaemons()) {
       this._spawnEntry(entry.id, entry.cwd, entry.name);
     }
+  }
+
+  /**
+   * Plan/120 — spawn (or re-spawn) the always-on device daemon. Unlike
+   * per-project daemons this one is NOT registry-backed: it always runs while
+   * the supervisor is up, connects to [DEVICE_ROOM], and its cwd is the user
+   * home. It handles `open_terminal_request` from the phone for offline
+   * sessions (the extension handler creates the worktree at the *requested*
+   * cwd, so the daemon's own cwd is irrelevant).
+   */
+  private _spawnDeviceDaemon(): void {
+    const id = DEVICE_DAEMON_ID;
+    const cwd = process.env["REMOTE_PI_HOME"] || homedir();
+    // Clean up any prior slot (crashed + waiting for backoff).
+    const existing = this.children.get(id);
+    if (existing) {
+      if (existing.restartTimer !== null) clearTimeout(existing.restartTimer);
+      if (existing.child.state === "running") void existing.child.stop();
+    }
+    const config: LocalConfig = {
+      agent_name: "device",
+      auto_start_relay: true,
+      room_id: DEVICE_ROOM,
+    };
+    const childOpts: RpcChildOptions = {
+      extensionPath: this.opts.extensionPath,
+      cwd,
+      config,
+    };
+    if (this.opts.piBin !== undefined) childOpts.piBin = this.opts.piBin;
+    const child = new RpcChild(childOpts);
+    const slot: ChildSlot = { id, cwd, child, restartTimer: null, restartAttempt: 0 };
+    this.children.set(id, slot);
+    child.on("exit", (evt: RpcChildExitEvent) => this._onChildExit(id, evt));
+    child.spawn();
   }
 
   private _spawnEntry(id: string, cwd: string, name?: string): void {

@@ -142,6 +142,9 @@ class HomeList extends HomeState {
           ).toLowerCase().compareTo(_roomLabel(b).toLowerCase()),
         );
       for (final r in sortedRooms) {
+        // Plan/120 — the device room is a supervisor system daemon, not a
+        // user session. Filter it from the Home list.
+        if (r.roomId == kDeviceRoom) continue;
         out.add(HomeItem(peer: p, room: r));
       }
     }

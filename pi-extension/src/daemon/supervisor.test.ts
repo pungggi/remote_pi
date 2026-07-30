@@ -11,6 +11,7 @@ import {
   parseReply,
   type ControlReply,
   type ControlRequest,
+  type DaemonInfo,
 } from "./control_protocol.js";
 
 /**
@@ -75,9 +76,16 @@ afterEach(async () => {
 });
 
 describe("Supervisor — control UDS surface", () => {
-  test("list returns empty daemons array when registry is empty", async () => {
+  test("list returns only the device daemon when registry is empty", async () => {
     const r = await ask({ op: "list" });
-    expect(r).toMatchObject({ ok: true, data: { daemons: [] } });
+    // Plan/120 — the supervisor always spawns a device daemon; with an empty
+    // registry it's the only entry.
+    expect(r).toMatchObject({ ok: true });
+    if (r.ok) {
+      const daemons = (r.data as { daemons: DaemonInfo[] }).daemons;
+      expect(daemons.length).toBe(1);
+      expect(daemons[0].id).toBe("device");
+    }
   });
 
   test("register adds an entry and returns the derived id", async () => {

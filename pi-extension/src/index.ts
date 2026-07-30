@@ -88,6 +88,7 @@ import {
 import { handleGitStatus, getGitStatus } from "./actions/git_status.js";
 import type { WireGitStatus } from "./protocol/types.js";
 import { handleOpenTerminal, handleListWorktrees, handleRemoveWorktree } from "./actions/open_terminal.js";
+import { handleListProjects } from "./projects/handlers.js";
 import { ensureModelRegistry } from "./actions/registry.js";
 import {
   ensureGlobalDirs,
@@ -2703,7 +2704,18 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
       // `-p`/`--print`, so they still auto-start the relay exactly as before.
       const isPrintMode =
         process.argv.includes("-p") || process.argv.includes("--print");
-      const cwd = isDaemon ? process.cwd() : "cwd" in ctx ? ctx.cwd : undefined;
+      // Prefer the session_start ctx's cwd; fall back to process.cwd() when the
+      // ctx omits it. Some session shapes arrive without `cwd`, which left
+      // freshly-spawned worktree pis idle ("Relay: off") — the gate below saw
+      // cwd=undefined and skipped auto-start even though the process runs in
+      // the configured worktree dir (the session *dir* is still derived from
+      // process.cwd(), so the two disagreed). Skipped under vitest so tests
+      // with a minimal ctx keep the historical no-autostart behaviour.
+      const cwd = isDaemon
+        ? process.cwd()
+        : "cwd" in ctx
+          ? ctx.cwd
+          : (process.env.VITEST ? undefined : process.cwd());
       if (
         !isPrintMode &&
         cwd &&
@@ -3208,7 +3220,13 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   // default/unnamed case preserves the legacy cwd-only id (no re-keying). Uses
   // the SAME name as room_meta.name / pair_ok below — the invariant that the
   // app pairs on the room the Pi actually announces.
-  const roomId = roomIdFor(cwd, sessionName);
+  //
+  // Plan/120 — a config `room_id` override wins over the cwd-derived id. The
+  // supervisor's device daemon sets this to DEVICE_ROOM so it connects in a
+  // fixed room independent of its (temp/home) cwd, letting the phone route
+  // offline terminal-open requests to it.
+  const localCfg = loadLocalConfig(cwd);
+  const roomId = localCfg.room_id ?? roomIdFor(cwd, sessionName);
 
   // Seed the current model from the SDK's resolved selection so room_meta
   // carries it on connect. `model_select` only fires on an explicit set/cycle
@@ -4990,6 +5008,12 @@ export function _routeClientMessageFrom(
       break;
     case "remove_worktree_request":
       handleRemoveWorktree(sender, msg);
+      break;
+    // Plan/121 — list git projects discovered under the configured roots
+    // (device daemon serves this so the phone can show a Projects list with
+    // no live pi). Spawn-from-project reuses open_terminal_request.
+    case "list_projects_request":
+      handleListProjects(sender, msg);
       break;
   }
 }

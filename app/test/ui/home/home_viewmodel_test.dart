@@ -465,6 +465,44 @@ void main() {
 
       vm.dispose();
     });
+
+    test(
+      'plan/120 — the device room is filtered from the Home list '
+      '(never appears in any tab)',
+      () async {
+        final ch = _ControllableChannel();
+        final storage = _FakeStorage([_peerA]);
+        final conn = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: storage,
+          emitDebounce: Duration.zero,
+        );
+        final prefs = Preferences(_FakeSecureStorage());
+        final vm = HomeViewModel(storage, prefs, conn, _fakeActions());
+        await conn.connectTo(_peerA);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        // Push a regular room + the device room.
+        ch.pushControl(
+          const RoomAnnounced(peer: 'epk_A', roomId: 'r1', startedAt: 1),
+        );
+        ch.pushControl(
+          const RoomAnnounced(peer: 'epk_A', roomId: 'device', startedAt: 2),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        // The device room must NOT appear in any filter.
+        for (final f in HomeFilter.values) {
+          vm.setFilter(f);
+          final ids = vm.visibleItems.map((i) => i.room.roomId).toList();
+          expect(ids, isNot(contains('device')));
+        }
+
+        vm.dispose();
+        await conn.disconnect();
+        conn.dispose();
+      },
+    );
   });
 
   group('HomeViewModel.openTerminal (plan/108 — session-list entry)', () {
@@ -548,13 +586,16 @@ void main() {
       () async {
         final storage = _FakeStorage([_peerA]);
         final connects = <String>[];
-        // Factory always fails → connectTo seeds activePeer=A but the link
-        // never reaches StatusOnline (_relayConnected stays false). The
-        // first retry is 1s out, so it never fires during this test.
+        // First call (connectTo) fails → seeds activePeer=A but _relayConnected
+        // stays false. Second call (switchTo from openTerminal) succeeds so
+        // _waitForOnline resolves immediately.
+        var attempt = 0;
         final conn = ConnectionManager(
           factory: (peer, _) async {
             connects.add(peer.remoteEpk);
-            throw Exception('offline');
+            attempt++;
+            if (attempt == 1) throw Exception('offline');
+            return _channel();
           },
           storage: storage,
         );

@@ -62,6 +62,15 @@ function psSingleQuote(s: string): string {
   return `'${String(s).replace(/'/g, "''")}'`;
 }
 
+/**
+ * PowerShell `-EncodedCommand` payload (UTF-16LE base64). Safe to pass through
+ * wt.exe / cmd.exe / Start-Process ArgumentList without any further quoting —
+ * the alphabet is `[A-Za-z0-9+/=]` so shells never split it.
+ */
+function psEncodedCommand(script: string): string {
+  return Buffer.from(script, "utf16le").toString("base64");
+}
+
 /** Compact local timestamp for branch + folder names: YYYYMMDD-HHMMSS. */
 function worktreeStamp(d = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -137,6 +146,37 @@ export function createWorktree(
     return { ok: false, message: `Invalid branch name "${branch}": ${errMsg(e)}` };
   }
 
+  // 0.5 — Reuse: a prior create (or a manual `git worktree add`) may have
+  // already made this folder+branch. Reopen it instead of failing on git's
+  // "already exists" — the user just wants a terminal in that worktree, and
+  // re-tapping a project+branch is the natural way to get back to it. Only
+  // reuse when the folder is a git worktree; a stray folder surfaces a clear
+  // error so the user can pick a different branch.
+  if (existsSync(worktreePath)) {
+    if (!existsSync(join(worktreePath, ".git"))) {
+      return {
+        ok: false,
+        message: `Folder already exists and isn't a git worktree: ${worktreePath}`,
+      };
+    }
+    // Ensure the worktree has its auto-connect config (idempotent merge —
+    // safe even for a manual worktree that lacks it).
+    try {
+      saveLocalConfig(worktreePath, { agent_name: basename(baseCwd), auto_start_relay: true });
+    } catch {
+      /* best-effort — worktree works, just may not auto-connect */
+    }
+    const entry: WireWorktree = {
+      id: stamp,
+      base: baseCwd,
+      path: worktreePath,
+      branch,
+      created_at: d.toISOString(),
+    };
+    addWorktree(entry); // dedupes by path — idempotent on re-tap
+    return { ok: true, entry, message: `Reusing existing worktree ${branch}` };
+  }
+
   // 1. Must be inside a git work tree.
   try {
     execFileSync("git", ["-C", baseCwd, "rev-parse", "--is-inside-work-tree"], {
@@ -149,17 +189,62 @@ export function createWorktree(
     return { ok: false, message: `Not a git repository: ${baseCwd} — ${errMsg(e)}` };
   }
 
-  // 2. Create the worktree on a fresh branch off HEAD (`git worktree add`
-  //    creates the destination path + parent dirs).
+  // 2. Create or check out the worktree. Bulletproof against every collision
+  //    shape we've hit: orphan branch (a prior failed `-b` made the ref then
+  //    died), stale worktree metadata (a folder git still tracks after manual
+  //    deletion — `prune` clears it so checkout stops failing "already used
+  //    by worktree"), and any disagreement between `show-ref` and `worktree
+  //    add -b`. Strategy: prune → try the natural mode (create if new /
+  //    checkout if exists) → fall back to the opposite mode → reuse the
+  //    folder if it appeared via a concurrent request.
   try {
-    execFileSync("git", ["-C", baseCwd, "worktree", "add", "-b", branch, worktreePath], {
-      encoding: "utf8",
-      timeout: 30000,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
+    execFileSync("git", ["-C", baseCwd, "worktree", "prune"], {
+      encoding: "utf8", timeout: 15000, stdio: ["ignore", "ignore", "ignore"], windowsHide: true,
     });
-  } catch (e) {
-    return { ok: false, message: `git worktree add failed: ${errMsg(e)}` };
+  } catch {
+    /* best-effort — prune failures must not block creation */
+  }
+  const branchExists = (() => {
+    try {
+      execFileSync("git", ["-C", baseCwd, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+        { encoding: "utf8", stdio: ["ignore", "ignore", "ignore"], windowsHide: true });
+      return true;
+    } catch { return false; }
+  })();
+  const add = (args: string[]) =>
+    execFileSync("git", ["-C", baseCwd, ...args], {
+      encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+    });
+  // Natural mode first; flip to the opposite on failure.
+  const modes: string[][] = branchExists
+    ? [["worktree", "add", worktreePath, branch], ["worktree", "add", "-b", branch, worktreePath]]
+    : [["worktree", "add", "-b", branch, worktreePath], ["worktree", "add", worktreePath, branch]];
+  let lastErr: unknown;
+  let added = false;
+  for (const args of modes) {
+    try {
+      add(args);
+      added = true;
+      break;
+    } catch (e) {
+      lastErr = e;
+      // A concurrent request may have just created the worktree → reuse it.
+      if (existsSync(join(worktreePath, ".git"))) {
+        try {
+          saveLocalConfig(worktreePath, { agent_name: basename(baseCwd), auto_start_relay: true });
+        } catch { /* best-effort */ }
+        const reused: WireWorktree = {
+          id: stamp, base: baseCwd, path: worktreePath, branch, created_at: d.toISOString(),
+        };
+        addWorktree(reused);
+        return { ok: true, entry: reused, message: `Reusing existing worktree ${branch}` };
+      }
+    }
+  }
+  if (!added) {
+    // Diagnostic marker (branch + whether show-ref thought it existed) so any
+    // residual failure is self-explanatory instead of a bare git message.
+    return { ok: false, message: `git worktree add failed (branch=${branch}, exists=${branchExists}): ${errMsg(lastErr)}` };
   }
 
   // 3. Plan/112 #2 — write local config so the worktree's `pi` session skips
@@ -248,6 +333,23 @@ interface ChildHandle {
 }
 
 /**
+ * Env for a terminal spawned FROM the device daemon. The daemon carries
+ * `REMOTE_PI_DIRECT_CONFIG={"room_id":"device",…}` and `REMOTE_PI_DAEMON=1`
+ * so it joins the fixed phone-filtered room. Node's `spawn` inherits
+ * `process.env` by default, so without scrubbing those vars the worktree's
+ * `pi` would also join room `"device"` — and the app filters that room out of
+ * Home (`kDeviceRoom`). Result: footer shows 🟢 relay but the session never
+ * appears as a tile. Strip the daemon-only identity; keep everything else
+ * (PATH, REMOTE_PI_RELAY, user profile, …).
+ */
+function envForSpawnedTerminal(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.REMOTE_PI_DIRECT_CONFIG;
+  delete env.REMOTE_PI_DAEMON;
+  return env;
+}
+
+/**
  * Opens a new terminal at `cwd`, optionally running `command` (e.g. "pi").
  * Mirrors pi-ps `openTab`: WT_SESSION → `wt.exe new-tab`; else Start-Process
  * window. A 2s safety net assumes success — the target runs independently of
@@ -268,10 +370,22 @@ export function openTerminalTab(
     }
 
     const shellExe = resolveShell();
+    // Scrub daemon identity INSIDE the launched shell too. `wt.exe -w 0
+    // new-tab` attaches to an already-running WT whose process env may still
+    // carry a polluted `REMOTE_PI_DIRECT_CONFIG` from an earlier daemon spawn
+    // — the outer `env:` scrub below only affects a freshly-started WT.
+    // Use -EncodedCommand (UTF-16LE base64) so `$env:…` / `;` never hit the
+    // wt.exe / cmd.exe quoting surface (raw -Command split on spaces and
+    // produced "file not found" for each fragment).
     const cmdSuffix = command
-      ? ` -NoExit -Command ${cmdQuote(command)}`
+      ? ` -NoExit -EncodedCommand ${psEncodedCommand(
+          `$env:REMOTE_PI_DIRECT_CONFIG=$null; $env:REMOTE_PI_DAEMON=$null; ${command}`,
+        )}`
       : "";
     const withCmd = command ? ` — running ${command}` : "";
+    // Always scrub daemon identity — even when the caller isn't the device
+    // daemon, deleting absent keys is a no-op and keeps the spawn path one.
+    const childEnv = envForSpawnedTerminal();
 
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -290,14 +404,24 @@ export function openTerminalTab(
     // Start-Process when WT isn't installed.
     if (resolveWt()) {
       // ── Windows Terminal: open a real new tab in the MRU window ──
-      const argsLine = `-w 0 new-tab -d ${cmdQuote(cwd)} ${cmdQuote(shellExe)}${cmdSuffix}`;
+      // Use the BARE shell name (e.g. `pwsh.exe`), not the resolved full path:
+      // a path like `C:\Program Files (x86)\PowerShell\7\pwsh.exe` (spaces +
+      // parens) mangles through `wt.exe … <shell> …` + `shell:true` and wt
+      // replies 0x80070057 (E_INVALIDARG). `pwsh.exe` is on PATH (resolveShell
+      // confirmed it via `where`), so wt resolves it cleanly. (Matches the
+      // hidden-wscript proof, which used bare `pwsh` and reached the desktop.)
+      const shellName = basename(shellExe);
+      const argsLine = `-w 0 new-tab -d ${cmdQuote(cwd)} ${cmdQuote(shellName)}${cmdSuffix}`;
       const okMessage = `Opened terminal tab at: ${cwd}${withCmd}`;
       try {
+        // `env` is inherited by wt.exe AND by the new-tab shell it launches
+        // (WT copies the launcher's environment into the pane process).
         const child = spawn(`wt.exe ${argsLine}`, [], {
           detached: true,
           stdio: "ignore",
           shell: true,
           windowsHide: true,
+          env: childEnv,
         }) as unknown as ChildHandle;
         child.on("error", (err) =>
           done({ ok: false, message: `Failed to open: ${err.message}`, method: "wt" }),
@@ -325,17 +449,27 @@ export function openTerminalTab(
       }
     } else {
       // ── Fallback: open a new console window via Start-Process ──
-      const argList = command ? `-NoExit -Command ${command}` : "";
+      // Same EncodedCommand scrub as the wt path — Start-Process inherits the
+      // intermediate powershell's env (already cleaned via childEnv), but
+      // the in-command unset still covers any residual inheritance.
+      const argList = command
+        ? `-NoExit -EncodedCommand ${psEncodedCommand(
+            `$env:REMOTE_PI_DIRECT_CONFIG=$null; $env:REMOTE_PI_DAEMON=$null; ${command}`,
+          )}`
+        : "";
       const psCommand =
         `Start-Process -FilePath ${psSingleQuote(shellExe)}` +
         (argList ? ` -ArgumentList ${psSingleQuote(argList)}` : "") +
         ` -WorkingDirectory ${psSingleQuote(cwd)}`;
       const okMessage = `Opened terminal window at: ${cwd}${withCmd}`;
       try {
+        // Intermediate powershell inherits `childEnv`; Start-Process then
+        // inherits THAT process's env into the new window (default behaviour).
         const child = spawn(shellExe, ["-NoProfile", "-Command", psCommand], {
           detached: true,
           stdio: "ignore",
           windowsHide: true,
+          env: childEnv,
         }) as unknown as ChildHandle;
         child.on("error", (err) =>
           done({ ok: false, message: `Failed to open: ${err.message}`, method: "window" }),
