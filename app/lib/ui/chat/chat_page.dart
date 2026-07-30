@@ -15,6 +15,7 @@ import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
 import 'package:app/ui/chat/voice/viewmodels/voice_input_viewmodel.dart';
 import 'package:app/ui/chat/widgets/attach_sheet.dart';
 import 'package:app/ui/chat/widgets/agent_image_bubble.dart';
+import 'package:app/ui/chat/widgets/agent_file_bubble.dart';
 import 'package:app/ui/chat/widgets/input_bar.dart';
 import 'package:app/ui/chat/widgets/message_bubble.dart';
 import 'package:app/ui/chat/widgets/streaming_bubble.dart';
@@ -1054,6 +1055,9 @@ class _MessageListState extends State<_MessageList> {
                   // Plan/114 — agent-pushed image (show_image tool): tappable
                   // bubble that opens the full-screen viewer.
                   AgentImageMsg() => AgentImageBubble(msg),
+                  // Plan/125 - agent-pushed document (show_file tool:
+                  // md/text/pdf/html): tappable card that opens the viewer.
+                  AgentFileMsg() => AgentFileBubble(msg),
                   ToolEvent() => ToolRequestCard(
                     tool: msg,
                     onDecide: widget.onDecide,

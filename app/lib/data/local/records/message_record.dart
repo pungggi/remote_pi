@@ -1,12 +1,55 @@
 import 'package:app/domain/session_state.dart';
 
-/// Plan/31 — one persisted chat message (row-granular SSOT). Stored in the
+/// Plan/31 - one persisted chat message (row-granular SSOT). Stored in the
 /// per-session `msgs:<epk>:<roomId>` box, keyed by [seq]. Maps to the domain
 /// [ChatMessage] the UI widgets already render.
 enum MsgRole { user, assistant, tool, compaction }
 
+/// Plan/125 - an agent-pushed document (show_file tool: markdown/text/pdf/html).
+/// The base64 [data] is the raw file bytes (valid UTF-8 for the text-y kinds);
+/// [kind] selects the viewer. Mirrors [MessageImage] (plan/30) for the image
+/// path. Persisted on the assistant row alongside `imagePath` (the repo path).
+class MessageFile {
+  final String kind; // markdown | text | pdf | html
+  final String data; // base64 raw file bytes
+  final String? mime;
+  final bool allowNetwork; // HTML only
+
+  const MessageFile({
+    required this.kind,
+    required this.data,
+    this.mime,
+    this.allowNetwork = false,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'kind': kind,
+    'data': data,
+    if (mime != null) 'mime': mime,
+    if (allowNetwork) 'allow_network': true,
+  };
+
+  factory MessageFile.fromJson(Map<String, dynamic> j) => MessageFile(
+    kind: j['kind'] as String,
+    data: j['data'] as String,
+    mime: j['mime'] as String?,
+    allowNetwork: (j['allow_network'] as bool?) ?? false,
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      other is MessageFile &&
+      other.kind == kind &&
+      other.data == data &&
+      other.mime == mime &&
+      other.allowNetwork == allowNetwork;
+
+  @override
+  int get hashCode => Object.hash(kind, data, mime, allowNetwork);
+}
+
 class MessageRecord {
-  /// Protocol id — the dedupe key (optimistic send ↔ Pi echo share it).
+  /// Protocol id - the dedupe key (optimistic send <-> Pi echo share it).
   final String id;
 
   /// Monotonic order within the session (the box key).
@@ -14,15 +57,19 @@ class MessageRecord {
   final MsgRole role;
   final String text;
 
-  /// Plan/30 — attached image (user messages only).
+  /// Plan/30 - attached image (user messages only).
   final MessageImage? image;
 
   /// Tool request+result collapsed into one row (tool messages only).
   final ToolEventData? tool;
 
-  /// Plan/114 — original repo path of an agent-pushed image (viewer title).
+  /// Plan/114 - original repo path of an agent-pushed image (viewer title).
   /// Null for every other row.
   final String? imagePath;
+
+  /// Plan/125 - agent-pushed document (show_file tool: markdown/text/pdf/html).
+  /// Null for every other row. Mutually exclusive with [image].
+  final MessageFile? file;
 
   final DateTime ts;
 
@@ -32,7 +79,7 @@ class MessageRecord {
   /// Local-only hint: this pending user row was sent while the Pi was busy.
   final bool steering;
 
-  /// Plan/32 — tokens reclaimed by a compaction (compaction rows only).
+  /// Plan/32 - tokens reclaimed by a compaction (compaction rows only).
   final int? tokensBefore;
 
   const MessageRecord({
@@ -43,6 +90,7 @@ class MessageRecord {
     this.image,
     this.tool,
     this.imagePath,
+    this.file,
     required this.ts,
     this.pending = false,
     this.steering = false,
@@ -55,6 +103,7 @@ class MessageRecord {
     MessageImage? image,
     ToolEventData? tool,
     String? imagePath,
+    MessageFile? file,
     bool? pending,
     bool? steering,
   }) => MessageRecord(
@@ -65,6 +114,7 @@ class MessageRecord {
     image: image ?? this.image,
     tool: tool ?? this.tool,
     imagePath: imagePath ?? this.imagePath,
+    file: file ?? this.file,
     ts: ts,
     pending: pending ?? this.pending,
     steering: steering ?? this.steering,
@@ -79,6 +129,7 @@ class MessageRecord {
     if (image != null) 'image': {'data': image!.data, 'mime': image!.mime},
     if (tool != null) 'tool': tool!.toJson(),
     if (imagePath != null) 'image_path': imagePath,
+    if (file != null) 'file': file!.toJson(),
     'ts': ts.millisecondsSinceEpoch,
     'pending': pending,
     if (steering) 'steering': true,
@@ -88,6 +139,7 @@ class MessageRecord {
   factory MessageRecord.fromJson(Map<String, dynamic> j) {
     final imageRaw = j['image'];
     final toolRaw = j['tool'];
+    final fileRaw = j['file'];
     return MessageRecord(
       id: j['id'] as String,
       seq: (j['seq'] as num).toInt(),
@@ -106,6 +158,9 @@ class MessageRecord {
           ? ToolEventData.fromJson(toolRaw.cast<String, dynamic>())
           : null,
       imagePath: (j['image_path'] as String?) ?? (j['path'] as String?),
+      file: fileRaw is Map
+          ? MessageFile.fromJson(fileRaw.cast<String, dynamic>())
+          : null,
       ts: DateTime.fromMillisecondsSinceEpoch((j['ts'] as num).toInt()),
       pending: (j['pending'] as bool?) ?? false,
       steering: (j['steering'] as bool?) ?? false,
@@ -125,7 +180,21 @@ class MessageRecord {
           image: image,
         );
       case MsgRole.assistant:
-        // Plan/114 — an assistant row carrying an image is an agent-pushed
+        // Plan/125 - an assistant row carrying a file is an agent-pushed
+        // document (show_file tool), rendered as a tappable viewer card.
+        final agentFile = file;
+        if (agentFile != null) {
+          return AgentFileMsg(
+            id: id,
+            kind: agentFile.kind,
+            data: agentFile.data,
+            mime: agentFile.mime,
+            path: imagePath,
+            caption: text,
+            allowNetwork: agentFile.allowNetwork,
+          );
+        }
+        // Plan/114 - an assistant row carrying an image is an agent-pushed
         // image (show_image tool), rendered as a tappable viewer bubble.
         // Local-promote `image`: Dart can't promote a nullable instance field.
         final agentImage = image;

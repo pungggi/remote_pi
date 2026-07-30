@@ -10,6 +10,9 @@ const SERVER_TYPES = new Set<ServerMessage["type"]>([
   "agent_message",
   // Plan/114 — image the agent pushes to the user (show_image tool).
   "agent_image",
+  // Plan/125 — document the agent pushes to the user (show_file tool:
+  // markdown / text / pdf / html).
+  "agent_file",
   "tool_request",
   "tool_result",
   "error",

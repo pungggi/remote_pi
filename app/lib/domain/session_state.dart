@@ -149,6 +149,48 @@ class AgentImageMsg extends ChatMessage {
   int get hashCode => Object.hash(id, image, path, caption);
 }
 
+/// Plan/125 - a document the agent pushed to the user from a file in the repo
+/// (via the `show_file` tool): Markdown / plain text or code / PDF / HTML.
+/// Rendered as a left-aligned, tappable card ([AgentFileBubble]) that opens
+/// [DocViewerPage], which routes by [kind] to the right viewer. [data] is the
+/// raw file bytes base64-encoded (decoded in the viewer; valid UTF-8 for the
+/// text-y kinds). [allowNetwork] is HTML-only and flips the WebView sandbox
+/// state. [caption] (possibly empty) shows under the card; [path] is the
+/// original repo path used as the viewer title.
+class AgentFileMsg extends ChatMessage {
+  final String kind; // markdown | text | pdf | html
+  final String data; // base64 raw file bytes
+  final String? mime;
+  final String? path;
+  final String caption;
+  final bool allowNetwork;
+
+  const AgentFileMsg({
+    required super.id,
+    required this.kind,
+    required this.data,
+    this.mime,
+    this.path,
+    this.caption = '',
+    this.allowNetwork = false,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      other is AgentFileMsg &&
+      other.id == id &&
+      other.kind == kind &&
+      other.data == data &&
+      other.mime == mime &&
+      other.path == path &&
+      other.caption == caption &&
+      other.allowNetwork == allowNetwork;
+
+  @override
+  int get hashCode =>
+      Object.hash(id, kind, data, mime, path, caption, allowNetwork);
+}
+
 class ToolEvent extends ChatMessage {
   final String toolCallId;
   final String tool;

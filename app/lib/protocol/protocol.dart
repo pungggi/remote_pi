@@ -950,6 +950,9 @@ sealed class ServerMessage {
       // (show_image tool). Inline base64; rendered as a tappable assistant-side
       // bubble that opens the full-screen viewer.
       'agent_image' => AgentImage.fromJson(json),
+      // Plan/125 — document the agent pushes to the user (show_file tool:
+      // markdown / text / pdf / html). Inline base64 + kind discriminator.
+      'agent_file' => AgentFile.fromJson(json),
       // Plan/32 — Pi-extension emits this when a context compaction finishes.
       'compaction' => Compaction.fromJson(json),
       'session_history' => SessionHistory.fromJson(json),
@@ -1317,6 +1320,49 @@ class AgentImage extends ServerMessage {
     caption: j['caption'] as String?,
     width: (j['width'] as num?)?.toInt(),
     height: (j['height'] as num?)?.toInt(),
+  );
+}
+
+/// Plan/125 - a document the agent shows to the user (via the `show_file`
+/// tool): Markdown / plain text or code / PDF / HTML. Carries inline base64
+/// bytes in [data] plus a [kind] that selects the viewer. Mirrors [AgentImage]
+/// (plan/114): live broadcast, persisted locally (plan/31 DB), not replayed
+/// via `session_history`. For HTML, [allowNetwork] tells the WebView sandbox
+/// whether remote resources are permitted (default false = JS runs, network
+/// blocked).
+class AgentFile extends ServerMessage {
+  final String id;
+  final String inReplyTo;
+  final String kind; // markdown | text | pdf | html
+  final String data; // base64 (raw file bytes; valid UTF-8 for text kinds)
+  final String? mime;
+  final String? path;
+  final String? caption;
+  final int? size;
+  final bool allowNetwork;
+
+  AgentFile({
+    required this.id,
+    required this.inReplyTo,
+    required this.kind,
+    required this.data,
+    this.mime,
+    this.path,
+    this.caption,
+    this.size,
+    this.allowNetwork = false,
+  });
+
+  factory AgentFile.fromJson(Map<String, dynamic> j) => AgentFile(
+    id: j['id'] as String,
+    inReplyTo: (j['in_reply_to'] as String?) ?? '',
+    kind: j['kind'] as String,
+    data: j['data'] as String,
+    mime: j['mime'] as String?,
+    path: j['path'] as String?,
+    caption: j['caption'] as String?,
+    size: (j['size'] as num?)?.toInt(),
+    allowNetwork: (j['allow_network'] as bool?) ?? false,
   );
 }
 

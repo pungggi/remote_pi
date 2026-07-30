@@ -81,6 +81,20 @@ dependencies:
   gal: ^2.0.0
   share_plus: ^12.0.2
 
+  # Plan 125 — document viewers for files the agent pushes from the repo
+  # (show_file tool: Markdown / text / PDF / HTML+JS).
+  #   - webview_flutter renders HTML with JavaScript. The app-facing package
+  #     pulls the Android (webview_flutter_android) + iOS (wkwebview) platform
+  #     implementations transitively; a strict CSP meta + navigationDelegate
+  #     sandbox the document (network blocked unless allowNetwork).
+  #   - pdfx renders PDFs via native PDFKit/PdfRenderer. If `flutter pub get`
+  #     fails to resolve pdfx on a very new Flutter, swap for `pdfrx`
+  #     (different API — see lib/ui/doc_viewer/pdf_viewer.dart).
+  #   - path_provider gives the viewers a temp dir (HTML loadFile, share cache).
+  webview_flutter: ^4.13.0
+  pdfx: ^2.8.0
+  path_provider: ^2.1.5
+
   # Plan 32b — render the agent's Markdown replies (GFM + code blocks),
   # optimized for LLM output. `url_launcher` opens links tapped in the
   # rendered markdown in the system browser.

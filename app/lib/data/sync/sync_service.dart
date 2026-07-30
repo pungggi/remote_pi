@@ -551,6 +551,41 @@ class SyncService extends Service {
               ),
         );
 
+      case AgentFile(
+        :final id,
+        :final kind,
+        :final data,
+        :final mime,
+        :final path,
+        :final caption,
+        :final allowNetwork,
+      ):
+        // Plan/125 - agent-pushed document (show_file tool: md/text/pdf/html).
+        // Persist as an assistant row carrying a file so it survives app
+        // restart; dedup by the message id guards against rebroadcast. Caption
+        // rides in `text`, the repo path in `imagePath` (viewer title).
+        // ignore: discarded_futures
+        _upsert(
+          MsgRole.assistant,
+          id,
+          (seq, existing) =>
+              existing ??
+              MessageRecord(
+                id: id,
+                seq: seq,
+                role: MsgRole.assistant,
+                text: caption ?? '',
+                file: MessageFile(
+                  kind: kind,
+                  data: data,
+                  mime: mime,
+                  allowNetwork: allowNetwork,
+                ),
+                imagePath: path,
+                ts: DateTime.now(),
+              ),
+        );
+
       case QueuedMessageState(:final items):
         _setQueuedMessages([
           for (final item in items)

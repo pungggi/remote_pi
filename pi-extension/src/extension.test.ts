@@ -1342,6 +1342,111 @@ describe("multi-channel broadcast (W2D)", () => {
     expect(typeof first.id).toBe("string");
   });
 
+  test("show_file broadcasts agent_file (md/pdf/html) with inline base64 to every owner (plan/125)", async () => {
+    await _pairForTest("ownerA__1234567890");
+    await _pairAdditionalForTest("ownerB__abcdefghij", "Android");
+
+    type CapturedTool = {
+      name: string;
+      execute: (id: string, p: Record<string, unknown>) => Promise<{
+        content?: { text?: string }[];
+        details?: Record<string, unknown>;
+      }>;
+    };
+    const tools: CapturedTool[] = [];
+    const capturePi = {
+      on: () => undefined,
+      registerCommand: () => undefined,
+      registerTool(t: CapturedTool) { tools.push(t); },
+      registerShortcut: () => undefined,
+      registerFlag: () => undefined, getFlag: () => undefined,
+      registerMessageRenderer: () => undefined,
+      sendMessage: () => undefined, sendUserMessage: () => undefined,
+    } as unknown as ExtensionAPI;
+    (extension as ExtensionFactory)(capturePi);
+    const showFile = tools.find((t) => t.name === "show_file");
+    expect(showFile).toBeDefined();
+
+    // ── markdown ────────────────────────────────────────────────────────
+    const mdBody = "# Plan 125\n\nA **doc**.\n";
+    const mdPath = join(tmpdir(), `pi-show-file-${Date.now()}.md`);
+    writeFileSync(mdPath, mdBody);
+    let sendsBefore = relayRef.current!.send.mock.calls.length;
+    let result = await showFile!.execute("md-1", { path: mdPath, caption: "the plan" });
+    rmSync(mdPath, { force: true });
+
+    expect(result.details).toMatchObject({
+      shown: true, kind: "markdown", path: mdPath, mime: "text/markdown", bytes: Buffer.byteLength(mdBody),
+    });
+    expect(JSON.stringify(result)).not.toContain(Buffer.from(mdBody).toString("base64"));
+
+    let sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt);
+    let docs = sent.filter((d) => d.inner.type === "agent_file");
+    expect(docs).toHaveLength(2);
+    expect(new Set(docs.map((d) => d.peer)))
+      .toEqual(new Set(["ownerA__1234567890", "ownerB__abcdefghij"]));
+    let md = docs[0]!.inner as {
+      id: string; in_reply_to: string; kind: string; data: string; mime: string;
+      path?: string; caption?: string; size?: number; allow_network?: boolean;
+    };
+    expect(md.kind).toBe("markdown");
+    expect(md.mime).toBe("text/markdown");
+    expect(md.data).toBe(Buffer.from(mdBody).toString("base64"));
+    expect(md.caption).toBe("the plan");
+    expect(md.path).toBe(mdPath);
+    expect(md.in_reply_to).toBe("");
+    expect(md.allow_network).toBeUndefined();
+
+    // ── pdf (large cap) ─────────────────────────────────────────────────
+    const pdfBytes = Buffer.concat([
+      Buffer.from("%PDF-1.4\n"),
+      Buffer.alloc(2 * 1024 * 1024, 0x41), // 2 MiB — over the 1 MiB text cap, under the 10 MiB pdf cap
+    ]);
+    const pdfPath = join(tmpdir(), `pi-show-file-${Date.now()}.pdf`);
+    writeFileSync(pdfPath, pdfBytes);
+    sendsBefore = relayRef.current!.send.mock.calls.length;
+    await showFile!.execute("pdf-1", { path: pdfPath });
+    rmSync(pdfPath, { force: true });
+    sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt);
+    docs = sent.filter((d) => d.inner.type === "agent_file");
+    expect(docs).toHaveLength(2);
+    const pdf = docs[0]!.inner as { kind: string; mime: string; data: string };
+    expect(pdf.kind).toBe("pdf");
+    expect(pdf.mime).toBe("application/pdf");
+    expect(pdf.data).toBe(pdfBytes.toString("base64"));
+
+    // ── html with allowNetwork ──────────────────────────────────────────
+    const htmlBody = "<!doctype html><script>document.title='x'</script>";
+    const htmlPath = join(tmpdir(), `pi-show-file-${Date.now()}.html`);
+    writeFileSync(htmlPath, htmlBody);
+    sendsBefore = relayRef.current!.send.mock.calls.length;
+    await showFile!.execute("html-1", { path: htmlPath, allowNetwork: true });
+    rmSync(htmlPath, { force: true });
+    sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt);
+    docs = sent.filter((d) => d.inner.type === "agent_file");
+    expect(docs).toHaveLength(2);
+    const html = docs[0]!.inner as { kind: string; mime: string; allow_network?: boolean };
+    expect(html.kind).toBe("html");
+    expect(html.mime).toBe("text/html");
+    expect(html.allow_network).toBe(true);
+
+    // ── html WITHOUT allowNetwork → no allow_network on the wire (default) ──
+    const html2Path = join(tmpdir(), `pi-show-file-${Date.now()}-2.html`);
+    writeFileSync(html2Path, htmlBody);
+    sendsBefore = relayRef.current!.send.mock.calls.length;
+    await showFile!.execute("html-2", { path: html2Path });
+    rmSync(html2Path, { force: true });
+    sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt);
+    docs = sent.filter((d) => d.inner.type === "agent_file");
+    const html2 = docs[0]!.inner as { kind: string; allow_network?: boolean };
+    expect(html2.kind).toBe("html");
+    expect(html2.allow_network).toBeUndefined();
+  });
+
   test("session_sync from owner A → session_history reply only to A", async () => {
     await _pairForTest("ownerA__1234567890");
     await _pairAdditionalForTest("ownerB__abcdefghij", "Android");
