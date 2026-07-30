@@ -313,7 +313,15 @@ class ActionsRepository extends Repository implements IActionsRepository {
         if (p == null) return;
         p.timeout.cancel();
         if (!p.completer.isCompleted) {
-          if (ok) {
+          // The wire protocol makes `room_id` optional, but a real spawn
+          // always reports the room it will re-announce. Guard a malformed /
+          // partial `ok:true` reply (null/empty room_id) as a failure so a
+          // caller can never mistake it for success (review #2).
+          if (ok && (roomId == null || roomId.isEmpty)) {
+            p.completer.completeError(
+              const ActionFailure('start_session reply missing room_id'),
+            );
+          } else if (ok) {
             p.completer.complete(
               StartSessionResult(
                 inReplyTo: inReplyTo,

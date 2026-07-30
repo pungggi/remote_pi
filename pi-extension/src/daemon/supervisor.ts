@@ -366,10 +366,11 @@ export class Supervisor {
     for (const [id, slot] of this.children) {
       if (slot.child.state !== "running") {
         already.push(id);
-        // Plan/124 — a non-running transient slot is dead weight; drop it
-        // so it doesn't linger in `children` (it has no registry entry to
-        // revive and won't be resurrected at boot).
-        if (slot.transient) this.children.delete(id);
+        // Plan/124 — a non-running transient slot is dead weight; RETIRE it
+        // (clear any pending restart timer / stop a starting child) before
+        // dropping it from `children` — a bare delete could orphan a pending
+        // timer's respawn (review #1).
+        if (slot.transient) await this._retireTransient(slot);
         continue;
       }
       if (slot.restartTimer !== null) {
@@ -378,10 +379,9 @@ export class Supervisor {
       }
       await slot.child.stop();
       stopped.push(id);
-      // Plan/124 — transient slots are not registry-backed: once stopped
-      // they're gone (no boot-resurrect, no manual restart without a fresh
-      // start_transient).
-      if (slot.transient) this.children.delete(id);
+      // Plan/124 — transient slots are not registry-backed: retire them
+      // (timer clear + stop + delete) so nothing respawns untracked (review #1).
+      if (slot.transient) await this._retireTransient(slot);
     }
     return { ok: true, data: { stopped, already_stopped: already } };
   }
@@ -405,7 +405,10 @@ export class Supervisor {
     }
     if (slot.child.state !== "running") {
       const state = slot.child.state;
-      if (slot.transient) this.children.delete(id);
+      // Retire (don't bare-delete): a `crashed` slot may hold a pending
+      // restart timer, a `starting` one a live child — both orphan without
+      // clearing/stopping (review #1).
+      if (slot.transient) await this._retireTransient(slot);
       return { ok: true, data: { id, state, stopped: false } };
     }
     if (slot.restartTimer !== null) {
@@ -414,8 +417,32 @@ export class Supervisor {
     }
     await slot.child.stop();
     const stoppedState = slot.child.state;
-    if (slot.transient) this.children.delete(id);
+    // Timer already cleared + child stopped above; `_retireTransient`
+    // centralizes the (now no-op) clear/stop + delete — single safe path
+    // (review #1).
+    if (slot.transient) await this._retireTransient(slot);
     return { ok: true, data: { id, state: stoppedState, stopped: true } };
+  }
+
+  /**
+   * Plan/124 — fully retire a transient slot before removing it from
+   * `children`: clear any pending crash-backoff `restartTimer` AND stop the
+   * child if it is still alive (running/starting). A bare `children.delete`
+   * on a slot with a pending timer lets `_onChildExit`'s closure fire
+   * `slot.child.spawn()` AFTER the slot left the map — respawning an
+   * UNTRACKED process that `list` / `stop` / `stop_all` can no longer see or
+   * reach (orphan). Review #1.
+   */
+  private async _retireTransient(slot: ChildSlot): Promise<void> {
+    if (slot.restartTimer !== null) {
+      clearTimeout(slot.restartTimer);
+      slot.restartTimer = null;
+    }
+    const s = slot.child.state;
+    if (s === "running" || s === "starting") {
+      await slot.child.stop();
+    }
+    this.children.delete(slot.id);
   }
 
   /** Restart a single registered daemon by id (stop-if-running, then spawn).
