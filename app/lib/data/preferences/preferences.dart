@@ -33,6 +33,9 @@ class Preferences extends ChangeNotifier {
   // Plan 110 — tool calls are collapsed by default; tapping expands them to show
   // full details. Reduces chat noise when the AI makes many tool calls.
   bool _collapseToolCalls = true;
+  // Plan/122 — project paths pinned to the top of the Projects list for
+  // quick access. Matched by absolute repo path.
+  List<String> _pinnedProjects = const [];
 
   Preferences([FlutterSecureStorage? store])
       : _store = store ?? const FlutterSecureStorage();
@@ -46,6 +49,7 @@ class Preferences extends ChangeNotifier {
   static const _kThemeModeKey = 'prefs.theme_mode';
   static const _kKeepAliveInBackgroundKey = 'prefs.keep_alive_in_background';
   static const _kCollapseToolCallsKey = 'prefs.collapse_tool_calls';
+  static const _kPinnedProjectsKey = 'prefs.pinned_projects';
 
   /// True → chat hides `ToolEvent` rows (only user/assistant text remain).
   bool get hideToolCalls => _hideToolCalls;
@@ -165,6 +169,14 @@ class Preferences extends ChangeNotifier {
     final collapseBool = collapse == null ? true : collapse == 'true';
     if (collapseBool != _collapseToolCalls) {
       _collapseToolCalls = collapseBool;
+      changed = true;
+    }
+
+    // Plan/122 — pinned project paths (JSON array). Empty/missing → none.
+    final pinnedRaw = await _store.read(key: _kPinnedProjectsKey);
+    final pinned = _decodeJsonStringList(pinnedRaw);
+    if (!_listEquals(pinned, _pinnedProjects)) {
+      _pinnedProjects = pinned;
       changed = true;
     }
 
@@ -333,6 +345,32 @@ class Preferences extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ── Plan/122 — pinned projects (Projects list quick access) ───────────
+
+  /// Project paths the user pinned to the top of the Projects list.
+  /// Matched by absolute repo path; a path that no longer exists on the
+  /// paired PC is inert (matches nothing and renders no tile).
+  List<String> get pinnedProjects => List.unmodifiable(_pinnedProjects);
+
+  bool isProjectPinned(String path) => _pinnedProjects.contains(path);
+
+  /// Toggle membership of [path] in the pinned set and persist. Returns the
+  /// new pinned state (`true` = now pinned). New pins append; removal is by
+  /// value. Safe to call from the UI toggle.
+  Future<bool> togglePinnedProject(String path) async {
+    final next = List<String>.from(_pinnedProjects);
+    final nowPinned = !next.remove(path);
+    if (nowPinned) next.add(path);
+    _pinnedProjects = List.unmodifiable(next);
+    if (next.isEmpty) {
+      await _store.delete(key: _kPinnedProjectsKey);
+    } else {
+      await _store.write(key: _kPinnedProjectsKey, value: jsonEncode(next));
+    }
+    notifyListeners();
+    return nowPinned;
+  }
+
   static ThemeMode _themeModeFromString(String? raw) {
     switch (raw) {
       case 'light':
@@ -349,14 +387,19 @@ class Preferences extends ChangeNotifier {
   /// Decode a persisted LAN endpoints blob (JSON array of strings) into a
   /// normalised, deduped list. Tolerates a missing/blank/corrupt value by
   /// returning an empty list — a corrupt blob must never block boot.
-  static List<String> _decodeLanEndpoints(String? raw) {
+  static List<String> _decodeLanEndpoints(String? raw) =>
+      _decodeJsonStringList(raw);
+
+  /// Decode a persisted JSON string array into a normalised (trimmed,
+  /// deduped, order-preserving) list. Tolerates a missing/blank/corrupt
+  /// value by returning an empty list — a corrupt blob must never block
+  /// boot. Shared by LAN endpoints (Plan 115) and pinned projects (122).
+  static List<String> _decodeJsonStringList(String? raw) {
     if (raw == null || raw.isEmpty) return const [];
     try {
       final decoded = jsonDecode(raw);
       if (decoded is! List) return const [];
-      return _normalizeLanEndpoints(
-        decoded.whereType<String>(),
-      );
+      return _normalizeLanEndpoints(decoded.whereType<String>());
     } catch (_) {
       return const [];
     }

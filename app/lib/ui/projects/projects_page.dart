@@ -136,10 +136,32 @@ class _ProjectsPageState extends State<ProjectsPage> {
           subtitle:
               'Clone repos under ~/source on your PC, or add roots to ~/.pi/piper/config.json (projects.roots).',
         ),
-      ProjectsReady(:final projects) => ListView.separated(
+      ProjectsReady(:final projects, :final pinnedPaths) => ListView.separated(
         physics: const AlwaysScrollableScrollPhysics(),
         itemCount: projects.length,
-        separatorBuilder: (_, _) => Divider(color: colors.border, height: 1),
+        separatorBuilder: (ctx, i) {
+          // Plan/122 — when crossing from the pinned group into the rest,
+          // render a section label instead of a bare divider so the split
+          // is legible at a glance. No label when nothing is pinned.
+          final topIsPinned = pinnedPaths.contains(projects[i].path);
+          final nextIsPinned = i + 1 < projects.length &&
+              pinnedPaths.contains(projects[i + 1].path);
+          if (topIsPinned && !nextIsPinned) {
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+              child: Text(
+                'ALL PROJECTS',
+                style: typo.monoSmall.copyWith(
+                  color: colors.muted2,
+                  letterSpacing: 1.2,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            );
+          }
+          return Divider(color: colors.border, height: 1);
+        },
         itemBuilder: (ctx, i) {
           final p = projects[i];
           final segs = p.path
@@ -147,11 +169,16 @@ class _ProjectsPageState extends State<ProjectsPage> {
               .where((s) => s.isNotEmpty)
               .toList();
           final parent = segs.length >= 2 ? segs[segs.length - 2] : '';
+          final isPinned = pinnedPaths.contains(p.path);
           return ListTile(
             leading: Icon(LucideIcons.folderGit, color: colors.accent),
             title: Text(
               p.name,
-              style: typo.mono.copyWith(color: colors.text, fontSize: 14),
+              style: typo.mono.copyWith(
+                color: colors.text,
+                fontSize: 14,
+                fontWeight: isPinned ? FontWeight.w600 : null,
+              ),
             ),
             subtitle: parent.isEmpty
                 ? null
@@ -159,7 +186,27 @@ class _ProjectsPageState extends State<ProjectsPage> {
                     parent,
                     style: typo.monoSmall.copyWith(color: colors.muted),
                   ),
-            trailing: Icon(LucideIcons.chevronRight, color: colors.muted2, size: 18),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: isPinned ? 'Unpin' : 'Pin to top',
+                  icon: Icon(
+                    isPinned ? LucideIcons.pin : LucideIcons.pinOff,
+                    size: 18,
+                    color: isPinned ? colors.accent : colors.muted2,
+                  ),
+                  onPressed: () =>
+                      context.read<ProjectsViewModel>().togglePin(p.path),
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 36, minHeight: 36),
+                ),
+                Icon(LucideIcons.chevronRight,
+                    color: colors.muted2, size: 18),
+              ],
+            ),
             onTap: () => _openTerminal(p),
           );
         },

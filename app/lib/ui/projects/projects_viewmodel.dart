@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:app/data/actions/actions_repository.dart';
+import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
@@ -17,7 +18,10 @@ final class ProjectsLoading extends ProjectsState {
 
 final class ProjectsReady extends ProjectsState {
   final List<WireProject> projects;
-  const ProjectsReady(this.projects);
+  // Plan/122 — absolute paths pinned to the top. Drives the per-tile icon +
+  // the pinned-first ordering the viewmodel emits.
+  final Set<String> pinnedPaths;
+  const ProjectsReady(this.projects, {this.pinnedPaths = const {}});
 }
 
 final class ProjectsError extends ProjectsState {
@@ -38,9 +42,10 @@ class ProjectsViewModel extends ViewModel<ProjectsState> {
   final PairingStorage _storage;
   final ConnectionManager _conn;
   final IActionsRepository _actions;
+  final Preferences _prefs;
   bool _disposed = false;
 
-  ProjectsViewModel(this._storage, this._conn, this._actions)
+  ProjectsViewModel(this._storage, this._conn, this._actions, this._prefs)
     : super(const ProjectsLoading());
 
   /// Fetch discovered projects from the device daemon. Routes the shared
@@ -53,7 +58,7 @@ class ProjectsViewModel extends ViewModel<ProjectsState> {
       if (_disposed) return;
       final projects = await _actions.listProjects();
       if (_disposed) return;
-      emit(ProjectsReady(projects));
+      emit(_sortedReady(projects));
     } on ActionFailure catch (e) {
       if (!_disposed) {
         emit(ProjectsError(e.message.isEmpty ? 'Device unreachable.' : e.message));
@@ -73,6 +78,39 @@ class ProjectsViewModel extends ViewModel<ProjectsState> {
     await _routeToDeviceRoom();
     if (_disposed) throw const ActionFailure('cancelled');
     return _actions.openTerminal(cwd: cwd, branch: branch);
+  }
+
+  /// Plan/122 — toggle a project's pin and re-sort the current list. No-op
+  /// outside [ProjectsReady]. Persists via [Preferences]; the list re-emits
+  /// immediately so the UI flips optimistically. Persistence failures are
+  /// swallowed — pinning must never crash.
+  Future<void> togglePin(String path) async {
+    try {
+      await _prefs.togglePinnedProject(path);
+    } catch (_) {
+      // best-effort: the optimistic re-sort still reflects the toggle
+    }
+    final s = state;
+    if (s is ProjectsReady && !_disposed) {
+      emit(_sortedReady(s.projects));
+    }
+  }
+
+  /// Build a [ProjectsReady] with projects partitioned: pinned (per
+  /// [Preferences.pinnedProjects]) first, then the rest — each group
+  /// preserving the discovery order returned by the device daemon. A stable
+  /// partition (not [List.sort]) keeps within-group order deterministic.
+  ProjectsReady _sortedReady(List<WireProject> projects) {
+    final pinned = _prefs.pinnedProjects.toSet();
+    if (pinned.isEmpty) {
+      return ProjectsReady(projects, pinnedPaths: const {});
+    }
+    final pinnedItems = <WireProject>[];
+    final rest = <WireProject>[];
+    for (final p in projects) {
+      (pinned.contains(p.path) ? pinnedItems : rest).add(p);
+    }
+    return ProjectsReady([...pinnedItems, ...rest], pinnedPaths: pinned);
   }
 
   /// Route the shared WS connection to the device daemon's room. switchTo the
