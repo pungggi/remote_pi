@@ -84,6 +84,7 @@ import {
   handleThinkingSet,
   handleListModels,
   type ActionCtx,
+  type ActionModelRegistry,
 } from "./actions/handlers.js";
 import { handleGitStatus, getGitStatus } from "./actions/git_status.js";
 import type { WireGitStatus } from "./protocol/types.js";
@@ -3239,8 +3240,18 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
         const provider = sm.getDefaultProvider();
         const modelId = sm.getDefaultModel();
         if (modelId) {
-          const found = provider ? ensureModelRegistry().find(provider, modelId) : undefined;
-          _currentModel = found?.name ?? modelId;
+          _currentModel = modelId;
+          // pi 0.83 made the registry build async (`ModelRuntime.create()`).
+          // Upgrade the seed to the model's friendly name best-effort, WITHOUT
+          // blocking session start — the raw id is already set above as a safe
+          // immediate default. Only an idle daemon (never prompted → no
+          // model_select / turn_start) benefits; those hydrate this later too.
+          if (provider) {
+            void ensureModelRegistry()
+              .then((reg) => reg.find(provider, modelId))
+              .then((found) => { if (found?.name) _currentModel = found.name; })
+              .catch(() => { /* best-effort — never block start */ });
+          }
         }
       }
     } catch { /* defensive — never block start on a model lookup */ }
@@ -4398,8 +4409,10 @@ async function _sendWithModelOverride(
   const override = msg.model;
   if (!override || !_pi) return;
   const ctx = (_lastEventCtx ?? _lastCtx) as ActionCtx | null;
-  const reg = ctx?.modelRegistry ?? ensureModelRegistry();
-  try { reg.refresh(); } catch { /* malformed models.json — best effort */ }
+  const reg = ctx?.modelRegistry ?? (await ensureModelRegistry());
+  // pi 0.83 made `refresh()` async; await inside the try so a malformed
+  // models.json rejection is swallowed by the catch (not left floating).
+  try { await reg.refresh(); } catch { /* malformed models.json — best effort */ }
   const chosen = reg.find(override.provider, override.id);
   if (!chosen) {
     sender.send({
@@ -4738,6 +4751,17 @@ function _abortCurrentTurn(
   return false;
 }
 
+/**
+ * Resolve the model registry for an action: prefer the LIVE session registry
+ * from the extension ctx (reflects providers registered dynamically by other
+ * extensions via `pi.registerProvider(...)`); otherwise fall back to the
+ * async disk-backed registry. pi 0.83 made the fallback build async
+ * (`ModelRuntime.create()`), so this awaits.
+ */
+async function _resolveRegistry(ctx: ActionCtx | null): Promise<ActionModelRegistry> {
+  return ctx?.modelRegistry ?? (await ensureModelRegistry());
+}
+
 export function _routeClientMessageFrom(
   sender: PlainPeerChannel,
   msg: ClientMessage,
@@ -4955,22 +4979,25 @@ export function _routeClientMessageFrom(
       })();
       break;
     }
-    case "model_set":
-      void handleModelSet(
-        _pi,
-        (_lastEventCtx ?? _lastCtx) as ActionCtx | null,
-        ensureModelRegistry(),
-        sender,
-        msg,
-        _persistModelDefault,
+    case "model_set": {
+      const msCtx = (_lastEventCtx ?? _lastCtx) as ActionCtx | null;
+      // Capture the guard-narrowed _pi into a const: the narrowing from
+      // `if (!_pi) return` above does NOT survive into the `.then` closure
+      // (mutable module-level let), but a const does.
+      const pi = _pi;
+      void _resolveRegistry(msCtx).then((reg) =>
+        handleModelSet(pi, msCtx, reg, sender, msg, _persistModelDefault),
       );
       break;
+    }
     case "thinking_set":
       handleThinkingSet(_pi, sender, msg);
       break;
-    case "list_models":
-      handleListModels(((_lastEventCtx ?? _lastCtx) as ActionCtx | null), ensureModelRegistry(), sender, msg);
+    case "list_models": {
+      const lmCtx = (_lastEventCtx ?? _lastCtx) as ActionCtx | null;
+      void _resolveRegistry(lmCtx).then((reg) => handleListModels(lmCtx, reg, sender, msg));
       break;
+    }
     // Plan/107 — on-demand git status snapshot. Runs `git status` in the
     // session cwd (the one already reported in room_meta) and replies with
     // git_status_result; the relay forwards it verbatim (no relay change).

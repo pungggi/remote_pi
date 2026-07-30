@@ -10,8 +10,7 @@
  * possible).
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { setEnabledModelsForTest, modelInScope } from "./model-scope.js";
+import { describe, expect, test } from "vitest";
 import {
   handleSessionCompact,
   handleSessionNew,
@@ -280,16 +279,11 @@ describe("handleModelSet", () => {
 // ── list_models ────────────────────────────────────────────────────────────
 
 describe("handleListModels", () => {
-  // Plan/109: list_models now scopes by `enabledModels`. These tests pre-date
-  // scoping and expect the whole catalogue, so force "no scope" here.
-  beforeEach(() => setEnabledModelsForTest([]));
-  afterEach(() => setEnabledModelsForTest(undefined));
-
-  test("returns wire-shaped catalog with current echo when ctx.getModel is set", () => {
+  test("returns wire-shaped catalog with current echo when ctx.getModel is set", async () => {
     const reg = fakeRegistry([sampleModel]);
     const ctx: ActionCtx = { getModel: () => sampleModel };
     const sender = makeSender();
-    handleListModels(ctx, reg, sender, { type: "list_models", id: "r5" });
+    await handleListModels(ctx, reg, sender, { type: "list_models", id: "r5" });
     const reply = sender.sent[0];
     expect(reply.type).toBe("models_list");
     if (reply.type !== "models_list") throw new Error("type guard");
@@ -307,17 +301,17 @@ describe("handleListModels", () => {
     expect(reply.current).toEqual(reply.models[0]);
   });
 
-  test("omits `current` when ctx.getModel is undefined", () => {
+  test("omits `current` when ctx.getModel is undefined", async () => {
     const reg = fakeRegistry([sampleModel]);
     const sender = makeSender();
-    handleListModels(null, reg, sender, { type: "list_models", id: "r5" });
+    await handleListModels(null, reg, sender, { type: "list_models", id: "r5" });
     const reply = sender.sent[0];
     expect(reply.type).toBe("models_list");
     if (reply.type !== "models_list") throw new Error("type guard");
     expect(reply.current).toBeUndefined();
   });
 
-  test("prefers ctx.modelRegistry over the fallback registry", () => {
+  test("prefers ctx.modelRegistry over the fallback registry", async () => {
     const fallback = fakeRegistry([sampleModel]);
     const liveModel: SdkModelLike = {
       id: "gpt-oss-20b",
@@ -329,7 +323,7 @@ describe("handleListModels", () => {
     const live = fakeRegistry([liveModel]);
     const ctx: ActionCtx = { modelRegistry: live };
     const sender = makeSender();
-    handleListModels(ctx, fallback, sender, { type: "list_models", id: "r5" });
+    await handleListModels(ctx, fallback, sender, { type: "list_models", id: "r5" });
     const reply = sender.sent[0];
     expect(reply.type).toBe("models_list");
     if (reply.type !== "models_list") throw new Error("type guard");
@@ -345,14 +339,14 @@ describe("handleListModels", () => {
     ]);
   });
 
-  test("registry refresh failure surfaces as error envelope", () => {
+  test("registry refresh failure surfaces as error envelope", async () => {
     const reg: ActionModelRegistry = {
       refresh: () => { throw new Error("models.json malformed"); },
       getAvailable: () => [],
       find: () => undefined,
     };
     const sender = makeSender();
-    handleListModels(null, reg, sender, { type: "list_models", id: "r5" });
+    await handleListModels(null, reg, sender, { type: "list_models", id: "r5" });
     expect(sender.sent[0]).toMatchObject({
       type: "error",
       in_reply_to: "r5",
@@ -361,14 +355,29 @@ describe("handleListModels", () => {
     });
   });
 
-  test("Plan/109 — scopes the catalog by enabledModels (provider/modelId + bare id)", () => {
+  test("Pi 0.83 — returns exactly ctx.scopedModels when scoping is configured", async () => {
+    // ctx.scopedModels is the core's authoritative resolution (same set
+    // `/scoped-models` shows); list_models must echo it verbatim, ignoring
+    // the registry's wider catalogue.
     const a = { ...sampleModel, id: "glm-5.2", provider: "zai", name: "GLM 5.2" };
     const b = { ...sampleModel, id: "grok-4.5", provider: "xai", name: "Grok 4.5" };
     const c = { ...sampleModel, id: "other", provider: "foo", name: "Other" };
-    setEnabledModelsForTest(["zai/glm-5.2", "grok-4.5"]); // exact + bare-id
     const reg = fakeRegistry([a, b, c]);
+    const ctx: ActionCtx = { scopedModels: [{ model: a }, { model: b }] };
     const sender = makeSender();
-    handleListModels(null, reg, sender, { type: "list_models", id: "r5" });
+    await handleListModels(ctx, reg, sender, { type: "list_models", id: "r5" });
+    const reply = sender.sent[0];
+    if (reply.type !== "models_list") throw new Error("expected models_list");
+    expect(reply.models.map((m) => m.id).sort()).toEqual(["glm-5.2", "grok-4.5"]);
+  });
+
+  test("Pi 0.83 — empty ctx.scopedModels means no scoping → whole catalogue", async () => {
+    const a = { ...sampleModel, id: "glm-5.2", provider: "zai", name: "GLM 5.2" };
+    const b = { ...sampleModel, id: "grok-4.5", provider: "xai", name: "Grok 4.5" };
+    const reg = fakeRegistry([a, b]);
+    const ctx: ActionCtx = { scopedModels: [] };
+    const sender = makeSender();
+    await handleListModels(ctx, reg, sender, { type: "list_models", id: "r5" });
     const reply = sender.sent[0];
     if (reply.type !== "models_list") throw new Error("expected models_list");
     expect(reply.models.map((m) => m.id).sort()).toEqual(["glm-5.2", "grok-4.5"]);
@@ -398,25 +407,5 @@ describe("wireFromModel", () => {
   test("vision=false when model.input is text-only", () => {
     const textOnly: SdkModelLike = { ...sampleModel, input: ["text"] };
     expect(wireFromModel(textOnly).vision).toBe(false);
-  });
-});
-
-describe("modelInScope (Plan/109)", () => {
-  test("no patterns → everything in scope", () => {
-    expect(modelInScope("any", "model")).toBe(true);
-    expect(modelInScope("any", "model", [])).toBe(true);
-  });
-  test("exact provider/modelId + bare id (case-insensitive)", () => {
-    expect(modelInScope("zai", "glm-5.2", ["zai/glm-5.2"])).toBe(true);
-    expect(modelInScope("zai", "GLM-5.2", ["zai/glm-5.2"])).toBe(true);
-    expect(modelInScope("zai", "glm-5.2", ["glm-5.2"])).toBe(true); // bare id
-    expect(modelInScope("xai", "grok-4.5", ["zai/glm-5.2"])).toBe(false);
-  });
-  test("glob * wildcard", () => {
-    expect(modelInScope("zai", "glm-5.2", ["zai/*"])).toBe(true);
-    expect(modelInScope("xai", "grok-4.5", ["zai/*"])).toBe(false);
-  });
-  test("strips a :thinking suffix", () => {
-    expect(modelInScope("zai", "glm-5.2", ["zai/glm-5.2:high"])).toBe(true);
   });
 });

@@ -21,12 +21,12 @@
  *   - `ModelRegistry.{refresh,getAvailable,find}` — see `registry.ts`
  */
 
-import { modelInScope, readEnabledModels } from "./model-scope.js";
 import type {
   ClientMessage,
   ServerMessage,
   WireModel,
   ActionName,
+  ThinkingLevel,
 } from "../protocol/types.js";
 
 /**
@@ -68,7 +68,18 @@ export interface ActionReplySender {
  */
 export interface ActionPi {
   setModel(model: Model<any>): Promise<boolean>;
-  setThinkingLevel(level: import("../protocol/types.js").ThinkingLevel): void;
+  setThinkingLevel(level: ThinkingLevel): void;
+}
+
+/**
+ * Mirrors the SDK's `ScopedModel` (pi 0.83+ `ctx.scopedModels` element): a
+ * resolved model plus its optional per-pattern thinking level. We capture
+ * only `model` + `thinkingLevel` so handlers stay decoupled from the SDK's
+ * full `ScopedModel` surface.
+ */
+export interface ActionScopedModel {
+  model: Model<any>;
+  thinkingLevel?: ThinkingLevel;
 }
 
 /**
@@ -82,6 +93,14 @@ export interface ActionPi {
  * a runtime TypeError.
  */
 export interface ActionCtx {
+  /**
+   * Pi 0.83 — the session's RESOLVED model scope (same set `/scoped-models`
+   * shows). The core already did the minimatch globbing, alias/dated-version
+   * selection, and de-dup against `enabledModels` / `--models`. Empty array =
+   * no scoping configured → whole catalogue is usable. Undefined when no ctx
+   * is available (pre-session edge case).
+   */
+  scopedModels?: readonly ActionScopedModel[];
   compact?: (options?: object) => void;
   /**
    * Starts a new session. `withSession` is the SDK's blessed hook for
@@ -251,8 +270,10 @@ export async function handleModelSet(
     // registered dynamically by extensions via `pi.registerProvider(...)`.
     // Fall back to remote-pi's own disk-backed registry when no ctx exists.
     const liveReg = ctx?.modelRegistry ?? reg;
-    // Refresh first so a model just-added via `/login` is visible.
-    liveReg.refresh();
+    // Refresh first so a model just-added via `/login` is visible. pi 0.83 made
+    // `refresh()` async (reloads models.json); await it so the find below sees
+    // the freshest catalogue. Sync test fakes are awaited harmlessly.
+    await liveReg.refresh();
     const model = liveReg.find(msg.provider, msg.model_id);
     if (!model) {
       throw new Error(`model "${msg.provider}/${msg.model_id}" not in registry`);
@@ -269,12 +290,12 @@ export async function handleModelSet(
   });
 }
 
-export function handleListModels(
+export async function handleListModels(
   ctx: ActionCtx | null,
   reg: ActionModelRegistry,
   sender: ActionReplySender,
   msg: ListModelsMsg,
-): void {
+): Promise<void> {
   // refresh() can throw if `models.json` is malformed — wrap in try so the
   // app gets an explicit error reply instead of a silent drop.
   try {
@@ -282,13 +303,20 @@ export function handleListModels(
     // registered dynamically by extensions via `pi.registerProvider(...)`.
     // Fall back to remote-pi's own disk-backed registry when no ctx exists.
     const liveReg = ctx?.modelRegistry ?? reg;
-    liveReg.refresh();
-    // Plan/109 — scope to pi's `enabledModels` (same set `/scoped-models`
-    // shows). No patterns configured → whole catalogue (pi's fallback).
-    const patterns = readEnabledModels();
-    const models = liveReg.getAvailable()
-      .filter((m) => modelInScope(m.provider, m.id, patterns))
-      .map(wireFromModel);
+    // pi 0.83 made `refresh()` async (reloads models.json); await it so the
+    // reads below see the freshest catalogue. Sync test fakes are awaited
+    // harmlessly. (Throws/rejects land in the catch below.)
+    await liveReg.refresh();
+    // Pi 0.83 exposed the session's RESOLVED model scope as `ctx.scopedModels`
+    // (same set `/scoped-models` shows). Prefer it over re-resolving
+    // `enabledModels` ourselves: the core already did the minimatch globbing,
+    // alias/dated-version selection, and de-dup. Empty array = no scoping →
+    // whole catalogue (pi's fallback); undefined = no ctx → also catalogue.
+    const scoped = ctx?.scopedModels;
+    const models =
+      scoped && scoped.length > 0
+        ? scoped.map((sm) => wireFromModel(sm.model))
+        : liveReg.getAvailable().map(wireFromModel);
     const current = ctx?.getModel?.();
     sender.send({
       type: "models_list",

@@ -5,6 +5,12 @@ allowBuilds:
   koffi: true
   protobufjs: true
 
+minimumReleaseAgeExclude:
+  - '@earendil-works/pi-agent-core@0.83.0'
+  - '@earendil-works/pi-ai@0.83.0'
+  - '@earendil-works/pi-coding-agent@0.83.0'
+  - '@earendil-works/pi-tui@0.83.0'
+
 # Keep transitive packages above known vulnerable ranges until upstreams
 # release dependency updates that naturally resolve these versions.
 overrides:
