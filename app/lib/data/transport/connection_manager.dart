@@ -715,6 +715,7 @@ class ConnectionManager extends Service {
         :final thinking,
         :final working,
         :final git,
+        :final contextUsage,
       ):
         final key = toStandardB64(peer);
         final list = _roomsByPeer[key] ?? <RoomInfo>[];
@@ -733,12 +734,14 @@ class ConnectionManager extends Service {
         // forcing the room back to idle.
         var preservedWorking = false;
         GitStatus? preservedGit;
+        ContextUsage? preservedContextUsage;
         final existingIdx = list.indexWhere((r) => r.roomId == roomId);
         if (existingIdx >= 0) {
           preservedName = list[existingIdx].name;
           preservedThinking = list[existingIdx].thinking;
           preservedWorking = list[existingIdx].working;
           preservedGit = list[existingIdx].git;
+          preservedContextUsage = list[existingIdx].contextUsage;
         }
         final next = RoomInfo(
           roomId: roomId,
@@ -749,6 +752,7 @@ class ConnectionManager extends Service {
           thinking: thinking ?? preservedThinking,
           working: working ?? preservedWorking,
           git: git ?? preservedGit,
+          contextUsage: contextUsage ?? preservedContextUsage,
         );
         final liveAlready = _liveRoomIds[key]?.contains(roomId) ?? false;
         final identicalEntry = existingIdx >= 0 && list[existingIdx] == next;
@@ -791,6 +795,8 @@ class ConnectionManager extends Service {
         :final hasModel,
         :final hasThinking,
         :final hasGit,
+        :final contextUsage,
+        :final hasContextUsage,
       ):
         final key = toStandardB64(peer);
         final list = _roomsByPeer[key];
@@ -815,10 +821,14 @@ class ConnectionManager extends Service {
         // envelope carried a `git` key (hasGit), else preserve the cached
         // snapshot.
         final nextGit = hasGit ? git : current.git;
+        // Plan/115 — context-usage patch: same has-flag convention as git.
+        final nextContextUsage =
+            hasContextUsage ? contextUsage : current.contextUsage;
         if (current.model == nextModel &&
             current.thinking == nextThinking &&
             current.working == nextWorking &&
-            current.git == nextGit) {
+            current.git == nextGit &&
+            current.contextUsage == nextContextUsage) {
           break; // dedup: nothing actually changed
         }
         list[idx] = current.copyWith(
@@ -826,6 +836,7 @@ class ConnectionManager extends Service {
           thinking: nextThinking,
           working: nextWorking,
           git: nextGit,
+          contextUsage: nextContextUsage,
         );
         roomsDirty = true;
         // ignore: unawaited_futures
@@ -859,6 +870,7 @@ class ConnectionManager extends Service {
             // `rooms_of` reads the current registry meta, so its
             // `working` reflects the latest turn_start/turn_end.
             working: r.working,
+            contextUsage: r.contextUsage ?? byId[r.roomId]?.contextUsage,
           );
         }
         final newList = byId.values.toList();

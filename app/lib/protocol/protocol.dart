@@ -38,6 +38,8 @@ sealed class ControlInbound {
         final rawWorking =
             (j['working'] as bool?) ?? (metaJson?['working'] as bool?);
         final rawGit = j['git'] ?? metaJson?['git'];
+        final rawContextUsage =
+            j['context_usage'] ?? metaJson?['context_usage'];
         return RoomAnnounced(
           peer: j['peer'] as String,
           roomId: j['room_id'] as String,
@@ -51,6 +53,9 @@ sealed class ControlInbound {
           working: rawWorking,
           git: rawGit is Map<String, dynamic>
               ? GitStatus.fromJson(rawGit)
+              : null,
+          contextUsage: rawContextUsage is Map<String, dynamic>
+              ? ContextUsage.fromJson(rawContextUsage)
               : null,
         );
       }(),
@@ -70,8 +75,10 @@ sealed class ControlInbound {
         final hasModel = meta?.containsKey('model') ?? false;
         final hasThinking = meta?.containsKey('thinking') ?? false;
         final hasGit = meta?.containsKey('git') ?? false;
+        final hasContextUsage = meta?.containsKey('context_usage') ?? false;
         final rawThinking = meta?['thinking'] as String?;
         final rawGit = meta?['git'];
+        final rawContextUsage = meta?['context_usage'];
         return RoomMetaUpdated(
           peer: j['peer'] as String,
           roomId: j['room_id'] as String,
@@ -86,9 +93,13 @@ sealed class ControlInbound {
           git: rawGit is Map<String, dynamic>
               ? GitStatus.fromJson(rawGit)
               : null,
+          contextUsage: rawContextUsage is Map<String, dynamic>
+              ? ContextUsage.fromJson(rawContextUsage)
+              : null,
           hasModel: hasModel,
           hasThinking: hasThinking,
           hasGit: hasGit,
+          hasContextUsage: hasContextUsage,
         );
       }(),
       _ => null,
@@ -216,6 +227,11 @@ class RoomInfo {
   /// not reported yet → the tile falls back to the model subtitle.
   final GitStatus? git;
 
+  /// Plan/115 — context-window fill the Pi reports via
+  /// `room_meta.context_usage` (`tokens`/`contextWindow`/`percent`). Null
+  /// until the first response reports usage (e.g. right after compaction).
+  final ContextUsage? contextUsage;
+
   const RoomInfo({
     required this.roomId,
     required this.startedAt,
@@ -225,6 +241,7 @@ class RoomInfo {
     this.thinking,
     this.working = false,
     this.git,
+    this.contextUsage,
   });
 
   factory RoomInfo.fromJson(Map<String, dynamic> j) {
@@ -242,6 +259,9 @@ class RoomInfo {
       git: j['git'] is Map<String, dynamic>
           ? GitStatus.fromJson(j['git'] as Map<String, dynamic>)
           : null,
+      contextUsage: j['context_usage'] is Map<String, dynamic>
+          ? ContextUsage.fromJson(j['context_usage'] as Map<String, dynamic>)
+          : null,
     );
   }
 
@@ -254,6 +274,7 @@ class RoomInfo {
     if (thinking != null) 'thinking': thinking!.wire,
     'working': working,
     if (git != null) 'git': git!.toJson(),
+    if (contextUsage != null) 'context_usage': contextUsage!.toJson(),
   };
 
   RoomInfo copyWith({
@@ -264,6 +285,7 @@ class RoomInfo {
     Object? thinking = _kRoomInfoUnset,
     bool? working,
     Object? git = _kRoomInfoUnset,
+    Object? contextUsage = _kRoomInfoUnset,
   }) => RoomInfo(
     roomId: roomId,
     name: name ?? this.name,
@@ -275,6 +297,9 @@ class RoomInfo {
         : thinking as ThinkingLevel?,
     working: working ?? this.working,
     git: identical(git, _kRoomInfoUnset) ? this.git : git as GitStatus?,
+    contextUsage: identical(contextUsage, _kRoomInfoUnset)
+        ? this.contextUsage
+        : contextUsage as ContextUsage?,
   );
 
   @override
@@ -287,11 +312,21 @@ class RoomInfo {
       other.model == model &&
       other.thinking == thinking &&
       other.working == working &&
-      other.git == git;
+      other.git == git &&
+      other.contextUsage == contextUsage;
 
   @override
-  int get hashCode =>
-      Object.hash(roomId, name, cwd, startedAt, model, thinking, working, git);
+  int get hashCode => Object.hash(
+    roomId,
+    name,
+    cwd,
+    startedAt,
+    model,
+    thinking,
+    working,
+    git,
+    contextUsage,
+  );
 }
 
 class RoomAnnounced extends ControlInbound {
@@ -316,6 +351,9 @@ class RoomAnnounced extends ControlInbound {
 
   /// Plan/107b — git snapshot from `room_meta.git` (flat in room_announced).
   final GitStatus? git;
+
+  /// Plan/115 — context-window fill (flat in room_announced).
+  final ContextUsage? contextUsage;
   const RoomAnnounced({
     required this.peer,
     required this.roomId,
@@ -326,6 +364,7 @@ class RoomAnnounced extends ControlInbound {
     this.thinking,
     this.working,
     this.git,
+    this.contextUsage,
   });
 }
 
@@ -389,6 +428,12 @@ class RoomMetaUpdated extends ControlInbound {
 
   /// Plan/107b — `true` when the `meta` envelope carried a `git` key.
   final bool hasGit;
+
+  /// Plan/115 — context-window fill patch from `meta.context_usage`.
+  /// [hasContextUsage] distinguishes "key absent" (preserve) from "key
+  /// present" (apply, even if null).
+  final ContextUsage? contextUsage;
+  final bool hasContextUsage;
   const RoomMetaUpdated({
     required this.peer,
     required this.roomId,
@@ -396,9 +441,11 @@ class RoomMetaUpdated extends ControlInbound {
     this.thinking,
     this.working,
     this.git,
+    this.contextUsage,
     this.hasModel = true,
     this.hasThinking = true,
     this.hasGit = true,
+    this.hasContextUsage = true,
   });
 }
 
@@ -436,6 +483,46 @@ class Usage {
     inputTokens: j['input_tokens'] as int,
     outputTokens: j['output_tokens'] as int,
   );
+}
+
+/// Context-window fill the Pi reports via `room_meta.context_usage`
+/// (Plan/115). `tokens`/`percent` are null right after compaction, before
+/// the next LLM response reports usage.
+class ContextUsage {
+  final int? tokens;
+  final int contextWindow;
+  final int? percent;
+
+  const ContextUsage({this.tokens, required this.contextWindow, this.percent});
+
+  /// Parses context usage; returns null when `contextWindow` is absent or
+  /// non-positive — a partial/malformed payload is treated as "unknown"
+  /// rather than synthesizing a misleading gauge like "—/0k".
+  static ContextUsage? fromJson(Map<String, dynamic> j) {
+    final contextWindow = (j['contextWindow'] as num?)?.toInt();
+    if (contextWindow == null || contextWindow <= 0) return null;
+    return ContextUsage(
+      tokens: (j['tokens'] as num?)?.toInt(),
+      contextWindow: contextWindow,
+      percent: (j['percent'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'tokens': tokens,
+    'contextWindow': contextWindow,
+    'percent': percent,
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is ContextUsage &&
+      other.tokens == tokens &&
+      other.contextWindow == contextWindow &&
+      other.percent == percent;
+
+  @override
+  int get hashCode => Object.hash(tokens, contextWindow, percent);
 }
 
 enum ApproveDecision { allow, deny }
@@ -529,8 +616,7 @@ class UserMessage extends ClientMessage {
       'streaming_behavior': streamingBehavior!.wireValue,
     if (images != null && images!.isNotEmpty)
       'images': images!.map((i) => i.toJson()).toList(),
-    if (model != null)
-      'model': {'provider': model!.provider, 'id': model!.id},
+    if (model != null) 'model': {'provider': model!.provider, 'id': model!.id},
   };
 }
 
@@ -839,13 +925,13 @@ class OpenTerminalRequest extends ClientMessage {
 
   @override
   Map<String, dynamic> toJson() => {
-        'type': 'open_terminal_request',
-        'id': id,
-        if (cwd != null) 'cwd': cwd,
-        'runPi': runPi,
-        if (worktreePath != null) 'worktree_path': worktreePath,
-        if (branch != null) 'branch': branch,
-      };
+    'type': 'open_terminal_request',
+    'id': id,
+    if (cwd != null) 'cwd': cwd,
+    'runPi': runPi,
+    if (worktreePath != null) 'worktree_path': worktreePath,
+    if (branch != null) 'branch': branch,
+  };
 }
 
 /// Plan/112 — request the list of tracked worktrees, optionally filtered by
@@ -858,10 +944,10 @@ class ListWorktreesRequest extends ClientMessage {
 
   @override
   Map<String, dynamic> toJson() => {
-        'type': 'list_worktrees_request',
-        'id': id,
-        if (base != null) 'base': base,
-      };
+    'type': 'list_worktrees_request',
+    'id': id,
+    if (base != null) 'base': base,
+  };
 }
 
 /// Plan/112 — request removal of a tracked worktree by id. The Pi runs
@@ -873,10 +959,10 @@ class RemoveWorktreeRequest extends ClientMessage {
 
   @override
   Map<String, dynamic> toJson() => {
-        'type': 'remove_worktree_request',
-        'id': id,
-        'worktree_id': worktreeId,
-      };
+    'type': 'remove_worktree_request',
+    'id': id,
+    'worktree_id': worktreeId,
+  };
 }
 
 /// Plan/121 — request the list of git projects discovered under the PC's
@@ -889,10 +975,7 @@ class ListProjectsRequest extends ClientMessage {
   ListProjectsRequest({required this.id});
 
   @override
-  Map<String, dynamic> toJson() => {
-        'type': 'list_projects_request',
-        'id': id,
-      };
+  Map<String, dynamic> toJson() => {'type': 'list_projects_request', 'id': id};
 }
 
 /// Plan/124 — bring an OFFLINE session back to life in its own cwd (no new
@@ -910,11 +993,11 @@ class StartSessionRequest extends ClientMessage {
 
   @override
   Map<String, dynamic> toJson() => {
-        'type': 'start_session_request',
-        'id': id,
-        'cwd': cwd,
-        if (name != null && name!.isNotEmpty) 'name': name,
-      };
+    'type': 'start_session_request',
+    'id': id,
+    'cwd': cwd,
+    if (name != null && name!.isNotEmpty) 'name': name,
+  };
 }
 
 // --- ServerMessage (extension → app) ---
@@ -1805,9 +1888,9 @@ class WireProject {
   const WireProject({required this.path, required this.name});
 
   factory WireProject.fromJson(Map<String, dynamic> j) => WireProject(
-        path: j['path'] as String,
-        name: (j['name'] as String?) ?? '',
-      );
+    path: j['path'] as String,
+    name: (j['name'] as String?) ?? '',
+  );
 }
 
 /// Plan/121 — reply to [ListProjectsRequest]. `ok` is false only if discovery
@@ -1852,7 +1935,8 @@ class StartSessionResult extends ServerMessage {
     required this.message,
   });
 
-  factory StartSessionResult.fromJson(Map<String, dynamic> j) => StartSessionResult(
+  factory StartSessionResult.fromJson(Map<String, dynamic> j) =>
+      StartSessionResult(
         inReplyTo: j['in_reply_to'] as String,
         ok: j['ok'] as bool? ?? false,
         roomId: j['room_id'] as String?,
@@ -1981,21 +2065,20 @@ class AskQuestionWire {
   });
 
   factory AskQuestionWire.fromJson(Map<String, dynamic> j) => AskQuestionWire(
-        id: j['id'] as String? ?? '',
-        label: (j['label'] as String?) ?? (j['prompt'] as String?) ?? '',
-        prompt: j['prompt'] as String? ?? '',
-        type: AskQuestionWireType.fromWire(j['type'] as String?) ??
-            AskQuestionWireType.single,
-        required: (j['required'] as bool?) ?? false,
-        presentedType:
-            AskQuestionWireType.fromWire(j['presentedType'] as String?),
-        requestedType:
-            AskQuestionWireType.fromWire(j['requestedType'] as String?),
-        options: (j['options'] as List<dynamic>? ?? const <dynamic>[])
-            .whereType<Map>()
-            .map((m) => AskOptionWire.fromJson(m.cast<String, dynamic>()))
-            .toList(growable: false),
-      );
+    id: j['id'] as String? ?? '',
+    label: (j['label'] as String?) ?? (j['prompt'] as String?) ?? '',
+    prompt: j['prompt'] as String? ?? '',
+    type:
+        AskQuestionWireType.fromWire(j['type'] as String?) ??
+        AskQuestionWireType.single,
+    required: (j['required'] as bool?) ?? false,
+    presentedType: AskQuestionWireType.fromWire(j['presentedType'] as String?),
+    requestedType: AskQuestionWireType.fromWire(j['requestedType'] as String?),
+    options: (j['options'] as List<dynamic>? ?? const <dynamic>[])
+        .whereType<Map>()
+        .map((m) => AskOptionWire.fromJson(m.cast<String, dynamic>()))
+        .toList(growable: false),
+  );
 }
 
 /// Optional pi-ask enrichment on an `extension_ui_request`. When present, the
@@ -2016,7 +2099,8 @@ class AskEnrichmentWire {
     this.questions = const <AskQuestionWire>[],
   });
 
-  factory AskEnrichmentWire.fromJson(Map<String, dynamic> j) => AskEnrichmentWire(
+  factory AskEnrichmentWire.fromJson(Map<String, dynamic> j) =>
+      AskEnrichmentWire(
         flowId: j['flow_id'] as String? ?? '',
         toolCallId: j['tool_call_id'] as String?,
         source: (j['source'] as String?) ?? 'tool',
@@ -2056,7 +2140,8 @@ class ExtensionUiRequest extends ServerMessage {
   factory ExtensionUiRequest.fromJson(Map<String, dynamic> j) =>
       ExtensionUiRequest(
         id: j['id'] as String? ?? '',
-        method: ExtensionUiMethod.fromWire(j['method'] as String?) ??
+        method:
+            ExtensionUiMethod.fromWire(j['method'] as String?) ??
             ExtensionUiMethod.select,
         title: j['title'] as String?,
         message: j['message'] as String?,
@@ -2089,7 +2174,8 @@ class AskAnswerWire {
   Map<String, dynamic> toJson() {
     final m = <String, dynamic>{};
     if (values.isNotEmpty) m['values'] = values;
-    if (customText != null && customText!.isNotEmpty) m['customText'] = customText;
+    if (customText != null && customText!.isNotEmpty)
+      m['customText'] = customText;
     if (note != null && note!.isNotEmpty) m['note'] = note;
     if (optionNotes.isNotEmpty) m['optionNotes'] = optionNotes;
     return m;
@@ -2101,6 +2187,7 @@ class AskAnswerWire {
 class AskResponseEnrichmentWire {
   final String flowId;
   final bool isCancel;
+
   /// 'submit' | 'elaborate' (null when cancel). Raw string for forward-compat.
   final String? mode;
   final Map<String, AskAnswerWire> answers;

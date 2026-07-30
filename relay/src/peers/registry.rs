@@ -287,7 +287,7 @@ impl PeerRegistry {
         room_id: &str,
         patch: RoomMetaPatch,
     ) -> bool {
-        let (current_model, current_thinking, current_working, current_git) = {
+        let (current_model, current_thinking, current_working, current_git, current_context_usage) = {
             let mut lock = self.senders.lock().unwrap();
             let key = (peer_id.to_string(), room_id.to_string());
             match lock.get_mut(&key) {
@@ -306,6 +306,10 @@ impl PeerRegistry {
                         if let Some(ref g) = patch.git {
                             meta.git = g.clone();
                         }
+                        // Opaque context-usage passthrough.
+                        if let Some(ref cu) = patch.context_usage {
+                            meta.context_usage = cu.clone();
+                        }
                     }
                     // All conns at this key carry the same post-patch state
                     // now; read the first as the canonical snapshot.
@@ -315,6 +319,7 @@ impl PeerRegistry {
                         head.1.thinking.clone(),
                         head.1.working,
                         head.1.git.clone(),
+                        head.1.context_usage.clone(),
                     )
                 }
                 _ => return false,
@@ -344,6 +349,10 @@ impl PeerRegistry {
             // Plan/107b — opaque git snapshot (only when the Pi reported one).
             if let Some(g) = &current_git {
                 meta_obj.insert("git".to_string(), g.clone());
+            }
+            // Opaque context-usage snapshot (only when the Pi reported one).
+            if let Some(cu) = &current_context_usage {
+                meta_obj.insert("context_usage".to_string(), cu.clone());
             }
             let msg = serde_json::json!({
                 "type": "room_meta_updated",
@@ -410,6 +419,7 @@ mod tests {
             thinking: None,
             working: false,
             git: None,
+            context_usage: None,
             started_at: 0,
         }
     }

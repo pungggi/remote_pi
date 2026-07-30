@@ -120,6 +120,8 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
         // Plan/107b — opaque git snapshot (the relay forwards it verbatim;
         // the app parses the shape).
         let git = room_meta_val.and_then(|m| m.get("git")).cloned();
+        // Opaque context-usage blob (the relay forwards it verbatim).
+        let context_usage = room_meta_val.and_then(|m| m.get("context_usage")).cloned();
         let started_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -132,6 +134,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             thinking,
             working,
             git,
+            context_usage,
             started_at,
         }
     };
@@ -302,11 +305,16 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     let git_patch = meta_obj
                                         .and_then(|m| m.get("git"))
                                         .map(|v| Some(v.clone()));
+                                    // Opaque context-usage passthrough.
+                                    let context_usage_patch = meta_obj
+                                        .and_then(|m| m.get("context_usage"))
+                                        .map(|v| Some(v.clone()));
                                     let patch = RoomMetaPatch {
                                         model: model_patch,
                                         thinking: thinking_patch,
                                         working: working_patch,
                                         git: git_patch,
+                                        context_usage: context_usage_patch,
                                     };
                                     if !registry
                                         .update_room_meta(&peer_id, &target_room, patch)
