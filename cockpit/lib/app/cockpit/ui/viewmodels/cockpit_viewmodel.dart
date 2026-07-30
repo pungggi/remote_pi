@@ -336,8 +336,11 @@ class CockpitViewModel extends ChangeNotifier {
               p.realmId == realmCtrl.activeId,
         )
         .toList();
-    // Ordem manual do usuário (drag-drop); createdAt como desempate/fallback.
+    // Pinned primeiro; dentro de cada grupo, ordem manual do usuário (drag-drop);
+    // createdAt como desempate/fallback.
     roots.sort((a, b) {
+      final byPin = (b.pinned ? 1 : 0).compareTo(a.pinned ? 1 : 0);
+      if (byPin != 0) return byPin;
       final byOrder = a.order.compareTo(b.order);
       return byOrder != 0 ? byOrder : a.createdAt.compareTo(b.createdAt);
     });
@@ -1761,6 +1764,20 @@ class CockpitViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Alterna o pin de um workspace raiz (fixa/desafixa no topo do rail).
+  /// No-op para worktrees e o workspace de sistema "Cockpit" — só roots
+  /// participam do sort/UI de pin; pinar esses persistiria estado confuso.
+  Future<void> togglePin(String id) async {
+    final index = _projectList.indexWhere((p) => p.id == id);
+    if (index < 0) return;
+    final project = _projectList[index];
+    if (project.isWorktree || project.isSystemTerminal) return;
+    final updated = project.copyWith(pinned: !project.pinned);
+    _projectList[index] = updated;
+    await _projects.save(updated);
+    notifyListeners();
+  }
+
   /// Reordena os workspaces raiz (drag-drop no rail): move [movedId] para antes
   /// ou depois de [targetId] e persiste a nova sequência no campo `order`. As
   /// worktrees acompanham o pai (herdam o `order` na reconciliação).
@@ -1770,9 +1787,16 @@ class CockpitViewModel extends ChangeNotifier {
     required bool before,
   }) async {
     if (movedId == targetId) return;
-    final roots = rootProjects.toList(); // já ordenado por order
+    final roots = rootProjects.toList(); // já ordenado (pinned-first → order)
     final from = roots.indexWhere((p) => p.id == movedId);
-    if (from < 0 || roots.indexWhere((p) => p.id == targetId) < 0) return;
+    final to = roots.indexWhere((p) => p.id == targetId);
+    if (from < 0 || to < 0) return;
+    // Pin-aware: o sort de `rootProjects` sempre põe pinned no topo, então
+    // soltar um item através da fronteira pinned/unpinned seria visualmente
+    // ignorado — mas reescreveria a sequência de `order` e desestabilizaria a
+    // ordem dentro do grupo. Drops só valem dentro do mesmo grupo
+    // (pinned↔pinned ou unpinned↔unpinned); o contrário é no-op.
+    if (roots[from].pinned != roots[to].pinned) return;
     final moved = roots.removeAt(from);
     var insertAt = roots.indexWhere((p) => p.id == targetId);
     if (!before) insertAt += 1;

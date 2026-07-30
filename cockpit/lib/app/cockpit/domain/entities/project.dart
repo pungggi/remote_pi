@@ -24,6 +24,7 @@ class Project {
     this.parentId,
     this.order = 0,
     this.imagePath,
+    this.pinned = false,
     this.kind = WorkspaceKind.project,
   });
 
@@ -78,6 +79,11 @@ class Project {
   /// sumir/ilegível, a UI cai num placeholder de erro (ver `WorkspaceAvatar`).
   final String? imagePath;
 
+  /// `true` quando o workspace está fixado no topo da lista (rail).
+  /// Persistido; default `false`. Pinned vêm antes de unpinned e respeitam
+  /// a ordem manual ([order]) entre si.
+  final bool pinned;
+
   /// Natureza do workspace (normal vs. terminal de sistema). Não persistido:
   /// projetos carregados do Hive caem no default [WorkspaceKind.project].
   final WorkspaceKind kind;
@@ -97,6 +103,7 @@ class Project {
     int? order,
     String? realmId,
     Object? imagePath = unchanged,
+    bool? pinned,
   }) => Project(
     id: id,
     name: name ?? this.name,
@@ -107,6 +114,7 @@ class Project {
     parentId: parentId,
     order: order ?? this.order,
     imagePath: imagePath == unchanged ? this.imagePath : imagePath as String?,
+    pinned: pinned ?? this.pinned,
     kind: kind,
   );
 
