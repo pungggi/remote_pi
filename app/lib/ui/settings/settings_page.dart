@@ -9,6 +9,7 @@ import 'package:app/ui/settings/widgets/widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 
 class SettingsPage extends StatelessWidget {
@@ -77,6 +78,8 @@ class SettingsPage extends StatelessWidget {
           // peers/rooms already exist (PairingViewModel handles the
           // add path the same way as the first pair).
           const _AddPairingButton(),
+          Divider(color: colors.border, height: 1),
+          const _AboutSection(),
         ],
       ),
     );
@@ -109,6 +112,65 @@ class _ReliabilityEntry extends StatelessWidget {
         color: colors.muted2,
       ),
       onTap: () => context.push('/settings/reliability'),
+    );
+  }
+}
+
+class _AboutSection extends StatelessWidget {
+  const _AboutSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const _SectionHeader('About'),
+        FutureBuilder<PackageInfo>(
+          future: PackageInfo.fromPlatform(),
+          builder: (context, snap) {
+            final v = snap.data?.version;
+            return ListTile(
+              leading:
+                  Icon(LucideIcons.info, size: 20, color: colors.text),
+              title: Text(
+                'Version',
+                style: const TextStyle(fontFamily: kMonoFamily, fontSize: 14),
+              ),
+              subtitle: Text(
+                v ?? '…',
+                style: TextStyle(
+                  fontFamily: kMonoFamily,
+                  fontSize: 12,
+                  color: colors.muted,
+                ),
+              ),
+            );
+          },
+        ),
+        ListTile(
+          leading:
+              Icon(LucideIcons.scrollText, size: 20, color: colors.text),
+          title: Text(
+            "What's new",
+            style: const TextStyle(fontFamily: kMonoFamily, fontSize: 14),
+          ),
+          subtitle: Text(
+            'Last changelog entries',
+            style: TextStyle(
+              fontFamily: kMonoFamily,
+              fontSize: 12,
+              color: colors.muted,
+            ),
+          ),
+          trailing: Icon(
+            LucideIcons.chevronRight,
+            size: 18,
+            color: colors.muted2,
+          ),
+          onTap: () => context.push('/settings/changelog'),
+        ),
+      ],
     );
   }
 }

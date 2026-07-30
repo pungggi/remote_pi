@@ -22,6 +22,7 @@ import 'package:app/ui/onboarding/viewmodels/onboarding_viewmodel.dart';
 import 'package:app/ui/pairing/pairing_page.dart';
 import 'package:app/ui/pairing/viewmodels/pairing_viewmodel.dart';
 import 'package:app/ui/settings/settings_page.dart';
+import 'package:app/ui/settings/changelog_page.dart';
 import 'package:app/ui/settings/connection_reliability_page.dart';
 import 'package:app/ui/settings/viewmodels/settings_viewmodel.dart';
 import 'package:app/ui/sync_required/sync_required_page.dart';
@@ -390,6 +391,12 @@ GoRouter buildRouter(
           value: injector.get<ReliabilityService>(),
           child: const ConnectionReliabilityPage(),
         ),
+      ),
+      // Plan/123 — "What's new": last entries from the bundled CHANGELOG.md
+      // (assets/CHANGELOG.md). Static page, no viewmodel.
+      GoRoute(
+        path: '/settings/changelog',
+        builder: (ctx, st) => const ChangelogPage(),
       ),
       // Plan/121 — Projects list (discovered repos). Lightweight
       // ProjectsViewModel: no stream subscriptions, routes to the device
