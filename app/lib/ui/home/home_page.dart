@@ -104,6 +104,12 @@ class HomePage extends StatelessWidget {
       toolbarHeight: 56,
       automaticallyImplyLeading: false,
       actions: [
+        // Plan/121 — Projects list (discovered repos on the paired PC).
+        IconButton(
+          tooltip: 'Projects',
+          icon: Icon(LucideIcons.folderGit, color: colors.muted2),
+          onPressed: () => context.push('/projects'),
+        ),
         IconButton(
           tooltip: 'Settings',
           icon: Icon(LucideIcons.settings, color: colors.muted2),
