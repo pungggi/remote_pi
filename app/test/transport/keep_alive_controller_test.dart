@@ -219,4 +219,50 @@ void main() {
       );
     },
   );
+
+  testWidgets(
+    'plan 125: reflect swallows MissingPluginException when the keep-alive '
+    'channel is not registered (PR #12 review)',
+    (tester) async {
+      // Register a handler that THROWS MissingPluginException for every
+      // call. The test messenger maps a thrown MissingPluginException to a
+      // null reply, which invokeMethod rethrows as MissingPluginException on
+      // the caller side — exactly the early-bootstrap case the fix targets.
+      // (Registering NO handler, by contrast, makes invokeMethod hang in
+      // flutter_test.) MissingPluginException implements Exception, NOT
+      // extends PlatformException, so the old `on PlatformException` catch
+      // let it escape as an unhandled async error from reflect()/poll.
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        _channel,
+        (call) async =>
+            throw MissingPluginException('no handler for ${call.method}'),
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          _channel,
+          null,
+        ),
+      );
+
+      final c = KeepAliveController(
+        _KeepAlivePrefs(KeepAliveMode.always),
+        isAndroid: () => true,
+        enableChargingPoll: false,
+      );
+      addTearDown(c.dispose);
+
+      // Background + a non-NoPeer status ⇒ _process wants the service running
+      // ⇒ it calls the channel (permission probe / start), which throws.
+      c.setBackgrounded(true);
+      await tester.pump(); // let the fire-and-forget NoPeer reflect complete
+
+      // reflect must NOT throw: _process now catches `on Exception`. With the
+      // old `on PlatformException` catch this await would throw
+      // MissingPluginException — the regression this test pins.
+      await c.reflect(const StatusConnecting());
+      await tester.pump();
+
+      expect(c, isNotNull);
+    },
+  );
 }
