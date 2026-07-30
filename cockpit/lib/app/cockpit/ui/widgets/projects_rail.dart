@@ -53,6 +53,7 @@ class ProjectsRail extends StatefulWidget {
     required this.onManageRealms,
     required this.moveTargetsOf,
     required this.onMoveToRealm,
+    required this.onTogglePin,
     this.cockpit,
     required this.onSelectCockpit,
     this.width = 252,
@@ -134,6 +135,9 @@ class ProjectsRail extends StatefulWidget {
 
   /// Reordena workspaces: move [movedId] para antes/depois de [targetId].
   final void Function(String movedId, String targetId, bool before) onReorder;
+
+  /// Alterna o pin de um workspace (fixa/desafixa no topo do rail).
+  final void Function(String projectId) onTogglePin;
 
   @override
   State<ProjectsRail> createState() => _ProjectsRailState();
@@ -262,6 +266,8 @@ class _ProjectsRailState extends State<ProjectsRail> {
                                 moveTargets: widget.moveTargetsOf(project.id),
                                 onMoveToRealm: (realmId) =>
                                     widget.onMoveToRealm(project.id, realmId),
+                                onTogglePin: () =>
+                                    widget.onTogglePin(project.id),
                               ),
                             ),
                             // Worktrees (forks) penduradas abaixo do workspace,
@@ -372,6 +378,7 @@ class _ProjectItem extends StatelessWidget {
     required this.onPush,
     required this.moveTargets,
     required this.onMoveToRealm,
+    required this.onTogglePin,
   });
 
   final Project project;
@@ -397,6 +404,7 @@ class _ProjectItem extends StatelessWidget {
   /// Realms de destino do "Move to realm" (vazio esconde o item).
   final List<RealmTarget> moveTargets;
   final void Function(String realmId) onMoveToRealm;
+  final VoidCallback onTogglePin;
 
   @override
   Widget build(BuildContext context) {
@@ -470,10 +478,17 @@ class _ProjectItem extends StatelessWidget {
               ),
               const SizedBox(width: 4),
             ],
+            if (project.pinned)
+              Padding(
+                padding: const EdgeInsets.only(right: 2),
+                child: Icon(Icons.push_pin, size: 13, color: colors.accent),
+              ),
             _MenuButton(
               workspaceId: project.id,
               canCreateWorktree: canCreateWorktree,
               roots: roots,
+              pinned: project.pinned,
+              onTogglePin: onTogglePin,
               onConfigure: onConfigure,
               onDelete: onDelete,
               onCreateWorktree: onCreateWorktree,
@@ -1058,6 +1073,8 @@ class _MenuButton extends StatelessWidget {
     required this.workspaceId,
     required this.canCreateWorktree,
     required this.roots,
+    required this.pinned,
+    required this.onTogglePin,
     required this.onConfigure,
     required this.onDelete,
     required this.onCreateWorktree,
@@ -1076,6 +1093,8 @@ class _MenuButton extends StatelessWidget {
   /// Roots git do workspace. 2+ → as ações git viram **submenu** (escolhe a
   /// root ali mesmo); 1 → executam direto nela (comportamento histórico).
   final List<RailRoot> roots;
+  final bool pinned;
+  final VoidCallback onTogglePin;
   final VoidCallback onConfigure;
   final VoidCallback onDelete;
   final void Function(String rootPath) onCreateWorktree;
@@ -1141,6 +1160,11 @@ class _MenuButton extends StatelessWidget {
           label: 'Copy workspace id',
           icon: Icons.content_copy,
         ),
+        AppMenuItem(
+          value: 'pin',
+          label: pinned ? 'Unpin' : 'Pin to top',
+          icon: pinned ? Icons.push_pin : Icons.push_pin_outlined,
+        ),
         const AppMenuItem(
           value: 'config',
           label: 'Settings',
@@ -1171,6 +1195,7 @@ class _MenuButton extends StatelessWidget {
       await Clipboard.setData(ClipboardData(text: workspaceId));
     }
     if (pick == 'config') onConfigure();
+    if (pick == 'pin') onTogglePin();
     if (pick == 'delete') onDelete();
   }
 

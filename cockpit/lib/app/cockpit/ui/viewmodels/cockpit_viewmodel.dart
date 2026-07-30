@@ -336,8 +336,11 @@ class CockpitViewModel extends ChangeNotifier {
               p.realmId == realmCtrl.activeId,
         )
         .toList();
-    // Ordem manual do usuário (drag-drop); createdAt como desempate/fallback.
+    // Pinned primeiro; dentro de cada grupo, ordem manual do usuário (drag-drop);
+    // createdAt como desempate/fallback.
     roots.sort((a, b) {
+      final byPin = (b.pinned ? 1 : 0).compareTo(a.pinned ? 1 : 0);
+      if (byPin != 0) return byPin;
       final byOrder = a.order.compareTo(b.order);
       return byOrder != 0 ? byOrder : a.createdAt.compareTo(b.createdAt);
     });
@@ -1756,6 +1759,17 @@ class CockpitViewModel extends ChangeNotifier {
       colorValue: colorValue,
       imagePath: imagePath,
     );
+    _projectList[index] = updated;
+    await _projects.save(updated);
+    notifyListeners();
+  }
+
+  /// Alterna o pin de um workspace raiz (fixa/desafixa no topo do rail).
+  Future<void> togglePin(String id) async {
+    final index = _projectList.indexWhere((p) => p.id == id);
+    if (index < 0) return;
+    final project = _projectList[index];
+    final updated = project.copyWith(pinned: !project.pinned);
     _projectList[index] = updated;
     await _projects.save(updated);
     notifyListeners();

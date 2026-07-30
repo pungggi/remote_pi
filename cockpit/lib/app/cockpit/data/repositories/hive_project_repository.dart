@@ -69,6 +69,7 @@ class HiveProjectRepository implements ProjectRepository {
     'order': p.order,
     'image': p.imagePath,
     'realm': p.realmId,
+    'pinned': p.pinned,
   };
 
   Project? _fromMap(Map<dynamic, dynamic> map) {
@@ -94,6 +95,8 @@ class HiveProjectRepository implements ProjectRepository {
       imagePath: map['image'] as String?,
       // Ausente em dados pré-realm → Default (o migrador normalmente já gravou).
       realmId: map['realm'] as String? ?? Realm.defaultId,
+      // Ausente em dados pré-pin → false.
+      pinned: map['pinned'] as bool? ?? false,
     );
   }
 }

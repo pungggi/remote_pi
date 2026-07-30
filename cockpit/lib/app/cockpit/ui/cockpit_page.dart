@@ -747,6 +747,8 @@ class _CockpitPageState extends State<CockpitPage> {
                             onMoveToRealm: (projectId, realmId) => unawaited(
                               vm.moveWorkspaceToRealm(projectId, realmId),
                             ),
+                            onTogglePin: (projectId) =>
+                                unawaited(vm.togglePin(projectId)),
                             cockpit: vm.cockpitWorkspace,
                             onSelectCockpit: () =>
                                 vm.selectProject(Project.cockpitId),
