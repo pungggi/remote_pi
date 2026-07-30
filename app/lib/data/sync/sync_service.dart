@@ -560,7 +560,7 @@ class SyncService extends Service {
         :final caption,
         :final allowNetwork,
       ):
-        // Plan/125 - agent-pushed document (show_file tool: md/text/pdf/html).
+        // Plan/126 - agent-pushed document (show_file tool: md/text/pdf/html).
         // Persist as an assistant row carrying a file so it survives app
         // restart; dedup by the message id guards against rebroadcast. Caption
         // rides in `text`, the repo path in `imagePath` (viewer title).

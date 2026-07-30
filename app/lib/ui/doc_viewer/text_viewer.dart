@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 
-/// Plan/125 - plain-text / code viewer for a text-y file the agent pushed via
+/// Plan/126 - plain-text / code viewer for a text-y file the agent pushed via
 /// `show_file` (`.txt`, `.json`, `.yaml`, `.dart`, `.ts`, ...). Monospace,
 /// line-numbered gutter, selectable. A toolbar chip toggles soft-wrap on/off.
 /// Syntax highlighting is a follow-up (cockpit uses the `highlight` package);

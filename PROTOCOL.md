@@ -350,7 +350,7 @@ vs decisão #8 do plan/30 — risco #2 do plan/114).
 
 ---
 
-## Documentos do agente (plan/125)
+## Documentos do agente (plan/126)
 
 Generalização do plan/114 além de imagens: o **agente mostra ao usuário** um
 **documento** do disco — Markdown, texto/código, PDF, ou HTML com JavaScript.
@@ -364,7 +364,7 @@ do modelo (mesma disciplina do plan/49/114). O app renderiza um balão (card)
 tappable que abre o viewer certo conforme `kind` (Markdown / texto / PDF /
 HTML+JS).
 
-**Sandbox HTML+JS (decisão #12 do plan/125):** JS sempre roda. Por padrão a
+**Sandbox HTML+JS (decisão #12 do plan/126):** JS sempre roda. Por padrão a
 rede é **bloqueada** — um `<meta Content-Security-Policy>` restritivo é
 injetado no documento (`default-src 'none'; script-src 'unsafe-inline'
 'unsafe-eval'; style-src 'unsafe-inline'; img/src/font/media `data:`/`blob:`;
@@ -384,7 +384,7 @@ ServerMessage `agent_file` (broadcast ao vivo, **não** replayed via
   "kind": "markdown",               // markdown | text | pdf | html
   "data": "<base64 bytes>",
   "mime": "text/markdown",          // original mime p/ display/save
-  "path": "plan/125-agent-document-viewers.md",
+  "path": "plan/126-agent-document-viewers.md",
   "caption": "o plano",
   "size": 12345,
   "allow_network": false }          // só relevante p/ html

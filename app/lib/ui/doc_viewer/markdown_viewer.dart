@@ -5,7 +5,7 @@ import 'package:app/ui/chat/widgets/agent_markdown.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 
-/// Plan/125 - Markdown viewer for a `.md` file the agent pushed via `show_file`.
+/// Plan/126 - Markdown viewer for a `.md` file the agent pushed via `show_file`.
 /// Renders GFM + code blocks with the same [AgentMarkdown] renderer used for
 /// agent replies (plan/32b), selectable + with copy buttons. A toolbar chip
 /// toggles between **Rendered** and **Source** (raw markdown). Scrollable.

@@ -5,7 +5,7 @@ import 'package:app/domain/session_state.dart';
 /// [ChatMessage] the UI widgets already render.
 enum MsgRole { user, assistant, tool, compaction }
 
-/// Plan/125 - an agent-pushed document (show_file tool: markdown/text/pdf/html).
+/// Plan/126 - an agent-pushed document (show_file tool: markdown/text/pdf/html).
 /// The base64 [data] is the raw file bytes (valid UTF-8 for the text-y kinds);
 /// [kind] selects the viewer. Mirrors [MessageImage] (plan/30) for the image
 /// path. Persisted on the assistant row alongside `imagePath` (the repo path).
@@ -67,7 +67,7 @@ class MessageRecord {
   /// Null for every other row.
   final String? imagePath;
 
-  /// Plan/125 - agent-pushed document (show_file tool: markdown/text/pdf/html).
+  /// Plan/126 - agent-pushed document (show_file tool: markdown/text/pdf/html).
   /// Null for every other row. Mutually exclusive with [image].
   final MessageFile? file;
 
@@ -180,7 +180,7 @@ class MessageRecord {
           image: image,
         );
       case MsgRole.assistant:
-        // Plan/125 - an assistant row carrying a file is an agent-pushed
+        // Plan/126 - an assistant row carrying a file is an agent-pushed
         // document (show_file tool), rendered as a tappable viewer card.
         final agentFile = file;
         if (agentFile != null) {

@@ -1343,7 +1343,7 @@ describe("multi-channel broadcast (W2D)", () => {
     expect(typeof first.id).toBe("string");
   });
 
-  test("show_file broadcasts agent_file (md/pdf/html) with inline base64 to every owner (plan/125)", async () => {
+  test("show_file broadcasts agent_file (md/pdf/html) with inline base64 to every owner (plan/126)", async () => {
     await _pairForTest("ownerA__1234567890");
     await _pairAdditionalForTest("ownerB__abcdefghij", "Android");
 
@@ -1369,7 +1369,7 @@ describe("multi-channel broadcast (W2D)", () => {
     expect(showFile).toBeDefined();
 
     // ── markdown ────────────────────────────────────────────────────────
-    const mdBody = "# Plan 125\n\nA **doc**.\n";
+    const mdBody = "# Plan 126\n\nA **doc**.\n";
     const mdPath = join(tmpdir(), `pi-show-file-${Date.now()}.md`);
     writeFileSync(mdPath, mdBody);
     let sendsBefore = relayRef.current!.send.mock.calls.length;

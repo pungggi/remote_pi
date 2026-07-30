@@ -1109,7 +1109,7 @@ class _MessageListState extends State<_MessageList> {
                   // Plan/114 — agent-pushed image (show_image tool): tappable
                   // bubble that opens the full-screen viewer.
                   AgentImageMsg() => AgentImageBubble(msg),
-                  // Plan/125 - agent-pushed document (show_file tool:
+                  // Plan/126 - agent-pushed document (show_file tool:
                   // md/text/pdf/html): tappable card that opens the viewer.
                   AgentFileMsg() => AgentFileBubble(msg),
                   ToolEvent() => ToolRequestCard(

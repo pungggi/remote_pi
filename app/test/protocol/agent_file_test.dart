@@ -1,4 +1,4 @@
-// Plan/125 - wire parsing of the `agent_file` ServerMessage (the document the
+// Plan/126 - wire parsing of the `agent_file` ServerMessage (the document the
 // agent pushes to the user via the `show_file` tool: markdown/text/pdf/html).
 
 import 'package:app/protocol/protocol.dart';

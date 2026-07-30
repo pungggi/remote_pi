@@ -4,13 +4,13 @@ import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:pdfx/pdfx.dart';
 
-/// Plan/125 - PDF viewer for a `.pdf` file the agent pushed via `show_file`.
+/// Plan/126 - PDF viewer for a `.pdf` file the agent pushed via `show_file`.
 /// Uses `pdfx` (native renderers: PDFKit on iOS, PdfRenderer on Android) via a
 /// [PdfController] + [PdfView]. Paginated; pinch-to-zoom is handled natively by
 /// PdfView. Shows a spinner while the document opens; pdfx renders its own
 /// default error for a corrupt/unreadable file.
 ///
-/// NOTE: pdfx 2.x is the approved renderer (plan/125). If `flutter pub get`
+/// NOTE: pdfx 2.x is the approved renderer (plan/126). If `flutter pub get`
 /// ever fails to resolve pdfx on a future Flutter, swap this widget for
 /// `pdfrx`'s `PdfViewer` (different API) — the rest of the feature is agnostic.
 class PdfViewer extends StatefulWidget {

@@ -97,7 +97,7 @@ opens a full-screen viewer (pinch-zoom, save, share). It returns only metadata
 (`path`, `mime`, dimensions, size) — the image bytes go straight to the app
 over the relay and never enter the model context. JPEG/PNG/WebP/GIF up to 4 MiB.
 
-`show_file` (plan/125) generalizes that to **documents**: Markdown, plain
+`show_file` (plan/126) generalizes that to **documents**: Markdown, plain
 text/code, PDF, and HTML (with JavaScript). The LLM calls
 `show_file({ path, caption?, kind?, allowNetwork? })`; the extension detects
 the viewer `kind` from the extension (override with `kind=`), enforces per-kind

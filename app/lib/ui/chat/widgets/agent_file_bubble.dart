@@ -6,7 +6,7 @@ import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/doc_viewer/doc_viewer_page.dart';
 import 'package:flutter/material.dart';
 
-/// Plan/125 - left-aligned, tappable card for an [AgentFileMsg] (a document
+/// Plan/126 - left-aligned, tappable card for an [AgentFileMsg] (a document
 /// the agent pushed from the repo via the `show_file` tool: Markdown / text /
 /// PDF / HTML). Decodes the inline base64 once and shows an icon + filename +
 /// a small preview / sandbox badge; tapping opens [DocViewerPage], which routes
@@ -115,7 +115,7 @@ class _AgentFileBubbleState extends State<AgentFileBubble> {
   Widget build(BuildContext context) {
     final m = widget.message;
     final colors = context.colors;
-    // Plan/125 review #6 — if the inline base64 failed to decode, show an
+    // Plan/126 review #6 — if the inline base64 failed to decode, show an
     // explicit error card instead of a normal card that silently no-ops on tap.
     if (_bytes == null) {
       return Align(

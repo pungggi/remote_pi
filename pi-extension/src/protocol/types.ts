@@ -370,7 +370,7 @@ export type ServerMessage =
       width?: number;
       height?: number;
     }
-  // Plan/125 — a document the agent pushes to the user from a file in the repo
+  // Plan/126 — a document the agent pushes to the user from a file in the repo
   // (Markdown / text / PDF / HTML). Triggered by the `show_file` tool (see
   // src/index.ts `_registerShowFileTool`). Same discipline as `agent_image`:
   // inline base64 `data` to every connected owner, tool_result carries ONLY

@@ -7,11 +7,11 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
-/// Plan/125 - HTML viewer (with JavaScript) for an `.html` file the agent
+/// Plan/126 - HTML viewer (with JavaScript) for an `.html` file the agent
 /// pushed via `show_file`. Renders in a [WebViewWidget] (webview_flutter) with
 /// JavaScript ENABLED.
 ///
-/// SANDBOX (the key plan/125 decision): when [allowNetwork] is false (the
+/// SANDBOX (the key plan/126 decision): when [allowNetwork] is false (the
 /// default) a strict Content-Security-Policy `<meta>` is injected into the
 /// document before loading. The CSP allows inline scripts/styles and `data:`
 /// images/fonts/media (so self-contained JS — canvas, DOM, local charts —
@@ -51,7 +51,7 @@ class _HtmlViewerState extends State<HtmlViewer> {
   String? _loadError;
 
   /// Temp file written by `_load` so the WebView can `loadFile` it. Deleted in
-  /// [dispose] to avoid accumulating one file per open (plan/125 review #3).
+  /// [dispose] to avoid accumulating one file per open (plan/126 review #3).
   File? _tempFile;
 
   /// Strict no-network CSP: inline JS + styles + data: assets only.

@@ -1,5 +1,5 @@
 /**
- * Plan/125 — unit tests for the `show_file` tool's kind detection, validation,
+ * Plan/126 — unit tests for the `show_file` tool's kind detection, validation,
  * caps, and metadata-only result shape.
  *
  * Runs the extension factory against a tool-capturing mock and invokes the
@@ -71,7 +71,7 @@ function assertNoBase64Payload(
   }
 }
 
-describe("show_file tool (plan/125)", () => {
+describe("show_file tool (plan/126)", () => {
   let dir: string;
   beforeEach(() => { dir = tmpDir(); });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
@@ -245,7 +245,7 @@ describe("show_file tool (plan/125)", () => {
     expect(JSON.stringify(result)).not.toContain(body);
   });
 
-  // Plan/125 review #1 — dotfiles (.env/.gitignore/.editorconfig/.npmrc) have
+  // Plan/126 review #1 — dotfiles (.env/.gitignore/.editorconfig/.npmrc) have
   // no real extension, so detection must fall back to the dot-stripped stem
   // against the extension + basename allowlists (not be rejected outright).
   test("common dotfiles detect as text (no kind= needed)", async () => {

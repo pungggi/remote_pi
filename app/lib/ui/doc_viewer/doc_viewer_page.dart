@@ -8,7 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 
 
-/// Plan/125 - full-screen viewer for a document the agent pushed from the repo
+/// Plan/126 - full-screen viewer for a document the agent pushed from the repo
 /// (`show_file` tool). Routes by [kind] to the right sub-viewer (Markdown /
 /// text / PDF / HTML+JS) and provides common chrome: a top bar (title + close)
 /// and a bottom Share action. Swipe down dismisses (photo-app convention).
@@ -118,7 +118,7 @@ class _DocViewerPageState extends State<DocViewerPage> {
   Widget build(BuildContext context) {
     final colors = context.colors;
     // System-bar icons follow the theme brightness so they stay legible on both
-    // the dark (black) and light (white) scaffold backgrounds (plan/125 #4).
+    // the dark (black) and light (white) scaffold backgrounds (plan/126 #4).
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final iconBrightness = isDark ? Brightness.light : Brightness.dark;
     return AnnotatedRegion<SystemUiOverlayStyle>(

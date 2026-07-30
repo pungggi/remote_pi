@@ -1033,7 +1033,7 @@ sealed class ServerMessage {
       // (show_image tool). Inline base64; rendered as a tappable assistant-side
       // bubble that opens the full-screen viewer.
       'agent_image' => AgentImage.fromJson(json),
-      // Plan/125 — document the agent pushes to the user (show_file tool:
+      // Plan/126 — document the agent pushes to the user (show_file tool:
       // markdown / text / pdf / html). Inline base64 + kind discriminator.
       'agent_file' => AgentFile.fromJson(json),
       // Plan/32 — Pi-extension emits this when a context compaction finishes.
@@ -1406,7 +1406,7 @@ class AgentImage extends ServerMessage {
   );
 }
 
-/// Plan/125 - a document the agent shows to the user (via the `show_file`
+/// Plan/126 - a document the agent shows to the user (via the `show_file`
 /// tool): Markdown / plain text or code / PDF / HTML. Carries inline base64
 /// bytes in [data] plus a [kind] that selects the viewer. Mirrors [AgentImage]
 /// (plan/114): live broadcast, persisted locally (plan/31 DB), not replayed

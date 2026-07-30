@@ -1,4 +1,4 @@
-# Plan 125 — Document viewers the agent can push (Markdown / Text / PDF / HTML+JS)
+# Plan 126 — Document viewers the agent can push (Markdown / Text / PDF / HTML+JS)
 
 **Objective**: generalize plan/114's agent→user image flow beyond images. Today
 the agent can push a **file** to the user's phone with exactly one tool —
@@ -7,7 +7,7 @@ to show **Markdown**, **plain text / code**, **PDF**, and **HTML with
 JavaScript** — each opening an appropriate full-screen viewer on the mobile app,
 mirroring the `show_image` bubble→viewer UX.
 
-Expected result: user says "show me `plan/125-agent-document-viewers.md`" or
+Expected result: user says "show me `plan/126-agent-document-viewers.md`" or
 "render `report.pdf`" or "open `dashboard.html`" → the agent calls a tool → the
 extension reads/validates the file and broadcasts a new `agent_file` message
 with inline base64 + a `kind` discriminator → the app renders a tappable bubble
@@ -307,7 +307,7 @@ Android + iOS builds pass.
 - [x] Wave D docs: `PROTOCOL.md` + `pi-extension/README.md` (tool `show_file` + sandbox note). New app deps in `pubspec.yaml`: `webview_flutter ^4.13.0`, `pdfx ^2.8.0`, `path_provider ^2.1.5`.
 - [ ] Wave D verificação: `flutter pub get && flutter analyze && flutter test` + **device smoke** (needs Flutter toolchain + device — not runnable in this env).
 - [x] Relay unchanged; bytes never reach model context (B3 test confirms).
-- [ ] Commit: `feat(plan-125): agent document viewers (md/text/pdf/html)`
+- [ ] Commit: `feat(plan-126): agent document viewers (md/text/pdf/html)`
 
 > **Verification caveat (as in plan/114)**: pi-extension side is verifiable here
 > (`pnpm typecheck`/`pnpm test`). The Flutter app side needs a Flutter toolchain

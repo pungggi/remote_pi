@@ -190,7 +190,7 @@ const RECEIVED_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 // follow-ups; until then oversized files are rejected with a clear message.
 const SHOW_IMAGE_MAX_BYTES = 4 * 1024 * 1024;
 
-// Plan/125 — hard caps on raw DOCUMENT files the agent may push to the user via
+// Plan/126 — hard caps on raw DOCUMENT files the agent may push to the user via
 // `show_file` (markdown / text / code / html / pdf). Text-y kinds are bounded
 // small (exceeding 1 MiB is unusual and a 1 MiB single text blob janks the
 // viewer); PDFs are allowed larger but pay the same double-base64 wire tax
@@ -881,7 +881,7 @@ function _registerShowImageTool(pi: ExtensionAPI): void {
   });
 }
 
-// ── Plan/125 — show_file tool (agent → user document: md/text/pdf/html) ───
+// ── Plan/126 — show_file tool (agent → user document: md/text/pdf/html) ───
 // Mirrors `show_image` for non-image files. The agent calls
 // `show_file({ path, caption?, kind?, allowNetwork? })`; the handler detects
 // the kind (markdown/text/pdf/html) by extension (explicit `kind` overrides),

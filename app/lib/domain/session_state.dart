@@ -149,7 +149,7 @@ class AgentImageMsg extends ChatMessage {
   int get hashCode => Object.hash(id, image, path, caption);
 }
 
-/// Plan/125 - a document the agent pushed to the user from a file in the repo
+/// Plan/126 - a document the agent pushed to the user from a file in the repo
 /// (via the `show_file` tool): Markdown / plain text or code / PDF / HTML.
 /// Rendered as a left-aligned, tappable card ([AgentFileBubble]) that opens
 /// [DocViewerPage], which routes by [kind] to the right viewer. [data] is the
