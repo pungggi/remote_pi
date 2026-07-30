@@ -6,6 +6,7 @@ import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/pairing/owner_identity_bridge.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/routing/adaptive.dart';
+import 'package:app/routing/routes.dart';
 import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
 import 'package:app/ui/chat/chat_page.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
@@ -14,6 +15,8 @@ import 'package:app/ui/chat/widgets/detail_placeholder.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/home/home_page.dart';
 import 'package:app/ui/home/viewmodels/home_viewmodel.dart';
+import 'package:app/ui/projects/projects_page.dart';
+import 'package:app/ui/projects/projects_viewmodel.dart';
 import 'package:app/ui/onboarding/onboarding_page.dart';
 import 'package:app/ui/onboarding/viewmodels/onboarding_viewmodel.dart';
 import 'package:app/ui/pairing/pairing_page.dart';
@@ -387,6 +390,14 @@ GoRouter buildRouter(
           value: injector.get<ReliabilityService>(),
           child: const ConnectionReliabilityPage(),
         ),
+      ),
+      // Plan/121 — Projects list (discovered repos). Lightweight
+      // ProjectsViewModel: no stream subscriptions, routes to the device
+      // room on demand for list/spawn.
+      GoRoute(
+        path: RoutePaths.projects,
+        builder: (ctx, st) =>
+            ViewmodelProvider<ProjectsViewModel>(child: const ProjectsPage()),
       ),
     ],
   );

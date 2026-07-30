@@ -20,6 +20,11 @@ import 'package:app/ui/home/states/home_state.dart';
 ///     in real time
 ///   - writes [Preferences.selectedRoom] when the user taps a tile so
 ///     `/chat` knows which (peer, room) to address
+///
+/// Plan/108-offline — how long we wait for a peer to come online after a
+/// [ConnectionManager.switchTo] before giving up on an [openTerminal] call.
+const kTerminalOpenConnectTimeout = Duration(seconds: 15);
+
 class HomeViewModel extends ViewModel<HomeState> {
   final PairingStorage _storage;
   final Preferences _prefs;
@@ -343,6 +348,12 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// just routing for this one action; the user's next chat open is
   /// unchanged.
   ///
+  /// When the target peer is offline (e.g. the user tapped an item in the
+  /// Offline tab), [switchTo] triggers a reconnect and this method waits
+  /// up to [kTerminalOpenConnectTimeout] for the connection to come online
+  /// before dispatching. If the peer stays unreachable the call throws
+  /// [ActionFailure] with a descriptive message.
+  ///
   /// Throws [ActionFailure] on transport issues (offline / timeout / peer
   /// not found); a launch failure comes back as `ok:false` in the result.
   Future<OpenTerminalResult> openTerminal({
@@ -373,9 +384,56 @@ class HomeViewModel extends ViewModel<HomeState> {
       if (_disposed) {
         throw const ActionFailure('cancelled');
       }
+      // Plan/108-offline — wait for the connection to come online before
+      // dispatching. switchTo returns as soon as the first connect attempt
+      // settles (success or retry-scheduled); we block here until the
+      // channel is actually available or the timeout fires.
+      if (_conn.status is! StatusOnline) {
+        await _waitForOnline(kTerminalOpenConnectTimeout);
+      }
     }
-    _conn.switchRoom(roomId);
+    // After connecting, decide which room to dispatch to.
+    // Plan/120 — if the target session room is offline but the supervisor's
+    // device daemon is live, route to the device room instead. The device
+    // daemon's pi-extension handles open_terminal_request at the requested
+    // cwd (it creates the worktree there regardless of its own cwd).
+    final targetLive = _conn.isRoomLive(epk, roomId);
+    final deviceLive = _conn.isRoomLive(epk, kDeviceRoom);
+    final dispatchRoom = (!targetLive && deviceLive) ? kDeviceRoom : roomId;
+    _conn.switchRoom(dispatchRoom);
     return _actions.openTerminal(cwd: cwd, runPi: runPi, branch: branch);
+  }
+
+  /// Waits up to [timeout] for the connection to reach [StatusOnline].
+  /// Throws [ActionFailure] on timeout or if the VM is disposed mid-wait.
+  Future<void> _waitForOnline(Duration timeout) async {
+    final completer = Completer<void>();
+    late final StreamSubscription<ConnectionStatus> sub;
+    sub = _conn.statusStream.listen((s) {
+      if (s is StatusOnline) {
+        sub.cancel();
+        if (!completer.isCompleted) completer.complete();
+      }
+    });
+    try {
+      await completer.future.timeout(timeout);
+    } on TimeoutException {
+      sub.cancel();
+      final label = _conn.activePeer?.nickname ??
+          _conn.activePeer?.sessionName ??
+          'the computer';
+      throw ActionFailure(
+        'Could not reach $label. Make sure the relay is reachable and ' 
+        'pi-supervisord is installed (`/remote-pi install`).',
+      );
+    } finally {
+      if (_disposed && !completer.isCompleted) {
+        sub.cancel();
+        if (!completer.isCompleted) {
+          completer.completeError(const ActionFailure('cancelled'));
+        }
+      }
+    }
   }
 
   @override

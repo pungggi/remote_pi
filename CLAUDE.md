@@ -67,3 +67,33 @@ and follows its own product line. Before touching identity (bundle IDs, domains,
 branding) or pulling changes from upstream, read [`FORK.md`](./FORK.md) — it
 defines the merge direction (always upstream → fork), what counts as intentional
 divergence, and how to sync.
+
+## Pitfalls
+
+### One `remote_pi_*` extension at a time (hard rule)
+
+This repo is checked out as many git worktrees side-by-side in
+`~/source/pi/packages/` (`remote_pi_off`, `remote_pi_vie`, `remote_pi_jumper`,
+`remote_pi_ppp`, …) — all the **same package** (`remote-pi`) on different
+branches. They all register the identical tool set
+(`agent_send`, `list_peers`, `agent_request`, `show_image`).
+
+Pi forbids duplicate tool names globally, so listing two worktrees in
+`~/.pi/agent/settings.json` `packages` makes the **second fail to load** with
+`Tool "…" conflicts …`. The first entry in the array wins and **shadows** the
+worktree you are actually editing — rebuilds there silently take no effect.
+
+**Rule: keep exactly ONE `remote_pi_*` worktree line in `packages`.** To switch
+the active worktree, **swap that single line** — never add a second.
+
+```
+# correct: one line
+    "..\..\source\pi\packages\remote_pi_off\pi-extension"
+
+# wrong: two lines → conflict, the second fails to load
+    "..\..\source\pi\packages\remote_pi_vie\pi-extension",
+    "..\..\source\pi\packages\remote_pi_off\pi-extension"
+```
+
+Source changes only take effect after rebuilding the worktree's `dist/`
+(`pnpm --dir <worktree>/pi-extension build`), because `main` is `dist/index.js`.

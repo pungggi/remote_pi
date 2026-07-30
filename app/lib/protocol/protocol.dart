@@ -174,6 +174,13 @@ Map<String, dynamic> roomsCheckFrame(List<String> peers) => {
 // tiles grouped by Mac.
 // ---------------------------------------------------------------------------
 
+/// Plan/120 — the fixed relay room id for the supervisor's **device daemon**.
+/// This room is always present when pi-supervisord is running and must be
+/// filtered from the Home list (it's not a user session). The phone also uses
+/// it as the fallback routing target for offline terminal-open requests.
+/// Must match `DEVICE_ROOM` in `pi-extension/src/rooms.ts`.
+const kDeviceRoom = 'device';
+
 // Sentinel for nullable copyWith parameters that need to distinguish
 // "keep current" (omit) from "set to null" (pass `null` explicitly).
 const Object _kRoomInfoUnset = Object();
@@ -872,6 +879,22 @@ class RemoveWorktreeRequest extends ClientMessage {
       };
 }
 
+/// Plan/121 — request the list of git projects discovered under the PC's
+/// configured roots. Served by the always-on device daemon (room
+/// [kDeviceRoom]) so the phone can show a Projects list even when no
+/// project pi is running. The chosen project is then spawned as a worktree
+/// via [OpenTerminalRequest] (cwd = project path, routed to the device room).
+class ListProjectsRequest extends ClientMessage {
+  final String id;
+  ListProjectsRequest({required this.id});
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'type': 'list_projects_request',
+        'id': id,
+      };
+}
+
 // --- ServerMessage (extension → app) ---
 // 1 pairing = 1 session: no session_id on any message.
 // Sealed: all subtypes in this file — switch exhaustiveness enforced by compiler.
@@ -919,6 +942,8 @@ sealed class ServerMessage {
       // Plan/112 — worktree tracking replies (list / remove).
       'list_worktrees_result' => ListWorktreesResult.fromJson(json),
       'remove_worktree_result' => RemoveWorktreeResult.fromJson(json),
+      // Plan/121 — discovered projects list (Projects screen).
+      'list_projects_result' => ListProjectsResult.fromJson(json),
       // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors
       // the SDK's extension_ui_request RPC contract; optional `ask` envelope
       // carries pi-ask's full question so the app renders multi/preview/notes.
@@ -1743,6 +1768,46 @@ class RemoveWorktreeResult extends ServerMessage {
       RemoveWorktreeResult(
         inReplyTo: j['in_reply_to'] as String,
         ok: j['ok'] as bool? ?? false,
+        message: (j['message'] as String?) ?? '',
+      );
+}
+
+/// Plan/121 — one discovered git project (main repo) for the Projects list.
+/// `path` is the repo root; `name` is its display name (basename of path).
+class WireProject {
+  final String path;
+  final String name;
+
+  const WireProject({required this.path, required this.name});
+
+  factory WireProject.fromJson(Map<String, dynamic> j) => WireProject(
+        path: j['path'] as String,
+        name: (j['name'] as String?) ?? '',
+      );
+}
+
+/// Plan/121 — reply to [ListProjectsRequest]. `ok` is false only if discovery
+/// itself threw (best-effort; an empty list is a valid, ok:true answer).
+class ListProjectsResult extends ServerMessage {
+  final String inReplyTo;
+  final bool ok;
+  final List<WireProject> projects;
+  final String message;
+  ListProjectsResult({
+    required this.inReplyTo,
+    required this.ok,
+    required this.projects,
+    required this.message,
+  });
+
+  factory ListProjectsResult.fromJson(Map<String, dynamic> j) =>
+      ListProjectsResult(
+        inReplyTo: j['in_reply_to'] as String,
+        ok: j['ok'] as bool? ?? false,
+        projects: (j['projects'] as List<dynamic>? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map(WireProject.fromJson)
+            .toList(),
         message: (j['message'] as String?) ?? '',
       );
 }

@@ -26,6 +26,8 @@ const SERVER_TYPES = new Set<ServerMessage["type"]>([
   // Plan/112 — worktree tracking replies (list / remove).
   "list_worktrees_result",
   "remove_worktree_result",
+  // Plan/121 — discovered projects list (phone's Projects tab).
+  "list_projects_result",
 ]);
 
 export class DecodeError extends Error {

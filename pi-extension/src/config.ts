@@ -33,6 +33,9 @@ export type RemotePiConfig = {
   relay?: string;
   /** See `resolveAdvertisedRelayUrl` — the address the pairing QR carries. */
   advertise?: string;
+  /** Plan/121 — roots scanned for project discovery (phone's Projects list).
+   *  `~/source` by default. */
+  projects?: { roots?: string[] };
 };
 
 export function loadConfig(): RemotePiConfig {
@@ -104,6 +107,41 @@ export function resolveRelayUrl(): RelayResolution {
  * address exists (Wi-Fi down, only virtual interfaces). The caller then emits
  * a QR without `r` rather than one pointing at an unreachable address.
  */
+/**
+ * Plan/121 — roots scanned by `discoverProjects` to build the phone's
+ * Projects list. Precedence:
+ *   1. `REMOTE_PI_PROJECTS_ROOTS` env (split on the platform path delimiter —
+ *      `;` on Windows so drive-prefixed paths like `C:\dev` stay intact);
+ *   2. `~/.pi/piper/config.json` `projects.roots`;
+ *   3. `kDefaultProjectsRoots` (`["~/source"]`).
+ * `~` is expanded to the user home. Empty/garbage entries are dropped.
+ */
+export const kDefaultProjectsRoots = ["~/source"];
+
+function expandTilde(p: string): string {
+  if (p === "~") return os.homedir();
+  if (p.startsWith("~/") || p.startsWith("~\\")) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+export function projectsRoots(): string[] {
+  const env = process.env["REMOTE_PI_PROJECTS_ROOTS"];
+  if (env && env.trim().length > 0) {
+    return env
+      .split(path.delimiter)
+      .map((s) => expandTilde(s.trim()))
+      .filter((s) => s.length > 0);
+  }
+  const cfg = loadConfig();
+  const roots = cfg.projects?.roots;
+  if (Array.isArray(roots) && roots.length > 0) {
+    return roots
+      .filter((r): r is string => typeof r === "string" && r.length > 0)
+      .map(expandTilde);
+  }
+  return kDefaultProjectsRoots.map(expandTilde);
+}
+
 export function resolveAdvertisedRelayUrl(
   rewriteForPhone: (url: string) => string | null,
 ): string | null {

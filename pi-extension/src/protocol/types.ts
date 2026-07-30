@@ -228,6 +228,11 @@ export type ClientMessage =
   // filtered by base repo path) and remove one by id.
   | { type: "list_worktrees_request"; id: string; base?: string | null }
   | { type: "remove_worktree_request"; id: string; worktree_id: string }
+  // Plan/121 — list git projects discovered under the configured roots
+  // (served by the always-on device daemon so the phone can show a Projects
+  // list with no live pi). The chosen project is then spawned as a worktree
+  // via open_terminal_request.
+  | { type: "list_projects_request"; id: string }
   // Plan/100 — interactive extension prompt response (ask_user via pi-ask).
   // Mirrors RpcExtensionUIResponse; the optional `ask` envelope carries
   // pi-ask's structured answer so multi/preview/notes survive the round-trip.
@@ -414,6 +419,15 @@ export type ServerMessage =
       ok: boolean;
       message: string;
     }
+  // Plan/121 — reply to list_projects_request. `ok:false` only if discovery
+  // itself threw (best-effort; an empty list is a valid, ok:true answer).
+  | {
+      type: "list_projects_result";
+      in_reply_to: string;
+      ok: boolean;
+      projects: WireProject[];
+      message?: string;
+    }
   // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors
   // RpcExtensionUIRequest (select/confirm/input/editor/notify); the optional
   // `ask` envelope carries pi-ask's full question so the app renders richly.
@@ -506,6 +520,15 @@ export interface WireWorktree {
   path: string;
   branch: string;
   created_at: string;
+}
+
+/**
+ * Plan/121 — one discovered git project (main repo) for the phone's Projects
+ * list. `path` is the repo root; `name` is `basename(path)` (display name).
+ */
+export interface WireProject {
+  path: string;
+  name: string;
 }
 
 export type ByeReason = "peer_stop" | "session_replaced" | "shutdown";

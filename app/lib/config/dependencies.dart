@@ -41,6 +41,7 @@ import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
 import 'package:app/ui/chat/voice/viewmodels/voice_input_viewmodel.dart';
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
 import 'package:app/ui/home/viewmodels/home_viewmodel.dart';
+import 'package:app/ui/projects/projects_viewmodel.dart';
 import 'package:app/ui/onboarding/viewmodels/onboarding_viewmodel.dart';
 import 'package:app/ui/pairing/viewmodels/pairing_viewmodel.dart';
 import 'package:app/ui/settings/viewmodels/settings_viewmodel.dart';
@@ -176,6 +177,15 @@ Future<void> setupDependencies() async {
     () => HomeViewModel(
       _injector.get<PairingStorage>(),
       _injector.get<Preferences>(),
+      _injector.get<ConnectionManager>(),
+      _injector.get<IActionsRepository>(),
+    ),
+  );
+  // Plan/121 — lightweight VM for the Projects screen (no stream
+  // subscriptions; routes to the device room on demand).
+  _injector.addViewModel<ProjectsViewModel>(
+    () => ProjectsViewModel(
+      _injector.get<PairingStorage>(),
       _injector.get<ConnectionManager>(),
       _injector.get<IActionsRepository>(),
     ),

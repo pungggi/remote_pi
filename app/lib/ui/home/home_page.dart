@@ -3,6 +3,7 @@ import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart' show RoomInfo, OpenTerminalResult;
 import 'package:app/routing/adaptive.dart';
+import 'package:app/routing/routes.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/core/widgets/branch_name_dialog.dart';
 import 'package:app/ui/home/states/home_state.dart';
@@ -104,6 +105,12 @@ class HomePage extends StatelessWidget {
       toolbarHeight: 56,
       automaticallyImplyLeading: false,
       actions: [
+        // Plan/121 — Projects list (discovered repos on the paired PC).
+        IconButton(
+          tooltip: 'Projects',
+          icon: Icon(LucideIcons.folderGit, color: colors.muted2),
+          onPressed: () => context.push(RoutePaths.projects),
+        ),
         IconButton(
           tooltip: 'Settings',
           icon: Icon(LucideIcons.settings, color: colors.muted2),

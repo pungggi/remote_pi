@@ -73,6 +73,35 @@ describe("loadLocalConfig — file vs REMOTE_PI_DIRECT_CONFIG", () => {
   });
 });
 
+describe("loadLocalConfig — room_id override (plan/120)", () => {
+  let cwd: string;
+
+  beforeEach(() => {
+    cwd = makeCwd();
+    delete process.env[ENV];
+  });
+  afterEach(() => {
+    delete process.env[ENV];
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  test("surfaces room_id from the file", () => {
+    writeFileConfig(cwd, { agent_name: "dev", room_id: "device" });
+    expect(loadLocalConfig(cwd)).toEqual({ agent_name: "dev", room_id: "device" });
+  });
+
+  test("surfaces room_id from inline env", () => {
+    process.env[ENV] = JSON.stringify({ room_id: "device" });
+    expect(loadLocalConfig(cwd)).toEqual({ room_id: "device" });
+  });
+
+  test("empty string room_id is dropped", () => {
+    process.env[ENV] = JSON.stringify({ room_id: "" });
+    expect(loadLocalConfig(cwd)).toEqual({});
+  });
+});
+
+
 describe("loadLocalConfig — workspace / worktree removed (plan 38)", () => {
   // The fields were dropped: the mesh identity is `(cwd, nome)`, with `cwd`
   // subsuming folder + worktree disambiguation. A stale key from an old config
@@ -147,5 +176,23 @@ describe("saveLocalConfig — unaffected by env (still writes the file)", () => 
     saveLocalConfig(cwd, { agent_name: "saved" });
     delete process.env[ENV]; // ensure we read the file back, not any env
     expect(loadLocalConfig(cwd)).toEqual({ agent_name: "saved", auto_start_relay: true });
+  });
+
+  // Plan/120 regression: a worktree is created from INSIDE the device daemon,
+  // which runs with REMOTE_PI_DIRECT_CONFIG={...,room_id:"device"}. saveLocalConfig
+  // must merge against the on-disk file only — never the env — or room_id:"device"
+  // leaks into the worktree's config.json and the new session joins the
+  // phone-filtered "device" room (looks "not connected").
+  test("never persists env-only fields (device daemon room_id must not leak)", () => {
+    process.env[ENV] = JSON.stringify({
+      agent_name: "device",
+      auto_start_relay: true,
+      room_id: "device",
+    });
+    saveLocalConfig(cwd, { agent_name: "ngTradr", auto_start_relay: true });
+    delete process.env[ENV]; // read the file back, not the env
+    const onDisk = loadLocalConfig(cwd);
+    expect(onDisk).toEqual({ agent_name: "ngTradr", auto_start_relay: true });
+    expect(onDisk.room_id).toBeUndefined();
   });
 });

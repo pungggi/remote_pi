@@ -131,6 +131,12 @@ abstract class IActionsRepository extends Repository {
   /// branch delete + registry prune). Returns the Pi's ok/message.
   Future<RemoveWorktreeResult> removeWorktree(String worktreeId);
 
+  /// Plan/121 — list git projects discovered under the PC's configured roots
+  /// (served by the always-on device daemon). Call after switching the
+  /// connection to room [kDeviceRoom]; throws [ActionFailure] on
+  /// offline/timeout. An empty list is a valid answer (no repos found).
+  Future<List<WireProject>> listProjects();
+
   /// Snapshot of the active room's meta. Recomputed on every rooms
   /// snapshot and on every connection-status change.
   ActiveRoomMeta get activeRoomMeta;
@@ -270,6 +276,20 @@ class ActionsRepository extends Repository implements IActionsRepository {
               message: message,
             ),
           );
+        }
+      // Plan/121 — discovered projects reply (Projects screen).
+      case ListProjectsResult(:final inReplyTo, :final ok, :final projects, :final message):
+        final p = _pending.remove(inReplyTo);
+        if (p == null) return;
+        p.timeout.cancel();
+        if (!p.completer.isCompleted) {
+          if (ok) {
+            p.completer.complete(projects);
+          } else {
+            p.completer.completeError(
+              ActionFailure(message.isEmpty ? 'discovery failed' : message),
+            );
+          }
         }
       default:
         // All other ServerMessages are owned by SessionRepository.
@@ -418,6 +438,10 @@ class ActionsRepository extends Repository implements IActionsRepository {
       _dispatch<RemoveWorktreeResult>(
         (id) => RemoveWorktreeRequest(id: id, worktreeId: worktreeId),
       );
+
+  @override
+  Future<List<WireProject>> listProjects() =>
+      _dispatch<List<WireProject>>((id) => ListProjectsRequest(id: id));
 
   Future<T> _dispatch<T>(ClientMessage Function(String id) builder) async {
     final ch = _channel;
