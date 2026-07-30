@@ -11,7 +11,7 @@ import 'package:provider/provider.dart';
 /// always-on device daemon in room `device`), independent of live `pi`
 /// sessions. Tapping a project prompts for a worktree branch and spawns a
 /// worktree terminal there (reusing the plan/108 spawn path via the device
-/// room). Reached from the Home app bar.
+/// room). Reached from the Home app bar (`RoutePaths.projects`).
 class ProjectsPage extends StatefulWidget {
   const ProjectsPage({super.key});
 
@@ -58,15 +58,14 @@ class _ProjectsPageState extends State<ProjectsPage> {
   void _toast(ScaffoldMessengerState m, String msg, {required bool isError}) {
     if (!m.mounted) return;
     final colors = m.context.colors;
+    final typo = m.context.typo;
     m.showSnackBar(
       SnackBar(
         backgroundColor: colors.surface,
         behavior: SnackBarBehavior.floating,
         content: Text(
           msg,
-          style: TextStyle(
-            fontFamily: kMonoFamily,
-            fontSize: 12,
+          style: typo.monoSmall.copyWith(
             color: isError ? colors.error : colors.accent,
           ),
         ),
@@ -78,6 +77,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final typo = context.typo;
     final state = context.watch<ProjectsViewModel>().state;
     return Scaffold(
       backgroundColor: colors.bg,
@@ -92,8 +92,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
         ),
         title: Text(
           'Projects',
-          style: TextStyle(
-            fontFamily: kMonoFamily,
+          style: typo.mono.copyWith(
             color: colors.text,
             fontSize: 16,
             fontWeight: FontWeight.w600,
@@ -104,6 +103,8 @@ class _ProjectsPageState extends State<ProjectsPage> {
         child: RefreshIndicator(
           onRefresh: () => context.read<ProjectsViewModel>().load(),
           color: colors.accent,
+          // Always a scrollable so RefreshIndicator works in every state
+          // (loading / empty / error), not only when the list is ready.
           child: _body(state),
         ),
       ),
@@ -112,8 +113,16 @@ class _ProjectsPageState extends State<ProjectsPage> {
 
   Widget _body(ProjectsState state) {
     final colors = context.colors;
+    final typo = context.typo;
     return switch (state) {
-      ProjectsLoading() => const Center(child: CircularProgressIndicator()),
+      // Scrollable shell so pull-to-refresh works while the first load runs.
+      ProjectsLoading() => ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: const [
+          SizedBox(height: 160),
+          Center(child: CircularProgressIndicator()),
+        ],
+      ),
       ProjectsError(:final message) => _CenterMessage(
         icon: LucideIcons.wifiOff,
         title: 'Device unreachable',
@@ -128,6 +137,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
               'Clone repos under ~/source on your PC, or add roots to ~/.pi/piper/config.json (projects.roots).',
         ),
       ProjectsReady(:final projects) => ListView.separated(
+        physics: const AlwaysScrollableScrollPhysics(),
         itemCount: projects.length,
         separatorBuilder: (_, _) => Divider(color: colors.border, height: 1),
         itemBuilder: (ctx, i) {
@@ -141,13 +151,13 @@ class _ProjectsPageState extends State<ProjectsPage> {
             leading: Icon(LucideIcons.folderGit, color: colors.accent),
             title: Text(
               p.name,
-              style: TextStyle(fontFamily: kMonoFamily, color: colors.text, fontSize: 14),
+              style: typo.mono.copyWith(color: colors.text, fontSize: 14),
             ),
             subtitle: parent.isEmpty
                 ? null
                 : Text(
                     parent,
-                    style: TextStyle(fontFamily: kMonoFamily, color: colors.muted, fontSize: 11),
+                    style: typo.monoSmall.copyWith(color: colors.muted),
                   ),
             trailing: Icon(LucideIcons.chevronRight, color: colors.muted2, size: 18),
             onTap: () => _openTerminal(p),
@@ -171,8 +181,10 @@ class _CenterMessage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final typo = context.typo;
     return ListView(
       // RefreshIndicator needs a scrollable; keep it scrollable even when empty.
+      physics: const AlwaysScrollableScrollPhysics(),
       children: [
         const SizedBox(height: 120),
         Center(
@@ -187,16 +199,14 @@ class _CenterMessage extends StatelessWidget {
                   const SizedBox(height: 16),
                   Text(
                     title,
-                    style: TextStyle(color: colors.muted2, fontSize: 14),
+                    style: typo.sansBody.copyWith(color: colors.muted2),
                   ),
                   const SizedBox(height: 6),
                   Text(
                     subtitle,
                     textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontFamily: kMonoFamily,
+                    style: typo.monoSmall.copyWith(
                       color: colors.muted,
-                      fontSize: 11,
                       height: 1.5,
                     ),
                   ),

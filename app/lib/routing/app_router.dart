@@ -6,6 +6,7 @@ import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/pairing/owner_identity_bridge.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/routing/adaptive.dart';
+import 'package:app/routing/routes.dart';
 import 'package:app/ui/chat/attachment/viewmodels/attachment_viewmodel.dart';
 import 'package:app/ui/chat/chat_page.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
@@ -394,7 +395,7 @@ GoRouter buildRouter(
       // ProjectsViewModel: no stream subscriptions, routes to the device
       // room on demand for list/spawn.
       GoRoute(
-        path: '/projects',
+        path: RoutePaths.projects,
         builder: (ctx, st) =>
             ViewmodelProvider<ProjectsViewModel>(child: const ProjectsPage()),
       ),
