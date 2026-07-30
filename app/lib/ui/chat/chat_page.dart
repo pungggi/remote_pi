@@ -146,6 +146,14 @@ class ChatPage extends StatelessWidget {
     // Plan-18 follow-up — when the agent is currently producing a
     // response, show "working…" instead of online/offline.
     final isWorking = vm.isWorking;
+    // While the agent is working, show the model running this turn next to
+    // the "working…" pill. `room.model` is kept current via room_meta_updated.
+    final rawModel = room?.model;
+    final modelLabel =
+        (isWorking && rawModel != null && rawModel.isNotEmpty) ? rawModel : null;
+    // Plan/115 — live context-window fill (tokens/contextWindow/percent),
+    // shown next to the working indicator. Null until the first response.
+    final usage = room?.contextUsage;
 
     // Plan/24-fix-title: pass the navigation hint into the helpers so
     // either line of the AppBar (room or peer) shows it instead of
@@ -259,6 +267,44 @@ class ChatPage extends StatelessWidget {
                         );
                       },
                     ),
+                    // Model running the current turn (only while working).
+                    if (modelLabel != null) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        _truncate(modelLabel, 24),
+                        style: TextStyle(
+                          fontFamily: kMonoFamily,
+                          fontSize: 10,
+                          color: colors.accent,
+                        ),
+                      ),
+                    ],
+                    // Plan/115 — context-window fill (percent colored by pressure).
+                    if (usage != null) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        usage.percent != null ? '${usage.percent}%' : '·',
+                        style: TextStyle(
+                          fontFamily: kMonoFamily,
+                          fontSize: 10,
+                          color: (usage.percent ?? 0) >= 90
+                              ? colors.error
+                              : (usage.percent ?? 0) >= 70
+                                  ? colors.warning
+                                  : colors.muted,
+                        ),
+                      ),
+                      const SizedBox(width: 3),
+                      Text(
+                        '${usage.tokens != null ? '${(usage.tokens! / 1000).round()}k' : '—'}/'
+                        '${(usage.contextWindow / 1000).round()}k',
+                        style: TextStyle(
+                          fontFamily: kMonoFamily,
+                          fontSize: 10,
+                          color: colors.muted,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ],
@@ -407,7 +453,7 @@ class ChatPage extends StatelessWidget {
     // while we wait for the first room_meta_updated to populate
     // `room.name`.
     if (initialTitle != null && initialTitle.isNotEmpty) return initialTitle;
-    return 'Piper';
+    return '';
   }
 
   static String _peerDisplayName(PeerRecord? peer, String? fallback) {

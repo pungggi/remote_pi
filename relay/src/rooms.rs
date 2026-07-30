@@ -33,6 +33,12 @@ pub struct RoomMeta {
     /// line without a per-session request round-trip.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git: Option<serde_json::Value>,
+    /// Context-window usage snapshot the Pi-extension pushes via
+    /// `room_meta.context_usage` (opaque JSON blob — e.g. `{tokens,
+    /// contextWindow, percent}` — the relay never inspects it, the app parses
+    /// it). `None` = not reported yet. Mirrors `git` (Plan/107b) passthrough.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_usage: Option<serde_json::Value>,
     pub started_at: i64,
 }
 
@@ -55,6 +61,9 @@ pub struct RoomMetaPatch {
     /// Plan/107b — opaque git snapshot (JSON value passthrough). Same
     /// `Option<Option<_>>` semantics as `model`/`thinking`.
     pub git: Option<Option<serde_json::Value>>,
+    /// Opaque context-usage snapshot (JSON value passthrough). Same
+    /// `Option<Option<_>>` semantics as `git`.
+    pub context_usage: Option<Option<serde_json::Value>>,
 }
 
 impl RoomMetaPatch {
@@ -66,6 +75,7 @@ impl RoomMetaPatch {
             && self.thinking.is_none()
             && self.working.is_none()
             && self.git.is_none()
+            && self.context_usage.is_none()
     }
 }
 

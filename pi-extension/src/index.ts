@@ -239,7 +239,11 @@ let _myRoomId: string | null = null;   // this Pi's room id (derived from cwd)
 // open instead of starting null. The SDK fires `thinking_level_select`
 // on every change (initial load + user toggle), mirrored to room_meta
 // the same way model is — apps subscribe to one channel for both.
-let _myRoomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; working?: boolean; git?: WireGitStatus | null } | null = null;
+/** Context-window fill the Pi-extension publishes as `room_meta.context_usage`
+ *  (opaque to the relay — the app parses it). Mirrors the `WireGitStatus` passthrough. */
+type WireContextUsage = { tokens: number | null; contextWindow: number; percent: number | null };
+
+let _myRoomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; working?: boolean; git?: WireGitStatus | null; context_usage?: WireContextUsage | null } | null = null;
 let _currentModel: string | undefined = undefined;  // last-known model name
 let _currentThinking: ThinkingLevel | undefined = undefined;  // last-known thinking level
 
@@ -356,6 +360,24 @@ function _publishWorking(working: boolean): void {
 }
 
 /**
+ * Publish live context-window usage as `room_meta.context_usage` (opaque blob
+ * — the relay forwards it verbatim, the app parses tokens/contextWindow/percent).
+ * Same shape as the model/thinking/working/git updates.
+ */
+function _publishContextUsage(usage: WireContextUsage): void {
+  if (_myRoomMeta) _myRoomMeta = { ..._myRoomMeta, context_usage: usage };
+  if (_relay && _myRoomId) {
+    _relay.sendControl({ type: "room_meta_update", room_id: _myRoomId, meta: { context_usage: usage } });
+  }
+}
+
+/** Read the live context usage from the SDK (when known) and fan it out. No-op until the first response reports usage. */
+function _refreshContextUsage(): void {
+  const usage = _lastEventCtx?.getContextUsage?.();
+  if (usage) _publishContextUsage(usage);
+}
+
+/**
  * Plan/32 hardening — re-publish the full cached room_meta (incl `working`)
  * right after a successful relay (re)connect.
  *
@@ -374,6 +396,7 @@ function _republishRoomMeta(): void {
   if (_myRoomMeta.model) meta.model = _myRoomMeta.model;
   if (_myRoomMeta.thinking !== undefined) meta.thinking = _myRoomMeta.thinking;
   if (_myRoomMeta.git !== undefined) meta.git = _myRoomMeta.git;
+  if (_myRoomMeta.context_usage !== undefined) meta.context_usage = _myRoomMeta.context_usage;
   _relay.sendControl({ type: "room_meta_update", room_id: _myRoomId, meta });
 }
 
@@ -2350,7 +2373,7 @@ let _lastCtx: Pick<ExtensionContext, "ui" | "abort" | "cwd"> | null = null;
 // (an app Quick Action OR a `/new` typed in the Pi TUI). It carries only
 // base-ctx methods (no newSession — that's command-ctx only), so command ops
 // keep using `_lastCtx`.
-let _lastEventCtx: Pick<ExtensionContext, "compact" | "abort" | "ui"> | null = null;
+let _lastEventCtx: Pick<ExtensionContext, "compact" | "abort" | "ui" | "getContextUsage"> | null = null;
 const _noopCtx = { ui: { notify: () => undefined }, abort: () => undefined };
 
 // A single Pi process can load this extension TWICE in the SAME session:
@@ -2558,6 +2581,9 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
         : { type: "error", code: "provider_error", message };
       _broadcastToActive(errMsg);
     }
+    // Fan out live context-window usage so the app shows it next to the working
+    // indicator. Refreshed per message — frequent enough for multi-step turns.
+    _refreshContextUsage();
   });
 
   pi.on("agent_end", () => {
@@ -2605,6 +2631,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     if (_relay && _myRoomId) {
       _relay.sendControl({ type: "room_meta_update", room_id: _myRoomId, meta: { working: true } });
     }
+    _refreshContextUsage();
   });
   pi.on("turn_end", () => {
     // Plan/32 Part B: publish working=false as room_meta (raw, no debounce).
@@ -2612,6 +2639,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     if (_relay && _myRoomId) {
       _relay.sendControl({ type: "room_meta_update", room_id: _myRoomId, meta: { working: false } });
     }
+    _refreshContextUsage();
     _maybeDrainQueuedItem();
     // Plan/109 — restore the live model after a one-shot override turn.
     void _revertModelOverride();
@@ -3290,7 +3318,7 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
     _currentThinking = _pi?.getThinkingLevel() as ThinkingLevel | undefined;
   } catch { /* defensive — never block /remote-pi start on this */ }
 
-  const roomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; git?: WireGitStatus | null } = { name: sessionName, cwd };
+  const roomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; git?: WireGitStatus | null; context_usage?: WireContextUsage | null } = { name: sessionName, cwd };
   const modelName = _currentModelName();
   if (modelName) roomMeta.model = modelName;
   if (_currentThinking) roomMeta.thinking = _currentThinking;
@@ -3298,6 +3326,9 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   // already carries it (apps render the Home-list git line immediately).
   roomMeta.git = await getGitStatus(cwd);
   _lastGitStatus = roomMeta.git ?? null;
+  // Seed context-window usage so the chat header shows it on connect.
+  const helloUsage = _lastEventCtx?.getContextUsage?.();
+  if (helloUsage) roomMeta.context_usage = helloUsage;
   // Persist so _attemptReconnect can replay the same hello payload — without
   // this, reconnect issues a bare hello and the relay creates a "default room"
   // entry that surfaces in the app as a phantom legacy session.

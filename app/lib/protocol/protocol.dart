@@ -38,6 +38,7 @@ sealed class ControlInbound {
         final rawWorking =
             (j['working'] as bool?) ?? (metaJson?['working'] as bool?);
         final rawGit = j['git'] ?? metaJson?['git'];
+        final rawContextUsage = j['context_usage'] ?? metaJson?['context_usage'];
         return RoomAnnounced(
           peer: j['peer'] as String,
           roomId: j['room_id'] as String,
@@ -51,6 +52,9 @@ sealed class ControlInbound {
           working: rawWorking,
           git: rawGit is Map<String, dynamic>
               ? GitStatus.fromJson(rawGit)
+              : null,
+          contextUsage: rawContextUsage is Map<String, dynamic>
+              ? ContextUsage.fromJson(rawContextUsage)
               : null,
         );
       }(),
@@ -70,8 +74,10 @@ sealed class ControlInbound {
         final hasModel = meta?.containsKey('model') ?? false;
         final hasThinking = meta?.containsKey('thinking') ?? false;
         final hasGit = meta?.containsKey('git') ?? false;
+        final hasContextUsage = meta?.containsKey('context_usage') ?? false;
         final rawThinking = meta?['thinking'] as String?;
         final rawGit = meta?['git'];
+        final rawContextUsage = meta?['context_usage'];
         return RoomMetaUpdated(
           peer: j['peer'] as String,
           roomId: j['room_id'] as String,
@@ -86,9 +92,13 @@ sealed class ControlInbound {
           git: rawGit is Map<String, dynamic>
               ? GitStatus.fromJson(rawGit)
               : null,
+          contextUsage: rawContextUsage is Map<String, dynamic>
+              ? ContextUsage.fromJson(rawContextUsage)
+              : null,
           hasModel: hasModel,
           hasThinking: hasThinking,
           hasGit: hasGit,
+          hasContextUsage: hasContextUsage,
         );
       }(),
       _ => null,
@@ -216,6 +226,11 @@ class RoomInfo {
   /// not reported yet → the tile falls back to the model subtitle.
   final GitStatus? git;
 
+  /// Plan/115 — context-window fill the Pi reports via
+  /// `room_meta.context_usage` (`tokens`/`contextWindow`/`percent`). Null
+  /// until the first response reports usage (e.g. right after compaction).
+  final ContextUsage? contextUsage;
+
   const RoomInfo({
     required this.roomId,
     required this.startedAt,
@@ -225,6 +240,7 @@ class RoomInfo {
     this.thinking,
     this.working = false,
     this.git,
+    this.contextUsage,
   });
 
   factory RoomInfo.fromJson(Map<String, dynamic> j) {
@@ -242,6 +258,9 @@ class RoomInfo {
       git: j['git'] is Map<String, dynamic>
           ? GitStatus.fromJson(j['git'] as Map<String, dynamic>)
           : null,
+      contextUsage: j['context_usage'] is Map<String, dynamic>
+          ? ContextUsage.fromJson(j['context_usage'] as Map<String, dynamic>)
+          : null,
     );
   }
 
@@ -254,6 +273,7 @@ class RoomInfo {
     if (thinking != null) 'thinking': thinking!.wire,
     'working': working,
     if (git != null) 'git': git!.toJson(),
+    if (contextUsage != null) 'context_usage': contextUsage!.toJson(),
   };
 
   RoomInfo copyWith({
@@ -264,6 +284,7 @@ class RoomInfo {
     Object? thinking = _kRoomInfoUnset,
     bool? working,
     Object? git = _kRoomInfoUnset,
+    Object? contextUsage = _kRoomInfoUnset,
   }) => RoomInfo(
     roomId: roomId,
     name: name ?? this.name,
@@ -275,6 +296,9 @@ class RoomInfo {
         : thinking as ThinkingLevel?,
     working: working ?? this.working,
     git: identical(git, _kRoomInfoUnset) ? this.git : git as GitStatus?,
+    contextUsage: identical(contextUsage, _kRoomInfoUnset)
+        ? this.contextUsage
+        : contextUsage as ContextUsage?,
   );
 
   @override
@@ -287,11 +311,12 @@ class RoomInfo {
       other.model == model &&
       other.thinking == thinking &&
       other.working == working &&
-      other.git == git;
+      other.git == git &&
+      other.contextUsage == contextUsage;
 
   @override
   int get hashCode =>
-      Object.hash(roomId, name, cwd, startedAt, model, thinking, working, git);
+      Object.hash(roomId, name, cwd, startedAt, model, thinking, working, git, contextUsage);
 }
 
 class RoomAnnounced extends ControlInbound {
@@ -316,6 +341,9 @@ class RoomAnnounced extends ControlInbound {
 
   /// Plan/107b — git snapshot from `room_meta.git` (flat in room_announced).
   final GitStatus? git;
+
+  /// Plan/115 — context-window fill (flat in room_announced).
+  final ContextUsage? contextUsage;
   const RoomAnnounced({
     required this.peer,
     required this.roomId,
@@ -326,6 +354,7 @@ class RoomAnnounced extends ControlInbound {
     this.thinking,
     this.working,
     this.git,
+    this.contextUsage,
   });
 }
 
@@ -389,6 +418,12 @@ class RoomMetaUpdated extends ControlInbound {
 
   /// Plan/107b — `true` when the `meta` envelope carried a `git` key.
   final bool hasGit;
+
+  /// Plan/115 — context-window fill patch from `meta.context_usage`.
+  /// [hasContextUsage] distinguishes "key absent" (preserve) from "key
+  /// present" (apply, even if null).
+  final ContextUsage? contextUsage;
+  final bool hasContextUsage;
   const RoomMetaUpdated({
     required this.peer,
     required this.roomId,
@@ -396,9 +431,11 @@ class RoomMetaUpdated extends ControlInbound {
     this.thinking,
     this.working,
     this.git,
+    this.contextUsage,
     this.hasModel = true,
     this.hasThinking = true,
     this.hasGit = true,
+    this.hasContextUsage = true,
   });
 }
 
@@ -436,6 +473,39 @@ class Usage {
     inputTokens: j['input_tokens'] as int,
     outputTokens: j['output_tokens'] as int,
   );
+}
+
+/// Context-window fill the Pi reports via `room_meta.context_usage`
+/// (Plan/115). `tokens`/`percent` are null right after compaction, before
+/// the next LLM response reports usage.
+class ContextUsage {
+  final int? tokens;
+  final int contextWindow;
+  final int? percent;
+
+  const ContextUsage({this.tokens, required this.contextWindow, this.percent});
+
+  factory ContextUsage.fromJson(Map<String, dynamic> j) => ContextUsage(
+        tokens: (j['tokens'] as num?)?.toInt(),
+        contextWindow: (j['contextWindow'] as num?)?.toInt() ?? 0,
+        percent: (j['percent'] as num?)?.toInt(),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'tokens': tokens,
+        'contextWindow': contextWindow,
+        'percent': percent,
+      };
+
+  @override
+  bool operator ==(Object other) =>
+      other is ContextUsage &&
+      other.tokens == tokens &&
+      other.contextWindow == contextWindow &&
+      other.percent == percent;
+
+  @override
+  int get hashCode => Object.hash(tokens, contextWindow, percent);
 }
 
 enum ApproveDecision { allow, deny }
