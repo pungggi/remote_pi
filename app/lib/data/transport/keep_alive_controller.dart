@@ -169,9 +169,12 @@ class KeepAliveController extends Service {
       // A poll completing after resume is harmless: setCharging is a no-op once
       // _isCharging already matches, and reflect re-evaluates to "stopped".
       setCharging(charging);
-    } on PlatformException {
-      // Channel not ready (early bootstrap) → leave _isCharging as-is; the next
-      // poll or status emission retries.
+    } on Exception {
+      // Channel not ready (early bootstrap) or not registered
+      // (MissingPluginException implements Exception, NOT extends
+      // PlatformException) → leave _isCharging as-is; the next poll or
+      // status emission retries. Broadened from `on PlatformException` per
+      // PR #12 review.
     }
   }
 
@@ -201,9 +204,11 @@ class KeepAliveController extends Service {
       } else {
         await _invoke('update', <String, dynamic>{'text': text});
       }
-    } on PlatformException {
-      // Channel not ready (early bootstrap) or service rejected the call.
-      // Non-fatal: the next status emission retries from scratch.
+    } on Exception {
+      // Channel not ready (early bootstrap), not registered
+      // (MissingPluginException), or service rejected the call. Non-fatal:
+      // the next status emission retries from scratch. Broadened from
+      // `on PlatformException` to match `_refreshCharging` (PR #12 review).
     }
   }
 

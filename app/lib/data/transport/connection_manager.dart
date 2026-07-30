@@ -233,7 +233,7 @@ class ConnectionManager extends Service {
 
   /// Plan-18 follow-up — periodically checks for stuck offline state
   /// and forces a reconnect attempt. Runs every 30s (plan 125 — was 15s;
-  /// `_kInboundTimeout` is 60s, so checking every 30s still detects a
+  /// `_kInboundTimeout` is 150s, so checking every 30s still detects a
   /// half-open link within ~30s of the threshold). Cheap; only fires the
   /// actual `_scheduleRetry` when the conditions match.
   void _startWatchdog() {

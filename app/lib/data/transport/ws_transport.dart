@@ -54,7 +54,7 @@ class WsTransport implements PeerTransport, IControlLink {
     // app↔Pi liveness; this one covers app↔relay TCP liveness.
     //
     // Plan 125 — this is a BACKSTOP, not the primary keepalive. The
-    // relay itself pings inbound every ~25 s (peer.rs heartbeat) and
+    // relay itself pings inbound every ~60 s (peer.rs heartbeat) and
     // `ws` auto-replies Pong, which already keeps NAT mappings alive
     // in both directions; the inbound-liveness watchdog in
     // ConnectionManager (_kInboundTimeout, checked every 30 s) is the
