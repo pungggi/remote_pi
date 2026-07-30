@@ -773,8 +773,7 @@ TranscriptGrow classifyTranscriptGrow(
     return streamChanged ? TranscriptGrow.bottom : TranscriptGrow.none;
   }
   if (oldMsgs.isEmpty) return TranscriptGrow.replace; // open / switch in
-  if (newMsgs.length < oldMsgs.length)
-    return TranscriptGrow.replace; // compaction
+  if (newMsgs.length < oldMsgs.length) return TranscriptGrow.replace; // compaction
   if (newMsgs.length == oldMsgs.length) {
     for (var i = 0; i < oldMsgs.length; i++) {
       if (oldMsgs[i].id != newMsgs[i].id) return TranscriptGrow.replace;

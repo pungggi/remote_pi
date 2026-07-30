@@ -2220,8 +2220,7 @@ class AskAnswerWire {
   Map<String, dynamic> toJson() {
     final m = <String, dynamic>{};
     if (values.isNotEmpty) m['values'] = values;
-    if (customText != null && customText!.isNotEmpty)
-      m['customText'] = customText;
+    if (customText != null && customText!.isNotEmpty) m['customText'] = customText;
     if (note != null && note!.isNotEmpty) m['note'] = note;
     if (optionNotes.isNotEmpty) m['optionNotes'] = optionNotes;
     return m;
