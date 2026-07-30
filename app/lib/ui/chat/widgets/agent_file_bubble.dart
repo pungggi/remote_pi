@@ -115,6 +115,39 @@ class _AgentFileBubbleState extends State<AgentFileBubble> {
   Widget build(BuildContext context) {
     final m = widget.message;
     final colors = context.colors;
+    // Plan/125 review #6 — if the inline base64 failed to decode, show an
+    // explicit error card instead of a normal card that silently no-ops on tap.
+    if (_bytes == null) {
+      return Align(
+        alignment: Alignment.centerLeft,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 300),
+          child: Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: colors.surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: colors.error),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.broken_image_outlined, color: colors.error, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Couldn\'t decode this file',
+                    style: context.typo.sansBody
+                        .copyWith(color: colors.text),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     return Align(
       alignment: Alignment.centerLeft,
       child: ConstrainedBox(

@@ -9,6 +9,12 @@ import 'package:flutter/material.dart';
 /// line-numbered gutter, selectable. A toolbar chip toggles soft-wrap on/off.
 /// Syntax highlighting is a follow-up (cockpit uses the `highlight` package);
 /// MVP renders plain monospace.
+///
+/// Renders lines lazily via [ListView.builder] so a 1 MiB file (tens of
+/// thousands of lines) only builds the visible rows — no eager widget tree.
+/// No-wrap mode truncates over-long lines with an ellipsis (wrap shows them
+/// in full); this trades full-width horizontal scrolling for the
+/// constant-memory lazy layout.
 class TextViewer extends StatefulWidget {
   final Uint8List bytes;
 
@@ -20,75 +26,31 @@ class TextViewer extends StatefulWidget {
 
 class _TextViewerState extends State<TextViewer> {
   bool _wrap = true;
+  // Decoded + split once per `bytes` (not per build/toggle).
+  late List<String> _lines;
 
-  String get _source => utf8.decode(widget.bytes, allowMalformed: true);
+  @override
+  void initState() {
+    super.initState();
+    _lines = _decode().split('\n');
+  }
+
+  @override
+  void didUpdateWidget(covariant TextViewer old) {
+    super.didUpdateWidget(old);
+    if (old.bytes != widget.bytes) {
+      _lines = _decode().split('\n');
+    }
+  }
+
+  String _decode() => utf8.decode(widget.bytes, allowMalformed: true);
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final lines = _source.split('\n');
-    final gutterChars = lines.length.toString().length.clamp(2, 6);
+    final gutterChars = _lines.length.toString().length.clamp(2, 6);
     // ~monospace advance; good enough for the gutter column width.
     final gutterWidth = gutterChars * 8.0;
-
-    final column = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        for (var i = 0; i < lines.length; i++)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 1),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SizedBox(
-                  width: gutterWidth,
-                  child: Align(
-                    alignment: Alignment.centerRight,
-                    child: Text(
-                      '${i + 1}',
-                      style: context.typo.monoSmall.copyWith(
-                        color: colors.muted,
-                        fontSize: 11,
-                        height: 1.4,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                if (_wrap)
-                  Expanded(
-                    child: Text(
-                      lines[i].isEmpty ? ' ' : lines[i],
-                      style: context.typo.mono
-                          .copyWith(color: colors.text, height: 1.4),
-                    ),
-                  )
-                else
-                  Text(
-                    lines[i].isEmpty ? ' ' : lines[i],
-                    style: context.typo.mono
-                        .copyWith(color: colors.text, height: 1.4),
-                  ),
-              ],
-            ),
-          ),
-      ],
-    );
-
-    final body = _wrap
-        ? SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-            child: column,
-          )
-        : SingleChildScrollView(
-            scrollDirection: Axis.vertical,
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-              child: IntrinsicWidth(child: column),
-            ),
-          );
 
     return Column(
       children: [
@@ -107,8 +69,56 @@ class _TextViewerState extends State<TextViewer> {
             ],
           ),
         ),
-        Expanded(child: SelectionArea(child: body)),
+        Expanded(
+          // SelectionArea makes the plain Text rows selectable as a group.
+          child: SelectionArea(
+            child: ListView.builder(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              itemCount: _lines.length,
+              itemBuilder: (context, i) => _row(i, gutterWidth),
+            ),
+          ),
+        ),
       ],
+    );
+  }
+
+  Widget _row(int i, double gutterWidth) {
+    final colors = context.colors;
+    final line = _lines[i];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 1),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: gutterWidth,
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: Text(
+                '${i + 1}',
+                style: context.typo.monoSmall.copyWith(
+                  color: colors.muted,
+                  fontSize: 11,
+                  height: 1.4,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              line.isEmpty ? ' ' : line,
+              softWrap: _wrap,
+              // No-wrap: clip the overflow with an ellipsis so the row stays
+              // one line (toggle Wrap to read the full line).
+              overflow: _wrap ? TextOverflow.clip : TextOverflow.ellipsis,
+              style: context.typo.mono.copyWith(color: colors.text, height: 1.4),
+            ),
+          ),
+        ],
+      ),
     );
   }
 

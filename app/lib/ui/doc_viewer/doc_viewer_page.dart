@@ -117,9 +117,17 @@ class _DocViewerPageState extends State<DocViewerPage> {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    // System-bar icons follow the theme brightness so they stay legible on both
+    // the dark (black) and light (white) scaffold backgrounds (plan/125 #4).
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final iconBrightness = isDark ? Brightness.light : Brightness.dark;
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: SystemUiOverlayStyle.light.copyWith(
+      value: SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: iconBrightness, // Android
+        statusBarBrightness: iconBrightness, // iOS (light content = light icons)
         systemNavigationBarColor: colors.bg,
+        systemNavigationBarIconBrightness: iconBrightness,
       ),
       child: Scaffold(
         backgroundColor: colors.bg,

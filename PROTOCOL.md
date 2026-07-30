@@ -395,7 +395,10 @@ Mesmo `ct` opaco do plan/30/114; relay **inalterado**. Double-base64 (~+77%)
 aceito pelos tetos (1 MiB / 10 MiB). Persistência **local no app** (DB plan/31):
 sobrevive a restart, não a re-sync pós-wipe (mesmo gap do plan/114). Detecção
 de `kind` por extensão (md/markdown, txt/json/yaml/dart/ts/py/... code,
-html/htm/xhtml, pdf); magic bytes `%PDF-` confirmando PDF quando aplicável.
+html/htm/xhtml, pdf, além de dotfiles comuns como `.env`/`.gitignore`/`.editorconfig`).
+A detecção é **somente por extensão** no MVP — **sem** checagem de magic bytes;
+um PDF truncado/corrupt é aceito pelo `.pdf` e renderiza um erro no viewer (mais
+útil que recusar). O agente pode forçar o `kind=` quando a extensão não bastar.
 
 ---
 

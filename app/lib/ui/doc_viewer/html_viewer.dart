@@ -50,6 +50,10 @@ class _HtmlViewerState extends State<HtmlViewer> {
   bool _loading = true;
   String? _loadError;
 
+  /// Temp file written by `_load` so the WebView can `loadFile` it. Deleted in
+  /// [dispose] to avoid accumulating one file per open (plan/125 review #3).
+  File? _tempFile;
+
   /// Strict no-network CSP: inline JS + styles + data: assets only.
   static const String _sandboxCsp =
       "default-src 'none'; "
@@ -105,6 +109,21 @@ class _HtmlViewerState extends State<HtmlViewer> {
     _load();
   }
 
+  @override
+  void dispose() {
+    // Clean up the temp HTML file we wrote for `loadFile` (best-effort — the
+    // WebView has already read it into memory by now).
+    final f = _tempFile;
+    if (f != null) {
+      try {
+        if (f.existsSync()) f.deleteSync();
+      } catch (_) {
+        // Best-effort; OS temp dir is GC'd anyway.
+      }
+    }
+    super.dispose();
+  }
+
   Future<void> _load() async {
     try {
       final html = utf8.decode(widget.bytes, allowMalformed: true);
@@ -115,6 +134,7 @@ class _HtmlViewerState extends State<HtmlViewer> {
       final dir = await getTemporaryDirectory();
       final file = File('${dir.path}/agent-doc-${DateTime.now().millisecondsSinceEpoch}.html');
       await file.writeAsString(prepared);
+      _tempFile = file; // tracked for dispose()-time cleanup
       await _controller.loadFile(file.path);
     } catch (e) {
       if (mounted) {

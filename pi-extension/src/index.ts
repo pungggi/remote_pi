@@ -919,11 +919,14 @@ function _mimeForFileKind(kind: ShowFileKind): string {
   }
 }
 
-/** Detect the viewer kind from the path (extension first, then common
- *  extension-less basenames). PDF is accepted by extension regardless of
- *  magic bytes (a truncated/corrupt PDF still renders as an error in the
+/** Detect the viewer kind from the path. Extension first; then dotfile /
+ *  extension-less basenames. A leading-dot file (`.env`, `.gitignore`,
+ *  `.editorconfig`) has no real extension so `_extOf` returns "" — fall back to
+ *  the dot-stripped stem and the common-text basename allowlist
+ *  (Makefile, Dockerfile, README, ...). PDF is accepted by extension regardless
+ *  of magic bytes (a truncated/corrupt PDF still renders as an error in the
  *  viewer, which is more useful than refusing). Returns undefined when the
- *  extension is unknown — the agent can pass `kind=` to force it. */
+ *  name is unknown — the agent can pass `kind=` to force it. */
 function _detectFileKind(absPath: string): ShowFileKind | undefined {
   const ext = _extOf(absPath);
   if (ext === "md" || ext === "markdown") return "markdown";
@@ -931,7 +934,15 @@ function _detectFileKind(absPath: string): ShowFileKind | undefined {
   if (ext === "pdf") return "pdf";
   if (SHOW_FILE_TEXT_EXTENSIONS.has(ext)) return "text";
   const base = (absPath.toLowerCase().split(/[\\/]/).pop() ?? "");
-  if (SHOW_FILE_TEXT_BASENAMES.has(base)) return "text";
+  // Dotfiles have an empty extension — strip the leading dot and match the
+  // stem against the extension + basename allowlists (`.env`→`env`,
+  // `.gitignore`→`gitignore`, `.editorconfig`→`editorconfig`).
+  const stem = base.startsWith(".") ? base.slice(1) : base;
+  if (SHOW_FILE_TEXT_EXTENSIONS.has(stem) ||
+      SHOW_FILE_TEXT_BASENAMES.has(stem) ||
+      SHOW_FILE_TEXT_BASENAMES.has(base)) {
+    return "text";
+  }
   return undefined;
 }
 

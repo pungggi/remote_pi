@@ -244,4 +244,20 @@ describe("show_file tool (plan/125)", () => {
     expect(result.details).not.toHaveProperty("content");
     expect(JSON.stringify(result)).not.toContain(body);
   });
+
+  // Plan/125 review #1 — dotfiles (.env/.gitignore/.editorconfig/.npmrc) have
+  // no real extension, so detection must fall back to the dot-stripped stem
+  // against the extension + basename allowlists (not be rejected outright).
+  test("common dotfiles detect as text (no kind= needed)", async () => {
+    const tool = captureShowFileTool();
+    for (const name of [".env", ".gitignore", ".editorconfig", ".npmrc"]) {
+      const path = join(dir, name);
+      writeFileSync(path, "some content\n");
+      const result = await tool.execute(`dot-${name}`, { path });
+      expect(result.details?.kind).toBe("text");
+      expect(result.details?.mime).toBe("text/plain");
+      expect(result.details?.shown).toBe(false); // no peer attached
+      rmSync(path, { force: true });
+    }
+  });
 });
