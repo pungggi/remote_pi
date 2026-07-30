@@ -3241,6 +3241,7 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
         const modelId = sm.getDefaultModel();
         if (modelId) {
           _currentModel = modelId;
+          const seeded = modelId;
           // pi 0.83 made the registry build async (`ModelRuntime.create()`).
           // Upgrade the seed to the model's friendly name best-effort, WITHOUT
           // blocking session start — the raw id is already set above as a safe
@@ -3249,7 +3250,11 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
           if (provider) {
             void ensureModelRegistry()
               .then((reg) => reg.find(provider, modelId))
-              .then((found) => { if (found?.name) _currentModel = found.name; })
+              .then((found) => {
+                // Only upgrade while the seed is still current — a user model
+                // switch (or model_select/turn_start) since startup must win.
+                if (found?.name && _currentModel === seeded) _currentModel = found.name;
+              })
               .catch(() => { /* best-effort — never block start */ });
           }
         }
@@ -4409,9 +4414,23 @@ async function _sendWithModelOverride(
   const override = msg.model;
   if (!override || !_pi) return;
   const ctx = (_lastEventCtx ?? _lastCtx) as ActionCtx | null;
-  const reg = ctx?.modelRegistry ?? (await ensureModelRegistry());
-  // pi 0.83 made `refresh()` async; await inside the try so a malformed
-  // models.json rejection is swallowed by the catch (not left floating).
+  let reg: ActionModelRegistry;
+  try {
+    // The caller invokes this fire-and-forget (`void _sendWithModelOverride`),
+    // so an unawaited `ensureModelRegistry()` rejection would surface as an
+    // unhandled rejection with no reply to the client. Catch it here instead.
+    reg = ctx?.modelRegistry ?? (await ensureModelRegistry());
+  } catch (err) {
+    sender.send({
+      type: "error",
+      code: "internal_error",
+      in_reply_to: msg.id,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
+  // pi 0.83 made `refresh()` async; keep best-effort (a stale catalogue is
+  // still usable) by swallowing its rejection rather than failing the send.
   try { await reg.refresh(); } catch { /* malformed models.json — best effort */ }
   const chosen = reg.find(override.provider, override.id);
   if (!chosen) {
@@ -4985,9 +5004,19 @@ export function _routeClientMessageFrom(
       // `if (!_pi) return` above does NOT survive into the `.then` closure
       // (mutable module-level let), but a const does.
       const pi = _pi;
-      void _resolveRegistry(msCtx).then((reg) =>
-        handleModelSet(pi, msCtx, reg, sender, msg, _persistModelDefault),
-      );
+      void _resolveRegistry(msCtx)
+        .then((reg) => handleModelSet(pi, msCtx, reg, sender, msg, _persistModelDefault))
+        .catch((err) => {
+          // _resolveRegistry() rejected (e.g. ensureModelRegistry() failure).
+          // Reply so the client isn't left waiting and the promise can't
+          // reject unhandled — mirror handleModelSet's action_error shape.
+          sender.send({
+            type: "action_error",
+            in_reply_to: msg.id,
+            action: "model_set",
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
       break;
     }
     case "thinking_set":
@@ -4995,7 +5024,18 @@ export function _routeClientMessageFrom(
       break;
     case "list_models": {
       const lmCtx = (_lastEventCtx ?? _lastCtx) as ActionCtx | null;
-      void _resolveRegistry(lmCtx).then((reg) => handleListModels(lmCtx, reg, sender, msg));
+      void _resolveRegistry(lmCtx)
+        .then((reg) => handleListModels(lmCtx, reg, sender, msg))
+        .catch((err) => {
+          // Mirror handleListModels' error envelope on registry-resolution
+          // failure so the client gets a reply (no unhandled rejection).
+          sender.send({
+            type: "error",
+            in_reply_to: msg.id,
+            code: "internal_error",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        });
       break;
     }
     // Plan/107 — on-demand git status snapshot. Runs `git status` in the

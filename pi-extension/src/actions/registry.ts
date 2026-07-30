@@ -33,7 +33,16 @@ let _registryPromise: Promise<ModelRegistry> | null = null;
  */
 export function ensureModelRegistry(): Promise<ModelRegistry> {
   if (!_registryPromise) {
-    _registryPromise = ModelRuntime.create().then((runtime) => new ModelRegistry(runtime));
+    _registryPromise = ModelRuntime.create()
+      .then((runtime) => new ModelRegistry(runtime))
+      // Don't cache a rejection: a transient construction failure (malformed
+      // models.json, auth read error, …) would otherwise wedge every later
+      // caller onto the same rejected promise until process restart. Drop the
+      // cached promise on failure so the next call retries from scratch.
+      .catch((err) => {
+        _registryPromise = null;
+        throw err;
+      });
   }
   return _registryPromise;
 }
