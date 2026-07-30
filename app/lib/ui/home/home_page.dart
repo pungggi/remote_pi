@@ -419,6 +419,26 @@ class HomePage extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Plan/124 — bring this OFFLINE session back to life in its own
+              // cwd: resume the existing conversation (no new worktree, no
+              // pin). Only offered when the room is offline — an online
+              // session is already alive.
+              if (!isLive)
+                ListTile(
+                  leading: Icon(LucideIcons.zap, color: colors.accent),
+                  title: Text(
+                    'Start session',
+                    style: TextStyle(color: colors.text),
+                  ),
+                  subtitle: Text(
+                    'Resume this session on the computer.',
+                    style: TextStyle(color: colors.muted, fontSize: 11),
+                  ),
+                  onTap: () {
+                    Navigator.of(sheetCtx).pop();
+                    _startSession(context, vm, it);
+                  },
+                ),
               // Plan/108 — open a terminal for THIS session straight from
               // the list (same worktree+pi flow as the Quick Actions sheet).
               ListTile(
@@ -516,6 +536,43 @@ class HomePage extends StatelessWidget {
     }
     if (!context.mounted) return;
     _toast(messenger, r.message, isError: !r.ok);
+  }
+
+  /// Plan/124 — bring an offline session back to life in its own cwd (resume
+  /// the existing conversation; no new worktree, no pin). Asks the supervisor
+  /// (via the device daemon) to spawn a transient `pi --mode rpc --continue`
+  /// at the session's cwd; the room re-announces and the tile flips live on
+  /// its own via the rooms push, so we just toast the spawn outcome.
+  Future<void> _startSession(
+    BuildContext context,
+    HomeViewModel vm,
+    HomeItem it,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final cwd = it.room.cwd;
+    if (cwd == null || cwd.isEmpty) {
+      _toast(messenger, 'This session has no folder to revive', isError: true);
+      return;
+    }
+    _toast(messenger, 'Starting session…', isError: false);
+    try {
+      await vm.startSession(
+        epk: it.peer.remoteEpk,
+        cwd: cwd,
+        name: it.room.name,
+      );
+      if (!context.mounted) return;
+      // The spawned pi re-announces the same room; the tile flips live via
+      // the rooms push. Confirm the spawn so the user knows it worked even
+      // before the presence dot turns green.
+      _toast(messenger, 'Session started — coming online', isError: false);
+    } on ActionFailure catch (e) {
+      if (!context.mounted) return;
+      _toast(messenger, e.message, isError: true);
+    } catch (_) {
+      if (!context.mounted) return;
+      _toast(messenger, 'Could not start session', isError: true);
+    }
   }
 
   /// Plan/112b — prompts for the new worktree's git branch name. Returns

@@ -895,6 +895,28 @@ class ListProjectsRequest extends ClientMessage {
       };
 }
 
+/// Plan/124 — bring an OFFLINE session back to life in its own cwd (no new
+/// worktree, no pin). Routed to the device daemon (room [kDeviceRoom]) like
+/// [OpenTerminalRequest]; the device daemon asks the supervisor for a
+/// transient `pi --mode rpc --continue` at [cwd], which resumes the existing
+/// conversation and re-announces the same room — so the tile flips live and
+/// the history carries over. [name] scopes the room for custom-named sessions
+/// (omit/null → legacy cwd-only room).
+class StartSessionRequest extends ClientMessage {
+  final String id;
+  final String cwd;
+  final String? name;
+  StartSessionRequest({required this.id, required this.cwd, this.name});
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'type': 'start_session_request',
+        'id': id,
+        'cwd': cwd,
+        if (name != null && name!.isNotEmpty) 'name': name,
+      };
+}
+
 // --- ServerMessage (extension → app) ---
 // 1 pairing = 1 session: no session_id on any message.
 // Sealed: all subtypes in this file — switch exhaustiveness enforced by compiler.
@@ -944,6 +966,8 @@ sealed class ServerMessage {
       'remove_worktree_result' => RemoveWorktreeResult.fromJson(json),
       // Plan/121 — discovered projects list (Projects screen).
       'list_projects_result' => ListProjectsResult.fromJson(json),
+      // Plan/124 — reply to StartSessionRequest (revive offline session).
+      'start_session_result' => StartSessionResult.fromJson(json),
       // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors
       // the SDK's extension_ui_request RPC contract; optional `ask` envelope
       // carries pi-ask's full question so the app renders multi/preview/notes.
@@ -1808,6 +1832,30 @@ class ListProjectsResult extends ServerMessage {
             .whereType<Map<String, dynamic>>()
             .map(WireProject.fromJson)
             .toList(),
+        message: (j['message'] as String?) ?? '',
+      );
+}
+
+/// Plan/124 — reply to [StartSessionRequest]. `roomId` is the room the
+/// spawned pi will (re)announce = roomIdFor(cwd, name); the app can sanity-
+/// check it against the tapped tile's room. `ok:false` (with [message]) when
+/// the supervisor is offline or the cwd is invalid.
+class StartSessionResult extends ServerMessage {
+  final String inReplyTo;
+  final bool ok;
+  final String? roomId;
+  final String message;
+  StartSessionResult({
+    required this.inReplyTo,
+    required this.ok,
+    this.roomId,
+    required this.message,
+  });
+
+  factory StartSessionResult.fromJson(Map<String, dynamic> j) => StartSessionResult(
+        inReplyTo: j['in_reply_to'] as String,
+        ok: j['ok'] as bool? ?? false,
+        roomId: j['room_id'] as String?,
         message: (j['message'] as String?) ?? '',
       );
 }

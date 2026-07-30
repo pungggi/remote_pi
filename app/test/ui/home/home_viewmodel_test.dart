@@ -165,11 +165,18 @@ class _OpenCall {
 
 class _RecordingActions implements IActionsRepository {
   final List<_OpenCall> openCalls = [];
+  final List<_StartCall> startCalls = [];
   OpenTerminalResult nextResult = OpenTerminalResult(
     inReplyTo: 'x',
     ok: true,
     message: 'opened',
     method: OpenTerminalMethod.wt,
+  );
+  StartSessionResult nextStartResult = StartSessionResult(
+    inReplyTo: 'x',
+    ok: true,
+    roomId: 'device-room',
+    message: '',
   );
   @override
   Future<GitStatus?> gitStatus() async => null;
@@ -184,7 +191,21 @@ class _RecordingActions implements IActionsRepository {
     return nextResult;
   }
   @override
+  Future<StartSessionResult> startSession({
+    required String cwd,
+    String? name,
+  }) async {
+    startCalls.add(_StartCall(cwd: cwd, name: name));
+    return nextStartResult;
+  }
+  @override
   dynamic noSuchMethod(Invocation i) => super.noSuchMethod(i);
+}
+
+class _StartCall {
+  final String cwd;
+  final String? name;
+  _StartCall({required this.cwd, this.name});
 }
 
 ConnectionManager _conn({_FakeStorage? storage}) {
@@ -637,6 +658,109 @@ void main() {
         throwsA(isA<ActionFailure>()),
       );
       expect(actions.openCalls, isEmpty);
+
+      vm.dispose();
+      await conn.disconnect();
+      conn.dispose();
+    });
+  });
+
+  group('HomeViewModel.startSession (plan/124 — bring session to life)', () {
+    test(
+      'routes to the device room and dispatches startSession with cwd + name',
+      () async {
+        final ch = _ControllableChannel();
+        final storage = _FakeStorage([_peerA]);
+        final conn = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: storage,
+          emitDebounce: Duration.zero,
+        );
+        final prefs = Preferences(_FakeSecureStorage());
+        final actions = _RecordingActions();
+        final vm = HomeViewModel(storage, prefs, conn, actions);
+        await conn.connectTo(_peerA);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        // The target session room (r1) stays offline — that's the whole
+        // point of revive. Make the supervisor's device room live so the
+        // dispatch proceeds.
+        ch.pushControl(
+          const RoomAnnounced(peer: 'epk_A', roomId: kDeviceRoom, startedAt: 1),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(vm.isRoomLive('epk_A', kDeviceRoom), isTrue);
+
+        final r = await vm.startSession(
+          epk: 'epk_A',
+          cwd: '/home/me/proj',
+          name: 'worker',
+        );
+
+        expect(r.ok, isTrue);
+        // The tapped cwd + name reached the action repo verbatim.
+        expect(actions.startCalls.single.cwd, '/home/me/proj');
+        expect(actions.startCalls.single.name, 'worker');
+        // The connection was routed to the device room for the dispatch
+        // (revive always rides the device daemon, never the offline room).
+        expect(conn.activeRoomId, kDeviceRoom);
+        // No terminal/worktree was spawned — this is a pure session revive.
+        expect(actions.openCalls, isEmpty);
+
+        vm.dispose();
+        await conn.disconnect();
+        conn.dispose();
+      },
+    );
+
+    test(
+      'throws ActionFailure when the device room is not live (no supervisor)',
+      () async {
+        final ch = _ControllableChannel();
+        final storage = _FakeStorage([_peerA]);
+        final conn = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: storage,
+          emitDebounce: Duration.zero,
+        );
+        final prefs = Preferences(_FakeSecureStorage());
+        final actions = _RecordingActions();
+        final vm = HomeViewModel(storage, prefs, conn, actions);
+        await conn.connectTo(_peerA);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        // Device room never announced → not live → fail fast with an
+        // actionable error instead of waiting out the dispatch timeout.
+        expect(vm.isRoomLive('epk_A', kDeviceRoom), isFalse);
+
+        await expectLater(
+          vm.startSession(epk: 'epk_A', cwd: '/home/me/proj'),
+          throwsA(isA<ActionFailure>()),
+        );
+        expect(actions.startCalls, isEmpty);
+
+        vm.dispose();
+        await conn.disconnect();
+        conn.dispose();
+      },
+    );
+
+    test('unknown peer throws ActionFailure and dispatches nothing', () async {
+      final storage = _FakeStorage([_peerA]);
+      final conn = ConnectionManager(
+        factory: (_, _) async => _channel(),
+        storage: storage,
+      );
+      final prefs = Preferences(_FakeSecureStorage());
+      final actions = _RecordingActions();
+      final vm = HomeViewModel(storage, prefs, conn, actions);
+      await conn.connectTo(_peerA);
+      await Future<void>.delayed(Duration.zero);
+
+      await expectLater(
+        vm.startSession(epk: 'epk_X', cwd: '/home/me/proj'),
+        throwsA(isA<ActionFailure>()),
+      );
+      expect(actions.startCalls, isEmpty);
 
       vm.dispose();
       await conn.disconnect();

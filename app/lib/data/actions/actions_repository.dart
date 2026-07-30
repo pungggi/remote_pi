@@ -137,6 +137,16 @@ abstract class IActionsRepository extends Repository {
   /// offline/timeout. An empty list is a valid answer (no repos found).
   Future<List<WireProject>> listProjects();
 
+  /// Plan/124 — bring an OFFLINE session back to life in its own cwd (no new
+  /// worktree, no pin). Call after switching the connection to room
+  /// [kDeviceRoom]; the device daemon asks the supervisor for a transient
+  /// `pi --mode rpc --continue` at [cwd], which resumes the existing
+  /// conversation and re-announces the same room — so the tapped tile flips
+  /// live on its own. [name] scopes the room for custom-named sessions.
+  /// Throws [ActionFailure] on offline/timeout or when the supervisor is
+  /// unavailable (e.g. only the Cockpit is running, no supervisor).
+  Future<StartSessionResult> startSession({required String cwd, String? name});
+
   /// Snapshot of the active room's meta. Recomputed on every rooms
   /// snapshot and on every connection-status change.
   ActiveRoomMeta get activeRoomMeta;
@@ -291,6 +301,33 @@ class ActionsRepository extends Repository implements IActionsRepository {
             );
           }
         }
+      // Plan/124 — start-session (revive) reply. ok:false → ActionFailure
+      // with the supervisor's message (e.g. "supervisor not running").
+      case StartSessionResult(
+        :final inReplyTo,
+        :final ok,
+        :final roomId,
+        :final message,
+      ):
+        final p = _pending.remove(inReplyTo);
+        if (p == null) return;
+        p.timeout.cancel();
+        if (!p.completer.isCompleted) {
+          if (ok) {
+            p.completer.complete(
+              StartSessionResult(
+                inReplyTo: inReplyTo,
+                ok: ok,
+                roomId: roomId,
+                message: message,
+              ),
+            );
+          } else {
+            p.completer.completeError(
+              ActionFailure(message.isEmpty ? 'could not start session' : message),
+            );
+          }
+        }
       default:
         // All other ServerMessages are owned by SessionRepository.
         break;
@@ -442,6 +479,12 @@ class ActionsRepository extends Repository implements IActionsRepository {
   @override
   Future<List<WireProject>> listProjects() =>
       _dispatch<List<WireProject>>((id) => ListProjectsRequest(id: id));
+
+  @override
+  Future<StartSessionResult> startSession({required String cwd, String? name}) =>
+      _dispatch<StartSessionResult>(
+        (id) => StartSessionRequest(id: id, cwd: cwd, name: name),
+      );
 
   Future<T> _dispatch<T>(ClientMessage Function(String id) builder) async {
     final ch = _channel;

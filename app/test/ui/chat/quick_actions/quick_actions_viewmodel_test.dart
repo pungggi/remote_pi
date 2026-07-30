@@ -59,6 +59,21 @@ class _FakeActionsRepository implements IActionsRepository {
       RemoveWorktreeResult(inReplyTo: '', ok: true, message: 'stub');
 
   @override
+  Future<List<WireProject>> listProjects() async => const [];
+
+  @override
+  Future<StartSessionResult> startSession({
+    required String cwd,
+    String? name,
+  }) async =>
+      StartSessionResult(
+        inReplyTo: '',
+        ok: true,
+        roomId: 'stub-room',
+        message: '',
+      );
+
+  @override
   Stream<ActiveRoomMeta> get activeRoomMetaStream =>
       _metaController.stream;
 
