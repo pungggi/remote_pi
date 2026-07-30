@@ -490,4 +490,74 @@ void main() {
       s.cm.dispose();
     });
   });
+
+  group('ActionsRepository — startSession (plan/124)', () {
+    test('resolves with room_id on ok:true', () async {
+      final s = await _setup();
+      final future = s.repo.startSession(cwd: '/home/me/proj', name: 'w');
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      final sent = s.ch.sent.single as StartSessionRequest;
+      expect(sent.cwd, '/home/me/proj');
+      expect(sent.name, 'w');
+      s.ch.push(
+        StartSessionResult(
+          inReplyTo: sent.id,
+          ok: true,
+          roomId: 'qV38rk9H2gOi',
+          message: '',
+        ),
+      );
+      final r = await future;
+      expect(r.ok, isTrue);
+      expect(r.roomId, 'qV38rk9H2gOi');
+      s.cm.dispose();
+    });
+
+    test('ok:true but missing room_id → ActionFailure (review #2)', () async {
+      final s = await _setup();
+      final future = s.repo.startSession(cwd: '/x');
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      final sent = s.ch.sent.single as StartSessionRequest;
+      // A real spawn always reports the room it will re-announce; a
+      // malformed/partial ok:true with no room_id must NOT look like success.
+      s.ch.push(
+        StartSessionResult(
+          inReplyTo: sent.id,
+          ok: true,
+          roomId: null,
+          message: '',
+        ),
+      );
+      expect(
+        () => future,
+        throwsA(
+          isA<ActionFailure>()
+              .having((e) => e.message, 'message', contains('room_id')),
+        ),
+      );
+      s.cm.dispose();
+    });
+
+    test('ok:false → ActionFailure with the supervisor message', () async {
+      final s = await _setup();
+      final future = s.repo.startSession(cwd: '/x');
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      final sent = s.ch.sent.single as StartSessionRequest;
+      s.ch.push(
+        StartSessionResult(
+          inReplyTo: sent.id,
+          ok: false,
+          message: 'supervisor not running',
+        ),
+      );
+      expect(
+        () => future,
+        throwsA(
+          isA<ActionFailure>()
+              .having((e) => e.message, 'message', contains('supervisor')),
+        ),
+      );
+      s.cm.dispose();
+    });
+  });
 }

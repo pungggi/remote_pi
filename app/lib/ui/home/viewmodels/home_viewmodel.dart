@@ -404,6 +404,62 @@ class HomeViewModel extends ViewModel<HomeState> {
     return _actions.openTerminal(cwd: cwd, runPi: runPi, branch: branch);
   }
 
+  /// Plan/124 — bring an OFFLINE session back to life in its own cwd (no new
+  /// worktree, no pin). Routes to the tapped session's peer (switch + wait for
+  /// online, like [openTerminal]), then to the device daemon's room
+  /// ([kDeviceRoom]) — only the device daemon can ask the supervisor to spawn
+  /// a transient `pi --mode rpc --continue` at [cwd]. That child resumes the
+  /// existing conversation and re-announces the SAME room, so the tapped tile
+  /// flips live on its own via the rooms push (this method returns as soon as
+  /// the spawn is acknowledged; the app does not poll). [name] scopes the room
+  /// for custom-named sessions.
+  ///
+  /// Throws [ActionFailure] when the peer is unreachable, the supervisor's
+  /// device daemon isn't live on that PC, or the spawn itself fails.
+  Future<StartSessionResult> startSession({
+    required String epk,
+    required String cwd,
+    String? name,
+  }) async {
+    final peers = await _storage.listPeers();
+    if (_disposed) {
+      throw const ActionFailure('cancelled');
+    }
+    final match = peers.where((p) => p.remoteEpk == epk).cast<PeerRecord?>();
+    if (match.isEmpty) {
+      throw const ActionFailure('peer not found');
+    }
+    final peer = match.first!;
+    final samePeer = _conn.activePeer?.remoteEpk == epk;
+    if (!samePeer || !_relayConnected) {
+      await _conn.switchTo(peer);
+      if (_disposed) {
+        throw const ActionFailure('cancelled');
+      }
+      if (_conn.status is! StatusOnline) {
+        await _waitForOnline(kTerminalOpenConnectTimeout);
+      }
+    }
+    // Revive always rides the device daemon: the target session's own room is
+    // offline by definition, and only the device daemon handles
+    // start_session_request (it forwards to the supervisor's transient spawn).
+    // If the device room isn't live, the supervisor isn't running there → fail
+    // fast with an actionable message instead of waiting out the dispatch
+    // timeout.
+    final deviceLive = _conn.isRoomLive(epk, kDeviceRoom);
+    if (!deviceLive) {
+      final label = _conn.activePeer?.nickname ??
+          _conn.activePeer?.sessionName ??
+          'the computer';
+      throw ActionFailure(
+        'Could not reach $label. Start the Cockpit or Pi on that computer '
+        '(the supervisor must be running).',
+      );
+    }
+    _conn.switchRoom(kDeviceRoom);
+    return _actions.startSession(cwd: cwd, name: name);
+  }
+
   /// Waits up to [timeout] for the connection to reach [StatusOnline].
   /// Throws [ActionFailure] on timeout or if the VM is disposed mid-wait.
   Future<void> _waitForOnline(Duration timeout) async {

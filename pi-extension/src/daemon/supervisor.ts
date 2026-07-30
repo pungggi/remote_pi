@@ -2,10 +2,10 @@ import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { addDaemon, listDaemons, migrateRegistryNames, removeDaemon } from "./registry.js";
+import { addDaemon, listDaemons, migrateRegistryNames, normalizeCwd, removeDaemon } from "./registry.js";
 import { daemonIdForCwd } from "./id.js";
 import { defaultAgentName, type LocalConfig } from "../session/local_config.js";
-import { DEVICE_ROOM } from "../rooms.js";
+import { DEVICE_ROOM, roomIdFor } from "../rooms.js";
 import { ipcAddress, usesNamedPipe } from "../session/ipc.js";
 import { EXIT_DAEMON_FRESH_SESSION, RpcChild, type RpcChildExitEvent, type RpcChildOptions } from "./rpc_child.js";
 import {
@@ -131,6 +131,10 @@ interface ChildSlot {
   child: RpcChild;
   restartTimer: ReturnType<typeof setTimeout> | null;
   restartAttempt: number;
+  /** Plan/124 — `true` for `start_transient` spawns: alive now + auto-
+   *  restarted on crash, but NOT registry-backed, so NOT resurrected at
+   *  boot and deleted from `children` once deliberately stopped. */
+  transient: boolean;
 }
 
 export class Supervisor {
@@ -253,6 +257,7 @@ export class Supervisor {
       case "send":         return this._opSend(req.id, req.text);
       case "register":     return this._opRegister(req.cwd);
       case "unregister":   return this._opUnregister(req.id);
+      case "start_transient": return this._opStartTransient(req.cwd, req.name);
       case "cron_add":     return this._opCronAdd(req);
       case "cron_list":    return this._opCronList();
       case "cron_remove":  return this._opCronRemove(req.job_id);
@@ -301,6 +306,26 @@ export class Supervisor {
         restart_count: devSlot.child.restartCount,
       });
     }
+    // Plan/124 — append transient (revived) spawns: they live in `children`
+    // but not in the registry, so the loop above skips them. Surfacing them
+    // here makes `stop <id>` / Cockpit visibility work and lets the operator
+    // see what a phone-side "Start session" brought up.
+    const registryIds = new Set(registry.map((e) => e.id));
+    for (const [id, slot] of this.children) {
+      if (slot.transient && id !== DEVICE_DAEMON_ID && !registryIds.has(id)) {
+        out.push({
+          id,
+          cwd: slot.cwd,
+          name: "transient",
+          state: slot.child.state,
+          ...(slot.child.pid !== undefined ? { pid: slot.child.pid } : {}),
+          ...(slot.child.uptimeMs !== undefined
+            ? { uptime_s: Math.floor(slot.child.uptimeMs / 1000) }
+            : {}),
+          restart_count: slot.child.restartCount,
+        });
+      }
+    }
     return out;
   }
 
@@ -341,6 +366,11 @@ export class Supervisor {
     for (const [id, slot] of this.children) {
       if (slot.child.state !== "running") {
         already.push(id);
+        // Plan/124 — a non-running transient slot is dead weight; RETIRE it
+        // (clear any pending restart timer / stop a starting child) before
+        // dropping it from `children` — a bare delete could orphan a pending
+        // timer's respawn (review #1).
+        if (slot.transient) await this._retireTransient(slot);
         continue;
       }
       if (slot.restartTimer !== null) {
@@ -349,27 +379,70 @@ export class Supervisor {
       }
       await slot.child.stop();
       stopped.push(id);
+      // Plan/124 — transient slots are not registry-backed: retire them
+      // (timer clear + stop + delete) so nothing respawns untracked (review #1).
+      if (slot.transient) await this._retireTransient(slot);
     }
     return { ok: true, data: { stopped, already_stopped: already } };
   }
 
-  /** Stop a single registered daemon by id. Idempotent: a daemon that isn't
-   *  running returns `stopped: false`. Unknown id → ok:false. Mirrors the
-   *  per-id semantics of `_opStart`. Cancels any pending restart backoff so a
-   *  deliberate stop stays stopped. */
+  /** Stop a single daemon by id. Idempotent: a daemon that isn't running
+   *  returns `stopped: false`. Unknown id → ok:false. Works for BOTH
+   *  registry-backed daemons AND Plan/124 transient spawns (which live in
+   *  `children` but not `daemons.json`). Cancels any pending restart backoff
+   *  so a deliberate stop stays stopped. A transient slot is deleted once
+   *  stopped (no boot-resurrect, no manual restart without a fresh
+   *  start_transient). */
   private async _opStop(id: string): Promise<ControlReply<unknown>> {
-    const entry = listDaemons().find((d) => d.id === id);
-    if (!entry) return { ok: false, error: `no daemon with id ${id}` };
     const slot = this.children.get(id);
-    if (!slot || slot.child.state !== "running") {
-      return { ok: true, data: { id, state: slot?.child.state ?? "stopped", stopped: false } };
+    // Transient slots aren't in the registry — resolve them from `children`
+    // directly. Only treat an id as truly unknown when it's neither running
+    // nor registered.
+    if (!slot) {
+      const entry = listDaemons().find((d) => d.id === id);
+      if (!entry) return { ok: false, error: `no daemon with id ${id}` };
+      return { ok: true, data: { id, state: "stopped", stopped: false } };
+    }
+    if (slot.child.state !== "running") {
+      const state = slot.child.state;
+      // Retire (don't bare-delete): a `crashed` slot may hold a pending
+      // restart timer, a `starting` one a live child — both orphan without
+      // clearing/stopping (review #1).
+      if (slot.transient) await this._retireTransient(slot);
+      return { ok: true, data: { id, state, stopped: false } };
     }
     if (slot.restartTimer !== null) {
       clearTimeout(slot.restartTimer);
       slot.restartTimer = null;
     }
     await slot.child.stop();
-    return { ok: true, data: { id, state: slot.child.state, stopped: true } };
+    const stoppedState = slot.child.state;
+    // Timer already cleared + child stopped above; `_retireTransient`
+    // centralizes the (now no-op) clear/stop + delete — single safe path
+    // (review #1).
+    if (slot.transient) await this._retireTransient(slot);
+    return { ok: true, data: { id, state: stoppedState, stopped: true } };
+  }
+
+  /**
+   * Plan/124 — fully retire a transient slot before removing it from
+   * `children`: clear any pending crash-backoff `restartTimer` AND stop the
+   * child if it is still alive (running/starting). A bare `children.delete`
+   * on a slot with a pending timer lets `_onChildExit`'s closure fire
+   * `slot.child.spawn()` AFTER the slot left the map — respawning an
+   * UNTRACKED process that `list` / `stop` / `stop_all` can no longer see or
+   * reach (orphan). Review #1.
+   */
+  private async _retireTransient(slot: ChildSlot): Promise<void> {
+    if (slot.restartTimer !== null) {
+      clearTimeout(slot.restartTimer);
+      slot.restartTimer = null;
+    }
+    const s = slot.child.state;
+    if (s === "running" || s === "starting") {
+      await slot.child.stop();
+    }
+    this.children.delete(slot.id);
   }
 
   /** Restart a single registered daemon by id (stop-if-running, then spawn).
@@ -416,6 +489,40 @@ export class Supervisor {
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
+  }
+
+  /**
+   * Plan/124 — bring an offline session to life with a TRANSIENT spawn:
+   * run `pi --mode rpc --continue` at the session's cwd so its room
+   * re-announces and `--continue` resumes the existing conversation — but
+   * do NOT persist to `daemons.json` (unlike `_opRegister`). The child is
+   * auto-restarted on crash (same backoff as registered daemons) yet is NOT
+   * resurrected at boot, and a deliberate `stop` retires it for good.
+   *
+   * Idempotent: a child already running/starting for that cwd (whether
+   * transient or registry-backed, e.g. a pin) is a no-op success — the room
+   * is already (becoming) live, no need to double-spawn.
+   */
+  private _opStartTransient(rawCwd: string, name?: string): ControlReply<unknown> {
+    let cwd: string;
+    try {
+      cwd = normalizeCwd(rawCwd);
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+    const id = daemonIdForCwd(cwd);
+    const effectiveName = name?.trim() || undefined;
+    const room_id = roomIdFor(cwd, effectiveName);
+    const existing = this.children.get(id);
+    if (existing && (existing.child.state === "running" || existing.child.state === "starting")) {
+      return { ok: true, data: { id, cwd, room_id, started: false } };
+    }
+    // Reuse the registry-daemon spawn machinery (config injection, exit →
+    // crash-backoff wiring) but tag the slot transient so stop/boot treat
+    // it as ephemeral. `--continue` (inside rpcSpawnArgs) resumes the cwd's
+    // most-recent session JSONL → the existing conversation carries over.
+    this._spawnEntry(id, cwd, effectiveName, true);
+    return { ok: true, data: { id, cwd, room_id, started: true } };
   }
 
   private async _opUnregister(id: string): Promise<ControlReply<unknown>> {
@@ -614,13 +721,13 @@ export class Supervisor {
     };
     if (this.opts.piBin !== undefined) childOpts.piBin = this.opts.piBin;
     const child = new RpcChild(childOpts);
-    const slot: ChildSlot = { id, cwd, child, restartTimer: null, restartAttempt: 0 };
+    const slot: ChildSlot = { id, cwd, child, restartTimer: null, restartAttempt: 0, transient: false };
     this.children.set(id, slot);
     child.on("exit", (evt: RpcChildExitEvent) => this._onChildExit(id, evt));
     child.spawn();
   }
 
-  private _spawnEntry(id: string, cwd: string, name?: string): void {
+  private _spawnEntry(id: string, cwd: string, name?: string, transient = false): void {
     // Clean up any prior slot (e.g. crashed + waiting for backoff).
     const existing = this.children.get(id);
     if (existing) {
@@ -644,7 +751,7 @@ export class Supervisor {
     };
     if (this.opts.piBin !== undefined) childOpts.piBin = this.opts.piBin;
     const child = new RpcChild(childOpts);
-    const slot: ChildSlot = { id, cwd, child, restartTimer: null, restartAttempt: 0 };
+    const slot: ChildSlot = { id, cwd, child, restartTimer: null, restartAttempt: 0, transient };
     this.children.set(id, slot);
 
     child.on("exit", (evt: RpcChildExitEvent) => this._onChildExit(id, evt));

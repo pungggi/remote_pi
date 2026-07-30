@@ -13,6 +13,7 @@ import {
   type ControlRequest,
   type DaemonInfo,
 } from "./control_protocol.js";
+import { roomIdForCwd } from "../rooms.js";
 
 /**
  * Supervisor integration tests. We spin up a real `Supervisor` against a
@@ -301,5 +302,73 @@ describe("Supervisor — cron ops", () => {
   test("cron_run on an unknown job → ok:false", async () => {
     const r = await ask({ op: "cron_run", job_id: "j_unknown" });
     expect(r).toMatchObject({ ok: false });
+  });
+});
+
+describe("Supervisor — start_transient (plan/124 — bring session to life)", () => {
+  test("returns a derived id + room_id and does NOT persist (register still works)", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "pi-sv-tr-"));
+    const r = await ask({
+      op: "start_transient", cwd: tmp,
+    }) as ControlReply<{ id: string; cwd: string; room_id: string; started: boolean }>;
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      // id is the daemonIdForCwd hex; room_id is the 12-char base64url room
+      // the spawned pi will re-announce (= roomIdForCwd for an unnamed agent).
+      expect(r.data!.id).toMatch(/^[0-9a-f]{8}$/);
+      expect(r.data!.room_id).toMatch(/^[A-Za-z0-9_-]{12}$/);
+      expect(r.data!.room_id).toBe(roomIdForCwd(r.data!.cwd));
+      expect(r.data!.started).toBe(true);
+    }
+
+    // Plan/124 key invariant: a transient spawn is NOT a pin — it never
+    // writes daemons.json, so registering the same cwd afterward succeeds
+    // (a `register` of an already-pinned cwd would reject with
+    // "already registered").
+    const reg = await ask({ op: "register", cwd: tmp }) as ControlReply<{ id: string }>;
+    expect(reg.ok).toBe(true);
+  });
+
+  test("forwards a custom name in the op payload", async () => {
+    // The supervisor handler is exercised over the UDS; we assert the op is
+    // accepted and returns a name-scoped room (≠ the cwd-only room), proving
+    // the name reached the room derivation rather than being dropped.
+    const tmp = mkdtempSync(join(tmpdir(), "pi-sv-trn-"));
+    const plain = await ask({ op: "start_transient", cwd: tmp }) as ControlReply<{ room_id: string }>;
+    const named = await ask({
+      op: "start_transient", cwd: tmp, name: "worker-2",
+    }) as ControlReply<{ room_id: string }>;
+    expect(plain.ok && named.ok).toBe(true);
+    if (plain.ok && named.ok) {
+      expect(named.data!.room_id).not.toBe(plain.data!.room_id);
+    }
+  });
+
+  test("surfaces in `list` as a transient entry, then is removed by `stop`", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "pi-sv-trl-"));
+    const r = await ask({
+      op: "start_transient", cwd: tmp,
+    }) as ControlReply<{ id: string; cwd: string }>;
+    expect(r.ok).toBe(true);
+    const id = r.ok ? r.data!.id : "";
+    const cwd = r.ok ? r.data!.cwd : "";
+
+    // The transient spawn is visible (name "transient") and stoppable by id.
+    const list = await ask({ op: "list" }) as ControlReply<{ daemons: DaemonInfo[] }>;
+    const entry = list.ok ? list.data!.daemons.find((d) => d.id === id) : undefined;
+    expect(entry).toBeDefined();
+    expect(entry?.name).toBe("transient");
+    expect(entry?.cwd).toBe(cwd);
+
+    // `stop <id>` works for a transient (non-registry) id — it must NOT
+    // return the "no daemon with id" error a registry-only lookup would.
+    const stop = await ask({ op: "stop", id }) as ControlReply<{ stopped: boolean }>;
+    expect(stop.ok).toBe(true);
+
+    // A stopped transient slot is deleted (no boot-resurrect, no lingering
+    // dead entry), so it drops out of `list`.
+    const list2 = await ask({ op: "list" }) as ControlReply<{ daemons: DaemonInfo[] }>;
+    const gone = list2.ok ? list2.data!.daemons.find((d) => d.id === id) : undefined;
+    expect(gone).toBeUndefined();
   });
 });

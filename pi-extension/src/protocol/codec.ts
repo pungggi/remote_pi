@@ -28,6 +28,8 @@ const SERVER_TYPES = new Set<ServerMessage["type"]>([
   "remove_worktree_result",
   // Plan/121 — discovered projects list (phone's Projects tab).
   "list_projects_result",
+  // Plan/124 — reply to start_session_request (revive offline session).
+  "start_session_result",
 ]);
 
 export class DecodeError extends Error {
