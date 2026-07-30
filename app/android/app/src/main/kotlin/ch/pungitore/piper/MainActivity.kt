@@ -3,10 +3,12 @@ package ch.pungitore.piper
 import android.Manifest
 import android.content.ClipboardManager
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
+import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
@@ -58,6 +60,9 @@ class MainActivity : FlutterActivity() {
                         requestNotificationPermission()
                         result.success(hasNotificationPermission())
                     }
+                    // Plan 125 (Layer 4) — current charging state for the
+                    // "When charging" keep-alive mode.
+                    "isCharging" -> result.success(isCharging())
                     else -> result.notImplemented()
                 }
             }
@@ -134,6 +139,18 @@ class MainActivity : FlutterActivity() {
             arrayOf(Manifest.permission.POST_NOTIFICATIONS),
             NOTIF_PERM_REQUEST,
         )
+    }
+
+    // Plan 125 (Layer 4) — current charging state for the "When charging"
+    // keep-alive mode. Reads the sticky ACTION_BATTERY_CHANGED intent (works on
+    // all API levels; BatteryManager.isCharging() needs API 24+). Registers no
+    // receiver — the sticky intent is delivered synchronously.
+    private fun isCharging(): Boolean {
+        val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            ?: return false
+        val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+        return status == BatteryManager.BATTERY_STATUS_CHARGING ||
+            status == BatteryManager.BATTERY_STATUS_FULL
     }
 
     // Plan 116 — battery-optimization + Tailscale reliability helpers.

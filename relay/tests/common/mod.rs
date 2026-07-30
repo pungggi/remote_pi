@@ -40,6 +40,7 @@ pub async fn start_relay() -> u16 {
         mesh_auth,
         metrics,
         port,
+        heartbeat_interval: std::time::Duration::from_secs(60),
     };
     let app = build_router(state);
     tokio::spawn(async move {

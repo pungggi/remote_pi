@@ -13,7 +13,14 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
-- (nothing yet)
+- **Adaptive keep-alive (battery & heat, plan 125)** — the phone ran hot
+  and drained fast because five overlapping keep-alive mechanisms kept the
+  cellular radio permanently awake. The relay heartbeat dropped 25 s → 60 s
+  (`REMOTEPI_HEARTBEAT_SECS`, floor 30), the foreground service now runs
+  only while the app is backgrounded, and "Keep connected in background"
+  became a three-way toggle — Always / When charging (default) / Off — with
+  a native charging probe + 60 s poll. Roughly halves inbound radio wakeups
+  with no change to message delivery.
 
 ---
 

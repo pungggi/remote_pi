@@ -47,18 +47,27 @@ class WsTransport implements PeerTransport, IControlLink {
     required String peerPubkey, // base64 standard or url — destination peer
     required SimpleKeyPair ed25519Key, // this device's Ed25519 long-term key
   }) async {
-    // Plan-18 follow-up — set a WS-level pingInterval (RFC 6455
-    // control frames). This keeps the TCP connection alive through
-    // NAT / corporate proxies that aggressively close idle sockets,
-    // and surfaces a dead WS as `onDone` / `onError` instead of
-    // letting it silently linger until the next user action. The
+    // Plan-18 follow-up — a WS-level pingInterval (RFC 6455 control
+    // frames) keeps the TCP connection alive through NAT / corporate
+    // proxies and surfaces a dead WS as `onDone` / `onError`. The
     // protocol-level Ping/Pong handled by ConnectionManager covers
     // app↔Pi liveness; this one covers app↔relay TCP liveness.
+    //
+    // Plan 125 — this is a BACKSTOP, not the primary keepalive. The
+    // relay itself pings inbound every ~60 s (peer.rs heartbeat) and
+    // `ws` auto-replies Pong, which already keeps NAT mappings alive
+    // in both directions; the inbound-liveness watchdog in
+    // ConnectionManager (_kInboundTimeout, checked every 30 s) is the
+    // PRIMARY dead-socket detector. So the client-side ping can be
+    // slow: 240 s beats every common NAT idle timeout (consumer routers
+    // ≥ 60 s, Cloudflare WSS ~100 s, corporate LBs 2–5 min) as a
+    // last-resort backstop, and removes a redundant outbound radio
+    // wakeup every 20 s.
     // Accept http(s) URLs in the user-facing form but always speak
     // ws(s) on the wire — IOWebSocketChannel rejects http schemes.
     final WebSocketChannel ws = IOWebSocketChannel.connect(
       Uri.parse(toWsRelayUrl(relayUrl)),
-      pingInterval: const Duration(seconds: 20),
+      pingInterval: const Duration(seconds: 240), // plan 125 — was 20s (backstop only)
     );
     final transport = WsTransport._(ws);
 

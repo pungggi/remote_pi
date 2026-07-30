@@ -14,6 +14,13 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(3000);
 
+    // Plan 125 — WS keepalive heartbeat interval (default 60 s, env-configurable,
+    // NAT-safe floor 30 s). The resolve/clamp logic is a pure, unit-tested fn in
+    // the library; see `relay::resolve_heartbeat_secs`.
+    let heartbeat_secs =
+        relay::resolve_heartbeat_secs(std::env::var("REMOTEPI_HEARTBEAT_SECS").ok().as_deref());
+    info!(heartbeat_secs, "WS keepalive heartbeat interval");
+
     // Read (and memoize) the outer-envelope size ceiling once at startup, then
     // log the effective value so ops can confirm RELAY_MAX_CT_MIB took effect.
     let max_ct_bytes = relay::protocol::outer::max_ct_bytes();
@@ -60,6 +67,7 @@ async fn main() -> anyhow::Result<()> {
         mesh_auth,
         metrics,
         port,
+        heartbeat_interval: std::time::Duration::from_secs(heartbeat_secs),
     };
     let app = relay::build_router(state);
 
