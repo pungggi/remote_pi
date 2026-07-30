@@ -38,7 +38,8 @@ sealed class ControlInbound {
         final rawWorking =
             (j['working'] as bool?) ?? (metaJson?['working'] as bool?);
         final rawGit = j['git'] ?? metaJson?['git'];
-        final rawContextUsage = j['context_usage'] ?? metaJson?['context_usage'];
+        final rawContextUsage =
+            j['context_usage'] ?? metaJson?['context_usage'];
         return RoomAnnounced(
           peer: j['peer'] as String,
           roomId: j['room_id'] as String,
@@ -315,8 +316,17 @@ class RoomInfo {
       other.contextUsage == contextUsage;
 
   @override
-  int get hashCode =>
-      Object.hash(roomId, name, cwd, startedAt, model, thinking, working, git, contextUsage);
+  int get hashCode => Object.hash(
+    roomId,
+    name,
+    cwd,
+    startedAt,
+    model,
+    thinking,
+    working,
+    git,
+    contextUsage,
+  );
 }
 
 class RoomAnnounced extends ControlInbound {
@@ -485,17 +495,24 @@ class ContextUsage {
 
   const ContextUsage({this.tokens, required this.contextWindow, this.percent});
 
-  factory ContextUsage.fromJson(Map<String, dynamic> j) => ContextUsage(
-        tokens: (j['tokens'] as num?)?.toInt(),
-        contextWindow: (j['contextWindow'] as num?)?.toInt() ?? 0,
-        percent: (j['percent'] as num?)?.toInt(),
-      );
+  /// Parses context usage; returns null when `contextWindow` is absent or
+  /// non-positive — a partial/malformed payload is treated as "unknown"
+  /// rather than synthesizing a misleading gauge like "—/0k".
+  static ContextUsage? fromJson(Map<String, dynamic> j) {
+    final contextWindow = (j['contextWindow'] as num?)?.toInt();
+    if (contextWindow == null || contextWindow <= 0) return null;
+    return ContextUsage(
+      tokens: (j['tokens'] as num?)?.toInt(),
+      contextWindow: contextWindow,
+      percent: (j['percent'] as num?)?.toInt(),
+    );
+  }
 
   Map<String, dynamic> toJson() => {
-        'tokens': tokens,
-        'contextWindow': contextWindow,
-        'percent': percent,
-      };
+    'tokens': tokens,
+    'contextWindow': contextWindow,
+    'percent': percent,
+  };
 
   @override
   bool operator ==(Object other) =>
@@ -599,8 +616,7 @@ class UserMessage extends ClientMessage {
       'streaming_behavior': streamingBehavior!.wireValue,
     if (images != null && images!.isNotEmpty)
       'images': images!.map((i) => i.toJson()).toList(),
-    if (model != null)
-      'model': {'provider': model!.provider, 'id': model!.id},
+    if (model != null) 'model': {'provider': model!.provider, 'id': model!.id},
   };
 }
 
@@ -909,13 +925,13 @@ class OpenTerminalRequest extends ClientMessage {
 
   @override
   Map<String, dynamic> toJson() => {
-        'type': 'open_terminal_request',
-        'id': id,
-        if (cwd != null) 'cwd': cwd,
-        'runPi': runPi,
-        if (worktreePath != null) 'worktree_path': worktreePath,
-        if (branch != null) 'branch': branch,
-      };
+    'type': 'open_terminal_request',
+    'id': id,
+    if (cwd != null) 'cwd': cwd,
+    'runPi': runPi,
+    if (worktreePath != null) 'worktree_path': worktreePath,
+    if (branch != null) 'branch': branch,
+  };
 }
 
 /// Plan/112 — request the list of tracked worktrees, optionally filtered by
@@ -928,10 +944,10 @@ class ListWorktreesRequest extends ClientMessage {
 
   @override
   Map<String, dynamic> toJson() => {
-        'type': 'list_worktrees_request',
-        'id': id,
-        if (base != null) 'base': base,
-      };
+    'type': 'list_worktrees_request',
+    'id': id,
+    if (base != null) 'base': base,
+  };
 }
 
 /// Plan/112 — request removal of a tracked worktree by id. The Pi runs
@@ -943,10 +959,10 @@ class RemoveWorktreeRequest extends ClientMessage {
 
   @override
   Map<String, dynamic> toJson() => {
-        'type': 'remove_worktree_request',
-        'id': id,
-        'worktree_id': worktreeId,
-      };
+    'type': 'remove_worktree_request',
+    'id': id,
+    'worktree_id': worktreeId,
+  };
 }
 
 /// Plan/121 — request the list of git projects discovered under the PC's
@@ -959,10 +975,7 @@ class ListProjectsRequest extends ClientMessage {
   ListProjectsRequest({required this.id});
 
   @override
-  Map<String, dynamic> toJson() => {
-        'type': 'list_projects_request',
-        'id': id,
-      };
+  Map<String, dynamic> toJson() => {'type': 'list_projects_request', 'id': id};
 }
 
 /// Plan/124 — bring an OFFLINE session back to life in its own cwd (no new
@@ -980,11 +993,11 @@ class StartSessionRequest extends ClientMessage {
 
   @override
   Map<String, dynamic> toJson() => {
-        'type': 'start_session_request',
-        'id': id,
-        'cwd': cwd,
-        if (name != null && name!.isNotEmpty) 'name': name,
-      };
+    'type': 'start_session_request',
+    'id': id,
+    'cwd': cwd,
+    if (name != null && name!.isNotEmpty) 'name': name,
+  };
 }
 
 // --- ServerMessage (extension → app) ---
@@ -1875,9 +1888,9 @@ class WireProject {
   const WireProject({required this.path, required this.name});
 
   factory WireProject.fromJson(Map<String, dynamic> j) => WireProject(
-        path: j['path'] as String,
-        name: (j['name'] as String?) ?? '',
-      );
+    path: j['path'] as String,
+    name: (j['name'] as String?) ?? '',
+  );
 }
 
 /// Plan/121 — reply to [ListProjectsRequest]. `ok` is false only if discovery
@@ -1922,7 +1935,8 @@ class StartSessionResult extends ServerMessage {
     required this.message,
   });
 
-  factory StartSessionResult.fromJson(Map<String, dynamic> j) => StartSessionResult(
+  factory StartSessionResult.fromJson(Map<String, dynamic> j) =>
+      StartSessionResult(
         inReplyTo: j['in_reply_to'] as String,
         ok: j['ok'] as bool? ?? false,
         roomId: j['room_id'] as String?,
@@ -2051,21 +2065,20 @@ class AskQuestionWire {
   });
 
   factory AskQuestionWire.fromJson(Map<String, dynamic> j) => AskQuestionWire(
-        id: j['id'] as String? ?? '',
-        label: (j['label'] as String?) ?? (j['prompt'] as String?) ?? '',
-        prompt: j['prompt'] as String? ?? '',
-        type: AskQuestionWireType.fromWire(j['type'] as String?) ??
-            AskQuestionWireType.single,
-        required: (j['required'] as bool?) ?? false,
-        presentedType:
-            AskQuestionWireType.fromWire(j['presentedType'] as String?),
-        requestedType:
-            AskQuestionWireType.fromWire(j['requestedType'] as String?),
-        options: (j['options'] as List<dynamic>? ?? const <dynamic>[])
-            .whereType<Map>()
-            .map((m) => AskOptionWire.fromJson(m.cast<String, dynamic>()))
-            .toList(growable: false),
-      );
+    id: j['id'] as String? ?? '',
+    label: (j['label'] as String?) ?? (j['prompt'] as String?) ?? '',
+    prompt: j['prompt'] as String? ?? '',
+    type:
+        AskQuestionWireType.fromWire(j['type'] as String?) ??
+        AskQuestionWireType.single,
+    required: (j['required'] as bool?) ?? false,
+    presentedType: AskQuestionWireType.fromWire(j['presentedType'] as String?),
+    requestedType: AskQuestionWireType.fromWire(j['requestedType'] as String?),
+    options: (j['options'] as List<dynamic>? ?? const <dynamic>[])
+        .whereType<Map>()
+        .map((m) => AskOptionWire.fromJson(m.cast<String, dynamic>()))
+        .toList(growable: false),
+  );
 }
 
 /// Optional pi-ask enrichment on an `extension_ui_request`. When present, the
@@ -2086,7 +2099,8 @@ class AskEnrichmentWire {
     this.questions = const <AskQuestionWire>[],
   });
 
-  factory AskEnrichmentWire.fromJson(Map<String, dynamic> j) => AskEnrichmentWire(
+  factory AskEnrichmentWire.fromJson(Map<String, dynamic> j) =>
+      AskEnrichmentWire(
         flowId: j['flow_id'] as String? ?? '',
         toolCallId: j['tool_call_id'] as String?,
         source: (j['source'] as String?) ?? 'tool',
@@ -2126,7 +2140,8 @@ class ExtensionUiRequest extends ServerMessage {
   factory ExtensionUiRequest.fromJson(Map<String, dynamic> j) =>
       ExtensionUiRequest(
         id: j['id'] as String? ?? '',
-        method: ExtensionUiMethod.fromWire(j['method'] as String?) ??
+        method:
+            ExtensionUiMethod.fromWire(j['method'] as String?) ??
             ExtensionUiMethod.select,
         title: j['title'] as String?,
         message: j['message'] as String?,
@@ -2159,7 +2174,8 @@ class AskAnswerWire {
   Map<String, dynamic> toJson() {
     final m = <String, dynamic>{};
     if (values.isNotEmpty) m['values'] = values;
-    if (customText != null && customText!.isNotEmpty) m['customText'] = customText;
+    if (customText != null && customText!.isNotEmpty)
+      m['customText'] = customText;
     if (note != null && note!.isNotEmpty) m['note'] = note;
     if (optionNotes.isNotEmpty) m['optionNotes'] = optionNotes;
     return m;
@@ -2171,6 +2187,7 @@ class AskAnswerWire {
 class AskResponseEnrichmentWire {
   final String flowId;
   final bool isCancel;
+
   /// 'submit' | 'elaborate' (null when cancel). Raw string for forward-compat.
   final String? mode;
   final Map<String, AskAnswerWire> answers;

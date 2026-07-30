@@ -130,6 +130,7 @@ class ChatPage extends StatelessWidget {
     // The dot reads from the ChatReady.peerPresence flag (which the
     // ViewModel sources from `isRoomLive`).
     final colors = context.colors;
+    final typo = context.typo;
     final vm = context.watch<ChatViewModel>();
     final peer = vm.activePeer;
     final room = vm.activeRoom;
@@ -149,8 +150,9 @@ class ChatPage extends StatelessWidget {
     // While the agent is working, show the model running this turn next to
     // the "working…" pill. `room.model` is kept current via room_meta_updated.
     final rawModel = room?.model;
-    final modelLabel =
-        (isWorking && rawModel != null && rawModel.isNotEmpty) ? rawModel : null;
+    final modelLabel = (isWorking && rawModel != null && rawModel.isNotEmpty)
+        ? rawModel
+        : null;
     // Plan/115 — live context-window fill (tokens/contextWindow/percent),
     // shown next to the working indicator. Null until the first response.
     final usage = room?.contextUsage;
@@ -272,34 +274,32 @@ class ChatPage extends StatelessWidget {
                       const SizedBox(width: 6),
                       Text(
                         _truncate(modelLabel, 24),
-                        style: TextStyle(
-                          fontFamily: kMonoFamily,
+                        style: typo.monoSmall.copyWith(
                           fontSize: 10,
                           color: colors.accent,
                         ),
                       ),
                     ],
-                    // Plan/115 — context-window fill (percent colored by pressure).
-                    if (usage != null) ...[
+                    // Plan/115 — context-window fill, shown only while the
+                    // agent is working (percent colored by pressure).
+                    if (isWorking && usage != null) ...[
                       const SizedBox(width: 6),
                       Text(
                         usage.percent != null ? '${usage.percent}%' : '·',
-                        style: TextStyle(
-                          fontFamily: kMonoFamily,
+                        style: typo.monoSmall.copyWith(
                           fontSize: 10,
                           color: (usage.percent ?? 0) >= 90
                               ? colors.error
                               : (usage.percent ?? 0) >= 70
-                                  ? colors.warning
-                                  : colors.muted,
+                              ? colors.warning
+                              : colors.muted,
                         ),
                       ),
                       const SizedBox(width: 3),
                       Text(
                         '${usage.tokens != null ? '${(usage.tokens! / 1000).round()}k' : '—'}/'
                         '${(usage.contextWindow / 1000).round()}k',
-                        style: TextStyle(
-                          fontFamily: kMonoFamily,
+                        style: typo.monoSmall.copyWith(
                           fontSize: 10,
                           color: colors.muted,
                         ),
@@ -400,7 +400,10 @@ class ChatPage extends StatelessWidget {
                   }
                   final s = snap.data;
                   if (s == null) {
-                    return const _InfoRow(label: 'Git', value: 'not a git repo');
+                    return const _InfoRow(
+                      label: 'Git',
+                      value: 'not a git repo',
+                    );
                   }
                   return _InfoRow(
                     label: 'Git',
@@ -737,11 +740,14 @@ int messageIndexForSlot(int slot, int msgCount, {required bool streaming}) {
 enum TranscriptGrow {
   /// No change since last frame.
   none,
+
   /// Content grew at the bottom (newest): the streaming bubble grew, a message
   /// was finalized/appended, or only the streaming bubble moved.
   bottom,
+
   /// Content grew at the top (oldest): "Load more" prepended older messages.
   top,
+
   /// Wholesale replace: open, session switch, reconnect re-sync, compaction.
   replace,
 }
@@ -766,7 +772,8 @@ TranscriptGrow classifyTranscriptGrow(
     return streamChanged ? TranscriptGrow.bottom : TranscriptGrow.none;
   }
   if (oldMsgs.isEmpty) return TranscriptGrow.replace; // open / switch in
-  if (newMsgs.length < oldMsgs.length) return TranscriptGrow.replace; // compaction
+  if (newMsgs.length < oldMsgs.length)
+    return TranscriptGrow.replace; // compaction
   if (newMsgs.length == oldMsgs.length) {
     for (var i = 0; i < oldMsgs.length; i++) {
       if (oldMsgs[i].id != newMsgs[i].id) return TranscriptGrow.replace;
@@ -884,7 +891,8 @@ class _MessageListState extends State<_MessageList> {
   @override
   void didUpdateWidget(_MessageList old) {
     super.didUpdateWidget(old);
-    final changed = !identical(old.messages, widget.messages) ||
+    final changed =
+        !identical(old.messages, widget.messages) ||
         old.streaming != widget.streaming;
     if (changed) {
       _grow = classifyTranscriptGrow(
@@ -1297,6 +1305,7 @@ class _RevokedBanner extends StatelessWidget {
 class _InfoRow extends StatelessWidget {
   final String label;
   final String value;
+
   /// Plan/107 — optional colored value (posh-git-style git status). When
   /// set, renders as a RichText instead of the plain [value] string.
   final TextSpan? richValue;
@@ -1376,7 +1385,9 @@ class _WorktreesSectionState extends State<_WorktreesSection> {
       );
       if (mounted) Navigator.of(context).pop();
     } on Object {
-      messenger.showSnackBar(const SnackBar(content: Text('Offline — try again.')));
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Offline — try again.')),
+      );
     }
   }
 
@@ -1385,7 +1396,9 @@ class _WorktreesSectionState extends State<_WorktreesSection> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
-        content: Text('Remove worktree ${w.branch}?\nThis deletes the folder and branch.'),
+        content: Text(
+          'Remove worktree ${w.branch}?\nThis deletes the folder and branch.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(c).pop(false),
@@ -1402,11 +1415,15 @@ class _WorktreesSectionState extends State<_WorktreesSection> {
     try {
       final res = await widget.actions.removeWorktree(w.id);
       messenger.showSnackBar(
-        SnackBar(content: Text(res.ok ? res.message : 'Failed: ${res.message}')),
+        SnackBar(
+          content: Text(res.ok ? res.message : 'Failed: ${res.message}'),
+        ),
       );
       if (res.ok) _refresh();
     } on Object {
-      messenger.showSnackBar(const SnackBar(content: Text('Offline — try again.')));
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Offline — try again.')),
+      );
     }
   }
 
@@ -1427,52 +1444,56 @@ class _WorktreesSectionState extends State<_WorktreesSection> {
           return const _InfoRow(label: 'Worktrees', value: 'none');
         }
         return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.only(top: 6),
-                  child: Text(
-                    'WORKTREES',
-                    style: TextStyle(
-                      fontFamily: kMonoFamily,
-                      fontSize: 10,
-                      color: colors.muted,
-                      letterSpacing: 0.4,
-                    ),
-                  ),
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                'WORKTREES',
+                style: TextStyle(
+                  fontFamily: kMonoFamily,
+                  fontSize: 10,
+                  color: colors.muted,
+                  letterSpacing: 0.4,
                 ),
-                for (final w in value)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: InkWell(
-                            onTap: () => _reopen(w),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 4),
-                              child: SelectableText(
-                                '${w.branch}  ·  ${_relativeAge(w.createdAt)}',
-                                style: TextStyle(
-                                  fontFamily: kMonoFamily,
-                                  fontSize: 12,
-                                  color: colors.accent,
-                                ),
-                              ),
+              ),
+            ),
+            for (final w in value)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: InkWell(
+                        onTap: () => _reopen(w),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: SelectableText(
+                            '${w.branch}  ·  ${_relativeAge(w.createdAt)}',
+                            style: TextStyle(
+                              fontFamily: kMonoFamily,
+                              fontSize: 12,
+                              color: colors.accent,
                             ),
                           ),
                         ),
-                        IconButton(
-                          icon: Icon(LucideIcons.trash2, size: 16, color: colors.error),
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
-                          onPressed: () => _remove(w),
-                        ),
-                      ],
+                      ),
                     ),
-                  ),
-              ],
-            );
+                    IconButton(
+                      icon: Icon(
+                        LucideIcons.trash2,
+                        size: 16,
+                        color: colors.error,
+                      ),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      onPressed: () => _remove(w),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        );
       },
     );
   }
@@ -1489,4 +1510,3 @@ String _relativeAge(String iso) {
   if (d.inHours < 24) return '${d.inHours}h ago';
   return '${d.inDays}d ago';
 }
-
