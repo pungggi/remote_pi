@@ -372,9 +372,10 @@ describe("extension default export", () => {
   test("no deprecated or removed commands leak back into the surface", () => {
     const { pi, registeredCommands } = makeMockPi();
     (extension as ExtensionFactory)(pi);
-    // 8 plan-25 + 2 daemon registry (W1) + 6 fleet ops (W2) + 2 install (W3)
-    // + 1 cross-PC inventory (plan-25 W D) + 1 cron (plan-39) + 1 rename (plan/41).
-    expect(registeredCommands).toHaveLength(21);
+    // 9 plan-25 (base, incl. setup) + 2 daemon registry (W1) + 6 fleet ops (W2)
+    // + 2 install (W3) + 1 cross-PC inventory (plan-25 W D) + 1 cron (plan-39)
+    // + 1 rename (plan/41).
+    expect(registeredCommands).toHaveLength(22);
     for (const removed of [
       "remote-pi join", "remote-pi leave", "remote-pi sessions",
       "remote-pi relay", "remote-pi relay start", "remote-pi relay stop",
