@@ -47,6 +47,7 @@ async fn spawn_relay() -> (String, tempfile::TempDir) {
         mesh_auth,
         metrics,
         port,
+        heartbeat_interval: std::time::Duration::from_secs(60),
     };
 
     let app = build_router(state);

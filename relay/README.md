@@ -124,6 +124,7 @@ state at the next mutation.
 | Variable | Default | Description |
 |---|---|---|
 | `REMOTEPI_RELAY_PORT` | `3000` | TCP port that serves the WebSocket upgrade, `/health`, and `/mesh/*` (all on the same port) |
+| `REMOTEPI_HEARTBEAT_SECS` | `60` | Seconds between WS keepalive Pings sent to each peer (plan 125 — was `25`). The relay is the heartbeat authority, so this is the floor on how often a mobile client's radio must wake. `60` beats every common NAT idle timeout with margin and halves inbound wakeups. Floor `30` (anything tighter forfeits the battery win and risks NAT drops); values below are clamped with a `warn` log |
 | `REMOTEPI_MESH_DB_PATH` | `/data/mesh.db` in Docker · `data/mesh.db` (cwd-relative) for bare-metal builds | Path to the SQLite database that stores signed membership versions. The parent directory is created automatically on first boot. The Docker image presets this to `/data/mesh.db` and declares `/data` as a volume — see the volume note above |
 | `RUST_LOG` | _(none)_ | Log level filter — e.g. `info`, `debug`, `warn` |
 

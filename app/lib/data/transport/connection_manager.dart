@@ -80,12 +80,51 @@ Duration _backoffFor(int attempt) =>
     Duration(seconds: _kBackoff[attempt.clamp(0, _kBackoff.length - 1)]);
 
 /// Plan 114 (C) — inbound-liveness threshold. The relay pushes a frame at
-/// least every ~25 s (its keep-alive), so a healthy link is never this
-/// quiet. A socket silent beyond this while we believe we're Online is
-/// half-open (the WS-layer ping interval can take *minutes* to notice on
-/// mobile) — the watchdog force-closes it so the retry chain kicks in.
-/// ≥ 2× the ping interval, so a live connection never trips it.
-const _kInboundTimeout = Duration(seconds: 60);
+/// least every ~60 s (its keep-alive — plan 125 raised the heartbeat from
+/// ~25 s to 60 s), so a healthy link is never this quiet. A socket silent
+/// beyond this while we believe we're Online is half-open (the WS-layer
+/// ping interval can take *minutes* to notice on mobile) — the watchdog
+/// force-closes it so the retry chain kicks in. ~2.5× the heartbeat
+/// interval (150 s vs the 60 s default), so a live connection never trips
+/// it — including on deployments that lower the heartbeat toward the 30 s
+/// floor via `REMOTEPI_HEARTBEAT_SECS` (150 s ≈ 5× that floor).
+const _kInboundTimeout = Duration(seconds: 150);
+
+// ---------------------------------------------------------------------------
+// Plan 125 (Layer 2) — adaptive power mode
+// ---------------------------------------------------------------------------
+
+/// Keep-alive cadence profile. [active] is the foreground default (reliability
+/// priority); [lean] is used while the app is backgrounded (plan 125 Layer 2):
+/// the relay's ~60 s inbound heartbeat (plan 125 Layer 3) already proves the
+/// relay leg, so the protocol Ping (which only proves the Pi leg) can be slower
+/// and the CPU-only watchdog can tick half as often. Driven from
+/// `didChangeAppLifecycleState` via [ConnectionManager.setPowerMode].
+enum PowerMode { active, lean }
+
+/// Plan 125 (Layer 2) — protocol-Ping interval for [mode]: 25 s active, 90 s
+/// lean. Pure so the cadence contract is pinned by a unit test.
+Duration pingIntervalFor(PowerMode mode) {
+  switch (mode) {
+    case PowerMode.active:
+      return const Duration(seconds: 25);
+    case PowerMode.lean:
+      return const Duration(seconds: 90);
+  }
+}
+
+/// Plan 125 (Layer 2) — watchdog interval for [mode] as a multiple of the
+/// (injected) active interval. Lean doubles it (active 30 s → lean 60 s in
+/// production). Scales with the injected active interval so unit tests that
+/// pass a fast active interval stay coherent in both modes.
+Duration watchdogIntervalFor(PowerMode mode, Duration active) {
+  switch (mode) {
+    case PowerMode.active:
+      return active;
+    case PowerMode.lean:
+      return active * 2;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Factory typedef — injectable for tests
@@ -149,13 +188,16 @@ class ConnectionManager extends Service {
   List<String> _subscribedEpks = const [];
   int _missedPings = 0;
   int _retryAttempt = 0;
-  // Plan 114 (C) — timestamp of the last inbound frame. The 15 s watchdog
-  // force-closes a socket silent beyond [_kInboundTimeout] while we're
+  // Plan 114 (C) — timestamp of the last inbound frame. The 30 s watchdog
+  // (plan 125) force-closes a socket silent beyond [_kInboundTimeout] while we're
   // Online. [_lastInboundAt] is reset on every successful connect. [__now]
   // is injectable so unit tests can advance a virtual clock.
   late DateTime _lastInboundAt;
   final DateTime Function() _now;
   final Duration _watchdogInterval;
+  // Plan 125 (Layer 2) — current keep-alive cadence profile. Default active
+  // (foreground); [setPowerMode] flips to lean when the app is backgrounded.
+  PowerMode _powerMode = PowerMode.active;
   // Tracks the last-running connect token so the watchdog can tell
   // whether a connect is in flight (without poking at the live token).
   bool _connectInFlight = false;
@@ -177,7 +219,9 @@ class ConnectionManager extends Service {
     required PairingStorage storage,
     Duration emitDebounce = const Duration(milliseconds: 50),
     DateTime Function()? now,
-    Duration watchdogInterval = const Duration(seconds: 15),
+    Duration watchdogInterval = const Duration(
+      seconds: 30,
+    ), // plan 125 — was 15s
   }) : _factory = factory,
        _storage = storage,
        _emitDebounce = emitDebounce,
@@ -188,30 +232,35 @@ class ConnectionManager extends Service {
   }
 
   /// Plan-18 follow-up — periodically checks for stuck offline state
-  /// and forces a reconnect attempt. Runs every 15s. Cheap; only
-  /// fires the actual `_scheduleRetry` when the conditions match.
+  /// and forces a reconnect attempt. Runs every 30s (plan 125 — was 15s;
+  /// `_kInboundTimeout` is 60s, so checking every 30s still detects a
+  /// half-open link within ~30s of the threshold). Cheap; only fires the
+  /// actual `_scheduleRetry` when the conditions match.
   void _startWatchdog() {
     _watchdogTimer?.cancel();
-    _watchdogTimer = Timer.periodic(_watchdogInterval, (_) {
-      final peer = _activePeer;
-      if (peer == null) return;
-      if (_status is StatusOnline) {
-        // Plan 114 (C) — inbound-liveness watchdog. The WS-layer ping
-        // interval can take minutes to surface a half-open socket on a
-        // mobile network transition; we detect "silent beyond
-        // [_kInboundTimeout] while we believe we're Online" and force the
-        // existing close-and-retry path so recovery starts now.
-        if (_now().difference(_lastInboundAt) > _kInboundTimeout) {
-          _onChannelLost(peer, (_status as StatusOnline).channel);
+    _watchdogTimer = Timer.periodic(
+      watchdogIntervalFor(_powerMode, _watchdogInterval),
+      (_) {
+        final peer = _activePeer;
+        if (peer == null) return;
+        if (_status is StatusOnline) {
+          // Plan 114 (C) — inbound-liveness watchdog. The WS-layer ping
+          // interval can take minutes to surface a half-open socket on a
+          // mobile network transition; we detect "silent beyond
+          // [_kInboundTimeout] while we believe we're Online" and force the
+          // existing close-and-retry path so recovery starts now.
+          if (_now().difference(_lastInboundAt) > _kInboundTimeout) {
+            _onChannelLost(peer, (_status as StatusOnline).channel);
+          }
+          return;
         }
-        return;
-      }
-      if (_connectInFlight) return;
-      if (_retryTimer != null) return;
-      // We SHOULD be reconnecting but nothing's scheduled and no
-      // attempt is in flight. Kick the retry chain.
-      _scheduleRetry(peer);
-    });
+        if (_connectInFlight) return;
+        if (_retryTimer != null) return;
+        // We SHOULD be reconnecting but nothing's scheduled and no
+        // attempt is in flight. Kick the retry chain.
+        _scheduleRetry(peer);
+      },
+    );
   }
 
   ConnectionStatus get status => _status;
@@ -469,6 +518,25 @@ class ConnectionManager extends Service {
     _retryAttempt = 0;
     await _teardownActive(emitNoPeer: false);
     await _connect(peer);
+  }
+
+  /// Plan 125 (Layer 2) — switch the keep-alive cadence between foreground
+  /// ([PowerMode.active]) and background ([PowerMode.lean]). Reschedules the
+  /// ping + watchdog timers at the new interval WITHOUT touching the
+  /// connection or the inbound-liveness logic (which is interval-agnostic).
+  /// Driven from `didChangeAppLifecycleState` in main.dart. Idempotent.
+  void setPowerMode(PowerMode mode) {
+    if (_powerMode == mode) return;
+    _powerMode = mode;
+    // Re-create the watchdog at the new cadence (it always runs).
+    _startWatchdog();
+    // Re-create the ping only if we're currently Online — otherwise it starts
+    // on the next successful connect and picks up the new mode automatically.
+    final peer = _activePeer;
+    if (_status is StatusOnline && peer != null) {
+      _cancelPing();
+      _startPing(peer, (_status as StatusOnline).channel);
+    }
   }
 
   /// Shared implementation between [disconnect] and [switchTo]. When
@@ -1147,7 +1215,7 @@ class ConnectionManager extends Service {
   }
 
   void _startPing(PeerRecord peer, IChannel ch) {
-    _pingTimer = Timer.periodic(const Duration(seconds: 25), (_) async {
+    _pingTimer = Timer.periodic(pingIntervalFor(_powerMode), (_) async {
       if (_status is! StatusOnline) return;
       // Plan-18 follow-up — DECOUPLED Pi-liveness from WS-liveness.
       //
@@ -1159,9 +1227,11 @@ class ConnectionManager extends Service {
       // `room_already_open` and the app sat permanently offline.
       // [ORCH:19-heartbeat-investigate] reported this.
       //
-      // After: the WS↔relay keep-alive is now exclusively handled
-      // by RFC 6455 Ping/Pong (IOWebSocketChannel.pingInterval).
-      // Protocol Ping/Pong here is a Pi-LIVENESS probe — when it
+      // After: the WS↔relay keep-alive is handled by the relay's
+      // inbound heartbeat (~60 s Ping — plan 125 Layer 3, was ~25 s,
+      // auto-Pong'd by `ws`) plus a slow client-side WS ping backstop
+      // (240 s — plan 125 Layer 1). Protocol
+      // Ping/Pong here is a Pi-LIVENESS probe — when it
       // fails, we mark the active room as offline locally so Home /
       // chat reflect it; the WS stays online for presence updates
       // and other rooms. A real WS failure surfaces via the catch

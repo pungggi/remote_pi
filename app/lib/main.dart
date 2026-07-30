@@ -31,24 +31,22 @@ void main() async {
   // Plan 103 — mirror connection status into the Android foreground service so
   // the relay WS survives backgrounding. attach() also reflects the current
   // status (Online at boot → starts the notification).
-  injector
-      .get<KeepAliveController>()
-      .attach(injector.get<ConnectionManager>());
+  injector.get<KeepAliveController>().attach(injector.get<ConnectionManager>());
   // Plan 114 — react to network changes (Wi-Fi ↔ cellular) and force an
   // immediate reconnect so recovery starts within ~1s instead of the 30s
   // backoff ceiling. attach() subscribes to connectivity events.
-  injector
-      .get<NetworkMonitor>()
-      .attach(injector.get<ConnectionManager>());
+  injector.get<NetworkMonitor>().attach(injector.get<ConnectionManager>());
   // Plan/104 — if launched via a Share (ACTION_SEND image), pull it now so it
   // waits in the inbox; the router listener routes to the chat once booted.
   final shared = await injector.get<IImagePickerService>().consumeSharedImage();
   if (shared != null) injector.get<SharedImageInbox>().deposit([shared]);
-  final sharedPdf =
-      await injector.get<IImagePickerService>().consumeSharedPdf();
+  final sharedPdf = await injector
+      .get<IImagePickerService>()
+      .consumeSharedPdf();
   if (sharedPdf != null) injector.get<SharedImageInbox>().deposit(sharedPdf);
-  final sharedText =
-      await injector.get<IImagePickerService>().consumeSharedText();
+  final sharedText = await injector
+      .get<IImagePickerService>()
+      .consumeSharedText();
   if (sharedText != null) injector.get<SharedTextInbox>().deposit(sharedText);
   runApp(const PiperApp());
 }
@@ -93,6 +91,18 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
   /// boot path).
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Plan 125 — the foreground service only earns its keep while backgrounded.
+    // Foregrounded, the process is already foreground-priority, so running it
+    // would waste the Android-15 `dataSync` 6 h budget for nothing.
+    injector.get<KeepAliveController>().setBackgrounded(
+      state != AppLifecycleState.resumed,
+    );
+    // Plan 125 (Layer 2) — lean keep-alive cadence while backgrounded, active
+    // on resume. Slows the protocol Ping (25 → 90 s) and the watchdog (30 → 60 s)
+    // while the app is in the background, halving outbound + CPU wakeups.
+    injector.get<ConnectionManager>().setPowerMode(
+      state == AppLifecycleState.resumed ? PowerMode.active : PowerMode.lean,
+    );
     final meshSync = injector.get<MeshSyncService>();
     switch (state) {
       case AppLifecycleState.resumed:

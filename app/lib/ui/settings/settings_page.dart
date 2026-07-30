@@ -106,11 +106,7 @@ class _ReliabilityEntry extends StatelessWidget {
           color: colors.muted,
         ),
       ),
-      trailing: Icon(
-        LucideIcons.chevronRight,
-        size: 18,
-        color: colors.muted2,
-      ),
+      trailing: Icon(LucideIcons.chevronRight, size: 18, color: colors.muted2),
       onTap: () => context.push('/settings/reliability'),
     );
   }
@@ -131,8 +127,7 @@ class _AboutSection extends StatelessWidget {
           builder: (context, snap) {
             final v = snap.data?.version;
             return ListTile(
-              leading:
-                  Icon(LucideIcons.info, size: 20, color: colors.text),
+              leading: Icon(LucideIcons.info, size: 20, color: colors.text),
               title: Text(
                 'Version',
                 style: const TextStyle(fontFamily: kMonoFamily, fontSize: 14),
@@ -149,8 +144,7 @@ class _AboutSection extends StatelessWidget {
           },
         ),
         ListTile(
-          leading:
-              Icon(LucideIcons.scrollText, size: 20, color: colors.text),
+          leading: Icon(LucideIcons.scrollText, size: 20, color: colors.text),
           title: Text(
             "What's new",
             style: const TextStyle(fontFamily: kMonoFamily, fontSize: 14),
@@ -358,9 +352,7 @@ class _RelaySectionState extends State<_RelaySection> {
                       // is wrong and the next pairing QR should decide.
                       onPressed: () async {
                         _ctrl.clear();
-                        await context
-                            .read<SettingsViewModel>()
-                            .clearRelayUrl();
+                        await context.read<SettingsViewModel>().clearRelayUrl();
                       },
                       child: Text(
                         'Clear',
@@ -441,8 +433,7 @@ class _RelaySectionState extends State<_RelaySection> {
                           vertical: 10,
                         ),
                         shape: const RoundedRectangleBorder(
-                          borderRadius:
-                              BorderRadius.all(Radius.circular(6)),
+                          borderRadius: BorderRadius.all(Radius.circular(6)),
                         ),
                       ),
                       child: Text(
@@ -457,9 +448,7 @@ class _RelaySectionState extends State<_RelaySection> {
                     TextButton(
                       onPressed: () async {
                         _lanCtrl.clear();
-                        await context
-                            .read<SettingsViewModel>()
-                            .clearLanUrl();
+                        await context.read<SettingsViewModel>().clearLanUrl();
                       },
                       child: Text(
                         'Clear',
@@ -511,14 +500,8 @@ class _DisplaySection extends StatelessWidget {
                       value: ThemeMode.system,
                       label: Text('System'),
                     ),
-                    ButtonSegment(
-                      value: ThemeMode.light,
-                      label: Text('Light'),
-                    ),
-                    ButtonSegment(
-                      value: ThemeMode.dark,
-                      label: Text('Dark'),
-                    ),
+                    ButtonSegment(value: ThemeMode.light, label: Text('Light')),
+                    ButtonSegment(value: ThemeMode.dark, label: Text('Dark')),
                   ],
                   selected: {prefs.themeMode},
                   onSelectionChanged: (s) => prefs.setThemeMode(s.first),
@@ -562,28 +545,43 @@ class _DisplaySection extends StatelessWidget {
           value: prefs.collapseToolCalls,
           onChanged: (v) => prefs.setCollapseToolCalls(v),
         ),
-        // Plan 103 — Android-only foreground service that keeps the relay
-        // connection alive in the background. Off = today's behaviour (the OS
-        // freezes the process and the WS drops on focus change).
+        // Plan 125 (Layer 4) — Android-only foreground service that keeps the
+        // relay connection alive in the background. Three-way: When charging
+        // (default) / Always / Off. Replaces the plan-103 on/off switch.
         if (Platform.isAndroid)
-          SwitchListTile(
+          ListTile(
             contentPadding: const EdgeInsets.symmetric(horizontal: 18),
-            activeThumbColor: colors.accent,
             title: Text(
               'Keep connected in background',
               style: context.typo.sansBody.copyWith(color: colors.text),
             ),
             subtitle: Text(
-              'Keeps the relay link alive when you switch apps, so you do not '
-              'reconnect on return. Uses a small persistent notification and '
-              'more battery.',
+              'Stays connected when you switch apps. "When charging" keeps you '
+              'online on power and saves battery on the go; "Always" uses a '
+              'persistent notification and more battery.',
               style: context.typo.sansBody.copyWith(
                 color: colors.muted,
                 fontSize: 12,
               ),
             ),
-            value: prefs.keepAliveInBackground,
-            onChanged: (v) => prefs.setKeepAliveInBackground(v),
+            trailing: DropdownButton<KeepAliveMode>(
+              value: prefs.keepAliveMode,
+              underline: const SizedBox(),
+              items: const [
+                DropdownMenuItem(
+                  value: KeepAliveMode.whenCharging,
+                  child: Text('When charging'),
+                ),
+                DropdownMenuItem(
+                  value: KeepAliveMode.always,
+                  child: Text('Always'),
+                ),
+                DropdownMenuItem(value: KeepAliveMode.off, child: Text('Off')),
+              ],
+              onChanged: (v) {
+                if (v != null) prefs.setKeepAliveMode(v);
+              },
+            ),
           ),
         const SizedBox(height: 8),
       ],

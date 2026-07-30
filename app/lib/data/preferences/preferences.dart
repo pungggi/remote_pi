@@ -4,6 +4,22 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+/// Plan 125 (Layer 4) — when the Android foreground service keeps the relay
+/// WebSocket alive in the background. Replaces the plan-103 on/off bool.
+enum KeepAliveMode {
+  /// Always run the service while backgrounded + a peer is connected. Most
+  /// reliable, most battery.
+  always,
+
+  /// Run the service only while charging (default). Reliable on power, saves
+  /// battery on the go.
+  whenCharging,
+
+  /// Never run the service; the OS freezes the process on background and the
+  /// WS drops on focus change (the pre-plan-103 behaviour).
+  off,
+}
+
 /// App-wide UI preferences (persisted across launches).
 ///
 /// Extends [ChangeNotifier] so widgets can `context.watch<Preferences>()`
@@ -26,10 +42,11 @@ class Preferences extends ChangeNotifier {
   String? _lastGoodRelayUrl;
   bool _onboardingCompleted = false;
   ThemeMode _themeMode = ThemeMode.system;
-  // Plan 103 — keep the relay WebSocket alive in the background via an Android
-  // foreground service. Defaults ON ("stay connected is priority"); the user
-  // can opt out in Settings (battery trade-off).
-  bool _keepAliveInBackground = true;
+  // Plan 125 (Layer 4) — when to keep the relay WebSocket alive in the
+  // background via an Android foreground service. Three-way (was a bool in
+  // plan 103). Default `whenCharging` ("stay connected on power, save battery
+  // on the go"); the user can switch in Settings.
+  KeepAliveMode _keepAliveMode = KeepAliveMode.whenCharging;
   // Plan 110 — tool calls are collapsed by default; tapping expands them to show
   // full details. Reduces chat noise when the AI makes many tool calls.
   bool _collapseToolCalls = true;
@@ -38,7 +55,7 @@ class Preferences extends ChangeNotifier {
   List<String> _pinnedProjects = const [];
 
   Preferences([FlutterSecureStorage? store])
-      : _store = store ?? const FlutterSecureStorage();
+    : _store = store ?? const FlutterSecureStorage();
 
   static const _kHideToolCallsKey = 'prefs.hide_tool_calls';
   static const _kSelectedPeerEpkKey = 'prefs.selected_peer_epk';
@@ -135,8 +152,9 @@ class Preferences extends ChangeNotifier {
     }
 
     final lastGood = await _store.read(key: _kLastGoodRelayUrlKey);
-    final lastGoodCleaned =
-        (lastGood != null && lastGood.isNotEmpty) ? lastGood : null;
+    final lastGoodCleaned = (lastGood != null && lastGood.isNotEmpty)
+        ? lastGood
+        : null;
     if (lastGoodCleaned != _lastGoodRelayUrl) {
       _lastGoodRelayUrl = lastGoodCleaned;
       changed = true;
@@ -156,11 +174,14 @@ class Preferences extends ChangeNotifier {
       changed = true;
     }
 
-    // Plan 103 — default true when the key is absent (first launch).
+    // Plan 125 (Layer 4) — migrate the plan-103 on/off bool to the three-way
+    // mode: 'true' → always, 'false' → off, absent (first launch) →
+    // whenCharging (new default). Already-migrated names pass through; garbage
+    // falls back to whenCharging.
     final keepAlive = await _store.read(key: _kKeepAliveInBackgroundKey);
-    final keepAliveBool = keepAlive == null ? true : keepAlive == 'true';
-    if (keepAliveBool != _keepAliveInBackground) {
-      _keepAliveInBackground = keepAliveBool;
+    final keepAliveMode = _parseKeepAliveMode(keepAlive);
+    if (keepAliveMode != _keepAliveMode) {
+      _keepAliveMode = keepAliveMode;
       changed = true;
     }
 
@@ -186,10 +207,7 @@ class Preferences extends ChangeNotifier {
   Future<void> setHideToolCalls(bool value) async {
     if (_hideToolCalls == value) return;
     _hideToolCalls = value;
-    await _store.write(
-      key: _kHideToolCallsKey,
-      value: value.toString(),
-    );
+    await _store.write(key: _kHideToolCallsKey, value: value.toString());
     notifyListeners();
   }
 
@@ -212,9 +230,7 @@ class Preferences extends ChangeNotifier {
     if (epk == null || epk.isEmpty) {
       return setSelectedPeerEpk(null);
     }
-    final composite = (roomId == null || roomId.isEmpty)
-        ? epk
-        : '$epk:$roomId';
+    final composite = (roomId == null || roomId.isEmpty) ? epk : '$epk:$roomId';
     return setSelectedPeerEpk(composite);
   }
 
@@ -249,10 +265,7 @@ class Preferences extends ChangeNotifier {
     if (cleaned.isEmpty) {
       await _store.delete(key: _kLanEndpointsKey);
     } else {
-      await _store.write(
-        key: _kLanEndpointsKey,
-        value: jsonEncode(cleaned),
-      );
+      await _store.write(key: _kLanEndpointsKey, value: jsonEncode(cleaned));
     }
     notifyListeners();
   }
@@ -272,10 +285,7 @@ class Preferences extends ChangeNotifier {
     }
     if (_listEquals(merged, _lanEndpoints)) return;
     _lanEndpoints = List.unmodifiable(merged);
-    await _store.write(
-      key: _kLanEndpointsKey,
-      value: jsonEncode(merged),
-    );
+    await _store.write(key: _kLanEndpointsKey, value: jsonEncode(merged));
     notifyListeners();
   }
 
@@ -301,10 +311,7 @@ class Preferences extends ChangeNotifier {
   Future<void> setOnboardingCompleted(bool value) async {
     if (_onboardingCompleted == value) return;
     _onboardingCompleted = value;
-    await _store.write(
-      key: _kOnboardingCompletedKey,
-      value: value.toString(),
-    );
+    await _store.write(key: _kOnboardingCompletedKey, value: value.toString());
     notifyListeners();
   }
 
@@ -317,18 +324,34 @@ class Preferences extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Plan 103 — when true, an Android foreground service keeps the relay
-  /// WebSocket alive while the app is backgrounded. Default true.
-  bool get keepAliveInBackground => _keepAliveInBackground;
+  /// Plan 125 (Layer 4) — when to keep the relay WebSocket alive in the
+  /// background via the Android foreground service. Default
+  /// [KeepAliveMode.whenCharging].
+  KeepAliveMode get keepAliveMode => _keepAliveMode;
 
-  Future<void> setKeepAliveInBackground(bool value) async {
-    if (_keepAliveInBackground == value) return;
-    _keepAliveInBackground = value;
-    await _store.write(
-      key: _kKeepAliveInBackgroundKey,
-      value: value.toString(),
-    );
+  Future<void> setKeepAliveMode(KeepAliveMode value) async {
+    if (_keepAliveMode == value) return;
+    _keepAliveMode = value;
+    await _store.write(key: _kKeepAliveInBackgroundKey, value: value.name);
     notifyListeners();
+  }
+
+  /// Plan 125 (Layer 4) — resolve the keep-alive mode from its stored string,
+  /// migrating the plan-103 bool. Unknown/garbage → [KeepAliveMode.whenCharging].
+  static KeepAliveMode _parseKeepAliveMode(String? raw) {
+    switch (raw) {
+      case null:
+        return KeepAliveMode.whenCharging;
+      case 'true':
+        return KeepAliveMode.always;
+      case 'false':
+        return KeepAliveMode.off;
+      default:
+        return KeepAliveMode.values.firstWhere(
+          (m) => m.name == raw,
+          orElse: () => KeepAliveMode.whenCharging,
+        );
+    }
   }
 
   /// Plan 110 — when true, tool calls are collapsed by default in chat.
@@ -338,10 +361,7 @@ class Preferences extends ChangeNotifier {
   Future<void> setCollapseToolCalls(bool value) async {
     if (_collapseToolCalls == value) return;
     _collapseToolCalls = value;
-    await _store.write(
-      key: _kCollapseToolCallsKey,
-      value: value.toString(),
-    );
+    await _store.write(key: _kCollapseToolCallsKey, value: value.toString());
     notifyListeners();
   }
 

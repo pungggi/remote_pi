@@ -31,7 +31,7 @@ pub async fn ws_handler(
 
 /// Owns one peer's WebSocket connection: hello/challenge/auth → register →
 /// routing loop (forwarding outer envelopes + handling presence/rooms control
-/// frames + sending 25 s keepalive pings) → unregister on disconnect.
+/// frames + sending keepalive pings) → unregister on disconnect.
 async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) {
     let peer_addr = peer_addr.to_string();
     let (mut sink, mut stream) = socket.split();
@@ -156,11 +156,15 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
     let mut last_rooms_resp: HashMap<String, String> = HashMap::new();
 
     // ── 4. Routing loop ───────────────────────────────────────────────────
-    // Send a WS Ping every 25 s so NAT/LB idle timers don't close the connection.
-    // First tick fires after 25 s (not immediately).
+    // Send a WS Ping at the configured interval (default 60 s — plan 125, was
+    // 25 s) so NAT/LB idle timers don't close the connection. 60 s beats every
+    // common NAT idle timeout with margin and halves inbound radio wakeups for
+    // mobile clients. Configurable via REMOTEPI_HEARTBEAT_SECS (min 30).
+    // First tick fires after the interval (not immediately).
+    let heartbeat_interval = state.heartbeat_interval;
     let mut heartbeat = time::interval_at(
-        time::Instant::now() + Duration::from_secs(25),
-        Duration::from_secs(25),
+        time::Instant::now() + heartbeat_interval,
+        heartbeat_interval,
     );
 
     'routing: loop {
