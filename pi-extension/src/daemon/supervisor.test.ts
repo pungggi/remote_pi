@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createConnection } from "node:net";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { Supervisor, decideFireAction, getSupervisorSockPath } from "./supervisor.js";
+import { ipcAddress, usesNamedPipe } from "../session/ipc.js";
 import { addDaemon } from "./registry.js";
 import { readCronLog } from "./cron_log.js";
 import {
@@ -48,9 +50,24 @@ async function ask<R = ControlReply<unknown>>(req: ControlRequest): Promise<R> {
   });
 }
 
+/** Per-test isolated supervisor socket. On win32 a unique named pipe (the
+ *  real daemon's per-user pipe would otherwise collide — see supervisor.ts);
+ *  on POSIX a socket file under the temp home. */
+function isolatedSupervisorSock(): string {
+  // Unique address per test. On win32 a named pipe (reuse ipcAddress escaping;
+  //  the real daemon's per-user pipe would otherwise collide — see supervisor.ts);
+  //  on POSIX a socket file under the temp home.
+  const id = randomUUID().slice(0, 8);
+  return usesNamedPipe()
+    ? ipcAddress(`supervisor-test-${id}`, "(pipe)")
+    : join(testHome, "supervisor.sock");
+}
+
 beforeEach(async () => {
   testHome = mkdtempSync(join(tmpdir(), "pi-sv-"));
   process.env["REMOTE_PI_HOME"] = testHome;
+  // Pin a unique supervisor socket so tests never collide with a live daemon.
+  process.env["REMOTE_PI_TEST_SUPERVISOR_SOCK"] = isolatedSupervisorSock();
   supervisor = new Supervisor({
     // Point at a non-existent extension. The supervisor will try to
     // spawn `<piBin> --mode rpc -e <path>` and the child exits immediately —
@@ -73,6 +90,7 @@ afterEach(async () => {
     supervisor = null;
   }
   delete process.env["REMOTE_PI_HOME"];
+  delete process.env["REMOTE_PI_TEST_SUPERVISOR_SOCK"];
   try { rmSync(testHome, { recursive: true, force: true }); } catch { /* best-effort */ }
 });
 

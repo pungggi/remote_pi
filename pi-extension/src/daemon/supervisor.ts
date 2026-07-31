@@ -67,6 +67,13 @@ const SUPERVISOR_SOCK_NAME = "supervisor.sock";
 const RESTART_BACKOFFS_MS = [1_000, 5_000, 30_000, 5 * 60_000];
 
 function supervisorSockPath(): string {
+  // Test isolation: tests pin a unique address here so they never collide with
+  // a live production supervisor. Needed on win32, where named pipes are
+  // per-user and `ipcAddress` ignores REMOTE_PI_HOME — a temp home is NOT
+  // enough to isolate the test socket from the real daemon's pipe. Production
+  // never sets this env var.
+  const testOverride = process.env["REMOTE_PI_TEST_SUPERVISOR_SOCK"];
+  if (testOverride) return testOverride;
   const root = process.env["REMOTE_PI_HOME"] || homedir();
   // POSIX → ~/.pi/piper/supervisor.sock; Windows → per-user named pipe (plan/40).
   return ipcAddress("supervisor", join(root, ".pi", "piper", SUPERVISOR_SOCK_NAME));
