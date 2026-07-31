@@ -85,8 +85,15 @@ function capturingRemoteRouter(): {
 }
 
 async function flushUds(): Promise<void> {
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  await new Promise<void>((resolve) => setImmediate(resolve));
+  // Each broker.injectFromRemote surfaces as a separate 'data' event on the
+  // reader socket; under vi.useFakeTimers these need several loop iterations to
+  // be delivered. The original 2 iterations could leave a second back-to-back
+  // injected frame undelivered (forged-transport-error test). Pump with headroom
+  // — setImmediate is cheap and timing can vary by host.
+  const UDS_FLUSH_CYCLES = 12;
+  for (let i = 0; i < UDS_FLUSH_CYCLES; i++) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
 }
 
 function observe<T>(promise: Promise<T>): Promise<
