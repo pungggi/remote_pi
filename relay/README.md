@@ -119,6 +119,50 @@ survives `docker rm` and image upgrades. Without a mount, the database is
 recreated empty each time the container starts and clients re-publish their
 state at the next mutation.
 
+### Windows: auto-start at logon (reboot-proof)
+
+A bare-metal relay started by hand dies when the PC reboots. Register it as a
+per-user scheduled task instead: it auto-starts at logon, never times out, and
+restarts on crash (up to 999×). No admin rights needed — it's user-level
+(`InteractiveToken`), the same model the daemon supervisor uses (plan 40).
+
+```powershell
+# from the repo root, after `cargo build --release` in relay/
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File relay/scripts/windows-autostart/Register-PiperRelayTask.ps1
+```
+
+The installer generates two launcher files under `~/.pi/piper/` and registers
+the `Piper Relay` task:
+
+- `piper-relay-run.cmd` — `cd` into the relay dir, sets `RUST_LOG=info`, runs
+  the binary with stdout+stderr teed to `relay.log`.
+- `PiperRelayLauncher.vbs` — runs that `.cmd` hidden (no console window) and
+  waits for the relay's lifetime, so the task's `RestartOnFailure` monitors it.
+- `relay.log` — append-only log. Without `RUST_LOG=info` the relay stays silent
+  (its default filter yields a 0-byte log), so the launcher sets it explicitly.
+
+Day-to-day:
+
+```powershell
+schtasks /Run  /TN "Piper Relay"      # start now
+schtasks /End   /TN "Piper Relay"      # stop the task instance
+schtasks /Query /TN "Piper Relay" /V /FO LIST   # status (Last Result 267009/0x41301 = running)
+Get-Content $HOME/.pi/piper/relay.log -Wait -Tail 20   # tail logs
+```
+
+Notes:
+
+- The task is **at-logon, not at-boot**: the relay runs while you're logged in,
+  which is the intended model (a dev machine, not an unattended server).
+- `ExecutionTimeLimit` is `PT0S` (unlimited) and `StopIfGoingOnBatteries` is
+  off, so neither a long uptime nor a battery transition kills it.
+- `RestartOnFailure` retries every minute; a transient bind conflict (a stale
+  relay still holding port 3000) clears itself within one retry window.
+- Re-running the installer is safe — it regenerates the launchers and re-registers
+  the task with `-Force`. Edit the two path variables at the top of the script if
+  your repo or install dir differ.
+
 ### Environment variables
 
 | Variable | Default | Description |

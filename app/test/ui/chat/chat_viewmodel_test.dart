@@ -455,4 +455,97 @@ void main() {
     sync.dispose();
     conn.dispose();
   });
+
+  test(
+    'model_set → room_meta_updated rebuilds ChatReady with the new model '
+    '(UI bug: model was a side-channel, ChatReady.== skipped notifyListeners)',
+    () async {
+      final ch = _FakeChannel();
+      final storage = _FakeStorage();
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      final boxes = LocalBoxes();
+      final sync = SyncService(conn, boxes);
+      final read = SessionReadRepository(boxes);
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+      await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
+
+      conn.adopt(ch, _peer);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      final vm = ChatViewModel(read, sync, conn, prefs, storage);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // Seed room with the OLD model (what the PC was running).
+      ch.pushControl(
+        const RoomAnnounced(
+          peer: 'epk_chat',
+          roomId: 'main',
+          startedAt: 1,
+          model: 'old-model',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(
+        (vm.state as ChatReady).model,
+        'old-model',
+        reason: 'state identity carries the seed model',
+      );
+      expect(vm.activeRoom?.model, 'old-model');
+
+      // Pure model flip — nothing else in ChatReady changes. Pre-fix this
+      // produced an equal ChatReady and ViewModel.emit skipped notifyListeners,
+      // so the AppBar / composer kept showing old-model while the PC switched.
+      ch.pushControl(
+        const RoomMetaUpdated(
+          peer: 'epk_chat',
+          roomId: 'main',
+          model: 'new-model',
+          hasThinking: false,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(
+        vm.activeRoom?.model,
+        'new-model',
+        reason: 'ConnectionManager applied the room_meta patch',
+      );
+      expect(
+        (vm.state as ChatReady).model,
+        'new-model',
+        reason: 'ChatReady.model is part of state identity → rebuild fires',
+      );
+
+      // Same for a pure context-usage tick (plan/115 header gauge).
+      ch.pushControl(
+        const RoomMetaUpdated(
+          peer: 'epk_chat',
+          roomId: 'main',
+          hasModel: false,
+          hasThinking: false,
+          contextUsage: ContextUsage(
+            tokens: 12000,
+            contextWindow: 200000,
+            percent: 6,
+          ),
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(
+        (vm.state as ChatReady).contextUsage?.tokens,
+        12000,
+        reason: 'usage ticks must also rebuild the header',
+      );
+      // Model preserved across a usage-only patch.
+      expect((vm.state as ChatReady).model, 'new-model');
+
+      vm.dispose();
+      sync.dispose();
+      conn.dispose();
+    },
+  );
 }

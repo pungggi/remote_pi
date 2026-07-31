@@ -13,8 +13,9 @@
 > original project. See [FORK.md](./FORK.md) for what diverges and how upstream
 > changes are merged in.
 >
-> The logo in `branding/` is still Remote Pi's and is not used here yet;
-> Piper needs its own artwork before anything ships.
+> Piper has its own visual identity (Matrix-green mark in `branding/`, shipped
+> across the app, cockpit, and site). `branding/` is the source of truth for
+> the logo; see [FORK.md](./FORK.md) for what else diverges from upstream.
 
 ## Links
 

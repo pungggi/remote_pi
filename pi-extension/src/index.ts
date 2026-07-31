@@ -258,10 +258,10 @@ let _currentThinking: ThinkingLevel | undefined = undefined;  // last-known thin
 // ── Plan/109 — one-shot model override (per-message model send) ───────────────
 // When an app sends a user_message with `model: {provider,id}`, we switch the
 // LIVE session model, inject the message, then revert on turn_end. The default
-// model is never persisted (setModel is live-only). While `_modelDisplayFrozen`
-// is set, `_setCurrentModel` is a no-op so the temporary model never flickers
-// to subscribed apps — they keep seeing the original until the turn ends.
-let _modelDisplayFrozen = false;
+// model is never persisted (setModel is live-only). The temp model PROPAGATES
+// to room_meta (and the app header) for the turn, then reverts — the earlier
+// display-freeze was removed so the user can see which model runs the message
+// (flicker on other subscribed devices is accepted).
 // The SDK's full Model shape (what `ExtensionAPI.setModel` expects). Handlers'
 // registry/ctx expose a narrow `SdkModelLike`; the runtime objects are real
 // Models, so we bridge with a cast at the setModel call sites.
@@ -341,11 +341,6 @@ function _currentModelName(): string | undefined {
  * otherwise never surface their model.
  */
 function _setCurrentModel(name: string): void {
-  // Plan/109 — while a one-shot model override is in flight, keep the
-  // displayed model frozen at the original so subscribers never see the
-  // temporary model flicker. The live model still changes (setModel); this
-  // only suppresses the room_meta broadcast + cached name update.
-  if (_modelDisplayFrozen) return;
   _currentModel = name;
   if (_myRoomMeta) _myRoomMeta = { ..._myRoomMeta, model: name };
   if (_relay && _myRoomId) {
@@ -4731,9 +4726,6 @@ async function _revertModelOverride(): Promise<void> {
   if (_pendingModelRevert === null) return;
   const orig = _pendingModelRevert;
   _pendingModelRevert = null;
-  // Unfreeze BEFORE setModel so the restoring model_select re-syncs the
-  // display (to the same value — _currentModel never changed while frozen).
-  _modelDisplayFrozen = false;
   if (!_pi) return;
   try {
     await _pi.setModel(orig);
@@ -4786,22 +4778,24 @@ async function _sendWithModelOverride(
     return;
   }
   const orig = ctx?.getModel?.();
-  // Freeze first so setModel's model_select doesn't broadcast the temp model.
-  _modelDisplayFrozen = true;
   let ok: boolean;
   try {
     ok = await _pi.setModel(chosen as FullSdkModel);
   } catch (err) {
-    _modelDisplayFrozen = false;
     const detail = err instanceof Error ? err.message : String(err);
     sender.send({ type: "error", code: "internal_error", in_reply_to: msg.id, message: `setModel failed: ${detail}` });
     return;
   }
   if (!ok) {
-    _modelDisplayFrozen = false;
     sender.send({ type: "error", code: "no_auth", in_reply_to: msg.id, message: `no auth configured for ${override.provider}/${override.id}` });
     return;
   }
+  // Explicitly broadcast the temp model so the app header shows it for the
+  // turn. Some pi versions don't emit `model_select` for a PROGRAMMATIC
+  // setModel (the normal picker works because its setModel is a user action
+  // that does fire the event), so call _setCurrentModel directly rather than
+  // rely on the event. plan/109. (If model_select DOES fire, it's idempotent.)
+  _setCurrentModel(chosen.name);
   // Remember the original to restore at turn_end (only the first override in
   // a turn sets the target — later overrides share the same revert).
   if (_pendingModelRevert === null && orig) _pendingModelRevert = orig as FullSdkModel;

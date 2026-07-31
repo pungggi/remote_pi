@@ -308,6 +308,10 @@ class ChatViewModel extends ViewModel<ChatState> {
         ? const PresenceOnline() as PresenceState
         : const PresenceOffline(sinceTs: 0);
 
+    // model + contextUsage are part of ChatReady's identity so a pure
+    // room_meta flip (model_set / usage tick) rebuilds the AppBar and
+    // composer hint. See ChatReady.model docs.
+    final room = activeRoom;
     return ChatReady(
       messages: _messages,
       streaming: _streaming,
@@ -316,6 +320,8 @@ class ChatViewModel extends ViewModel<ChatState> {
       peerOfflineReason: _peerOfflineReason,
       peerPresence: peerPresence,
       isWorking: isWorking,
+      model: room?.model,
+      contextUsage: room?.contextUsage,
       queuedMessages: _queuedMessages,
       pendingUiRequest: _pendingUiRequest,
       pendingUiError: _pendingUiError,

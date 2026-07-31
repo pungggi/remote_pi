@@ -295,6 +295,11 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     let model_patch = meta_obj
                                         .and_then(|m| m.get("model"))
                                         .map(|v| v.as_str().map(String::from));
+                                    // TEMP diagnostic (plan/109 per-message override) — confirm whether
+                                    // model patches reach the relay. Remove once the fix is verified.
+                                    if let Some(Some(m)) = &model_patch {
+                                        info!(peer = %peer_short, room = %target_room, model = %m, "room_meta_update (model patch)");
+                                    }
                                     let thinking_patch = meta_obj
                                         .and_then(|m| m.get("thinking"))
                                         .map(|v| v.as_str().map(String::from));

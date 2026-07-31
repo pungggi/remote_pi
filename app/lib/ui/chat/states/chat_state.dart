@@ -43,6 +43,19 @@ class ChatReady extends ChatState {
   /// per-room, like Home) actually triggers a rebuild even when nothing
   /// else changed. See [ChatViewModel.isWorking].
   final bool isWorking;
+
+  /// Active model name for this room (from `room_meta.model`). Part of the
+  /// state identity for the same reason as [isWorking]: the AppBar / composer
+  /// hint read it via side-channel getters (`activeRoom.model`), and without
+  /// it in `==` a pure model switch (model_set → room_meta_updated) produced
+  /// an equal ChatReady and [ViewModel.emit] skipped notifyListeners — the
+  /// UI kept showing the old model even though the PC had switched.
+  final String? model;
+
+  /// Plan/115 — live context-window usage. Same identity reason as [model]:
+  /// a pure usage tick must rebuild the header gauge.
+  final ContextUsage? contextUsage;
+
   final List<QueuedMsg> queuedMessages;
 
   /// Plan/100 — an interactive extension_ui_request (ask_user via pi-ask)
@@ -71,6 +84,8 @@ class ChatReady extends ChatState {
     this.peerOfflineReason,
     this.peerPresence = const PresenceUnknown(),
     this.isWorking = false,
+    this.model,
+    this.contextUsage,
     this.queuedMessages = const [],
     this.pendingUiRequest,
     this.pendingUiError,
@@ -85,6 +100,10 @@ class ChatReady extends ChatState {
     String? peerOfflineReason,
     PresenceState? peerPresence,
     bool? isWorking,
+    String? model,
+    bool clearModel = false,
+    ContextUsage? contextUsage,
+    bool clearContextUsage = false,
     List<QueuedMsg>? queuedMessages,
     bool clearStreaming = false,
     bool clearPeerOffline = false,
@@ -105,6 +124,10 @@ class ChatReady extends ChatState {
             : (peerOfflineReason ?? this.peerOfflineReason),
         peerPresence: peerPresence ?? this.peerPresence,
         isWorking: isWorking ?? this.isWorking,
+        model: clearModel ? null : (model ?? this.model),
+        contextUsage: clearContextUsage
+            ? null
+            : (contextUsage ?? this.contextUsage),
         queuedMessages: clearQueuedMessages
             ? []
             : (queuedMessages ?? this.queuedMessages),
@@ -127,6 +150,8 @@ class ChatReady extends ChatState {
       other.peerOfflineReason == peerOfflineReason &&
       other.peerPresence.runtimeType == peerPresence.runtimeType &&
       other.isWorking == isWorking &&
+      other.model == model &&
+      other.contextUsage == contextUsage &&
       other.queuedMessages == queuedMessages &&
       other.pendingUiRequest == pendingUiRequest &&
       other.pendingUiError == pendingUiError &&
@@ -141,6 +166,8 @@ class ChatReady extends ChatState {
         peerOfflineReason,
         peerPresence.runtimeType,
         isWorking,
+        model,
+        contextUsage,
         queuedMessages,
         pendingUiRequest,
         pendingUiError,
