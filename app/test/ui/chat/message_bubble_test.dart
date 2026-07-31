@@ -229,6 +229,32 @@ void main() {
     }
   }
 
+  /// Stubs url_launcher's method channel, recording every call. Returns the
+  /// list so a test can assert that a tap actually reached `launch` (the only
+  /// reliable way to verify a link's tap gesture fired, since the platform
+  /// interface isn't registered in widget tests).
+  List<MethodCall> stubUrlLauncher(WidgetTester tester) {
+    final calls = <MethodCall>[];
+    const channel = MethodChannel('plugins.flutter.io/url_launcher');
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+      call,
+    ) async {
+      calls.add(call);
+      return true;
+    });
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        null,
+      ),
+    );
+    return calls;
+  }
+
+  /// True if [calls] contains a url_launcher `launch` call for [url].
+  bool launched(List<MethodCall> calls, String url) =>
+      calls.any((c) => c.method == 'launch' && (c.arguments as Map)['url'] == url);
+
   testWidgets('UserBubble makes a bare URL a tappable span', (tester) async {
     await tester.pumpWidget(
       const MaterialApp(
@@ -326,6 +352,91 @@ void main() {
         ),
         findsWidgets,
       );
+    },
+  );
+
+  testWidgets(
+    'AgentMarkdown peels trailing punctuation / parens from bare URLs',
+    (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: AgentMarkdown(
+                'a https://example.com/x. b (https://example.com/y)',
+                selectable: false,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // The trailing '.' and the prose ')' stay as normal text — they are
+      // NOT part of the link target/label.
+      expect(find.text('https://example.com/x'), findsOneWidget);
+      expect(find.text('https://example.com/x.'), findsNothing);
+      expect(find.text('https://example.com/y'), findsOneWidget);
+      expect(find.text('https://example.com/y)'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'LinkifiedText URL tap fires even inside a SelectionArea',
+    (tester) async {
+      final calls = stubUrlLauncher(tester);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LinkifiedText(
+              'https://example.com/tap',
+              style: const TextStyle(),
+              linkStyle: const TextStyle(decoration: TextDecoration.underline),
+              selectable: true,
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      await tester.tap(
+        find.descendant(
+          of: find.byType(LinkifiedText),
+          matching: find.byType(RichText),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // The tap reached url_launcher — i.e. SelectionArea did not swallow the
+      // URL's TapGestureRecognizer.
+      expect(launched(calls, 'https://example.com/tap'), true);
+    },
+  );
+
+  testWidgets(
+    'AgentMarkdown bare-URL tap fires inside a SelectionArea (production config)',
+    (tester) async {
+      // AssistantBubble renders AgentMarkdown with selectable: true, so verify
+      // the autolinked URL is tappable in that real configuration.
+      final calls = stubUrlLauncher(tester);
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: AgentMarkdown(
+                'see https://example.com/now for details',
+                selectable: true,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      await tester.tap(find.text('https://example.com/now'));
+      await tester.pumpAndSettle();
+
+      expect(launched(calls, 'https://example.com/now'), true);
     },
   );
 }

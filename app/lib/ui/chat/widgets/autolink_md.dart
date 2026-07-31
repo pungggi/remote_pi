@@ -42,15 +42,9 @@ class AutoLinkMd extends InlineMd {
       ),
     );
 
-    if (trailing.isEmpty) return linkSpan;
-
-    // Re-parse the peeled tail so any inline Markdown there still renders.
-    final trailingSpans = MarkdownComponent.generate(
-      context,
-      trailing,
-      config,
-      false,
-    );
+    // Re-parse the peeled tail (empty when there was nothing to peel) so any
+    // inline Markdown there still renders; the URL itself is a tappable span.
+    final trailingSpans = MarkdownComponent.generate(context, trailing, config, false);
     return TextSpan(children: [linkSpan, ...trailingSpans]);
   }
 
