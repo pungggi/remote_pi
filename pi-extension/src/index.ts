@@ -161,6 +161,7 @@ import {
   cmdUninstall,
 } from "./commands/fleet.js";
 import { enrichToolArgs, stringifyContent, stringifyToolResult } from "./tools/format.js";
+import { startGitRefresh, stopGitRefresh } from "./git/refresh.js";
 // Preserve the public type export surface (these were `export type` in the monolith).
 export type { RemoteState, RelayConnectivity } from "./extension-state.js";
 
@@ -820,45 +821,6 @@ function _getSyncLimit(): number {
 // Backoffs in ms: 1s, 2s, 5s, 10s, 30s, then stays at 30s.
 const RECONNECT_BACKOFFS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
 
-// ── Plan/107b — room_meta.git refresh ────────────────────────────────────
-// The pi-extension owns the session cwd, so it computes `git status` and
-// pushes it as room_meta.git so EVERY subscribed app renders the Home-list
-// git line without a per-session request round-trip. NOT realtime: git is
-// re-run every GIT_REFRESH_MS and only re-broadcast when the snapshot
-// changes (JSON-equal). Seeded into the hello roomMeta (so room_announced
-// already carries it) + kept fresh by this interval across the relay session.
-const GIT_REFRESH_MS = 60_000; // 1 min — posh-git-style Home tile refresh
-
-async function _pushGitStatus(cwd: string): Promise<void> {
-  if (!ext.relay || !ext.myRoomId) return;
-  const status = await getGitStatus(cwd);
-  // Suppress no-op broadcasts (unchanged snapshot) to avoid relay churn.
-  if (JSON.stringify(ext.lastGitStatus) === JSON.stringify(status)) return;
-  ext.lastGitStatus = status;
-  if (ext.myRoomMeta) ext.myRoomMeta = { ...ext.myRoomMeta, git: status };
-  try {
-    ext.relay.sendControl({
-      type: "room_meta_update",
-      room_id: ext.myRoomId,
-      meta: { git: status },
-    });
-  } catch { /* relay tearing down — next interval retries */ }
-}
-
-function _startGitRefresh(): void {
-  _stopGitRefresh();
-  const cwd = ext.myRoomMeta?.cwd;
-  if (!cwd) return;
-  void _pushGitStatus(cwd); // seed immediately (broadcasts if changed since last session)
-  ext.gitRefreshTimer = setInterval(() => { void _pushGitStatus(cwd); }, GIT_REFRESH_MS);
-}
-
-function _stopGitRefresh(): void {
-  if (ext.gitRefreshTimer) {
-    clearInterval(ext.gitRefreshTimer);
-    ext.gitRefreshTimer = null;
-  }
-}
 // Every initial connect/reconnect candidate captures this generation. Stop,
 // relay-off, and an unexpected close invalidate older async continuations.
 // Root startup has pre-candidate awaits (cwd lock, wizard) that relay/mesh
@@ -1175,7 +1137,7 @@ function _onRelayClose(closedRelay: RelayClient): void {
   ext.relayLifecycleGeneration += 1;
   ext.stopAutoListener?.();
   ext.stopAutoListener = null;
-  _stopGitRefresh(); // Plan/107b — halt room_meta.git polling until reconnect
+  stopGitRefresh(); // Plan/107b — halt room_meta.git polling until reconnect
 
   // Detach every per-owner channel — relay is gone, none can route. The
   // auto-listener re-attaches owners after `_attemptReconnect` succeeds
@@ -1280,7 +1242,7 @@ async function _attemptReconnect(
 
   relay.on("close", () => _onRelayClose(relay));
   ext.stopAutoListener = _installAutoListener(relay);
-  _startGitRefresh(); // Plan/107b — resume room_meta.git polling
+  startGitRefresh(); // Plan/107b — resume room_meta.git polling
 
   // Plan/25 Wave B/C: relay is back; bring cross-PC routing back online.
   _attachBridgeIfReady();
@@ -2760,7 +2722,7 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   relay.on("close", () => _onRelayClose(relay));
 
   ext.stopAutoListener = _installAutoListener(relay);
-  _startGitRefresh(); // Plan/107b — begin room_meta.git polling
+  startGitRefresh(); // Plan/107b — begin room_meta.git polling
   _refreshFooter(ctx);
 
   // SelfRevoke is the Pi path's single initial topology producer. Its first
