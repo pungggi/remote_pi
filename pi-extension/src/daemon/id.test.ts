@@ -1,8 +1,22 @@
 import { describe, expect, test } from "vitest";
-import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { daemonIdForCwd } from "./id.js";
+
+// Windows needs Developer Mode (or admin) to create symlinks — probe once so
+// the realpath/symlink tests skip cleanly instead of EPERM-failing here.
+const canSymlink = (() => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-sym-"));
+  try {
+    symlinkSync(dir, join(dir, "link"));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+})();
 
 describe("daemonIdForCwd", () => {
   test("deterministic for the same cwd", () => {
@@ -22,7 +36,7 @@ describe("daemonIdForCwd", () => {
     expect(id).toMatch(/^[0-9a-f]{8}$/);
   });
 
-  test("realpath: symlinks collapse to the same id", () => {
+  test.skipIf(!canSymlink)("realpath: symlinks collapse to the same id", () => {
     const tmp = mkdtempSync(join(tmpdir(), "pi-daemonid-"));
     const real = join(tmp, "real");
     mkdirSync(real);
