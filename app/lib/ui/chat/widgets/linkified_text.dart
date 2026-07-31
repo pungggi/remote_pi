@@ -73,7 +73,9 @@ class _LinkifiedTextState extends State<LinkifiedText> {
     widget.text.splitMapJoin(
       urlRegExp,
       onMatch: (m) {
-        final url = m[0]!;
+        // Peel trailing prose punctuation so it isn't part of the link target
+        // (mirrors the Markdown autolinker via the shared peelUrl helper).
+        final (:url, :trailing) = peelUrl(m[0]!);
         final recognizer = TapGestureRecognizer()
           ..onTap = () {
             if (!mounted) return;
@@ -83,6 +85,9 @@ class _LinkifiedTextState extends State<LinkifiedText> {
         spans.add(
           TextSpan(text: url, style: widget.linkStyle, recognizer: recognizer),
         );
+        if (trailing.isNotEmpty) {
+          spans.add(TextSpan(text: trailing, style: widget.style));
+        }
         return '';
       },
       onNonMatch: (nonMatch) {

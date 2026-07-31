@@ -439,4 +439,57 @@ void main() {
       expect(launched(calls, 'https://example.com/now'), true);
     },
   );
+
+  testWidgets(
+    'UserBubble peels trailing punctuation from a bare URL',
+    (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: UserBubble(
+                UserMsg(id: 'u1', text: 'check https://example.com.'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final rich = tester.widget<RichText>(
+        find.descendant(
+          of: find.byType(LinkifiedText),
+          matching: find.byType(RichText),
+        ),
+      );
+      final linkTexts =
+          spansWithRecognizer(rich.text).map((s) => s.toPlainText()).toList();
+      // The link target is the bare URL …
+      expect(linkTexts, contains('https://example.com'));
+      expect(linkTexts, isNot(contains('https://example.com.')));
+      // … and the peeled '.' is still rendered as normal text.
+      expect(rich.text.toPlainText(), 'check https://example.com.');
+    },
+  );
+
+  testWidgets(
+    'AgentMarkdown keeps a URL whole when a stray ")" is mid-URL',
+    (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: AgentMarkdown('see https://x.com/)path', selectable: false),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // The trailing 'h' is NOT a ')', so nothing is peeled — the URL is kept
+      // intact rather than wrongly truncated to 'https://x.com/)pat'.
+      expect(find.text('https://x.com/)path'), findsOneWidget);
+      expect(find.text('https://x.com/)pat'), findsNothing);
+    },
+  );
 }

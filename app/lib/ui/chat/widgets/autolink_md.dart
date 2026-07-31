@@ -20,10 +20,8 @@ class AutoLinkMd extends InlineMd {
     // The combined regex hands us the full greedy URL run. Peel trailing prose
     // punctuation (and an unmatched ')') so it stays as normal text instead of
     // becoming part of the link target — e.g. "see https://x.com." or
-    // "(https://x.com)".
-    final urlEnd = _urlEnd(text);
-    final url = text.substring(0, urlEnd);
-    final trailing = text.substring(urlEnd);
+    // "(https://x.com)". Shared with the plain-text linkifier.
+    final (:url, :trailing) = peelUrl(text);
 
     final theme = GptMarkdownTheme.of(context);
     final base = config.style ?? const TextStyle();
@@ -46,27 +44,5 @@ class AutoLinkMd extends InlineMd {
     // inline Markdown there still renders; the URL itself is a tappable span.
     final trailingSpans = MarkdownComponent.generate(context, trailing, config, false);
     return TextSpan(children: [linkSpan, ...trailingSpans]);
-  }
-
-  /// Index in [token] just past the real URL, before trailing punctuation.
-  static int _urlEnd(String token) {
-    var end = token.length;
-    const trailingPunct = '.,;:!?';
-    while (end > 0 && trailingPunct.contains(token[end - 1])) {
-      end--;
-    }
-    // Drop a trailing ')' when the parens in the remainder are unbalanced —
-    // e.g. prose "(see https://x.com)" where the ')' isn't part of the URL.
-    var depth = 0;
-    for (var i = 0; i < end; i++) {
-      final c = token[i];
-      if (c == '(') {
-        depth++;
-      } else if (c == ')') {
-        depth--;
-      }
-    }
-    if (depth < 0) end--;
-    return end;
   }
 }
