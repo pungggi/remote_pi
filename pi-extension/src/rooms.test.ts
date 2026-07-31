@@ -1,22 +1,9 @@
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { roomIdForCwd, roomIdFor } from "./rooms.js";
-
-// Windows needs Developer Mode (or admin) to create symlinks — probe once so
-// the realpath/symlink tests skip cleanly instead of EPERM-failing here.
-const canSymlink = (() => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-sym-"));
-  try {
-    symlinkSync(dir, join(dir, "link"));
-    return true;
-  } catch {
-    return false;
-  } finally {
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
-  }
-})();
+import { canSymlink } from "./test-helpers.js";
 import { defaultAgentName } from "./session/local_config.js";
 
 describe("roomIdForCwd", () => {
