@@ -26,6 +26,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { RelayClient } from "./transport/relay_client.js";
+import type { PlainPeerChannel } from "./transport/peer_channel.js";
 import type { MeshNode } from "./session/mesh_node.js";
 import type { SelfRevoke } from "./mesh/self_revoke.js";
 import type { MeshTopologySnapshot } from "./mesh/siblings.js";
@@ -92,6 +93,7 @@ export interface ExtensionState {
   lastRelayStatus: RelayConnectivity | null;
   relayUrl: string | null;
   peerShort: string;                 // shortid of the most recently attached peer (UX hint)
+  activePeers: Map<string, PlainPeerChannel>;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   reconnectAttempt: number;
   relayLifecycleGeneration: number;
@@ -172,6 +174,7 @@ export const ext: ExtensionState = {
   lastRelayStatus: null,
   relayUrl: null,
   peerShort: "",
+  activePeers: new Map<string, PlainPeerChannel>(),
   reconnectTimer: null,
   reconnectAttempt: 0,
   relayLifecycleGeneration: 0,
@@ -249,6 +252,7 @@ export function resetExtensionState(): void {
     lastRelayStatus: null,
     relayUrl: null,
     peerShort: "",
+    activePeers: new Map<string, PlainPeerChannel>(),
     reconnectTimer: null,
     reconnectAttempt: 0,
     relayLifecycleGeneration: 0,

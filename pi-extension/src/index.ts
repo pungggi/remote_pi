@@ -172,8 +172,8 @@ export type { RemoteState, RelayConnectivity } from "./extension-state.js";
 // what unblocked the app from sending application messages.
 //
 // Now: `idle` → `started`. The `paired` state is a derived metric
-// (`_activePeers.size > 0`) — N owners can be connected at once, each with
-// its own `PlainPeerChannel` in `_activePeers`. Plan/24 W2D ("multi-channel
+// (`ext.activePeers.size > 0`) — N owners can be connected at once, each with
+// its own `PlainPeerChannel` in `ext.activePeers`. Plan/24 W2D ("multi-channel
 // broadcast"): pairing a second device no longer disconnects the first, and
 // every connected owner receives the same agent stream in parallel.
 
@@ -202,10 +202,9 @@ export const CTRL_PREFIX = "\x00remote-pi-ctrl:";
  *   - Adding/removing entries is exclusively in `_attachPeerChannel` and
  *     `_detachPeerChannel` (or `_goIdle` for the bulk teardown). Don't mutate
  *     directly elsewhere — those helpers keep the footer/log/state in sync.
- *   - `paired` UX state is `_activePeers.size > 0`. The footer and the
+ *   - `paired` UX state is `ext.activePeers.size > 0`. The footer and the
  *     `/remote-pi status` output both derive from this.
  */
-const _activePeers = new Map<string, PlainPeerChannel>();
 
 
 // Plan/114 — hard cap on a raw image file the agent may push to the user via
@@ -847,22 +846,22 @@ export function _hasPendingReconnect(): boolean {
  * Public state-snapshot helper. Returns the derived UX state, not the raw
  * `ext.state` enum: the W2D refactor collapsed the internal machine to
  * `idle | started` and made `paired` a derived metric
- * (`_activePeers.size > 0`). Tests and the footer keep the three-state
+ * (`ext.activePeers.size > 0`). Tests and the footer keep the three-state
  * mental model via this getter.
  */
 export function _getState(): "idle" | "started" | "paired" {
   if (ext.state === "idle") return "idle";
-  return _activePeers.size > 0 ? "paired" : "started";
+  return ext.activePeers.size > 0 ? "paired" : "started";
 }
 
 /** Test-only: number of owners currently attached via PlainPeerChannel. */
 export function _getActivePeerCountForTest(): number {
-  return _activePeers.size;
+  return ext.activePeers.size;
 }
 
 /** Test-only: true if a specific peer (base64 std) has an attached channel. */
 export function _hasActivePeerForTest(appPeerIdStd: string): boolean {
-  return _activePeers.has(appPeerIdStd);
+  return ext.activePeers.has(appPeerIdStd);
 }
 
 
@@ -880,36 +879,36 @@ export function _hasActivePeerForTest(appPeerIdStd: string): boolean {
  * use this — they go to the sender channel directly.
  */
 function _broadcastToActive(msg: ServerMessage): void {
-  for (const ch of _activePeers.values()) {
+  for (const ch of ext.activePeers.values()) {
     try { ch.send(msg); } catch { /* best-effort per channel */ }
   }
 }
 
 /** Returns true when at least one owner is attached. Derived `paired` UX. */
 function _anyPeerActive(): boolean {
-  return _activePeers.size > 0;
+  return ext.activePeers.size > 0;
 }
 
 /**
- * Adds an owner's channel to `_activePeers`. Also updates the UX hint
+ * Adds an owner's channel to `ext.activePeers`. Also updates the UX hint
  * `ext.peerShort` (last-attached shortid) so the footer + status can pick
  * a representative device when only one is connected.
  */
 function _attachPeerChannel(appPeerId: string, channel: PlainPeerChannel): void {
-  _activePeers.set(appPeerId, channel);
+  ext.activePeers.set(appPeerId, channel);
   ext.peerShort = appPeerId.slice(0, 8);
 }
 
 /** Detaches a single owner's channel + removes it from the map. Used by
  *  `_onPeerDisconnect`, `_cmdRevoke`, and the SelfRevoke callback. */
 function _detachPeerChannel(appPeerId: string): void {
-  const ch = _activePeers.get(appPeerId);
+  const ch = ext.activePeers.get(appPeerId);
   if (!ch) return;
   try { ch.detach(); } catch { /* best-effort */ }
-  _activePeers.delete(appPeerId);
+  ext.activePeers.delete(appPeerId);
   if (ext.peerShort === appPeerId.slice(0, 8)) {
     // Pick a different remaining peer for the UX hint, or clear when none.
-    const next = _activePeers.keys().next().value;
+    const next = ext.activePeers.keys().next().value;
     ext.peerShort = next ? next.slice(0, 8) : "";
   }
 }
@@ -1026,7 +1025,7 @@ function _reportRevocationByFingerprint(canonicalOwnerPubkey: string): void {
 }
 
 function _revokeActiveOwnerRuntime(canonicalOwnerPubkey: string): void {
-  if (!_activePeers.has(canonicalOwnerPubkey)) return;
+  if (!ext.activePeers.has(canonicalOwnerPubkey)) return;
   _refreshPairingsCache();
   _detachPeerChannel(canonicalOwnerPubkey);
   _refreshFooter();
@@ -1082,10 +1081,10 @@ function _goIdle(byeReason?: import("./protocol/types.js").ByeReason): void {
   if (ext.queuedItems.length > 0) _resetQueuedItems({ broadcast: true });
 
   // Tear down every per-owner channel and clear the map.
-  for (const ch of _activePeers.values()) {
+  for (const ch of ext.activePeers.values()) {
     try { ch.detach(); } catch { /* best-effort */ }
   }
-  _activePeers.clear();
+  ext.activePeers.clear();
   ext.peerShort = "";
   ext.currentTurnId = null;
   ext.pendingReceivedImagePreviews.length = 0;
@@ -1142,11 +1141,11 @@ function _onRelayClose(closedRelay: RelayClient): void {
   // Detach every per-owner channel — relay is gone, none can route. The
   // auto-listener re-attaches owners after `_attemptReconnect` succeeds
   // (via the same known-peer + pair_request paths used on first connect).
-  for (const ch of _activePeers.values()) {
+  for (const ch of ext.activePeers.values()) {
     try { ch.detach(); } catch { /* best-effort */ }
   }
   if (ext.queuedItems.length > 0) _resetQueuedItems({ broadcast: true });
-  _activePeers.clear();
+  ext.activePeers.clear();
   ext.peerShort = "";
   ext.currentTurnId = null;
   ext.pendingSteers = [];
@@ -1422,9 +1421,9 @@ async function _renameAgent(newName: string): Promise<void> {
  */
 export function _onPeerDisconnect(appPeerId?: string): void {
   if (ext.state === "idle") return;
-  const target = appPeerId ?? [..._activePeers.keys()].pop();
+  const target = appPeerId ?? [...ext.activePeers.keys()].pop();
   if (!target) return;
-  if (!_activePeers.has(target)) return;
+  if (!ext.activePeers.has(target)) return;
 
   _detachPeerChannel(target);
   if (_anyPeerActive()) {
@@ -1446,7 +1445,7 @@ export function _onPeerDisconnect(appPeerId?: string): void {
  * Attaches a new owner channel to the multi-owner set. Replaces the
  * pre-W2D singleton `_promoteToPaired` which set `ext.state = "paired"` and
  * a single `_peerChannel`. The relay state remains `started`; pairing
- * status is derived from `_activePeers.size`.
+ * status is derived from `ext.activePeers.size`.
  *
  * Idempotent for the same `appPeerId` (re-attaching tears down the prior
  * channel and installs a fresh one — covers reconnect from the same
@@ -1461,7 +1460,7 @@ function _attachOwner(
   const peerShort = appPeerId.slice(0, 8);
 
   // Drop any stale channel for this owner before re-attaching.
-  if (_activePeers.has(appPeerId)) _detachPeerChannel(appPeerId);
+  if (ext.activePeers.has(appPeerId)) _detachPeerChannel(appPeerId);
 
   // Prefer always-fresh session_start ctx for async relay routing — `ext.lastCtx`
   // is a captured command ctx that goes stale after session replacement (#55).
@@ -1478,7 +1477,7 @@ function _attachOwner(
 
   _safeNotify(
     `[remote-pi] Owner attached: peer=${peerShort}, name=${peerName} ` +
-    `(${_activePeers.size} active)`,
+    `(${ext.activePeers.size} active)`,
     "info",
   );
 
@@ -1495,7 +1494,7 @@ function _attachOwner(
 //
 // Installed while in 'started' state. Decodes the outer envelope as
 // base64(JSON) and dispatches per sender peer_id:
-//   • Sender already in `_activePeers` → ignored here (the per-owner
+//   • Sender already in `ext.activePeers` → ignored here (the per-owner
 //     PlainPeerChannel listens on the same relay event and handles its own
 //     traffic via its `remotePeerId` filter)
 //   • `pair_request` from a new peer → validate token, persist peer, send
@@ -1520,7 +1519,7 @@ function _installAutoListener(relay: RelayClient): () => void {
 
     if (!hasListenerAuthority()) return;
     // Already-attached owners: their PlainPeerChannel handles routing.
-    if (_activePeers.has(outer.peer)) return;
+    if (ext.activePeers.has(outer.peer)) return;
 
     // Decode inner envelope (base64 JSON)
     let inner: ClientMessage;
@@ -2312,13 +2311,13 @@ function _cmdStatus(ctx: Pick<ExtensionContext, "ui">): void {
     meshLine = "⚪ Local mesh: not connected";
   }
 
-  // Relay line — paired state is derived from _activePeers.size now.
+  // Relay line — paired state is derived from ext.activePeers.size now.
   let relayLine: string;
   if (ext.state === "idle") {
     relayLine = `⚪ Relay: off (${relayUrl}) — run /remote-pi to start`;
-  } else if (_activePeers.size > 0) {
-    const count = _activePeers.size;
-    const shortids = [..._activePeers.keys()].map((peerId) => peerId.slice(0, 8)).join(", ");
+  } else if (ext.activePeers.size > 0) {
+    const count = ext.activePeers.size;
+    const shortids = [...ext.activePeers.keys()].map((peerId) => peerId.slice(0, 8)).join(", ");
     relayLine = `🟢 Relay: ${count} owner${count === 1 ? "" : "s"} online (${shortids}) (${relayUrl})`;
   } else {
     relayLine = ext.hasGlobalPairings
@@ -2758,7 +2757,7 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
         }
         const presentOwners = new Set(canonicalOwnerPubkeys);
         let effectFailed = false;
-        for (const canonicalOwnerPubkey of [..._activePeers.keys()]) {
+        for (const canonicalOwnerPubkey of [...ext.activePeers.keys()]) {
           if (
             ext.selfRevoke !== producer ||
             producerEpoch !== ext.selfRevokeEpoch
@@ -2815,7 +2814,7 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
  * Pre-W2D this rejected with "Already paired with X" once one owner was
  * connected, forcing /remote-pi stop to pair a second device — the
  * catch-22 the multi-channel refactor was designed to break. Now the new
- * device is **added** to `_activePeers` after scanning, while existing
+ * device is **added** to `ext.activePeers` after scanning, while existing
  * owners keep their session.
  */
 async function _cmdPair(ctx: Pick<ExtensionContext, "ui" | "cwd">, args = ""): Promise<void> {
@@ -2954,7 +2953,7 @@ async function _cmdList(ctx: Pick<ExtensionContext, "ui">): Promise<void> {
   const lines = peers.flatMap((record) => {
     const inspected = _inspectPeerRecord(record);
     if (!inspected) return [];
-    const tag = inspected.runtimeKey !== null && _activePeers.has(inspected.runtimeKey)
+    const tag = inspected.runtimeKey !== null && ext.activePeers.has(inspected.runtimeKey)
       ? " 🟢 online"
       : " ⚪ offline";
     return `• ${inspected.rawHandle.slice(0, 8)} — ${inspected.record.name}${tag}`;
@@ -3025,8 +3024,8 @@ async function _cmdRevoke(arg: string, ctx: Pick<ExtensionContext, "ui" | "cwd">
 
   // Storage removal uses the exact saved representation; the active channel
   // is indexed by its canonical identity.
-  if (peer.runtimeKey !== null && _activePeers.has(peer.runtimeKey)) {
-    const channel = _activePeers.get(peer.runtimeKey);
+  if (peer.runtimeKey !== null && ext.activePeers.has(peer.runtimeKey)) {
+    const channel = ext.activePeers.get(peer.runtimeKey);
     try { channel?.send({ type: "bye", reason: "session_replaced" }); } catch { /* best-effort */ }
     _detachPeerChannel(peer.runtimeKey);
     _refreshFooter();
@@ -3945,7 +3944,7 @@ export function routeClientMessage(
   msg: ClientMessage,
   ctx: Pick<ExtensionContext, "abort">,
 ): void {
-  const fallback = [..._activePeers.values()].pop();
+  const fallback = [...ext.activePeers.values()].pop();
   if (!fallback) return;
   _routeClientMessageFrom(fallback, msg, ctx);
 }
