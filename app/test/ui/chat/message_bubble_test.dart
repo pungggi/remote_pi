@@ -4,7 +4,9 @@
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/agent_markdown.dart';
 import 'package:app/ui/chat/widgets/copy_button.dart';
+import 'package:app/ui/chat/widgets/linkified_text.dart';
 import 'package:app/ui/chat/widgets/message_bubble.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -157,7 +159,8 @@ void main() {
       ),
     );
     await tester.pump();
-    expect(find.byType(SelectableText), findsOneWidget);
+    expect(find.byType(LinkifiedText), findsOneWidget);
+    expect(find.byType(SelectionArea), findsOneWidget);
     expect(find.text('my message'), findsOneWidget);
   });
 
@@ -212,4 +215,117 @@ void main() {
     await tester.pump();
     expect(find.text('sending…'), findsOneWidget);
   });
+
+  // --- Bare HTTP(S) links are tappable anywhere in the chat ---------------
+
+  /// Walks an [InlineSpan] tree and yields every [TextSpan] that carries a
+  /// gesture recognizer (i.e. a tappable link span).
+  Iterable<TextSpan> spansWithRecognizer(InlineSpan span) sync* {
+    if (span is TextSpan) {
+      if (span.recognizer != null) yield span;
+      for (final child in span.children ?? const <InlineSpan>[]) {
+        yield* spansWithRecognizer(child);
+      }
+    }
+  }
+
+  testWidgets('UserBubble makes a bare URL a tappable span', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: UserBubble(
+              UserMsg(id: 'u1', text: 'check https://example.com/a/b out'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    // The user text is rendered by the link-aware widget.
+    expect(find.byType(LinkifiedText), findsOneWidget);
+
+    // The URL run is its own TextSpan carrying a tap recognizer + link style.
+    final rich = tester.widget<RichText>(
+      find.descendant(
+        of: find.byType(LinkifiedText),
+        matching: find.byType(RichText),
+      ),
+    );
+    final urlSpans =
+        spansWithRecognizer(rich.text)
+            .where((s) => s.toPlainText() == 'https://example.com/a/b')
+            .toList();
+    expect(urlSpans, hasLength(1));
+    expect(urlSpans.first.recognizer, isA<TapGestureRecognizer>());
+    expect(
+      urlSpans.first.style?.decoration?.contains(TextDecoration.underline),
+      true,
+    );
+  });
+
+  testWidgets(
+    'AgentMarkdown autolinks a bare URL (tappable + underlined)',
+    (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: Center(
+              // selectable=false → no SelectionArea, isolating the link widget.
+              child: AgentMarkdown(
+                'see https://example.com/now for details',
+                selectable: false,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // The bare URL is rendered as its own tappable text widget.
+      expect(find.text('https://example.com/now'), findsOneWidget);
+      expect(
+        find.ancestor(
+          of: find.text('https://example.com/now'),
+          matching: find.byType(GestureDetector),
+        ),
+        findsWidgets,
+        reason: 'the autolinked URL is wrapped in a tappable GestureDetector',
+      );
+      final style = tester.widget<Text>(
+        find.text('https://example.com/now'),
+      ).style;
+      expect(style?.decoration?.contains(TextDecoration.underline), true);
+    },
+  );
+
+  testWidgets(
+    'AgentMarkdown keeps an explicit [text](url) link working',
+    (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: AgentMarkdown(
+                '[docs](https://example.com/docs)',
+                selectable: false,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // The AutoLink component must not break explicit Markdown links.
+      expect(find.text('docs'), findsOneWidget);
+      expect(
+        find.ancestor(
+          of: find.text('docs'),
+          matching: find.byType(GestureDetector),
+        ),
+        findsWidgets,
+      );
+    },
+  );
 }
