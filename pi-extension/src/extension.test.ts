@@ -5,6 +5,7 @@
  * over an opaque outer envelope whose `ct` is base64(JSON.stringify(inner)).
  */
 import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
+import { resetExtensionState } from "./extension-state.js";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -317,6 +318,10 @@ const OWNER_URL_SAFE_FIXTURE = OWNER_PUBLIC_FIXTURE.toString("base64url");
 const OTHER_OWNER_STANDARD_FIXTURE = OTHER_OWNER_PUBLIC_FIXTURE.toString("base64");
 
 // ── Registration tests ────────────────────────────────────────────────────────
+
+// Clean ext slate before every test so state can't leak across tests. Runs
+// before each describe's own beforeEach, which re-establishes what it needs.
+beforeEach(() => resetExtensionState());
 
 describe("extension default export", () => {
   test("is an ExtensionFactory function", () => {
