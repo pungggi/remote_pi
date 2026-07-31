@@ -1,8 +1,9 @@
+import 'package:app/ui/chat/widgets/autolink_md.dart';
 import 'package:app/ui/chat/widgets/copy_button.dart';
+import 'package:app/ui/chat/widgets/linkify.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 /// Plan/32b — renders the agent's Markdown reply (GFM + code) themed to the
 /// app's dark/mono look. Links open in the system browser (url_launcher);
@@ -24,7 +25,14 @@ class AgentMarkdown extends StatelessWidget {
     final markdown = GptMarkdown(
       data,
       style: typo.mono,
-      onLinkTap: (url, _) => _openLink(context, url),
+      onLinkTap: (url, _) => openUrl(context, url),
+      // Bare `http(s)://` URLs become tappable links too (not just explicit
+      // `[text](url)` Markdown). Appended last so all other inline syntax —
+      // links, code spans, emphasis — keeps precedence.
+      inlineComponents: [
+        ...MarkdownComponent.inlineComponents,
+        AutoLinkMd(),
+      ],
       // Inline `code` — subtle highlight, keeps the baseline.
       highlightBuilder: (context, text, style) => Text(
         text,
@@ -38,20 +46,6 @@ class AgentMarkdown extends StatelessWidget {
           _CodeBlock(language: name, code: code),
     );
     return selectable ? SelectionArea(child: markdown) : markdown;
-  }
-
-  static Future<void> _openLink(BuildContext context, String url) async {
-    final messenger = ScaffoldMessenger.maybeOf(context);
-    final uri = Uri.tryParse(url);
-    if (uri == null) return;
-    try {
-      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (!ok) {
-        messenger?.showSnackBar(SnackBar(content: Text("Couldn't open $url")));
-      }
-    } catch (_) {
-      messenger?.showSnackBar(SnackBar(content: Text("Couldn't open $url")));
-    }
   }
 }
 

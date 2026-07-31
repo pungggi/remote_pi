@@ -2,6 +2,7 @@ import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/agent_markdown.dart';
 import 'package:app/ui/chat/widgets/copy_button.dart';
 import 'package:app/ui/chat/widgets/image_bubble.dart';
+import 'package:app/ui/chat/widgets/linkified_text.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -55,11 +56,17 @@ class UserBubble extends StatelessWidget {
                         horizontal: 13,
                         vertical: 10,
                       ),
-                      // Selectable so the user can copy their own message (the
-                      // agent reply is already selectable via AgentMarkdown).
-                      child: SelectableText(
+                      // Selectable (so the user can copy their own
+                      // message) AND link-aware — bare HTTP(S) URLs become
+                      // tappable. The agent reply is handled by AgentMarkdown.
+                      child: LinkifiedText(
                         message.text,
                         style: typo.sansBody.copyWith(color: colors.text),
+                        linkStyle: typo.sansBody.copyWith(
+                          color: colors.accent,
+                          decoration: TextDecoration.underline,
+                          decorationColor: colors.accent,
+                        ),
                       ),
                     ),
             ),
