@@ -5902,7 +5902,10 @@ describe("model meta", () => {
     } finally {
       if (prevAgentDir === undefined) delete process.env["PI_CODING_AGENT_DIR"];
       else process.env["PI_CODING_AGENT_DIR"] = prevAgentDir;
-      rmSync(cwd, { recursive: true, force: true });
+      // Best-effort: on Windows a transient handle (AV scan, watcher) can briefly
+      // hold the temp dir → EPERM. The assertion already passed; don't fail the
+      // test on teardown of a scratch dir under the system temp.
+      try { rmSync(cwd, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
   });
 
