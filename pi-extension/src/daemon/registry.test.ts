@@ -14,6 +14,7 @@ import {
 } from "./registry.js";
 import { daemonIdForCwd } from "./id.js";
 import { defaultAgentName } from "../session/local_config.js";
+import { canSymlink } from "../test-helpers.js";
 
 /** Each test runs against an isolated $HOME-like directory so the registry
  *  writes never touch the developer's real `~/.pi/piper/daemons.json`. */
@@ -61,7 +62,7 @@ describe("normalizeCwd", () => {
     expect(() => normalizeCwd("/no/such/path/anywhere/xyz-pi-test")).toThrow();
   });
 
-  test("symlinks resolve to canonical realpath", () => {
+  test.skipIf(!canSymlink)("symlinks resolve to canonical realpath", () => {
     const tmp = mkdtempSync(join(tmpdir(), "pi-symlink-"));
     const real = join(tmp, "real");
     mkdirSync(real);
@@ -117,7 +118,7 @@ describe("addDaemon", () => {
     expect(() => addDaemon(tmp)).toThrow(/already registered/i);
   });
 
-  test("relative path canonicalizes to same entry as absolute", () => {
+  test.skipIf(!canSymlink)("relative path canonicalizes to same entry as absolute", () => {
     const tmp = mkdtempSync(join(tmpdir(), "pi-relabs-"));
     addDaemon(tmp);
     // Trying to add via a symlink → same normalized path → duplicate.

@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createConnection } from "node:net";
 import { join } from "node:path";
-import { Supervisor, decideFireAction, getSupervisorSockPath } from "./supervisor.js";
+import { randomUUID } from "node:crypto";
+import { Supervisor, decideFireAction } from "./supervisor.js";
+import { ipcAddress, usesNamedPipe } from "../session/ipc.js";
 import { addDaemon } from "./registry.js";
 import { readCronLog } from "./cron_log.js";
 import {
@@ -27,11 +29,12 @@ import { roomIdForCwd } from "../rooms.js";
  */
 
 let testHome: string;
+let testSock: string;
 let supervisor: Supervisor | null = null;
 
 async function ask<R = ControlReply<unknown>>(req: ControlRequest): Promise<R> {
   return new Promise((resolve, reject) => {
-    const sock = createConnection({ path: getSupervisorSockPath() });
+    const sock = createConnection({ path: testSock });
     let buf = "";
     sock.setEncoding("utf8");
     sock.on("data", (chunk: string) => {
@@ -48,10 +51,27 @@ async function ask<R = ControlReply<unknown>>(req: ControlRequest): Promise<R> {
   });
 }
 
+/** Per-test isolated supervisor socket. On win32 a unique named pipe (the
+ *  real daemon's per-user pipe would otherwise collide — see supervisor.ts);
+ *  on POSIX a socket file under the temp home. */
+function isolatedSupervisorSock(): string {
+  // Unique address per test. On win32 a named pipe (reuse ipcAddress escaping;
+  //  the real daemon's per-user pipe would otherwise collide — see supervisor.ts);
+  //  on POSIX a socket file under the temp home.
+  const id = randomUUID().slice(0, 8);
+  return usesNamedPipe()
+    ? ipcAddress(`supervisor-test-${id}`, "(pipe)")
+    : join(testHome, "supervisor.sock");
+}
+
 beforeEach(async () => {
   testHome = mkdtempSync(join(tmpdir(), "pi-sv-"));
   process.env["REMOTE_PI_HOME"] = testHome;
+  // Inject a unique supervisor socket so tests never collide with a live
+  // production daemon (win32 named pipes are per-user — see supervisor.ts).
+  testSock = isolatedSupervisorSock();
   supervisor = new Supervisor({
+    sockPath: testSock,
     // Point at a non-existent extension. The supervisor will try to
     // spawn `<piBin> --mode rpc -e <path>` and the child exits immediately —
     // fine for testing the control surface (we assert on op replies, not on
@@ -178,7 +198,7 @@ describe("Supervisor — control UDS surface", () => {
 
   test("malformed request returns ok:false with parser error", async () => {
     const reply = await new Promise<ControlReply<unknown>>((resolve, reject) => {
-      const sock = createConnection({ path: getSupervisorSockPath() });
+      const sock = createConnection({ path: testSock });
       let buf = "";
       sock.setEncoding("utf8");
       sock.on("data", (c: string) => {
@@ -197,7 +217,7 @@ describe("Supervisor — control UDS surface", () => {
     // Bypass the typed encoder so we can send an op the type system
     // doesn't know about.
     const reply = await new Promise<ControlReply<unknown>>((resolve, reject) => {
-      const sock = createConnection({ path: getSupervisorSockPath() });
+      const sock = createConnection({ path: testSock });
       let buf = "";
       sock.setEncoding("utf8");
       sock.on("data", (c: string) => {

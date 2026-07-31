@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { roomIdForCwd, roomIdFor } from "./rooms.js";
+import { canSymlink } from "./test-helpers.js";
 import { defaultAgentName } from "./session/local_config.js";
 
 describe("roomIdForCwd", () => {
@@ -23,7 +24,7 @@ describe("roomIdForCwd", () => {
     expect(id).toMatch(/^[A-Za-z0-9_-]{12}$/);
   });
 
-  test("realpath: symlinks resolve to the same id", () => {
+  test.skipIf(!canSymlink)("realpath: symlinks resolve to the same id", () => {
     // Real fs setup: dir + symlink → dir. Both must produce identical ids.
     const tmp = mkdtempSync(join(tmpdir(), "remote-pi-rooms-"));
     const real = join(tmp, "real");
@@ -67,7 +68,7 @@ describe("roomIdFor (plan/41 — App↔Pi room per (cwd, name))", () => {
     expect(roomIdFor(cwd, dflt)).not.toBe(roomIdFor(cwd, `${dflt}#2`));
   });
 
-  test("realpath: a symlinked cwd yields the SAME name-scoped id as the real dir", () => {
+  test.skipIf(!canSymlink)("realpath: a symlinked cwd yields the SAME name-scoped id as the real dir", () => {
     const tmp = mkdtempSync(join(tmpdir(), "remote-pi-rooms41-"));
     const real = join(tmp, "real");
     mkdirSync(real);
