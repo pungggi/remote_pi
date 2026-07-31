@@ -67,13 +67,6 @@ const SUPERVISOR_SOCK_NAME = "supervisor.sock";
 const RESTART_BACKOFFS_MS = [1_000, 5_000, 30_000, 5 * 60_000];
 
 function supervisorSockPath(): string {
-  // Test isolation: tests pin a unique address here so they never collide with
-  // a live production supervisor. Needed on win32, where named pipes are
-  // per-user and `ipcAddress` ignores REMOTE_PI_HOME — a temp home is NOT
-  // enough to isolate the test socket from the real daemon's pipe. Production
-  // never sets this env var.
-  const testOverride = process.env["REMOTE_PI_TEST_SUPERVISOR_SOCK"];
-  if (testOverride) return testOverride;
   const root = process.env["REMOTE_PI_HOME"] || homedir();
   // POSIX → ~/.pi/piper/supervisor.sock; Windows → per-user named pipe (plan/40).
   return ipcAddress("supervisor", join(root, ".pi", "piper", SUPERVISOR_SOCK_NAME));
@@ -116,6 +109,9 @@ export interface SupervisorOptions {
   extensionPath: string;
   /** Override the `pi` binary path. Defaults to "pi" on PATH. */
   piBin?: string;
+  /** Override the control-socket address (tests inject a unique path/pipe to
+   *  isolate from any live production supervisor; production leaves unset). */
+  sockPath?: string;
 }
 
 /** Pure decision for `fireJob` (plan/39) — picks the action from the daemon's
@@ -152,6 +148,12 @@ export class Supervisor {
   private shuttingDown = false;
 
   constructor(private readonly opts: SupervisorOptions) {}
+
+  /** Effective control-socket address. Injected by tests for isolation;
+   *  otherwise derived per-user/per-home (plan/40). */
+  private get sockPath(): string {
+    return this.opts.sockPath ?? supervisorSockPath();
+  }
 
   /** Bind the control UDS + spawn all registered daemons. */
   async start(): Promise<void> {
@@ -191,7 +193,7 @@ export class Supervisor {
     // Best-effort: clear the socket file so a next supervisor bind succeeds.
     // Windows named pipes have no file (auto-removed on exit) → nothing to do.
     if (!usesNamedPipe()) {
-      try { unlinkSync(supervisorSockPath()); } catch { /* ignored */ }
+      try { unlinkSync(this.sockPath); } catch { /* ignored */ }
     }
   }
 
@@ -200,11 +202,11 @@ export class Supervisor {
   private _mkdirParent(): void {
     // A named pipe has no parent directory to create (the addr is `\\.\pipe\…`).
     if (usesNamedPipe()) return;
-    mkdirSync(dirname(supervisorSockPath()), { recursive: true });
+    mkdirSync(dirname(this.sockPath), { recursive: true });
   }
 
   private async _bindUds(): Promise<void> {
-    const path = supervisorSockPath();
+    const path = this.sockPath;
     const pipe = usesNamedPipe();
     // Single-instance guard. PROBE first: a live supervisor answering the
     // connect means we must NOT start a second one. Stealing the socket

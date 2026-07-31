@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { Supervisor, decideFireAction, getSupervisorSockPath } from "./supervisor.js";
+import { Supervisor, decideFireAction } from "./supervisor.js";
 import { ipcAddress, usesNamedPipe } from "../session/ipc.js";
 import { addDaemon } from "./registry.js";
 import { readCronLog } from "./cron_log.js";
@@ -29,11 +29,12 @@ import { roomIdForCwd } from "../rooms.js";
  */
 
 let testHome: string;
+let testSock: string;
 let supervisor: Supervisor | null = null;
 
 async function ask<R = ControlReply<unknown>>(req: ControlRequest): Promise<R> {
   return new Promise((resolve, reject) => {
-    const sock = createConnection({ path: getSupervisorSockPath() });
+    const sock = createConnection({ path: testSock });
     let buf = "";
     sock.setEncoding("utf8");
     sock.on("data", (chunk: string) => {
@@ -66,9 +67,11 @@ function isolatedSupervisorSock(): string {
 beforeEach(async () => {
   testHome = mkdtempSync(join(tmpdir(), "pi-sv-"));
   process.env["REMOTE_PI_HOME"] = testHome;
-  // Pin a unique supervisor socket so tests never collide with a live daemon.
-  process.env["REMOTE_PI_TEST_SUPERVISOR_SOCK"] = isolatedSupervisorSock();
+  // Inject a unique supervisor socket so tests never collide with a live
+  // production daemon (win32 named pipes are per-user — see supervisor.ts).
+  testSock = isolatedSupervisorSock();
   supervisor = new Supervisor({
+    sockPath: testSock,
     // Point at a non-existent extension. The supervisor will try to
     // spawn `<piBin> --mode rpc -e <path>` and the child exits immediately —
     // fine for testing the control surface (we assert on op replies, not on
@@ -90,7 +93,6 @@ afterEach(async () => {
     supervisor = null;
   }
   delete process.env["REMOTE_PI_HOME"];
-  delete process.env["REMOTE_PI_TEST_SUPERVISOR_SOCK"];
   try { rmSync(testHome, { recursive: true, force: true }); } catch { /* best-effort */ }
 });
 
@@ -196,7 +198,7 @@ describe("Supervisor — control UDS surface", () => {
 
   test("malformed request returns ok:false with parser error", async () => {
     const reply = await new Promise<ControlReply<unknown>>((resolve, reject) => {
-      const sock = createConnection({ path: getSupervisorSockPath() });
+      const sock = createConnection({ path: testSock });
       let buf = "";
       sock.setEncoding("utf8");
       sock.on("data", (c: string) => {
@@ -215,7 +217,7 @@ describe("Supervisor — control UDS surface", () => {
     // Bypass the typed encoder so we can send an op the type system
     // doesn't know about.
     const reply = await new Promise<ControlReply<unknown>>((resolve, reject) => {
-      const sock = createConnection({ path: getSupervisorSockPath() });
+      const sock = createConnection({ path: testSock });
       let buf = "";
       sock.setEncoding("utf8");
       sock.on("data", (c: string) => {
