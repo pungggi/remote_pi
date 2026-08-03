@@ -9,7 +9,7 @@ import 'package:flutter_modular/flutter_modular.dart';
 /// existem e como se conectam. Cada submódulo declara seu próprio `path` (ou a
 /// ausência dele, no caso do core), então aqui é só `module(...)`.
 ///
-/// `Future` porque o `cockpit` faz bootstrap async (abre as próprias Hive boxes).
+/// `Future` porque o `cockpit` faz bootstrap async (abre os próprios stores JSON).
 /// Os valores threadados são o [PiSpawnConfig] e o resolver de perfis de
 /// terminal: ambos moram no core (root-owned) e as features os resolvem
 /// **upward**; os demais async (boxes/versão/notifier) cada builder resolve
@@ -23,7 +23,10 @@ Future<Module> buildAppModule({required PiSpawnConfig config}) async {
   final terminalProfiles = TerminalProfileResolverImpl();
   await terminalProfiles.discover();
 
-  final core = buildCoreModule(config: config, terminalProfiles: terminalProfiles);
+  final core = buildCoreModule(
+    config: config,
+    terminalProfiles: terminalProfiles,
+  );
   final cockpit = await buildCockpitModule();
   final settings = buildSettingsModule();
   return createModule(

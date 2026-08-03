@@ -4,13 +4,15 @@
 # assinada. Espelha o build_hook.sh. Dois modos:
 #
 #   ./macos/build_cli.sh dev
-#     Compila para ~/.cockpit/bin/cockpit (para `flutter run` / testes E2E).
+#     Compila para ~/.cockpit/bin-debug/cockpit (para `flutter run` / testes
+#     E2E) — o diretório da CLI é namespaceado por flavor, como o status.sock,
+#     pra build de dev e instalada não sobrescreverem a CLI uma da outra.
 #
 #   (sem args / rodado pelo Xcode como Run Script phase)
 #     Compila e copia para
 #       ${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources/cockpit-cli
 #     e code-signa com ${EXPANDED_CODE_SIGN_IDENTITY} (a mesma da app). O app,
-#     no boot, materializa essa cópia como ~/.cockpit/bin/cockpit.
+#     no boot, materializa essa cópia como ~/.cockpit/bin[-debug]/cockpit.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"   # cockpit/
@@ -39,7 +41,7 @@ compile() {
 
 mode="${1:-bundle}"
 if [ "$mode" = "dev" ]; then
-  compile "$HOME/.cockpit/bin/cockpit"
+  compile "$HOME/.cockpit/bin-debug/cockpit"
   echo "[build_cli] dev OK"
   exit 0
 fi

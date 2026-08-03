@@ -6,6 +6,8 @@ import 'package:cockpit/app/cockpit/domain/entities/db_result.dart';
 import 'package:cockpit/app/cockpit/domain/services/db_query_service.dart';
 import 'package:cockpit/app/cockpit/domain/services/mongo_browse_service.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'fakes/mongo_database_store_fake.dart';
+import 'fakes/ssh_fakes.dart';
 
 /// Runner fake: grava os runCommand enviados e devolve replies roteirizados
 /// pela chave-comando (primeiro campo do documento: 'find', 'update'…).
@@ -18,6 +20,7 @@ class _FakeRunner implements NoSqlRunner {
     DbConnection conn,
     Map<String, dynamic> command, {
     String? password,
+    String? database,
   }) async {
     commands.add(command);
     return replies[command.keys.first] ?? {'ok': 1};
@@ -79,6 +82,9 @@ void main() {
       _NoSecrets(),
       _NoRegistry(),
       runner,
+      FakeSshTunnel(),
+      FakeSshKeyInspector(),
+      FakeMongoDatabaseStore(),
     );
     service = MongoBrowseService(db)
       ..target(workspaceRoot: '/ws', workspaceId: 'ws1', connName: 'app');

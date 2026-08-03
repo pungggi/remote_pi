@@ -5,14 +5,63 @@ As versões seguem o `version:` do `pubspec.yaml` (SSOT). O campo `notes` do
 `latest.json` (VPS) deriva deste arquivo.
 
 <!--
-  ATENÇÃO: o CI publica as notas da release a partir da PRIMEIRA seção `## `
-  deste arquivo, e só as 20 primeiras linhas não-vazias dela
-  (`awk '/^## /{n++} n==1' | tail -n +2 | sed '/^$/d' | head -20` em
-  .github/workflows/cockpit-release.yml). Então: a seção da versão que está
-  saindo fica no TOPO, e cabe em 20 linhas — não deixe um `## [Unreleased]`
-  vazio na frente (as notas sairiam vazias) nem escreva demais (sai cortado no
-  meio da frase).
+  ATENÇÃO: a PRIMEIRA seção `## ` deste arquivo é o texto que o usuário vê no
+  diálogo de update (Sparkle/WinSparkle) e na página de download. Regras:
+
+  - A seção da versão que está saindo fica no TOPO. O job `meta` do
+    .github/workflows/cockpit-release.yml **falha a release** se a versão do
+    primeiro `## ` não bater com a tag — foi assim que 1.16/1.17/1.18 saíram
+    repetindo a nota da 1.15.4.
+  - Nada de `## [Unreleased]` na frente: o guard reprova.
+  - Markdown normal (parágrafo, `### Fixed`, lista, `**negrito**`, `código`) —
+    o CI converte pra HTML (cockpit/packaging/release_notes_html.py) antes de
+    pôr no appcast, então quebra de linha e formatação aparecem certinho.
+  - O `notes` do latest.json (página de download) ainda usa só as 20 primeiras
+    linhas não-vazias — o começo da seção deve fazer sentido sozinho.
 -->
+
+## [1.19.0] — 2026-08-02
+
+Precisão do mouse: menus, foco de pane e seleção de texto voltam a cair onde
+você clica. E a nota que aparece no update finalmente é legível.
+
+### Added
+- **Frequência da verificação de update** em Configurações → Updates: diária,
+  semanal, mensal ou nunca (obrigado, @OrlandoEduardo101).
+
+### Fixed
+- **Menus e dropdowns abriam fora do lugar** com "Interface size" diferente de
+  14 — menu de contexto da aba, opções do workspace e as listas das
+  Configurações. O erro crescia conforme a distância do canto da janela.
+- **Clicar dentro do terminal não ativava o pane:** com vários agentes lado a
+  lado, o clique era engolido e o que você digitava saía na aba anterior — às
+  vezes só clicando na aba resolvia.
+- **Seleção de texto escorregava depois de rolar** no markdown, no viewer de
+  código e no diff: quanto mais rolado, mais a seleção saía abaixo do cursor.
+- **Notas de update repetidas e ilegíveis:** o diálogo de atualização mostrava
+  o texto de uma versão antiga, com o markdown cru e tudo numa linha só.
+- Erro ao abrir as Configurações e falha de injeção na tela de update.
+
+## [1.15.4] — 2026-07-28
+
+Conexão de banco por túnel SSH: o Mongo em Atlas finalmente funciona.
+
+### Fixed
+- **Túnel SSH pendurava o primeiro comando pra sempre:** o registro de abertura
+  em voo era limpo com `whenComplete(() => map.remove(key))` e o future passava
+  a esperar por si mesmo — só o primeiro chamador travava, o que aparecia como
+  "o painel carrega pra sempre mas a CLI responde".
+- **Proxy SOCKS do túnel morria em silêncio** a cada teardown de pool do driver
+  Mongo; agora é nosso, sobrevive a reset e o cache reabre quando ele cai.
+- **Comando Mongo custava ~7s:** `anaki_mongodb` 0.1.7 devolve o `close()` na
+  hora (era 5s, e 59s antes disso em `mongodb+srv://`).
+
+### Added
+- **Mongo escolhe o database:** URL de Atlas não traz database e o painel caía
+  no `admin`, mostrando `system.*`. A conexão agora expande nos databases.
+- **`cockpit mongo --database <nome>`:** o agente escolhe a base sem mexer no
+  que o humano vê; sem database resolvível, erro listando as disponíveis.
+- **"Copy name"** no menu da conexão (o nome que a CLI usa em `--db`).
 
 ## [1.14.6] — 2026-07-20
 

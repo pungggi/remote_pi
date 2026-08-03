@@ -184,6 +184,15 @@ class SyntaxColors {
     return TextStyle(color: color);
   }
 
+  /// Estilo de um tipo semântico do LSP (ex: `'class'`, `'variable'`).
+  /// `null` → mantém a cor léxica. Mapeia tipos da spec padrão pra cores já
+  /// existentes na paleta.
+  TextStyle? styleForSemanticType(String tokenType) {
+    final color = _colorForSemanticType(tokenType);
+    if (color == null) return null;
+    return TextStyle(color: color);
+  }
+
   Color? _colorFor(String scope) {
     switch (scope) {
       case 'comment':
@@ -231,6 +240,46 @@ class SyntaxColors {
         return meta;
       case 'deletion':
         return deletion;
+      default:
+        return null;
+    }
+  }
+
+  Color? _colorForSemanticType(String type) {
+    switch (type) {
+      // Tipos → klass
+      case 'class':
+      case 'enum':
+      case 'interface':
+      case 'type':
+      case 'typeParameter':
+        return klass;
+      // Funções/métodos → function
+      case 'function':
+      case 'method':
+        return function;
+      // Variáveis/parâmetros/propriedades → variable
+      case 'variable':
+      case 'parameter':
+      case 'property':
+        return variable;
+      // Namespace → meta
+      case 'namespace':
+        return meta;
+      // Keywords
+      case 'keyword':
+        return keyword;
+      // Comentários
+      case 'comment':
+        return comment;
+      // Built-ins
+      case 'builtinType':
+        return builtin;
+      // Números/strings (raro em semantic)
+      case 'number':
+        return number;
+      case 'string':
+        return string;
       default:
         return null;
     }

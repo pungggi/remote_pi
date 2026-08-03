@@ -12,7 +12,12 @@ import 'package:cockpit/app/cockpit/domain/entities/task_definition.dart';
 /// Resolução de `cwd`: relativa à **raiz do workspace** (a pasta que contém o
 /// `.cockpit/`), per-task; top-level `cwd` é só default. Ver plano 48.
 class TasksJsonLoader {
-  const TasksJsonLoader();
+  const TasksJsonLoader({this.hostOs});
+
+  /// SO usado no filtro de `platforms` — só sobrescrito em teste.
+  final String? hostOs;
+
+  String get _os => hostOs ?? Platform.operatingSystem;
 
   /// Caminho do arquivo a partir da raiz do workspace.
   static String pathFor(String workspaceCwd) =>
@@ -55,6 +60,7 @@ class TasksJsonLoader {
     final label = m['label'] as String?;
     final command = m['command'] as String?;
     if (label == null || command == null) return null; // mínimos obrigatórios
+    if (!_visibleOnThisOs(m['platforms'])) return null;
 
     final cwd = resolveCwd(workspaceCwd, (m['cwd'] as String?) ?? defaultCwd);
 
@@ -71,6 +77,21 @@ class TasksJsonLoader {
       watch: _watch(m['watch']),
       progressPatterns: _patterns(m['progressPatterns']),
     );
+  }
+
+  /// `platforms`: string ou lista de `"macos"|"windows"|"linux"` (nomes do
+  /// `Platform.operatingSystem`). Ausente/vazio/tipo errado → visível em todos.
+  bool _visibleOnThisOs(Object? v) {
+    final List<String> platforms;
+    if (v is String) {
+      platforms = [v];
+    } else if (v is List) {
+      platforms = v.map((e) => e.toString()).toList();
+    } else {
+      return true;
+    }
+    if (platforms.isEmpty) return true;
+    return platforms.any((p) => p.toLowerCase() == _os);
   }
 
   // --- parsers de campo (tolerantes: tipo errado → default) --------------

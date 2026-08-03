@@ -1,23 +1,24 @@
 import 'package:cockpit/app/cockpit/domain/contracts/realm_repository.dart';
 import 'package:cockpit/app/cockpit/domain/entities/realm.dart';
-import 'package:hive/hive.dart';
+import 'package:cockpit/app/core/data/setup/json_state_store.dart';
 
-/// Persiste realms numa Box do Hive, um `Map` por id (mesmo estilo schemaless
-/// do `HiveProjectRepository`). O realm Default é garantido em [all]: se a box
-/// está vazia (instalação nova ou pré-realm), ele é criado na hora.
-class HiveRealmRepository implements RealmRepository {
-  HiveRealmRepository(this._box);
+/// Persiste realms num [JsonStateStore], um `Map` por id (mesmo estilo
+/// schemaless do `JsonProjectRepository`). O realm Default é garantido em
+/// [all]: se o store está vazio (instalação nova ou pré-realm), ele é criado
+/// na hora.
+class JsonRealmRepository implements RealmRepository {
+  JsonRealmRepository(this._store);
 
-  final Box<dynamic> _box;
+  final JsonStateStore _store;
 
-  static const String boxName = 'realms';
+  static const String storeName = 'realms';
 
   /// Chave reservada (não-Map) pro id do realm ativo; `all()` a ignora.
   static const String _activeKey = '__active__';
 
   @override
   Future<List<Realm>> all() async {
-    final realms = _box.values
+    final realms = _store.values
         .whereType<Map<dynamic, dynamic>>()
         .map(_fromMap)
         .whereType<Realm>()
@@ -39,22 +40,22 @@ class HiveRealmRepository implements RealmRepository {
   }
 
   @override
-  Future<void> save(Realm realm) => _box.put(realm.id, _toMap(realm));
+  Future<void> save(Realm realm) => _store.put(realm.id, _toMap(realm));
 
   @override
   Future<void> remove(String id) async {
     if (id == Realm.defaultId) return; // Default é indelével
-    await _box.delete(id);
+    await _store.delete(id);
   }
 
   @override
   Future<String> loadActive() async {
-    final v = _box.get(_activeKey);
+    final v = _store.get(_activeKey);
     return v is String ? v : Realm.defaultId;
   }
 
   @override
-  Future<void> saveActive(String id) => _box.put(_activeKey, id);
+  Future<void> saveActive(String id) => _store.put(_activeKey, id);
 
   Map<String, dynamic> _toMap(Realm r) => <String, dynamic>{
     'id': r.id,

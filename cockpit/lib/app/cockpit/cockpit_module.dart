@@ -8,6 +8,12 @@ import 'package:cockpit/app/cockpit/data/db/db_driver_registry_impl.dart';
 import 'package:cockpit/app/cockpit/data/db/nosql_command_runner.dart';
 import 'package:cockpit/app/cockpit/domain/services/db_query_service.dart';
 import 'package:cockpit/app/cockpit/data/db/db_secrets_impl.dart';
+import 'package:cockpit/app/cockpit/data/db/json_mongo_database_store.dart';
+import 'package:cockpit/app/cockpit/data/db/json_ssh_host_key_store.dart';
+import 'package:cockpit/app/cockpit/data/db/ssh_key_pem.dart';
+import 'package:cockpit/app/cockpit/data/db/ssh_tunnel_impl.dart';
+import 'package:cockpit/app/cockpit/domain/contracts/mongo_database_store.dart';
+import 'package:cockpit/app/cockpit/domain/contracts/ssh_tunnel.dart';
 import 'package:cockpit/app/cockpit/data/filesystem/app_launcher_impl.dart';
 import 'package:cockpit/app/cockpit/data/filesystem/content_searcher_impl.dart';
 import 'package:cockpit/app/cockpit/data/filesystem/file_reader_impl.dart';
@@ -21,11 +27,13 @@ import 'package:cockpit/app/cockpit/data/filesystem/git_diff_reader_impl.dart';
 import 'package:cockpit/app/cockpit/data/filesystem/git_status_reader_impl.dart';
 import 'package:cockpit/app/cockpit/data/filesystem/session_history_impl.dart';
 import 'package:cockpit/app/cockpit/data/filesystem/worktree_manager_impl.dart';
+import 'package:cockpit/app/cockpit/data/layout/ckp_layout_loader.dart';
+import 'package:cockpit/app/cockpit/domain/contracts/layout_loader.dart';
 import 'package:cockpit/app/cockpit/data/notifications/local_notifier.dart';
-import 'package:cockpit/app/cockpit/data/repositories/hive_dismissed_update_store.dart';
-import 'package:cockpit/app/cockpit/data/repositories/hive_project_repository.dart';
-import 'package:cockpit/app/cockpit/data/repositories/hive_realm_repository.dart';
-import 'package:cockpit/app/cockpit/data/repositories/hive_workspace_layout_store.dart';
+import 'package:cockpit/app/cockpit/data/repositories/json_dismissed_update_store.dart';
+import 'package:cockpit/app/cockpit/data/repositories/json_project_repository.dart';
+import 'package:cockpit/app/cockpit/data/repositories/json_realm_repository.dart';
+import 'package:cockpit/app/cockpit/data/repositories/json_workspace_layout_store.dart';
 import 'package:cockpit/app/cockpit/data/repositories/project_schema_migrator.dart';
 import 'package:cockpit/app/cockpit/data/rpc/pi_rpc_process_factory.dart';
 import 'package:cockpit/app/cockpit/data/setup/environment_installer_impl.dart';
@@ -75,10 +83,11 @@ import 'package:cockpit/app/cockpit/ui/session/task_terminal_store.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/setup_viewmodel.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/tasks_viewmodel.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/update_viewmodel.dart';
-import 'package:cockpit/app/core/data/repositories/hive_settings_store.dart';
+import 'package:cockpit/app/core/data/repositories/json_settings_store.dart';
+import 'package:cockpit/app/core/data/setup/json_state_store.dart';
+import 'package:cockpit/app/core/data/setup/storage_location.dart';
 import 'package:flutter/foundation.dart' show debugPrint, kReleaseMode;
 import 'package:flutter_modular/flutter_modular.dart';
-import 'package:hive_flutter/hive_flutter.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 /// Feature **Cockpit** — o shell (home, `path: '/'`). Registra os binds de infra
@@ -86,33 +95,45 @@ import 'package:package_info_plus/package_info_plus.dart';
 /// `/` com os 3 ViewModels page-scoped.
 ///
 /// **Bootstrap async (idioma do flutter_modular):** o builder é `Future` e abre
-/// as PRÓPRIAS dependências assíncronas — Hive boxes, versão do app, notifier —
-/// capturando-as no closure (box privada → `addInstance(HiveX(box))`). Assim o
-/// `main` não threada esses valores: chame UMA vez e componha o módulo retornado
-/// (dedup é por identidade).
+/// as PRÓPRIAS dependências assíncronas — stores JSON, versão do app, notifier —
+/// capturando-as no closure (store privado → `addInstance(JsonX(store))`). Assim
+/// o `main` não threada esses valores: chame UMA vez e componha o módulo
+/// retornado (dedup é por identidade).
 ///
 /// **Resolução cross-module (flutter_modular >= 7.1.0):** os binds que dependem
 /// do `PiSpawnConfig` usam `.new` e resolvem o config **upward** do core
-/// (root-owned) — por isso o builder não recebe mais `config`. As Hive boxes,
+/// (root-owned) — por isso o builder não recebe mais `config`. Os stores JSON,
 /// porém, continuam exigindo o bootstrap async acima (não há async bind).
 ///
 /// Como o shell fica em `/` e o Settings é **empilhado** por cima (não substitui),
 /// a rota `/` nunca deixa a pilha em navegação normal → estes binds
 /// feature-scoped vivem o app inteiro na prática.
 Future<Module> buildCockpitModule() async {
-  // Bootstrap async: abre as próprias boxes (privadas no closure), resolve a
-  // versão e inicia o notifier. `Hive.initFlutter` já rodou no `main`.
-  final projectBox = await Hive.openBox<dynamic>(HiveProjectRepository.boxName);
-  final layoutBox = await Hive.openBox<dynamic>(
-    HiveWorkspaceLayoutStore.boxName,
+  // Bootstrap async: abre os próprios stores (privados no closure), resolve a
+  // versão e inicia o notifier. A migração Hive→JSON já rodou no bootstrapper.
+  final stateDir = await StorageLocation.stateDir();
+  final projectStore = await JsonStateStore.open(
+    stateDir,
+    JsonProjectRepository.storeName,
   );
-  final realmBox = await Hive.openBox<dynamic>(HiveRealmRepository.boxName);
+  final layoutStore = await JsonStateStore.open(
+    stateDir,
+    JsonWorkspaceLayoutStore.storeName,
+  );
+  final realmStore = await JsonStateStore.open(
+    stateDir,
+    JsonRealmRepository.storeName,
+  );
   // Schema pré-realm (id == path) → UUID + realm. Idempotente; roda antes de
-  // qualquer bind ler as boxes.
-  await const ProjectSchemaMigrator().run(projectBox, layoutBox);
-  // Updates dispensados moram na box de settings (mesma do SettingsController);
-  // `openBox` é idempotente → devolve a instância já aberta pelo `main`.
-  final settingsBox = await Hive.openBox<dynamic>(HiveSettingsStore.boxName);
+  // qualquer bind ler os stores.
+  await const ProjectSchemaMigrator().run(projectStore, layoutStore);
+  // Updates dispensados moram no store de settings (mesmo do
+  // SettingsController); `open` é idempotente → devolve a instância já aberta
+  // pelo bootstrapper.
+  final settingsStore = await JsonStateStore.open(
+    stateDir,
+    JsonSettingsStore.storeName,
+  );
   final appVersion = (await PackageInfo.fromPlatform()).version;
 
   // Notificações do SO — init pede permissão; falha não pode derrubar o boot.
@@ -127,11 +148,13 @@ Future<Module> buildCockpitModule() async {
     path: '/',
     register: (c) {
       c
-        ..addInstance<ProjectRepository>(HiveProjectRepository(projectBox))
-        ..addInstance<RealmRepository>(HiveRealmRepository(realmBox))
-        ..addInstance<WorkspaceLayoutStore>(HiveWorkspaceLayoutStore(layoutBox))
+        ..addInstance<ProjectRepository>(JsonProjectRepository(projectStore))
+        ..addInstance<RealmRepository>(JsonRealmRepository(realmStore))
+        ..addInstance<WorkspaceLayoutStore>(
+          JsonWorkspaceLayoutStore(layoutStore),
+        )
         ..addInstance<DismissedUpdateStore>(
-          HiveDismissedUpdateStore(settingsBox),
+          JsonDismissedUpdateStore(settingsStore),
         )
         // Dependem do PiSpawnConfig → `.new` resolve upward do core (>= 7.1.0).
         ..addLazySingleton<RpcGatewayFactory>(PiRpcProcessFactory.new)
@@ -146,6 +169,14 @@ Future<Module> buildCockpitModule() async {
         ..addInstance<DbSecrets>(const DbSecretsImpl())
         ..addInstance<DbDriverRegistry>(const DbDriverRegistryImpl())
         ..addInstance<NoSqlRunner>(const NoSqlRunnerImpl())
+        // Database escolhido por conexão Mongo (URL de Atlas vem sem path):
+        // reusa o store de settings, como o host key store abaixo.
+        ..addInstance<MongoDatabaseStore>(JsonMongoDatabaseStore(settingsStore))
+        // Plano 54 — túnel SSH opcional por conexão. O host key store reusa o
+        // store de settings (mesmo padrão do DismissedUpdateStore).
+        ..addInstance<SshHostKeyStore>(JsonSshHostKeyStore(settingsStore))
+        ..addInstance<SshKeyInspector>(const SshKeyPemInspector())
+        ..addLazySingleton<SshTunnel>(SshTunnelImpl.new)
         ..addLazySingleton<DbQueryService>(DbQueryService.new)
         ..addInstance<FileSearcher>(FileSearcherImpl())
         ..addInstance<ContentSearcher>(const ContentSearcherImpl())
@@ -163,6 +194,7 @@ Future<Module> buildCockpitModule() async {
         ..addLazySingleton<TaskRunnerGateway>(PtyTaskRunner.new)
         ..addLazySingleton(TaskTerminalStore.new)
         ..addInstance<TaskDiscovery>(TaskDiscoveryImpl(const []))
+        ..addInstance<LayoutLoader>(const CkpLayoutLoader())
         ..addInstance<AppLauncherGateway>(const AppLauncherImpl())
         ..addInstance<Notifier>(notifier)
         ..addInstance<UpdateChecker>(const UpdateCheckerImpl())

@@ -3,6 +3,7 @@ import 'package:cockpit/app/cockpit/domain/services/db_access_gate.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  _mongoForcedDatabaseTests();
   group('sqlReadViolation', () {
     test('leitura passa', () {
       expect(sqlReadViolation('SELECT * FROM users'), isNull);
@@ -118,6 +119,22 @@ void main() {
       final json = conn.toJson();
       expect(json['access'], 'readwrite');
       expect(json['agents'], false);
+    });
+  });
+}
+
+void _mongoForcedDatabaseTests() {
+  group('mongoForcedDatabase', () {
+    test('listDatabases é roteado pro admin', () {
+      expect(mongoForcedDatabase({'listDatabases': 1}), 'admin');
+      // Case-insensitive: o agente escreve o comando na mão.
+      expect(mongoForcedDatabase({'listdatabases': 1}), 'admin');
+    });
+
+    test('demais comandos deixam a resolução normal seguir', () {
+      expect(mongoForcedDatabase({'find': 'users'}), isNull);
+      expect(mongoForcedDatabase({'listCollections': 1}), isNull);
+      expect(mongoForcedDatabase(<String, dynamic>{}), isNull);
     });
   });
 }

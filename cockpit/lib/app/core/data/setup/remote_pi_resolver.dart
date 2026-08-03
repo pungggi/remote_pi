@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:cockpit/app/core/utils/executable_resolver.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 
 /// Helpers de resolução do `remote-pi` — compartilhados entre o instalador do
 /// supervisor e o gateway de relay/pareamento.
@@ -13,6 +14,31 @@ import 'package:cockpit/app/core/utils/executable_resolver.dart';
 /// `~/` do usuário: Windows não seta `HOME`, o equivalente é `USERPROFILE`.
 String? remotePiHome() =>
     Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+
+/// Onde a **CLI interna** (`cockpit`) é materializada, e o único diretório que o
+/// app prefixa no PATH das suas abas.
+///
+/// Namespaceado por debug/release pela mesma razão do `status.sock`: `~/.cockpit`
+/// é o HOME real (não é isolado por bundle id como o Hive), então uma build de
+/// dev e a instalada disputariam o mesmo arquivo — quem bootasse por último
+/// sobrescreveria a CLI da outra. Como o PATH é injetado por app, cada um aponta
+/// pro seu diretório e o comando continua se chamando `cockpit` nos dois.
+///
+/// O `cockpit-hook` **não** segue este namespace: o caminho dele vai gravado no
+/// `~/.claude/settings.json` (global, um só), e apontar pra uma pasta de build de
+/// dev quebraria o hook no dia em que essa build sumisse.
+String? cockpitCliDir() {
+  final home = remotePiHome();
+  if (home == null) return null;
+  return '$home/.cockpit/bin${kDebugMode ? '-debug' : ''}';
+}
+
+/// Diretório estável do helper de hooks, compartilhado entre builds.
+String? cockpitHookDir() {
+  final home = remotePiHome();
+  if (home == null) return null;
+  return '$home/.cockpit/bin';
+}
 
 /// Caminho absoluto do `dist/index.js` da extensão remote-pi (via `packages[]`
 /// do `~/.pi/agent/settings.json`), ou `null` se não der pra achar.
@@ -54,13 +80,12 @@ Future<String?> resolveRemotePiIndexJs() async {
 /// Resolve o `node` em caminhos conhecidos (mesma estratégia do `pi`).
 /// Cacheado por processo: a resolução via `which` num shell de login pode
 /// levar segundos (carrega o `.zshrc`) e o resultado é estável.
-Future<String> resolveNode() =>
-    _cachedNode ??= resolveExecutable(
-      'node',
-      unixCandidates: const ['/opt/homebrew/bin/node', '/usr/local/bin/node'],
-      unixHomeRelative: const ['.local/bin/node'],
-      windowsExtraDirs: const [r'C:\Program Files\nodejs'],
-    );
+Future<String> resolveNode() => _cachedNode ??= resolveExecutable(
+  'node',
+  unixCandidates: const ['/opt/homebrew/bin/node', '/usr/local/bin/node'],
+  unixHomeRelative: const ['.local/bin/node'],
+  windowsExtraDirs: const [r'C:\Program Files\nodejs'],
+);
 
 Future<String>? _cachedNode;
 

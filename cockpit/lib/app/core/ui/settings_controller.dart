@@ -111,6 +111,12 @@ class SettingsController extends ChangeNotifier {
   void setShowCockpit(bool value) =>
       _apply(_settings.copyWith(showCockpit: value));
 
+  void setUpdateCheckFrequency(UpdateCheckFrequency frequency) =>
+      _apply(_settings.copyWith(updateCheckFrequency: frequency));
+
+  void setLastUpdateCheckTime(DateTime time) =>
+      _apply(_settings.copyWith(lastUpdateCheckTime: time));
+
   /// Persiste a visibilidade dos painéis do shell (rail de projetos + árvore de
   /// arquivos) para restaurar no próximo boot. Não faz `notifyListeners` porque
   /// a fonte de verdade em runtime é a `CockpitViewModel` — aqui só grava.

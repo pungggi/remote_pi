@@ -33,6 +33,11 @@ abstract class LspClient {
 
   bool get isRunning;
 
+  /// Legenda de semantic tokens (tipos e modificadores suportados), ou `null`
+  /// se o server não anuncia suporte ao `semanticTokensProvider`.
+  /// Preenchido no `initialize` handshake.
+  dynamic get semanticTokensLegend;
+
   /// Raiz absoluta do projeto que este servidor atende.
   String get rootPath;
 
@@ -58,6 +63,18 @@ abstract class LspClient {
     String method,
     Map<String, dynamic> params,
   );
+
+  /// `textDocument/semanticTokens/full` — tokens semânticos do documento.
+  /// `null` se o server não suporta ou o documento não tem tokens.
+  Future<Result<Object?, LspError>> semanticTokensFull(String path);
+
+  /// `textDocument/definition` — definição de símbolo na posição.
+  /// Retorna `Location | Location[] | LocationLink[] | null` (cru).
+  Future<Result<Object?, LspError>> definition(
+    String path, {
+    required int line,
+    required int character,
+  });
 
   /// Encerra graciosamente (`shutdown`/`exit` → close stdin → SIGTERM → SIGKILL).
   Future<void> kill();

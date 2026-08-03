@@ -76,33 +76,33 @@ class _DiffBody extends StatelessWidget {
       color: colors.bg,
       // Seleção contínua entre linhas (copiar blocos de código do diff). Os
       // números de linha ficam fora da seleção (SelectionContainer.disabled).
-      child: SelectionArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            // Cada coluna preenche metade da largura disponível, respeitando um
-            // mínimo (abaixo do qual rola na horizontal).
-            final avail = constraints.maxWidth;
-            final side = ((avail - 1) / 2).clamp(
-              _minSideWidth,
-              double.infinity,
-            );
-            final total = side * 2 + 1;
+      // A SelectionArea fica DENTRO dos dois scrolls de propósito: em volta
+      // deles a seleção escorrega ao rolar com Interface size != 14 — ver
+      // [SelectableScroll].
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          // Cada coluna preenche metade da largura disponível, respeitando um
+          // mínimo (abaixo do qual rola na horizontal).
+          final avail = constraints.maxWidth;
+          final side = ((avail - 1) / 2).clamp(_minSideWidth, double.infinity);
+          final total = side * 2 + 1;
 
-            final children = <Widget>[];
-            for (var i = 0; i < rows.length; i++) {
-              final hdr = headerText[i];
-              if (hdr != null) {
-                children.add(_HunkHeader(text: hdr, width: total));
-              }
-              children.add(
-                _DiffRow(row: rows[i], sideWidth: side, language: language),
-              );
+          final children = <Widget>[];
+          for (var i = 0; i < rows.length; i++) {
+            final hdr = headerText[i];
+            if (hdr != null) {
+              children.add(_HunkHeader(text: hdr, width: total));
             }
+            children.add(
+              _DiffRow(row: rows[i], sideWidth: side, language: language),
+            );
+          }
 
-            return SingleChildScrollView(
-              scrollDirection: Axis.vertical,
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
+          return SingleChildScrollView(
+            scrollDirection: Axis.vertical,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SelectionArea(
                 child: SizedBox(
                   width: total,
                   child: Column(
@@ -112,9 +112,9 @@ class _DiffBody extends StatelessWidget {
                   ),
                 ),
               ),
-            );
-          },
-        ),
+            ),
+          );
+        },
       ),
     );
   }

@@ -34,6 +34,13 @@
           "type": "string",
           "description": "Pasta de execução relativa à pasta do tasks.json (ou absoluta). Omitido = default top-level / raiz."
         },
+        "platforms": {
+          "oneOf": [
+            { "$ref": "#/$defs/platform" },
+            { "type": "array", "items": { "$ref": "#/$defs/platform" } }
+          ],
+          "description": "SOs onde a task é visível (macos, windows, linux). Omitido = todos."
+        },
         "kind": {
           "enum": ["watch", "oneShot"],
           "default": "oneShot",
@@ -54,6 +61,7 @@
         }
       }
     },
+    "platform": { "enum": ["macos", "windows", "linux"] },
     "interactiveKey": {
       "type": "object",
       "required": ["key", "label"],

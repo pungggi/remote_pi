@@ -62,6 +62,7 @@ class FileTreePanel extends StatefulWidget {
     this.stagedPaths = const <String>[],
     this.unstagedPaths = const <String>[],
     required this.onOpenWith,
+    this.onOpenLayout,
     required this.onCreateInFolder,
     required this.onCreate,
     required this.onRename,
@@ -190,6 +191,9 @@ class FileTreePanel extends StatefulWidget {
 
   /// "Open with" → abre o arquivo/pasta no app/explorador padrão do SO.
   final ValueChanged<String> onOpenWith;
+
+  /// "Open layout" (só arquivos `.ckp`): aplica o layout de orquestração.
+  final ValueChanged<String>? onOpenLayout;
 
   /// Menu de contexto de uma **pasta**: cria uma aba (agente/terminal) nela.
   final void Function(String relativeSub, bool terminal) onCreateInFolder;
@@ -813,6 +817,7 @@ class _FileTreePanelState extends State<FileTreePanel> {
       onTapFile: widget.onTapFile,
       onSelectFile: widget.onSelectFile,
       onOpenWith: widget.onOpenWith,
+      onOpenLayout: widget.onOpenLayout,
       onCreateInFolder: widget.onCreateInFolder,
       onStartCreate: _startCreate,
       onCancelCreate: _cancelCreate,
@@ -1285,6 +1290,7 @@ class _TreeEdit {
     required this.onTapFile,
     required this.onSelectFile,
     required this.onOpenWith,
+    this.onOpenLayout,
     required this.onCreateInFolder,
     required this.onStartCreate,
     required this.onCancelCreate,
@@ -1320,6 +1326,7 @@ class _TreeEdit {
   /// "Show git diff" (menu de contexto) → abre o diff do arquivo.
   final ValueChanged<String> onShowDiff;
   final ValueChanged<String> onOpenWith;
+  final ValueChanged<String>? onOpenLayout;
   final void Function(String relativeSub, bool terminal) onCreateInFolder;
 
   final void Function(String parentPath, bool isFolder) onStartCreate;
@@ -1449,6 +1456,11 @@ class _DirViewState extends State<_DirView> {
                 },
                 onDoubleTap: () => edit.onOpenFile(node.path),
                 onOpenWith: () => edit.onOpenWith(node.path),
+                onOpenLayout:
+                    edit.onOpenLayout == null ||
+                        !node.name.toLowerCase().endsWith('.ckp')
+                    ? null
+                    : () => edit.onOpenLayout!(node.path),
                 onStartRename: () => edit.onStartRename(node.path),
                 onCommitRename: (name) => edit.onCommitRename(node.path, name),
                 onCancelRename: edit.onCancelRename,
@@ -1592,6 +1604,7 @@ class _Row extends StatefulWidget {
     this.onTap,
     this.onDoubleTap,
     this.onOpenWith,
+    this.onOpenLayout,
     this.onCreateInFolder,
     this.onNewFile,
     this.onNewFolder,
@@ -1622,6 +1635,9 @@ class _Row extends StatefulWidget {
 
   /// "Open with" (arquivo) / "Open in Finder" (pasta).
   final VoidCallback? onOpenWith;
+
+  /// "Open layout" (só arquivos `.ckp`). `null` = item não aparece.
+  final VoidCallback? onOpenLayout;
 
   /// Só pastas: criar agente/terminal nela (relativo, terminal?).
   final void Function(String relativeSub, bool terminal)? onCreateInFolder;
@@ -1712,6 +1728,13 @@ class _RowState extends State<_Row> {
             label: 'Open with',
             icon: Icons.launch_outlined,
           ),
+          // Só arquivos `.ckp`: aplica o layout de orquestração de panes.
+          if (widget.onOpenLayout != null)
+            const AppMenuItem(
+              value: 'layout',
+              label: 'Open layout',
+              icon: Icons.grid_view_outlined,
+            ),
           // Sempre visível; desabilitado quando o arquivo não tem mudança git.
           AppMenuItem(
             value: 'diff',
@@ -1791,6 +1814,8 @@ class _RowState extends State<_Row> {
         case 'openwith':
         case 'reveal':
           widget.onOpenWith?.call();
+        case 'layout':
+          widget.onOpenLayout?.call();
         case 'newfile':
           widget.onNewFile?.call();
         case 'newfolder':

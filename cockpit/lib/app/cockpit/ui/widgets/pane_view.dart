@@ -86,9 +86,22 @@ class PaneView extends StatelessWidget {
     final rawIndex = tabs.indexOf(pane.active);
     final activeIndex = rawIndex < 0 ? 0 : rawIndex;
 
-    return GestureDetector(
+    // `Listener` (ponteiro cru), NÃO `GestureDetector`: um clique **dentro do
+    // terminal** nunca chegava aqui. O flterm registra Tap/Pan/LongPress no
+    // corpo do terminal e, na arena de gestos, o reconhecedor mais interno vence
+    // (tap: sweep no pointer-up escolhe o primeiro membro, que é o mais
+    // profundo; arraste de mouse: o Pan aceita na hora). O perdedor nunca
+    // dispara `onTapDown` — ou seja, `vm.focus(pane.id)` só rodava ao clicar
+    // FORA do terminal (tab strip, padding, espaço vazio).
+    //
+    // Consequência com vários panes: o flterm focava o `FocusNode` do pane
+    // clicado, mas a VM continuava achando que o pane anterior era o focado —
+    // e o próximo bump de `tabFocusGen` fazia o pane antigo re-pedir o teclado
+    // no pós-frame (ver `_requestTerminalFocusSoon`), então o que era digitado
+    // saía na aba anterior. Listener não participa da arena: sempre recebe.
+    return Listener(
       behavior: HitTestBehavior.translucent,
-      onTapDown: (_) => vm.focus(pane.id),
+      onPointerDown: (_) => vm.focus(pane.id),
       child: Container(
         color: colors.panel,
         child: Column(

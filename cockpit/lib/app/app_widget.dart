@@ -7,6 +7,7 @@ import 'package:cockpit/app/core/ui/menu/editor_menu_bridge.dart';
 import 'package:cockpit/app/core/ui/menu/menu_model.dart';
 import 'package:cockpit/app/core/ui/menu/workspace_menu_bridge.dart';
 import 'package:cockpit/app/core/ui/clamping_scroll_behavior.dart';
+import 'package:cockpit/app/core/ui/overlay/app_popover_handler.dart';
 import 'package:cockpit/app/core/ui/settings_controller.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
@@ -37,6 +38,12 @@ class AppRoot extends StatelessWidget {
     final app = ShadcnApp.router(
       title: 'Cockpit',
       debugShowCheckedModeBanner: false,
+      // Todos os overlays ancorados (popover/menu/tooltip) passam pelo nosso
+      // handler: o do shadcn mede a âncora no espaço da JANELA e insere o
+      // overlay dentro do [_AppZoom] — com escala ≠ 1.0 tudo abre deslocado.
+      popoverHandler: const AppPopoverOverlayHandler(),
+      menuHandler: const AppPopoverOverlayHandler(),
+      tooltipHandler: const AppPopoverOverlayHandler(),
       // Física de scroll CLAMP em todo o app (mata o bounce/overscroll estranho
       // do default BouncingScrollPhysics do shadcn). Ver ClampingScrollBehavior.
       scrollBehavior: const ClampingScrollBehavior(),

@@ -19,7 +19,32 @@ class FileTerminalScrollbackStore implements TerminalScrollbackStore {
       Directory(await StorageLocation.scrollbackDir());
 
   File _fileIn(Directory root, String projectId, String sessionId) =>
-      File('${root.path}/$projectId/$sessionId.log');
+      File('${root.path}/${_safe(projectId)}/${_safe(sessionId)}.log');
+
+  /// Ids viram nome de arquivo, mas nem todo id é um nome válido: forks de
+  /// multi-root são namespaced `rootId::path` (issue #88 — `:` é ilegal no
+  /// Windows, errno 123) e um `/` embutido criaria subpasta acidental. Escapa
+  /// tudo fora de `[A-Za-z0-9._-]` como `%XX` — identidade pra ids antigos
+  /// (UUIDs), preservando o scrollback existente.
+  static String _safe(String id) {
+    final buf = StringBuffer();
+    for (final unit in id.codeUnits) {
+      final c = String.fromCharCode(unit);
+      final ok =
+          (unit >= 0x30 && unit <= 0x39) || // 0-9
+          (unit >= 0x41 && unit <= 0x5a) || // A-Z
+          (unit >= 0x61 && unit <= 0x7a) || // a-z
+          c == '.' ||
+          c == '_' ||
+          c == '-';
+      if (ok) {
+        buf.write(c);
+      } else {
+        buf.write('%${unit.toRadixString(16).padLeft(2, '0').toUpperCase()}');
+      }
+    }
+    return buf.toString();
+  }
 
   @override
   Future<String?> load({
@@ -41,11 +66,18 @@ class FileTerminalScrollbackStore implements TerminalScrollbackStore {
     required String sessionId,
     required String contents,
   }) async {
-    final file = _fileIn(await _root(), projectId, sessionId);
-    await file.parent.create(recursive: true);
-    final tmp = File('${file.path}.tmp');
-    await tmp.writeAsString(contents, flush: true);
-    await tmp.rename(file.path); // atômico no mesmo filesystem.
+    // Best-effort: scrollback é cache — falha de IO aqui jamais pode derrubar
+    // o app (o dispose chama via `unawaited`, e um throw vira erro async fatal;
+    // foi o crash da issue #88).
+    try {
+      final file = _fileIn(await _root(), projectId, sessionId);
+      await file.parent.create(recursive: true);
+      final tmp = File('${file.path}.tmp');
+      await tmp.writeAsString(contents, flush: true);
+      await tmp.rename(file.path); // atômico no mesmo filesystem.
+    } on FileSystemException {
+      // Disco cheio/caminho inválido/lock transitório: perde este snapshot.
+    }
   }
 
   @override
@@ -67,13 +99,15 @@ class FileTerminalScrollbackStore implements TerminalScrollbackStore {
   Future<void> pruneExcept(Set<String> keep) async {
     final root = await _root();
     if (!root.existsSync()) return;
+    // Nomes em disco são escapados por [_safe]; compara no mesmo espaço.
+    final keepSafe = keep.map(_safe).toSet();
     await for (final projectDir in root.list()) {
       if (projectDir is! Directory) continue;
       await for (final entry in projectDir.list()) {
         if (entry is! File || !entry.path.endsWith('.log')) continue;
         final name = entry.uri.pathSegments.last; // '<sessionId>.log'
         final sessionId = name.substring(0, name.length - '.log'.length);
-        if (keep.contains(sessionId)) continue;
+        if (keepSafe.contains(sessionId)) continue;
         try {
           await entry.delete();
         } catch (_) {

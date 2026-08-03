@@ -192,6 +192,9 @@ const String _exampleConfig = '''
       "command": "flutter", // base executable
       "args": ["run"], // base args, before the profile
       "kind": "watch", // "watch" = long-running (dev server); else "oneShot"
+      // Optional: only show this task on some OSes — "macos" | "windows" |
+      // "linux", as a string or array. Omitted -> visible everywhere.
+      // "platforms": ["macos", "linux"],
       // Interactive keys -> buttons that write a key to the process stdin.
       // primary=true shows a fixed button; the rest go under a key menu.
       // icon: bolt | refresh | restart | stop (omit -> a chip with the key).

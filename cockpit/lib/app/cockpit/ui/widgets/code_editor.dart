@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:cockpit/app/core/domain/entities/lsp_diagnostic.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
@@ -13,8 +14,10 @@ import 'package:flutter/material.dart'
         TextField,
         InputDecoration,
         InputBorder,
-        TextInputType;
+        TextInputType,
+        SystemMouseCursors;
 import 'package:flutter/gestures.dart' show PointerHoverEvent;
+import 'package:flutter/services.dart' show HardwareKeyboard;
 import 'package:flutter/widgets.dart';
 
 /// Área **editável** de código com gutter de número de linha.
@@ -46,10 +49,14 @@ class CodeEditor extends StatefulWidget {
     this.revealTick = 0,
     this.revealMatchStart,
     this.revealMatchTick = 0,
+    this.onGoToDefinition,
   });
 
   final CodeEditingController controller;
   final FocusNode focusNode;
+
+  /// Callback quando Cmd/Ctrl+clique (go-to-definition). Passa {line, character}.
+  final void Function(({int line, int character}))?  onGoToDefinition;
 
   /// Linha (base 1) a revelar (rolar + selecionar) — vem de um resultado de
   /// busca. `null` = nenhum pedido.
@@ -84,6 +91,7 @@ class _CodeEditorState extends State<CodeEditor> {
   @override
   void initState() {
     super.initState();
+    _rebuildLineStarts();
     // Recontar linhas (gutter) a cada digitação que muda o nº de '\n'.
     widget.controller.addListener(_onChanged);
     widget.controller.addListener(_keepHorizontalOnSelection);
@@ -278,7 +286,21 @@ class _CodeEditorState extends State<CodeEditor> {
   List<String> _hoverMsgs = const <String>[];
   double _hoverDx = 0;
 
+  // Go-to-definition: detecta modificador (Cmd/Ctrl) + hover + tap.
+  bool _definitionModeActive = false;
+  bool _definitionModeHovered = false;
+  MouseCursor _defCursor = SystemMouseCursors.text;
+  TextStyle? _codeStyle; // cache do build(), usado pro hit-test do hover
+  double _gutterWidth = 0; // idem — largura medida do bloco do gutter
+  double _digitsWidth = 0; // largura do maior nº de linha (dimensiona o gutter)
+  List<int> _lineStarts = <int>[0]; // offset de início de cada linha
+
   void _onHover(PointerHoverEvent event) {
+    // Atualiza estado do definition mode (Cmd/Ctrl segurado?) + range sob o
+    // mouse (independente do cache por linha do tooltip de diagnostic abaixo).
+    _updateDefinitionMode();
+    _updateDefinitionHoverRange(event);
+
     final scroll = _vertical.hasClients ? _vertical.offset : 0.0;
     final contentY = event.localPosition.dy - _padTop + scroll;
     if (contentY < 0 || _lineHeight <= 0) return _clearHover();
@@ -292,7 +314,78 @@ class _CodeEditorState extends State<CodeEditor> {
     });
   }
 
+  void _updateDefinitionMode() {
+    final keys = HardwareKeyboard.instance;
+    final isCmd =
+        (Platform.isMacOS && keys.isMetaPressed) || keys.isControlPressed;
+    if (isCmd != _definitionModeActive) {
+      setState(() => _definitionModeActive = isCmd);
+    }
+  }
+
+  /// Converte a posição do mouse em offset de texto (via largura medida do
+  /// gutter + scroll horizontal + `TextPainter.getPositionForOffset` na linha
+  /// hovered) e atualiza o range sublinhado no controller — só quando o
+  /// modificador está ativo. Fora dele, limpa (sem sublinhado/cursor de mão).
+  void _updateDefinitionHoverRange(PointerHoverEvent event) {
+    if (!_definitionModeActive) return _clearDefinitionHover();
+    final codeStyle = _codeStyle;
+    if (codeStyle == null) return _clearDefinitionHover();
+
+    final scrollV = _vertical.hasClients ? _vertical.offset : 0.0;
+    final contentY = event.localPosition.dy - _padTop + scrollV;
+    final line = contentY ~/ _lineHeight;
+    if (contentY < 0 || _lineHeight <= 0 || line < 0 || line >= _lineStarts.length) {
+      return _clearDefinitionHover();
+    }
+
+    final scrollH = _horizontal.hasClients ? _horizontal.offset : 0.0;
+    final codeLocalX = event.localPosition.dx - _gutterWidth - 14 + scrollH;
+    if (codeLocalX < 0) return _clearDefinitionHover();
+
+    final text = widget.controller.text;
+    final lineStart = _lineStarts[line];
+    final lineEnd = line + 1 < _lineStarts.length
+        ? _lineStarts[line + 1] - 1
+        : text.length;
+    final lineText = text.substring(lineStart, lineEnd.clamp(lineStart, text.length));
+    final painter = TextPainter(
+      text: TextSpan(text: lineText, style: codeStyle),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final pos = painter.getPositionForOffset(Offset(codeLocalX, 0));
+    final offset = (lineStart + pos.offset).clamp(0, text.length);
+    final range = widget.controller.wordRangeAt(offset);
+
+    final hovered = range != null;
+    if (hovered != _definitionModeHovered) {
+      setState(() {
+        _definitionModeHovered = hovered;
+        _defCursor = hovered ? SystemMouseCursors.click : SystemMouseCursors.text;
+      });
+    }
+    widget.controller.definitionHoverRange = range;
+  }
+
+  void _clearDefinitionHover() {
+    if (_definitionModeHovered) {
+      setState(() {
+        _definitionModeHovered = false;
+        _defCursor = SystemMouseCursors.text;
+      });
+    }
+    widget.controller.definitionHoverRange = null;
+  }
+
+  void _onDefinitionTap() {
+    final offset = widget.controller.selection.baseOffset;
+    if (offset < 0) return;
+    final pos = widget.controller.offsetToLineChar(offset);
+    widget.onGoToDefinition?.call(pos);
+  }
+
   void _clearHover() {
+    _clearDefinitionHover();
     if (_hoverLine == null && _hoverMsgs.isEmpty) return;
     setState(() {
       _hoverLine = null;
@@ -300,7 +393,17 @@ class _CodeEditorState extends State<CodeEditor> {
     });
   }
 
+  void _rebuildLineStarts() {
+    final t = widget.controller.text;
+    final starts = <int>[0];
+    for (var i = 0; i < t.length; i++) {
+      if (t.codeUnitAt(i) == 0x0A) starts.add(i + 1);
+    }
+    _lineStarts = starts;
+  }
+
   void _onChanged() {
+    _rebuildLineStarts();
     final n = '\n'.allMatches(widget.controller.text).length + 1;
     final diag = widget.controller.diagnostics;
     // Rebuild do gutter quando o nº de linhas OU os diagnostics mudam (o campo
@@ -319,6 +422,7 @@ class _CodeEditorState extends State<CodeEditor> {
     widget.controller.removeListener(_keepHorizontalOnSelection);
     _horizontal.removeListener(_onHorizontalScroll);
     _vertical.removeListener(_syncGutter);
+    widget.controller.definitionHoverRange = null;
     _vertical.dispose();
     _horizontal.dispose();
     _gutter.dispose();
@@ -374,6 +478,7 @@ class _CodeEditorState extends State<CodeEditor> {
     final typo = context.typo;
     final syntax = context.syntax;
     final codeStyle = typo.mono.copyWith(color: syntax.base);
+    _codeStyle = codeStyle;
     _lineCount = '\n'.allMatches(widget.controller.text).length + 1;
 
     // Altura de uma linha (px) pra mapear posição do mouse → índice de linha.
@@ -382,6 +487,16 @@ class _CodeEditorState extends State<CodeEditor> {
       textDirection: TextDirection.ltr,
     )..layout();
     _lineHeight = lineProbe.preferredLineHeight;
+
+    // Largura do bloco do gutter (pad esquerdo + slot do ícone + dígitos do
+    // maior nº de linha + pad direito + divisor) — usada pra converter posição
+    // X do mouse em offset de texto (hover do go-to-definition).
+    final digitsProbe = TextPainter(
+      text: TextSpan(text: '$_lineCount', style: codeStyle),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    _digitsWidth = digitsProbe.width;
+    _gutterWidth = 14 + _iconSlot + _digitsWidth + 14 + 1;
 
     // Clicar em qualquer ponto do editor (gutter, padding, espaço abaixo da
     // última linha) foca o campo — como num editor de verdade. Cliques sobre o
@@ -395,6 +510,7 @@ class _CodeEditorState extends State<CodeEditor> {
       child: ColoredBox(
         color: syntax.background,
         child: MouseRegion(
+          cursor: _defCursor,
           onHover: _onHover,
           onExit: (_) => _clearHover(),
           child: LayoutBuilder(
@@ -468,17 +584,31 @@ class _CodeEditorState extends State<CodeEditor> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // Gutter — scroll próprio (travado ao input) espelhando `_vertical`.
+              //
+              // `ListView.builder` (e não `Column`): com uma Column, um arquivo
+              // de 5k linhas materializava 5000 Rows+Texts A CADA rebuild — e
+              // rebuild acontece até quando o mouse cruza uma linha (o tooltip
+              // de diagnostic faz setState). Virtualizado, só as ~40 linhas
+              // visíveis são construídas, e `severityForLine` (que varre os
+              // diagnostics) roda só pra elas.
+              //
+              // `itemExtent: _lineHeight` é o que mantém o alinhamento 1:1 com
+              // o texto — mesma métrica que o campo usa por linha — e ainda dá
+              // scroll O(1) (o `jumpTo` do `_syncGutter` não precisa medir os
+              // itens anteriores). Largura fixa porque a ListView, ao contrário
+              // da Column dentro do SingleChildScrollView, não é intrínseca:
+              // sem isso o gutter esticaria e comeria o campo.
               Padding(
                 padding: const EdgeInsets.only(left: 14, right: 14),
-                child: SingleChildScrollView(
-                  controller: _gutter,
-                  physics: const NeverScrollableScrollPhysics(),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      for (var i = 1; i <= lineCount; i++)
-                        _gutterLine(i, numStyle),
-                    ],
+                child: SizedBox(
+                  width: _iconSlot + _digitsWidth,
+                  child: ListView.builder(
+                    controller: _gutter,
+                    physics: const NeverScrollableScrollPhysics(),
+                    padding: EdgeInsets.zero,
+                    itemExtent: _lineHeight,
+                    itemCount: lineCount,
+                    itemBuilder: (context, i) => _gutterLine(i + 1, numStyle),
                   ),
                 ),
               ),
@@ -519,6 +649,19 @@ class _CodeEditorState extends State<CodeEditor> {
                             // internamente; o gutter espelha via `_syncGutter`.
                             expands: true,
                             keyboardType: TextInputType.multiline,
+                            // `onTap` do próprio TextField dispara DEPOIS que o
+                            // toque já moveu `controller.selection` pra posição
+                            // clicada (comportamento interno do EditableText) —
+                            // por isso lemos a seleção aqui, não num
+                            // GestureDetector externo (que veria a seleção ANTIGA,
+                            // antes do TextField processar o tap).
+                            onTap: _definitionModeActive ? _onDefinitionTap : null,
+                            // TextField sempre define seu PRÓPRIO cursor (I-beam)
+                            // por padrão — sobrescreve o `MouseRegion` externo, que
+                            // nunca vencia a resolução de cursor (o descendente mais
+                            // específico ganha). Precisa ser setado aqui pra virar
+                            // clicável de fato durante o hover de definition.
+                            mouseCursor: _defCursor,
                             decoration: const InputDecoration(
                               isCollapsed: true,
                               border: InputBorder.none,

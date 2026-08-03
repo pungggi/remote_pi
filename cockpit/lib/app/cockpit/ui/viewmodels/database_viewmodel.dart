@@ -5,7 +5,7 @@ import 'package:cockpit/app/cockpit/domain/entities/redis_key.dart';
 import 'package:cockpit/app/cockpit/domain/services/mongo_browse_service.dart';
 import 'package:cockpit/app/cockpit/domain/services/redis_browse_service.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/db_connection_store.dart';
-import 'package:cockpit/app/cockpit/domain/contracts/db_driver.dart';
+import 'package:cockpit/app/cockpit/domain/contracts/ssh_tunnel.dart';
 import 'package:cockpit/app/cockpit/domain/entities/db_connection.dart';
 import 'package:cockpit/app/cockpit/domain/entities/db_result.dart';
 import 'package:flutter/foundation.dart';
@@ -85,11 +85,18 @@ class MongoTabState {
 /// 51). Page-scoped (provido no `cockpit_module`); o workspace ativo entra
 /// via [setWorkspace] (chamado pelo painel quando o projeto muda).
 class DatabaseViewModel extends ChangeNotifier {
-  DatabaseViewModel(this._store, this._secrets, this._registry, this.service);
+  DatabaseViewModel(
+    this._store,
+    this._secrets,
+    this.service,
+    this._sshKeys,
+    this._hostKeys,
+  );
 
   final DbConnectionStore _store;
   final DbSecrets _secrets;
-  final DbDriverRegistry _registry;
+  final SshKeyInspector _sshKeys;
+  final SshHostKeyStore _hostKeys;
 
   /// Motor compartilhado tab/CLI — exposto pras tabs `.dbq` executarem.
   final DbQueryService service;
@@ -157,19 +164,60 @@ class DatabaseViewModel extends ChangeNotifier {
 
   /// Collections de uma conexão Mongo (lazy, cacheada até [reload] — análogo
   /// do [tables] SQL). O painel chama ao expandir.
+  ///
+  /// Chave inclui o database escolhido: trocar de database no seletor precisa
+  /// listar as collections do novo, não devolver as do anterior.
   final _collectionsCache = <String, List<String>>{};
 
-  Future<List<String>> collections(DbConnection conn) async {
-    final cached = _collectionsCache[conn.name];
+  /// [database] lista as collections daquele database específico (o painel
+  /// mostra todos os databases expansíveis); omitido, usa o database efetivo
+  /// da conexão.
+  Future<List<String>> collections(
+    DbConnection conn, {
+    String? database,
+  }) async {
+    final root = _workspaceRoot;
+    final wsId = _workspaceId;
+    if (root == null || wsId == null) return const [];
+    final db = database ?? service.mongoDatabase(wsId, conn);
+    final key = '${conn.name}@${db ?? ''}';
+    final cached = _collectionsCache[key];
     if (cached != null) return cached;
+    final svc = MongoBrowseService(service)
+      ..target(workspaceRoot: root, workspaceId: wsId, connName: conn.name);
+    final names = await svc.listCollections(database: database);
+    _collectionsCache[key] = names;
+    return names;
+  }
+
+  /// Database em uso pela conexão Mongo (URL, ou escolha salva). `null` = ainda
+  /// não escolhido → o painel pede a escolha antes de listar collections.
+  String? mongoDatabase(DbConnection conn) {
+    final wsId = _workspaceId;
+    return wsId == null ? null : service.mongoDatabase(wsId, conn);
+  }
+
+  /// `true` quando a URL não traz database e o seletor é necessário.
+  bool mongoNeedsDatabase(DbConnection conn) =>
+      service.mongoNeedsDatabase(conn);
+
+  /// Databases disponíveis no deployment (para o seletor).
+  Future<List<String>> mongoDatabases(DbConnection conn) async {
     final root = _workspaceRoot;
     final wsId = _workspaceId;
     if (root == null || wsId == null) return const [];
     final svc = MongoBrowseService(service)
       ..target(workspaceRoot: root, workspaceId: wsId, connName: conn.name);
-    final names = await svc.listCollections();
-    _collectionsCache[conn.name] = names;
-    return names;
+    return svc.listDatabases();
+  }
+
+  /// Fixa o database da conexão e invalida as collections cacheadas.
+  Future<void> selectMongoDatabase(DbConnection conn, String database) async {
+    final wsId = _workspaceId;
+    if (wsId == null) return;
+    await service.selectMongoDatabase(wsId, conn.name, database);
+    _collectionsCache.removeWhere((k, _) => k.startsWith('${conn.name}@'));
+    if (!_disposed) notifyListeners();
   }
 
   /// Aponta pro workspace ativo; recarrega quando muda (ou em [force]).
@@ -201,6 +249,7 @@ class DatabaseViewModel extends ChangeNotifier {
   Future<void> upsert(
     DbConnection conn, {
     String? password,
+    String? sshPassphrase,
     String? previousName,
   }) async {
     final root = _workspaceRoot;
@@ -235,6 +284,12 @@ class DatabaseViewModel extends ChangeNotifier {
       // Só sobrescreve quando o usuário digitou algo; vazio = mantém a atual.
       await _secrets.write(newKey, password);
     }
+    await _syncSshPassphrase(
+      conn,
+      wsId,
+      sshPassphrase,
+      previousName: previousName,
+    );
     await reload();
   }
 
@@ -248,8 +303,52 @@ class DatabaseViewModel extends ChangeNotifier {
       ),
     ]);
     await _secrets.delete(DbQueryService.secretKey(wsId, conn.name));
+    await _secrets.delete(DbQueryService.sshSecretKey(wsId, conn.name));
+    service.forgetSshPassphrase(wsId, conn.name);
+    // A host key confiada some junto: manter o fingerprint de um bastion que
+    // ninguém mais usa só acumula lixo com aparência de decisão de segurança.
+    final endpoint = conn.ssh?.endpoint;
+    if (endpoint != null) await _hostKeys.forget(endpoint);
     await reload();
   }
+
+  /// Espelha a regra da senha de banco pra passphrase da chave SSH: rename
+  /// migra o segredo, desligar o switch apaga, e campo vazio mantém o atual.
+  Future<void> _syncSshPassphrase(
+    DbConnection conn,
+    String wsId,
+    String? passphrase, {
+    String? previousName,
+  }) async {
+    final oldKey = DbQueryService.sshSecretKey(wsId, previousName ?? conn.name);
+    final newKey = DbQueryService.sshSecretKey(wsId, conn.name);
+    final save = conn.ssh?.savePassphrase ?? false;
+    if (previousName != null && previousName != conn.name) {
+      final existing = await _secrets.read(oldKey);
+      if (save &&
+          existing != null &&
+          (passphrase == null || passphrase.isEmpty)) {
+        await _secrets.write(newKey, existing);
+      }
+      await _secrets.delete(oldKey);
+      service.forgetSshPassphrase(wsId, previousName);
+    }
+    if (!save) {
+      await _secrets.delete(newKey);
+    } else if (passphrase != null && passphrase.isNotEmpty) {
+      await _secrets.write(newKey, passphrase);
+    }
+    // Config mudou (chave nova, host novo): a passphrase de sessão pode não
+    // valer mais.
+    service.forgetSshPassphrase(wsId, conn.name);
+  }
+
+  /// Repassa a classificação de chave pro dialog — a UI não fala com `data/`.
+  Future<bool> sshKeyNeedsPassphrase(String keyPath) =>
+      _sshKeys.needsPassphrase(keyPath);
+
+  /// Sugestão de chave padrão pro dialog (`~/.ssh/id_ed25519`…).
+  Future<String?> defaultSshKeyPath() => _sshKeys.defaultKeyPath();
 
   /// Tabelas de uma conexão (introspecção normalizada, lazy — a árvore do
   /// painel chama ao expandir). Cacheado por nome de conexão até [reload].
@@ -367,16 +466,13 @@ class DatabaseViewModel extends ChangeNotifier {
   Future<String?> test(
     DbConnection conn, {
     String? password,
+    String? sshPassphrase,
     String? storedPasswordName,
   }) async {
-    final driver = _registry.forEngine(conn.engine);
-    if (driver == null) {
-      return '${conn.engine.label} support arrives with the anakiORM '
-          'integration.';
-    }
-    var effective = (password == null || password.isEmpty) ? null : password;
     final wsId = _workspaceId;
-    if (effective == null && storedPasswordName != null && wsId != null) {
+    if (wsId == null) return 'No workspace is open.';
+    var effective = (password == null || password.isEmpty) ? null : password;
+    if (effective == null && storedPasswordName != null) {
       effective = await _secrets.read(
         DbQueryService.secretKey(wsId, storedPasswordName),
       );
@@ -391,7 +487,15 @@ class DatabaseViewModel extends ChangeNotifier {
       if (!absolute) target = conn.copyWith(url: 'sqlite:$root/$p');
     }
     try {
-      await driver.query(target, 'SELECT 1', limit: 1, password: effective);
+      // Delegado ao serviço (e não ao driver direto) porque testar precisa
+      // exercitar o MESMO caminho da execução real — inclusive o túnel SSH.
+      // Testar por fora do túnel validava um host que a query nunca usaria.
+      await service.ping(
+        target,
+        workspaceId: wsId,
+        password: effective,
+        sshPassphrase: sshPassphrase,
+      );
       return null;
     } on DbQueryException catch (e) {
       return e.message;

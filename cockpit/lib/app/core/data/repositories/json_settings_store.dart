@@ -1,20 +1,20 @@
+import 'package:cockpit/app/core/data/setup/json_state_store.dart';
 import 'package:cockpit/app/core/domain/contracts/settings_store.dart';
 import 'package:cockpit/app/core/domain/entities/app_settings.dart';
-import 'package:hive/hive.dart';
 
-/// Persiste as [AppSettings] numa Box do Hive (um único registro JSON sob a
-/// chave [_key]). Só tipos primitivos → sem TypeAdapters.
-class HiveSettingsStore implements SettingsStore {
-  HiveSettingsStore(this._box);
+/// Persiste as [AppSettings] num [JsonStateStore] (um único registro JSON sob
+/// a chave [_key]). Substitui o antigo `HiveSettingsStore` — mesma semântica.
+class JsonSettingsStore implements SettingsStore {
+  JsonSettingsStore(this._store);
 
-  final Box<dynamic> _box;
+  final JsonStateStore _store;
 
-  static const String boxName = 'settings';
+  static const String storeName = 'settings';
   static const String _key = 'app';
 
   @override
   Future<AppSettings> load() async {
-    final raw = _box.get(_key);
+    final raw = _store.get(_key);
     if (raw is Map) {
       final settings = AppSettings.fromJson(raw);
       // Migração: um registro salvo por uma versão ANTERIOR à flag `enableAgent`
@@ -40,5 +40,6 @@ class HiveSettingsStore implements SettingsStore {
   }
 
   @override
-  Future<void> save(AppSettings settings) => _box.put(_key, settings.toJson());
+  Future<void> save(AppSettings settings) =>
+      _store.put(_key, settings.toJson());
 }

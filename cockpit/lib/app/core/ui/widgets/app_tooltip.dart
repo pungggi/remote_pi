@@ -37,15 +37,11 @@ class _AppTooltipState extends State<AppTooltip> {
     if (!mounted) return;
     _entry?.remove();
     final box = context.findRenderObject();
-    final overlayBox = Overlay.of(
-      context,
-      rootOverlay: true,
-    ).context.findRenderObject();
-    if (box is! RenderBox || overlayBox is! RenderBox) return;
-    // Bottom-center do trigger, no espaço do Overlay (imune ao zoom).
+    if (box is! RenderBox) return;
+    // Bottom-center do trigger. O handler do app converte pro espaço do
+    // Overlay (imune ao zoom) — ver [AppPopoverOverlayHandler].
     final anchor = box.localToGlobal(
       Offset(box.size.width / 2, box.size.height),
-      ancestor: overlayBox,
     );
     _entry = showPopover<void>(
       context: context,

@@ -49,9 +49,24 @@ class NativeFolderPicker {
         // Falha nativa inesperada → fallback pro file_picker.
       }
     }
-    return FilePicker.platform.getDirectoryPath(
-      dialogTitle: dialogTitle,
-      initialDirectory: initialDirectory,
-    );
+    // `initialDirectory` chega canônico (`/`), mas o diálogo do Windows resolve
+    // a pasta por `SHCreateItemFromParsingName`, que **não** aceita `/`: falha,
+    // o `file_picker` lança `WindowsException` e o diálogo nem abre. Daí o bug
+    // "não dá pra criar workspace estando dentro de um" — sem projeto
+    // selecionado o parâmetro era nulo e tudo funcionava. Ver [toNativePath].
+    final initial = initialDirectory == null
+        ? null
+        : toNativePath(initialDirectory);
+    try {
+      return await FilePicker.platform.getDirectoryPath(
+        dialogTitle: dialogTitle,
+        initialDirectory: initial,
+      );
+    } on Exception {
+      // Pasta inicial inválida (apagada, unidade removida, permissão) não pode
+      // impedir a escolha: reabre sem ela.
+      if (initial == null) rethrow;
+      return FilePicker.platform.getDirectoryPath(dialogTitle: dialogTitle);
+    }
   }
 }

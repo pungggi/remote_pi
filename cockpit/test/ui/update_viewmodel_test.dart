@@ -7,8 +7,19 @@ import 'package:cockpit/app/cockpit/domain/contracts/update_checker.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/url_opener.dart';
 import 'package:cockpit/app/cockpit/domain/entities/update_info.dart';
 import 'package:cockpit/app/cockpit/domain/value_objects/update_target.dart';
+import 'package:cockpit/app/core/domain/contracts/settings_store.dart';
+import 'package:cockpit/app/core/domain/entities/app_settings.dart';
+import 'package:cockpit/app/core/ui/settings_controller.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/update_viewmodel.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+class _FakeSettingsStore implements SettingsStore {
+  @override
+  Future<AppSettings> load() async => const AppSettings();
+
+  @override
+  Future<void> save(AppSettings settings) async {}
+}
 
 /// Motor de self-update controlável: os testes empurram fases à mão, como o
 /// Sparkle/WinSparkle fariam.
@@ -123,6 +134,7 @@ void main() {
         _kWindowsTarget,
         updater,
       );
+      vm.attachSettings(SettingsController(_FakeSettingsStore()));
     });
     tearDown(() {
       vm.dispose();
@@ -310,6 +322,7 @@ void main() {
         _kWindowsTarget,
         updater,
       );
+      vm.attachSettings(SettingsController(_FakeSettingsStore()));
     });
     tearDown(() {
       vm.dispose();

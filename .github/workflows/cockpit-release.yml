@@ -61,6 +61,16 @@ jobs:
             echo "::error::pubspec precisa de build number (ex: $VERSION+8)"
             exit 1
           fi
+          # As notas que o Sparkle mostra saem da PRIMEIRA seção `## ` do
+          # CHANGELOG. Sem esta checagem, esquecer de escrever a seção da
+          # versão publica silenciosamente a nota da versão ANTERIOR. Falha
+          # aqui (segundos) em vez de depois dos builds. (Portado do upstream.)
+          CHANGELOG_VERSION=$(awk '/^## /{print; exit}' cockpit/CHANGELOG.md \
+            | sed -E 's/^## *\[?([0-9]+\.[0-9]+\.[0-9]+)\]?.*/\1/')
+          if [ "$VERSION" != "$CHANGELOG_VERSION" ]; then
+            echo "::error::CHANGELOG.md começa em '$CHANGELOG_VERSION' mas a release é $VERSION — escreva a seção ## [$VERSION] no topo (é dela que sai a nota do update)"
+            exit 1
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "build=$BUILD" >> "$GITHUB_OUTPUT"
 

@@ -119,6 +119,23 @@ String? redisReadViolation(List<String> parts) {
       'in the Database panel';
 }
 
+/// Comandos Mongo que **só** rodam contra o `admin` — o servidor recusa em
+/// qualquer outra base (`Unauthorized: … may only be run against the admin
+/// database`).
+///
+/// Importa porque `listDatabases` é justamente o comando de *descoberta*: sem
+/// rotear pra `admin`, o agente que pergunta "quais bases existem?" leva um
+/// erro e não tem como saber que a resposta era passar `--database admin`.
+const _mongoAdminOnlyCommands = {'listdatabases'};
+
+/// Database a usar quando o chamador não passou um explicitamente, ou `null`
+/// pra deixar a resolução normal seguir (URL → escolha do painel).
+String? mongoForcedDatabase(Map<String, dynamic> command) {
+  if (command.isEmpty) return null;
+  final first = command.keys.first.toLowerCase();
+  return _mongoAdminOnlyCommands.contains(first) ? 'admin' : null;
+}
+
 /// Comandos Mongo (primeira chave do runCommand) permitidos em `read`.
 const _mongoReadCommands = {
   'find', 'aggregate', 'count', 'distinct', 'listcollections',

@@ -85,6 +85,28 @@ void main() {
     expect(t.profiles.single.env, {'X': '1'});
   });
 
+  test('platforms filtra pelo SO do host (string ou lista)', () async {
+    await write('''
+      { "tasks": [
+        { "label": "all", "command": "make" },
+        { "label": "win-only", "command": "make", "platforms": "windows" },
+        { "label": "mac-only", "command": "make", "platforms": ["macos"] },
+        { "label": "desktop", "command": "make", "platforms": ["Windows", "linux"] },
+        { "label": "broken", "command": "make", "platforms": 42 }
+      ] }
+    ''');
+    final onWin = await const TasksJsonLoader(hostOs: 'windows').load(tmp.path);
+    expect(
+      onWin.map((t) => t.label),
+      unorderedEquals(['all', 'win-only', 'desktop', 'broken']),
+    );
+    final onMac = await const TasksJsonLoader(hostOs: 'macos').load(tmp.path);
+    expect(
+      onMac.map((t) => t.label),
+      unorderedEquals(['all', 'mac-only', 'broken']),
+    );
+  });
+
   test('task sem label ou command é ignorada', () async {
     await write('''
       { "tasks": [

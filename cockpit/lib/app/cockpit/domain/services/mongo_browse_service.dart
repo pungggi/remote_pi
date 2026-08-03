@@ -27,7 +27,10 @@ class MongoBrowseService {
     required String connName,
   }) => _target = (root: workspaceRoot, id: workspaceId, conn: connName);
 
-  Future<Map<String, dynamic>> _run(Map<String, dynamic> command) async {
+  Future<Map<String, dynamic>> _run(
+    Map<String, dynamic> command, {
+    String? database,
+  }) async {
     final t = _target;
     if (t == null) {
       throw const DbQueryException('query_failed', 'No connection targeted.');
@@ -37,6 +40,7 @@ class MongoBrowseService {
       workspaceId: t.id,
       connName: t.conn,
       command: command,
+      database: database,
     );
     if (reply is! Map) {
       throw DbQueryException('query_failed', 'Unexpected reply: $reply');
@@ -65,9 +69,34 @@ class MongoBrowseService {
     }
   }
 
-  /// Nomes das collections do database da conexão, ordenados.
-  Future<List<String>> listCollections() async {
-    final reply = await _run({'listCollections': 1, 'nameOnly': true});
+  /// Databases do deployment, sem os de sistema, ordenados. Alimenta o seletor
+  /// do painel quando a URL da conexão não traz database.
+  ///
+  /// `listDatabases` só roda no `admin` — daí o override explícito: sem ele
+  /// esta chamada dependeria justamente da escolha que ela existe pra permitir.
+  Future<List<String>> listDatabases() async {
+    const system = {'admin', 'config', 'local'};
+    final reply = await _run({
+      'listDatabases': 1,
+      'nameOnly': true,
+    }, database: 'admin');
+    final raw = reply['databases'];
+    if (raw is! List) return const [];
+    return [
+      for (final d in raw)
+        if (d is Map && d['name'] is String && !system.contains(d['name']))
+          d['name'] as String,
+    ]..sort();
+  }
+
+  /// Nomes das collections, ordenados. [database] lista as de um database
+  /// específico sem mexer na escolha corrente — é o que o painel usa pra
+  /// mostrar a árvore inteira (N databases expansíveis) de uma vez.
+  Future<List<String>> listCollections({String? database}) async {
+    final reply = await _run({
+      'listCollections': 1,
+      'nameOnly': true,
+    }, database: database);
     final batch = _cursorBatch(reply);
     final names = [
       for (final c in batch)

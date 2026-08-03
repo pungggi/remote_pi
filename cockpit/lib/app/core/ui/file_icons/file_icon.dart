@@ -81,6 +81,15 @@ class FileTypeIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // `.ckp` (layout de orquestração) usa o logo do próprio Cockpit — não é
+    // um tipo que o material-icon-theme conheça.
+    if (!_isFolder && name.toLowerCase().endsWith('.ckp')) {
+      return Image.asset(
+        'assets/branding/cockpit_logo.png',
+        width: size,
+        height: size,
+      );
+    }
     final icon = _isFolder
         ? folderIconName(name, open: _open)
         : fileIconName(name);

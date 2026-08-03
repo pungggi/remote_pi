@@ -16,7 +16,7 @@ publish_to: "none" # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.15.0+42
+version: 1.19.0+52
 
 environment:
   sdk: ^3.12.0
@@ -47,6 +47,9 @@ dependencies:
   flutter:
     sdk: flutter
 
+  # Parse dos layouts `.ckp` (orquestração de panes) — YAML puro-Dart.
+  yaml: ^3.1.2
+
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
@@ -72,9 +75,15 @@ dependencies:
   # Manager / Secret Service). Nunca em .cockpit/databases.json.
   flutter_secure_storage: ^9.0.0
 
-  # Wave 2 — persistência local dos projetos (pasta salva = projeto).
+  # Persistência local virou JSON puro (JsonStateStore, write-temp+rename
+  # atômico) — o Hive fica SÓ pra migração one-shot dos dados legados
+  # (core/data/setup/hive_migration.dart é o único import). Remover numa
+  # release futura, quando a base instalada tiver migrado.
   hive: ^2.2.3
-  hive_flutter: ^1.1.0
+
+  # Montagem de paths ciente de plataforma (Windows usa `\`; interpolar `/`
+  # na mão corrompia a resolução de diretórios de storage).
+  path: ^1.9.0
 
   # Wave 2 — fontes da identidade visual (Space Grotesk / Hanken Grotesk /
   # JetBrains Mono), servidas em runtime + cacheadas pelo google_fonts.
@@ -84,7 +93,7 @@ dependencies:
   gpt_markdown: ^1.1.8
 
   # Wave 2 — notificações nativas do SO (agente terminou um turno).
-  flutter_local_notifications: ^18.0.1
+  flutter_local_notifications: ^22.2.0
 
   # Wave 2 — esconde a barra nativa da janela (temos a customizada) e permite
   # arrastar/min/max pela nossa barra. macOS/Windows/Linux.
@@ -182,7 +191,19 @@ dependencies:
   anaki_mssql: ^0.1.4
   # NoSQL/cache — acesso APENAS via CLI por enquanto (sem UI); ver plano 51.
   anaki_redis: ^0.1.4
-  anaki_mongodb: ^0.1.4
+  # 0.1.5: feature `socks5-proxy` do crate mongodb habilitada (plano 54) — é o
+  # que faz `proxyHost`/`proxyPort` valerem. Sem ela o driver recusa a opção, e
+  # Mongo atrás de bastion (replica set / Atlas SRV) não tem caminho: o driver
+  # descobre os membros pelo `hello` e disca os hostnames anunciados, furando
+  # qualquer port-forward.
+  anaki_mongodb: ^0.1.7
+
+  # Plano 54 — túnel SSH opcional por conexão de banco. Dart puro de propósito
+  # (decisão C): o binário `ssh` só *provavelmente* existe no Windows (Feature
+  # on Demand removível), valida ACL da chave em vez de chmod e depende do
+  # ssh-agent como serviço desligado por padrão. Custo assumido: não herdamos
+  # `~/.ssh/config`, ProxyJump, known_hosts nem o agent.
+  dartssh2: ^2.22.4
 
 dev_dependencies:
   flutter_test:
@@ -262,22 +283,39 @@ dependency_overrides:
       url: https://github.com/media-kit/media-kit.git
       ref: 44ba261
       path: media_kit
-  # Pinados em SHA, não em branch de dev: consumir
+  # Pinados em TAG, não em branch nem em SHA de branch de dev. Consumir
   # `fix/flterm-tui-scroll-forwarding` deixava o app à mercê de qualquer push
-  # na branch — foi assim que um terminal quebrado chegou aqui. As duas saem do
-  # mesmo main (695c00d), então são compatíveis entre si.
+  # na branch — foi assim que um terminal quebrado chegou aqui. Pinar o SHA
+  # resolveu isso mas criou outro problema: revisão de PR reescreve a branch
+  # (force-push) e o SHA vira commit órfão — some de todo clone frio, e o
+  # release quebra em TODAS as plataformas no CI ("Could not find a file named
+  # packages/libghostty/pubspec.yaml"), enquanto a máquina com pub-cache quente
+  # segue compilando. Foi o que derrubou o cockpit-v1.15.1. Tag não move em
+  # force-push, então é o único pin realmente imutável aqui.
   #
-  # O SHA do libghostty inclui o fix de isolamento do git no hook: sem ele, o
+  # O commit do libghostty inclui o fix de isolamento do git no hook: sem ele, o
   # `source: compile` lia a tag do repo CONSUMIDOR (cockpit-vX.Y.Z), não batia
   # com o vX.Y.Z esperado pelo ghostty e abortava — quebrando todo release
-  # tagueado. Upstream: elias8/libghostty#120.
+  # tagueado. Upstream: elias8/libghostty#120 (785a21c = versão revisada do
+  # mesmo fix, depois do force-push da revisão).
+  #
+  # Voltar pro pub.dev quando elias8/libghostty#119 e #120 forem merjados e
+  # sair release.
+  # Tag unificada (mesma ref para os dois pacotes) com quatro fixes:
+  #  - scroll de TUI (wheel/trackpad) no flterm
+  #  - IME dead-key/acentos parando quando outro cliente rouba a
+  #    TextInputConnection singleton
+  #  - isolamento do git no build hook (GIT_CEILING_DIRECTORIES) p/ tag de
+  #    release fora do padrao vX.Y.Z nao dar panic no ghostty
+  #  - compile no CPU baseline (-Dtarget sempre) p/ a .dll do Windows nao sair
+  #    com AVX2/AVX-512 e crashar (0xC000001D) em CPUs sem essas extensoes
   flterm:
     git:
       url: https://github.com/jacobaraujo7/libghostty.git
-      ref: 2822cc2e1c8500b1d0c41a866060b7733068b19f
+      ref: cockpit-pin-flterm-cpu-baseline
       path: packages/flterm
   libghostty:
     git:
       url: https://github.com/jacobaraujo7/libghostty.git
-      ref: 45f783033804e2c0e77f4a0867bf42c362ade076
+      ref: cockpit-pin-flterm-cpu-baseline
       path: packages/libghostty

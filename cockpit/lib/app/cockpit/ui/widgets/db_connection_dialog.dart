@@ -1,25 +1,38 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:cockpit/app/cockpit/domain/entities/db_connection.dart';
+import 'package:cockpit/app/cockpit/domain/entities/ssh_tunnel_config.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/database_viewmodel.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/db_engine_icon.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
+import 'package:cockpit/app/core/utils/path_utils.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 /// Resultado do [DbConnectionDialog]: salvo (com senha opcional pro cofre),
 /// excluído, ou `null` (cancelado).
 class DbConnectionDialogResult {
-  const DbConnectionDialogResult.saved(this.connection, this.password)
-    : deleted = false;
+  const DbConnectionDialogResult.saved(
+    this.connection,
+    this.password, {
+    this.sshPassphrase,
+  }) : deleted = false;
   const DbConnectionDialogResult.deleted()
     : connection = null,
       password = null,
+      sshPassphrase = null,
       deleted = true;
 
   final DbConnection? connection;
 
   /// Senha digitada (vai pro cofre via VM). `null` = não mexer na guardada.
   final String? password;
+
+  /// Passphrase da chave SSH digitada (plano 54). Mesma semântica do
+  /// [password]: `null` = não mexer na guardada.
+  final String? sshPassphrase;
   final bool deleted;
 }
 
@@ -47,11 +60,6 @@ class DbConnectionDialog extends StatefulWidget {
 class _DbConnectionDialogState extends State<DbConnectionDialog> {
   late bool _savePassword = widget.initial?.savePassword ?? false;
 
-  /// Switch "Use SSL/TLS" — vira query param/scheme por engine na URL. SRV
-  /// (Atlas) implica TLS: switch travado em ON.
-  late bool _useTls = widget.initial?.useTls ?? false;
-  bool get _isSrv => widget.initial?.isSrv ?? false;
-
   /// Guardrails do caminho dos agentes (CLI): escrita opt-in + visibilidade.
   /// GUI nunca é gated. Defaults seguros: read-only e visível.
   late bool _allowWrites = widget.initial?.access == DbAccess.readwrite;
@@ -62,11 +70,40 @@ class _DbConnectionDialogState extends State<DbConnectionDialog> {
 
   final _name = TextEditingController();
   final _file = TextEditingController();
-  final _host = TextEditingController(text: 'localhost');
-  final _port = TextEditingController();
-  final _db = TextEditingController();
-  final _user = TextEditingController();
   final _pass = TextEditingController();
+
+  // --- Túnel SSH (plano 54) ---------------------------------------------
+  /// Seção expandida no dialog. Não implica ter túnel: o túnel só existe se
+  /// host/user/key estiverem preenchidos ([_buildSsh]).
+  bool _sshOpen = false;
+  late bool _saveSshPassphrase = widget.initial?.ssh?.savePassphrase ?? false;
+
+  /// `true` quando a chave escolhida é encriptada — é o que decide se o campo
+  /// de passphrase aparece. Chave limpa = conexão sem segredo nenhum.
+  bool _sshKeyEncrypted = false;
+
+  final _sshHost = TextEditingController();
+  final _sshPort = TextEditingController();
+  final _sshUser = TextEditingController();
+  final _sshKey = TextEditingController();
+  final _sshPassphrase = TextEditingController();
+
+  /// Connection string — a **única** forma de editar conexão de rede.
+  ///
+  /// A `DbConnection` já guarda URL como forma canônica, então um formulário
+  /// decomposto seria a camada com perda: ele não expressa `mongodb+srv://`,
+  /// params proprietários de driver, múltiplos hosts nem nada que não tenhamos
+  /// modelado. Colar a URL inteira é o caminho sem perda — e é o que as
+  /// pessoas já têm em mãos.
+  final _uri = TextEditingController();
+
+  /// Altura do campo de connection string, arrastável pelo canto.
+  double _uriHeight = _uriDefaultHeight;
+
+  /// Cabe uma URL de Atlas com params sem precisar rolar.
+  static const _uriDefaultHeight = 96.0;
+  static const _uriMinHeight = 58.0;
+  static const _uriMaxHeight = 260.0;
 
   DbEngine get _engine => widget.engine;
   bool get _editing => widget.initial != null;
@@ -80,58 +117,166 @@ class _DbConnectionDialogState extends State<DbConnectionDialog> {
     if (_engine == DbEngine.sqlite) {
       _file.text = c.sqlitePath;
     } else {
-      _host.text = c.host;
-      _port.text = '${c.port}';
-      _db.text = c.database;
-      _user.text = c.user;
-      // Senha guardada na URL (savePassword off) é recuperável — prefill.
-      // A do cofre nunca aparece (placeholder `*******`).
-      if (!c.savePassword) _pass.text = c.urlPassword ?? '';
+      _uri.text = c.url;
+    }
+    final ssh = c.ssh;
+    if (ssh != null) {
+      _sshOpen = true;
+      _sshHost.text = ssh.host;
+      _sshPort.text = '${ssh.port}';
+      _sshUser.text = ssh.user;
+      _sshKey.text = ssh.keyPath;
+      unawaited(_refreshKeyEncryption());
     }
   }
 
   @override
   void dispose() {
-    for (final c in [_name, _file, _host, _port, _db, _user, _pass]) {
+    for (final c in [
+      _name,
+      _file,
+      _pass,
+      _uri,
+      _sshHost,
+      _sshPort,
+      _sshUser,
+      _sshKey,
+      _sshPassphrase,
+    ]) {
       c.dispose();
     }
     super.dispose();
   }
 
-  DbConnection _build() {
-    final name = _name.text.trim().isEmpty
-        ? 'new-connection'
-        : _name.text.trim();
-    final access = _allowWrites ? DbAccess.readwrite : DbAccess.read;
-    if (_engine == DbEngine.sqlite) {
-      return DbConnection.sqlite(
-        name,
-        _file.text.trim(),
-        access: access,
-        agents: _visibleToAgents,
-      );
+  /// Reavalia se a chave atual pede passphrase. Chamado ao abrir a seção em
+  /// modo edição e a cada troca de arquivo — é o que faz o campo aparecer/
+  /// sumir sem o usuário precisar saber o formato da chave.
+  Future<void> _refreshKeyEncryption() async {
+    final path = _sshKey.text.trim();
+    final encrypted = path.isEmpty
+        ? false
+        : await widget.viewModel.sshKeyNeedsPassphrase(path);
+    if (!mounted || encrypted == _sshKeyEncrypted) return;
+    setState(() => _sshKeyEncrypted = encrypted);
+  }
+
+  /// Abre a seção SSH. Na primeira abertura, semeia user e chave com defaults
+  /// razoáveis — quem tunela quase sempre usa a chave padrão e o mesmo login
+  /// do SO, e digitar isso à toa é atrito puro.
+  Future<void> _openSshSection() async {
+    setState(() => _sshOpen = true);
+    if (_sshUser.text.isEmpty) {
+      final me =
+          Platform.environment['USER'] ?? Platform.environment['USERNAME'];
+      if (me != null && me.isNotEmpty) _sshUser.text = me;
     }
-    return DbConnection.network(
-      name: name,
-      engine: _engine,
-      host: _host.text.trim(),
-      port: int.tryParse(_port.text.trim()),
-      database: _db.text.trim(),
-      user: _user.text.trim(),
-      // Destino da senha pelo switch: OFF → embutida na URL (texto plano no
-      // databases.json, recuperável); ON → só no cofre (URL limpa).
-      password: _savePassword ? null : _pass.text,
-      savePassword: _savePassword,
-      access: access,
-      agents: _visibleToAgents,
-      // Edição de conexão Atlas: preserva o formato SRV e os query params da
-      // URL original (o form não os expõe; reescrever pra mongodb://host:port
-      // quebraria a conexão).
-      srv: _isSrv,
-      query: widget.initial?.urlQuery ?? '',
-      tls: _useTls,
+    if (_sshKey.text.isEmpty) {
+      final suggested = await widget.viewModel.defaultSshKeyPath();
+      if (!mounted || suggested == null) return;
+      _sshKey.text = suggested;
+      await _refreshKeyEncryption();
+      if (mounted) setState(() {});
+    }
+  }
+
+  /// Escolhe a chave privada no picker nativo. Abre em `~/.ssh` quando existe
+  /// e re-encurta pra `~/…`, que é a forma portável guardada no JSON.
+  Future<void> _pickSshKey() async {
+    final home =
+        Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+    final sshDir = home == null ? null : '$home/.ssh';
+    final result = await FilePicker.platform.pickFiles(
+      dialogTitle: 'Choose SSH private key',
+      // Nativo, não canônico: o diálogo do Windows rejeita `/` (ver
+      // NativeFolderPicker) e não abre.
+      initialDirectory: sshDir != null && Directory(sshDir).existsSync()
+          ? toNativePath(sshDir)
+          : null,
+      type: FileType.any,
+    );
+    if (!mounted || result == null) return;
+    final path = result.files.single.path;
+    if (path == null) return;
+    _sshKey.text = home != null && path.startsWith('$home/')
+        ? '~${path.substring(home.length)}'
+        : path;
+    // Trocou de chave: a passphrase antiga não vale mais.
+    _sshPassphrase.clear();
+    await _refreshKeyEncryption();
+    if (mounted) setState(() {});
+  }
+
+  /// Monta o túnel a partir dos campos — `null` quando a seção está fechada
+  /// ou incompleta. Túnel pela metade não é salvo: viraria uma conexão que
+  /// falha no uso sem explicar por quê.
+  SshTunnelConfig? _buildSsh() {
+    if (!_sshOpen || !_engine.supportsSshTunnel) return null;
+    final host = _sshHost.text.trim();
+    final user = _sshUser.text.trim();
+    final key = _sshKey.text.trim();
+    if (host.isEmpty || user.isEmpty || key.isEmpty) return null;
+    return SshTunnelConfig(
+      host: host,
+      port: int.tryParse(_sshPort.text.trim()) ?? SshTunnelConfig.defaultPort,
+      user: user,
+      keyPath: key,
+      // Chave limpa nunca marca o flag: não há segredo pra guardar.
+      savePassphrase: _sshKeyEncrypted && _saveSshPassphrase,
     );
   }
+
+  /// Conexão montada a partir do modo ativo, ou `null` se a connection string
+  /// não parseia (Save/Test ficam desabilitados nesse caso).
+  DbConnection? _tryBuild() {
+    if (_engine == DbEngine.sqlite) return _build();
+    final raw = _uri.text.trim();
+    if (raw.isEmpty) return null;
+    try {
+      var url = raw;
+      String? extracted;
+      // "Save Password" ON com senha na URI: tira do texto e manda pro cofre —
+      // mesma semântica do modo campos, sem senha em claro no databases.json.
+      if (_savePassword) {
+        final parsed = Uri.parse(url);
+        final info = parsed.userInfo;
+        final colon = info.indexOf(':');
+        if (colon >= 0) {
+          extracted = Uri.decodeComponent(info.substring(colon + 1));
+          url = parsed.replace(userInfo: info.substring(0, colon)).toString();
+        }
+      }
+      // Digitada no campo obscurecido ganha da que veio na URL.
+      _uriPassword = _pass.text.isNotEmpty ? _pass.text : extracted;
+      return DbConnection.fromJson({
+        'name': _name.text.trim().isEmpty
+            ? 'new-connection'
+            : _name.text.trim(),
+        'url': url,
+        'savePassword': _savePassword,
+        'access': (_allowWrites ? DbAccess.readwrite : DbAccess.read).name,
+        'agents': _visibleToAgents,
+        if (_buildSsh() != null) 'ssh': _buildSsh()!.toJson(),
+      });
+    } on Object {
+      return null;
+    }
+  }
+
+  /// Senha extraída da URI no último [_tryBuild] (só quando `savePassword`).
+  String? _uriPassword;
+
+  /// Senha a devolver pro cofre: a digitada no campo obscurecido ou a que foi
+  /// extraída da URL.
+  String? get _passwordResult =>
+      _engine == DbEngine.sqlite ? null : _uriPassword;
+
+  /// Só SQLite passa por aqui — rede é sempre connection string.
+  DbConnection _build() => DbConnection.sqlite(
+    _name.text.trim().isEmpty ? 'new-connection' : _name.text.trim(),
+    _file.text.trim(),
+    access: _allowWrites ? DbAccess.readwrite : DbAccess.read,
+    agents: _visibleToAgents,
+  );
 
   /// Linha switch + rótulo (+ hint à direita) — padrão do "Save Password".
   Widget _switchRow(
@@ -174,7 +319,7 @@ class _DbConnectionDialogState extends State<DbConnectionDialog> {
     final root = widget.viewModel.workspaceRoot;
     final result = await FilePicker.platform.pickFiles(
       dialogTitle: 'Choose SQLite database',
-      initialDirectory: root,
+      initialDirectory: root == null ? null : toNativePath(root),
       type: FileType.any,
     );
     if (!mounted || result == null) return;
@@ -198,9 +343,21 @@ class _DbConnectionDialogState extends State<DbConnectionDialog> {
       _testMessage = null;
     });
     final initial = widget.initial;
+    final built = _tryBuild();
+    if (built == null) {
+      setState(() {
+        _testing = false;
+        _testOk = false;
+        _testMessage = 'Not a valid connection URL.';
+      });
+      return;
+    }
     final error = await widget.viewModel.test(
-      _build(),
+      built,
       password: _pass.text.isEmpty ? null : _pass.text,
+      // Passphrase digitada agora vale mais que a do cofre — senão "Test"
+      // depois de trocar a chave validaria a passphrase antiga.
+      sshPassphrase: _sshPassphrase.text.isEmpty ? null : _sshPassphrase.text,
       // Edição com senha no cofre: o teste usa a guardada quando o campo está
       // vazio (o placeholder `*******` já diz que ela existe). Chave = nome
       // ORIGINAL — rename só migra a senha ao salvar.
@@ -304,15 +461,254 @@ class _DbConnectionDialogState extends State<DbConnectionDialog> {
     );
   }
 
+  /// Campo da connection string: a URL inteira, do jeito que o driver a
+  /// recebe. É o caminho sem perda — aceita `mongodb+srv://`, replica set,
+  /// params proprietários e tudo que o formulário não modela.
+  Widget _uriField(AppColors colors, AppTypography typo) {
+    final invalid = _uri.text.trim().isNotEmpty && _tryBuild() == null;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Connection string',
+            style: typo.label.copyWith(fontSize: 11, color: colors.text3),
+          ),
+          const SizedBox(height: 4),
+          // Altura arrastável: connection string de Atlas/replica set passa
+          // fácil de 200 caracteres, e ler uma URL truncada é o jeito mais
+          // rápido de colar errado.
+          Stack(
+            children: [
+              SizedBox(
+                height: _uriHeight,
+                child: TextField(
+                  controller: _uri,
+                  // `expands` exige maxLines/minLines nulos — a altura passa a
+                  // ser a do SizedBox.
+                  maxLines: null,
+                  minLines: null,
+                  expands: true,
+                  // Sem isto o texto fica centralizado verticalmente quando o
+                  // campo cresce — com `expands` o default é center.
+                  textAlignVertical: TextAlignVertical.top,
+                  onChanged: (_) => setState(() {
+                    _testOk = null;
+                    _testMessage = null;
+                  }),
+                  style: typo.mono.copyWith(fontSize: 12, color: colors.text),
+                  placeholder: Text(
+                    '${_engine.scheme}://user:password@host:'
+                    '${_engine.defaultPort}/database',
+                    style: typo.mono.copyWith(
+                      fontSize: 12,
+                      color: colors.text4,
+                    ),
+                  ),
+                  border: Border.all(
+                    color: invalid ? colors.error : colors.border,
+                  ),
+                  borderRadius: BorderRadius.circular(6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 7,
+                  ),
+                ),
+              ),
+              Positioned(right: 2, bottom: 2, child: _uriResizeHandle(colors)),
+            ],
+          ),
+          if (invalid) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Not a valid connection URL.',
+              style: typo.label.copyWith(fontSize: 10.5, color: colors.error),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// Alça de redimensionamento no canto do campo — mesmo gesto do `resize` de
+  /// um `<textarea>`: arrasta pra baixo cresce, pra cima encolhe.
+  Widget _uriResizeHandle(AppColors colors) => MouseRegion(
+    cursor: SystemMouseCursors.resizeUpDown,
+    child: GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onVerticalDragUpdate: (d) => setState(() {
+        _uriHeight = (_uriHeight + d.delta.dy).clamp(
+          _uriMinHeight,
+          _uriMaxHeight,
+        );
+      }),
+      // Duplo clique volta ao tamanho padrão — desfazer sem mira.
+      onDoubleTap: () => setState(() => _uriHeight = _uriDefaultHeight),
+      child: Padding(
+        padding: const EdgeInsets.all(3),
+        child: CustomPaint(
+          size: const Size(10, 10),
+          painter: _ResizeGripPainter(colors.text4),
+        ),
+      ),
+    ),
+  );
+
+  /// Seção "SSH Tunnel" (plano 54). **Inline, não sub-dialog**: o usuário
+  /// precisa ver Host/Port do banco enquanto configura o túnel, porque com
+  /// SSH o campo Host passa a significar "localhost *do servidor SSH*" — é a
+  /// confusão nº 1 do recurso e a única defesa é a proximidade visual.
+  Widget _sshSection(AppColors colors, AppTypography typo) {
+    if (!_sshOpen) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: HoverTap(
+          onTap: _openSshSection,
+          border: Border.all(color: colors.border),
+          borderRadius: const BorderRadius.all(Radius.circular(6)),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          child: Row(
+            children: [
+              Icon(Icons.lock_outline, size: 13, color: colors.text3),
+              const SizedBox(width: 8),
+              Text(
+                'SSH Tunnel',
+                style: typo.label.copyWith(fontSize: 12, color: colors.text2),
+              ),
+              const Spacer(),
+              Icon(Icons.expand_more, size: 14, color: colors.text3),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 2),
+      decoration: BoxDecoration(
+        border: Border.all(color: colors.border),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.lock_outline, size: 13, color: colors.text3),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'SSH Tunnel',
+                  style: typo.label.copyWith(fontSize: 12, color: colors.text2),
+                ),
+              ),
+              HoverTap(
+                onTap: () => setState(() {
+                  _sshOpen = false;
+                  _sshHost.clear();
+                  _sshPort.clear();
+                  _sshUser.clear();
+                  _sshKey.clear();
+                  _sshPassphrase.clear();
+                  _sshKeyEncrypted = false;
+                }),
+                padding: const EdgeInsets.all(2),
+                child: Icon(Icons.close, size: 13, color: colors.text3),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          _field('SSH Host', _sshHost),
+          Row(
+            children: [
+              Expanded(
+                child: _field(
+                  'SSH Port',
+                  _sshPort,
+                  hint: '${SshTunnelConfig.defaultPort}',
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(child: _field('SSH User', _sshUser)),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Private key',
+                  style: typo.label.copyWith(fontSize: 11, color: colors.text3),
+                ),
+                const SizedBox(height: 4),
+                HoverTap(
+                  onTap: _pickSshKey,
+                  border: Border.all(color: colors.border),
+                  borderRadius: const BorderRadius.all(Radius.circular(6)),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 7,
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          _sshKey.text.isEmpty
+                              ? 'Choose a private key…'
+                              : _sshKey.text,
+                          overflow: TextOverflow.ellipsis,
+                          style: typo.mono.copyWith(
+                            fontSize: 12.5,
+                            color: _sshKey.text.isEmpty
+                                ? colors.text4
+                                : colors.text,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Icon(Icons.folder_open, size: 14, color: colors.text3),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Só aparece quando a chave é de fato encriptada — chave limpa é o
+          // caminho feliz e não deve nem sugerir que há segredo envolvido.
+          if (_sshKeyEncrypted) ...[
+            _field(
+              'Key passphrase',
+              _sshPassphrase,
+              obscure: true,
+              hint: _editing && (widget.initial?.ssh?.savePassphrase ?? false)
+                  ? '*******'
+                  : null,
+            ),
+            _switchRow(
+              'Save passphrase',
+              _saveSshPassphrase,
+              (v) => setState(() => _saveSshPassphrase = v),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
     final typo = context.typo;
     // Largura fixa: sem isso o `Spacer` da barra de ações (Delete à esquerda,
-    // modo edição) esticaria o dialog até a largura da tela.
+    // modo edição) esticaria o dialog até a largura da tela. Larga o bastante
+    // pra uma connection string caber sem quebrar em três linhas — é o campo
+    // que manda no dimensionamento agora.
     return Center(
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 440),
+        constraints: const BoxConstraints(maxWidth: 660),
         child: _dialog(colors, typo),
       ),
     );
@@ -331,7 +727,7 @@ class _DbConnectionDialogState extends State<DbConnectionDialog> {
         ],
       ),
       content: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 380),
+        constraints: const BoxConstraints(maxWidth: 600),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -340,75 +736,37 @@ class _DbConnectionDialogState extends State<DbConnectionDialog> {
             if (_engine == DbEngine.sqlite)
               _fileField()
             else ...[
-              _field('Host', _host),
-              Row(
-                children: [
-                  Expanded(
-                    child: _field(
-                      'Port',
-                      _port,
-                      hint: '${_engine.defaultPort}',
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(child: _field('Database', _db, hint: 'app_dev')),
-                ],
-              ),
-              _field('User', _user, hint: 'postgres'),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Row(
-                  children: [
-                    Switch(
-                      value: _savePassword,
-                      onChanged: (v) => setState(() => _savePassword = v),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Save Password',
-                      style: typo.label.copyWith(
-                        fontSize: 12,
-                        color: colors.text2,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              // Sempre habilitado: com "Save Password" OFF a senha vai
-              // embutida na URL (databases.json, texto plano, recuperável);
-              // ON, vai pro cofre — placeholder `*******` sinaliza que existe
-              // senha guardada e campo vazio ao salvar MANTÉM a atual.
-              _field(
-                'Password',
-                _pass,
-                obscure: true,
-                hint: _editing && widget.initial!.savePassword
-                    ? '*******'
-                    : null,
-              ),
+              _uriField(colors, typo),
               _switchRow(
-                'Use SSL/TLS',
-                _isSrv || _useTls,
-                (v) {
-                  if (!_isSrv) setState(() => _useTls = v);
-                },
-                hint: _isSrv
-                    ? 'implied by mongodb+srv'
-                    : 'managed DBs (RDS, Atlas…) usually require it',
+                'Save Password',
+                _savePassword,
+                (v) => setState(() => _savePassword = v),
               ),
+              // Campo obscurecido quando a senha vai pro cofre: a caixa da
+              // connection string mostra o texto na tela, e quem liga esse
+              // switch está justamente evitando senha em claro. Preenchido,
+              // tem precedência sobre a que estiver na URL.
+              if (_savePassword)
+                _field(
+                  'Password',
+                  _pass,
+                  obscure: true,
+                  hint: _editing && widget.initial!.savePassword
+                      ? '*******'
+                      : null,
+                ),
+              _sshSection(colors, typo),
             ],
             // Guardrails dos agentes (CLI). GUI nunca é bloqueada.
             _switchRow(
               'Allow writes (agents)',
               _allowWrites,
               (v) => setState(() => _allowWrites = v),
-              hint: 'off = agents can only read via CLI',
             ),
             _switchRow(
               'Visible to agents',
               _visibleToAgents,
               (v) => setState(() => _visibleToAgents = v),
-              hint: 'off = hidden from the CLI, GUI only',
             ),
             if (_testing || _testOk != null) ...[
               const SizedBox(height: 4),
@@ -467,19 +825,54 @@ class _DbConnectionDialogState extends State<DbConnectionDialog> {
           child: const Text('Cancel'),
         ),
         OutlineButton(
-          onPressed: _testing ? null : _test,
+          // URI que não parseia: nada a testar nem a salvar.
+          onPressed: _testing || _tryBuild() == null ? null : _test,
           child: const Text('Test'),
         ),
         PrimaryButton(
-          onPressed: () => Navigator.of(context).pop(
-            DbConnectionDialogResult.saved(
-              _build(),
-              _pass.text.isEmpty ? null : _pass.text,
-            ),
-          ),
+          onPressed: _tryBuild() == null
+              ? null
+              : () {
+                  final conn = _tryBuild()!;
+                  Navigator.of(context).pop(
+                    DbConnectionDialogResult.saved(
+                      conn,
+                      _passwordResult,
+                      sshPassphrase: _sshPassphrase.text.isEmpty
+                          ? null
+                          : _sshPassphrase.text,
+                    ),
+                  );
+                },
           child: Text(_editing ? 'Save' : 'Add'),
         ),
       ],
     );
   }
+}
+
+/// Duas riscas diagonais no canto — a convenção visual de "arrastável" que
+/// navegador e editor usam em textarea.
+class _ResizeGripPainter extends CustomPainter {
+  const _ResizeGripPainter(this.color);
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 1
+      ..strokeCap = StrokeCap.round;
+    for (final inset in [0.0, 4.0]) {
+      canvas.drawLine(
+        Offset(size.width - inset, size.height),
+        Offset(size.width, size.height - inset),
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_ResizeGripPainter old) => old.color != color;
 }

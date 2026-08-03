@@ -187,6 +187,27 @@ class CockpitCliHandler {
           Failure(:final error) => CockpitCommandResult.fail(error),
         };
 
+      // `cockpit orchestrate <file.ckp>` — aplica um layout de panes no
+      // workspace ativo. A CLI já resolveu o path pro absoluto. Merge
+      // idempotente (tab de mesmo nome = pulada); devolve {created, skipped}.
+      case 'orchestrate':
+        final path = (c.args['path'] ?? '').toString();
+        if (path.isEmpty) {
+          return const CockpitCommandResult.fail('missing path');
+        }
+        final sender = c.tabId == null ? null : _vm.session(c.tabId!);
+        if (sender != null && sender.projectId != _vm.selectedProjectId) {
+          _vm.selectProject(sender.projectId);
+        }
+        final applied = await _vm.applyLayoutFile(path);
+        return switch (applied) {
+          Success(:final value) => CockpitCommandResult.ok({
+            'created': value.created,
+            'skipped': value.skipped,
+          }),
+          Failure(:final error) => CockpitCommandResult.fail(error),
+        };
+
       case 'list-workspaces':
         final ws = _vm.projects
             .map(
@@ -457,11 +478,21 @@ class CockpitCliHandler {
             final violation = mongoReadViolation(command);
             if (violation != null) return CockpitCommandResult.fail(violation);
           }
+          var database = (c.args['database'] ?? '').toString().trim();
+          // Comando que só roda no `admin` (listDatabases) é roteado pra lá —
+          // é o comando de descoberta do agente e falharia com `Unauthorized`
+          // contra qualquer outra base. Mesma regra do seletor do painel.
+          if (database.isEmpty) {
+            database = mongoForcedDatabase(command) ?? '';
+          }
+          final dbErr = await _mongoDatabaseError(project, conn, database);
+          if (dbErr != null) return CockpitCommandResult.fail(dbErr);
           final reply = await _db.mongoCommand(
             workspaceRoot: project.path,
             workspaceId: project.id,
             connName: conn.name,
             command: command,
+            database: database.isEmpty ? null : database,
           );
           return CockpitCommandResult.ok(reply);
         });
@@ -499,6 +530,18 @@ class CockpitCliHandler {
           final filter = (c.args['filter'] ?? '').toString();
           // Valida o JSON aqui — nunca abrir a tab com filtro quebrado.
           MongoBrowseService.parseFilter(filter);
+          // Diferente do `mongo-cmd`: aqui o `--database` **fixa** a base da
+          // conexão. A tab é o que o humano passa a ver, e ela resolve o alvo
+          // pela conexão — abrir uma view apontando pra outra base seria mentira.
+          final (conn, _) = await _agentConn(project, connName);
+          final database = (c.args['database'] ?? '').toString().trim();
+          if (conn != null) {
+            final dbErr = await _mongoDatabaseError(project, conn, database);
+            if (dbErr != null) return CockpitCommandResult.fail(dbErr);
+            if (database.isNotEmpty) {
+              await _db.selectMongoDatabase(project.id, conn.name, database);
+            }
+          }
           final ok = _vm.openMongoBrowser(
             connName,
             collection,
@@ -519,6 +562,46 @@ class CockpitCliHandler {
 
       default:
         return CockpitCommandResult.fail('unknown command: "${c.cmd}"');
+    }
+  }
+
+  /// Recusa comandos Mongo que não têm database resolvível, listando o que
+  /// existe. `null` = pode seguir.
+  ///
+  /// Sem isto o runner caía em `admin` e o agente recebia `ok:1` com as
+  /// `system.*` do deployment — resposta que *parece* sucesso e não é. Erro
+  /// explícito é a única saída honesta: URL de Atlas não traz database no path,
+  /// e a seleção do painel pode nunca ter acontecido neste workspace.
+  Future<String?> _mongoDatabaseError(
+    Project project,
+    DbConnection conn,
+    String database,
+  ) async {
+    if (database.isNotEmpty) return null;
+    if (_db.mongoDatabase(project.id, conn) != null) return null;
+    final available = await _mongoDatabaseNames(project, conn);
+    return 'query_failed: connection "${conn.name}" has no database — its URL '
+        'has none in the path and none was picked in the app. Pass '
+        '--database <name>${available.isEmpty ? '' : ' (available: '
+                  '${available.join(', ')})'}.';
+  }
+
+  /// Databases do deployment, pro texto do erro acima. Falha vira lista vazia:
+  /// a mensagem principal continua valendo sem eles.
+  Future<List<String>> _mongoDatabaseNames(
+    Project project,
+    DbConnection conn,
+  ) async {
+    try {
+      final svc = MongoBrowseService(_db)
+        ..target(
+          workspaceRoot: project.path,
+          workspaceId: project.id,
+          connName: conn.name,
+        );
+      return await svc.listDatabases();
+    } on Object {
+      return const [];
     }
   }
 

@@ -9,6 +9,7 @@ import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/app_menu.dart';
 import 'package:cockpit/app/core/ui/widgets/app_tooltip.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
@@ -77,7 +78,11 @@ class _DbPanelState extends State<DbPanel> {
       builder: (context) => DbConnectionDialog(engine: engine, viewModel: vm),
     );
     if (result?.connection == null) return;
-    await vm.upsert(result!.connection!, password: result.password);
+    await vm.upsert(
+      result!.connection!,
+      password: result.password,
+      sshPassphrase: result.sshPassphrase,
+    );
   }
 
   /// Conexões expandidas (schema visível). Estado local do painel.
@@ -87,12 +92,20 @@ class _DbPanelState extends State<DbPanel> {
     if (!_expanded.remove(name)) _expanded.add(name);
   });
 
-  /// Menu de contexto de uma conexão: Edit · New .dbq · Delete (confirmado).
+  /// Menu de contexto de uma conexão: Edit · Copy name · New .dbq · Delete
+  /// (confirmado).
   Future<void> _contextMenu(BuildContext anchor, DbConnection conn) async {
     final action = await showAppMenu<String>(
       anchor,
       items: [
         const AppMenuItem(value: 'edit', label: 'Edit…', icon: Icons.edit),
+        // O nome é o identificador que a CLI usa (`--db <nome>`): copiar daqui
+        // evita transcrever à mão pro prompt do agente.
+        const AppMenuItem(
+          value: 'copy-name',
+          label: 'Copy name',
+          icon: Icons.content_copy,
+        ),
         // "New query" só faz sentido pros SQL (abre tab `.dbq`). Redis abre a
         // tabela de chaves (plano 52); Mongo segue CLI-only.
         if (conn.engine.isSql)
@@ -116,6 +129,8 @@ class _DbPanelState extends State<DbPanel> {
     switch (action) {
       case 'edit':
         await _edit(conn);
+      case 'copy-name':
+        await Clipboard.setData(ClipboardData(text: conn.name));
       case 'dbq':
         _newDbq(conn);
       case 'redis':
@@ -142,6 +157,7 @@ class _DbPanelState extends State<DbPanel> {
       await vm.upsert(
         result.connection!,
         password: result.password,
+        sshPassphrase: result.sshPassphrase,
         previousName: conn.name,
       );
     }
@@ -574,8 +590,14 @@ class _SchemaTreeState extends State<_SchemaTree> {
   );
 }
 
-/// Collections de uma conexão Mongo (plano 53), carregadas sob demanda —
-/// análogo do `_SchemaTree` SQL. Clique abre o collection browser.
+/// Árvore Mongo de uma conexão (plano 53) — análogo do `_SchemaTree` SQL.
+///
+/// Quando a URL da conexão traz database, lista as collections dele direto.
+/// Quando não traz (o caso do Atlas, `mongodb+srv://…/?…`), lista **todos** os
+/// databases do deployment, cada um expansível nas suas collections: mostrar o
+/// que existe é mais direto que pedir uma escolha antes de mostrar qualquer
+/// coisa. Abrir uma collection fixa o database daquele ramo como o corrente da
+/// conexão — é o que a tab do browser e o `cockpit mongo` do agente usam.
 class _MongoCollections extends StatefulWidget {
   const _MongoCollections({required this.conn});
   final DbConnection conn;
@@ -585,64 +607,165 @@ class _MongoCollections extends StatefulWidget {
 }
 
 class _MongoCollectionsState extends State<_MongoCollections> {
-  late final Future<List<String>> _collections;
+  /// Databases do deployment (só quando a URL não fixa um).
+  Future<List<String>>? _databases;
+
+  /// Databases expandidos + suas collections, carregadas sob demanda.
+  final _expanded = <String>{};
+  final _collections = <String, Future<List<String>>>{};
 
   @override
   void initState() {
     super.initState();
-    _collections = context.read<DatabaseViewModel>().collections(widget.conn);
+    final vm = context.read<DatabaseViewModel>();
+    if (vm.mongoNeedsDatabase(widget.conn)) {
+      _databases = vm.mongoDatabases(widget.conn);
+      // O database já escolhido antes nasce aberto: o fluxo de todo dia é
+      // voltar na mesma base. Isso custa um `listCollections` especulativo
+      // (~1.4s, quase todo em `open`) que entra na fila do engine à frente do
+      // próximo clique — aceitável desde que o teardown do driver deixou de
+      // cobrar 5s por comando (anaki_mongodb 0.1.7).
+      final current = vm.mongoDatabase(widget.conn);
+      if (current != null) _toggleDatabase(current);
+    } else {
+      _collections[''] = vm.collections(widget.conn);
+      _expanded.add('');
+    }
+  }
+
+  void _toggleDatabase(String database) {
+    if (_expanded.remove(database)) return;
+    _expanded.add(database);
+    _collections[database] ??= context.read<DatabaseViewModel>().collections(
+      widget.conn,
+      database: database.isEmpty ? null : database,
+    );
+  }
+
+  /// Abrir uma collection fixa o database do ramo: a tab e a CLI resolvem o
+  /// alvo pela conexão, não pelo nó clicado.
+  Future<void> _open(String database, String collection) async {
+    final vm = context.read<DatabaseViewModel>();
+    final cockpit = context.read<CockpitViewModel>();
+    if (database.isNotEmpty && vm.mongoDatabase(widget.conn) != database) {
+      await vm.selectMongoDatabase(widget.conn, database);
+    }
+    cockpit.openMongoBrowser(widget.conn.name, collection);
   }
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.colors;
-    final typo = context.typo;
+    final databases = _databases;
     return Padding(
       padding: const EdgeInsets.only(left: 20, bottom: 4),
-      child: FutureBuilder<List<String>>(
-        future: _collections,
-        builder: (context, snap) {
-          if (snap.connectionState != ConnectionState.done) {
-            return _hint('Loading…');
-          }
-          if (snap.hasError) {
-            return _hint(_errorMessage(snap.error), error: true);
-          }
-          final names = snap.data ?? const [];
-          if (names.isEmpty) return _hint('No collections.');
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+      child: databases == null
+          // URL com database: um nível só, como sempre foi.
+          ? _collectionList('')
+          : FutureBuilder<List<String>>(
+              future: databases,
+              builder: (context, snap) {
+                if (snap.connectionState != ConnectionState.done) {
+                  return _hint('Loading…');
+                }
+                if (snap.hasError) {
+                  return _hint(_errorMessage(snap.error), error: true);
+                }
+                final names = snap.data ?? const [];
+                if (names.isEmpty) return _hint('No databases.');
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [for (final name in names) _databaseNode(name)],
+                );
+              },
+            ),
+    );
+  }
+
+  Widget _databaseNode(String database) {
+    final colors = context.colors;
+    final typo = context.typo;
+    final open = _expanded.contains(database);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        HoverTap(
+          onTap: () => setState(() => _toggleDatabase(database)),
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+          child: Row(
             children: [
-              for (final name in names)
-                HoverTap(
-                  onTap: () => context
-                      .read<CockpitViewModel>()
-                      .openMongoBrowser(widget.conn.name, name),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 4,
-                    vertical: 3,
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.data_object, size: 11, color: colors.text4),
-                      const SizedBox(width: 6),
-                      Flexible(
-                        child: Text(
-                          name,
-                          overflow: TextOverflow.ellipsis,
-                          style: typo.mono.copyWith(
-                            fontSize: 11.5,
-                            color: colors.text2,
-                          ),
-                        ),
-                      ),
-                    ],
+              Icon(
+                open ? Icons.expand_more : Icons.chevron_right,
+                size: 13,
+                color: colors.text4,
+              ),
+              const SizedBox(width: 2),
+              Icon(Icons.storage, size: 11, color: colors.text4),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  database,
+                  overflow: TextOverflow.ellipsis,
+                  style: typo.mono.copyWith(
+                    fontSize: 11.5,
+                    color: colors.text2,
                   ),
                 ),
+              ),
             ],
-          );
-        },
-      ),
+          ),
+        ),
+        if (open)
+          Padding(
+            padding: const EdgeInsets.only(left: 15),
+            child: _collectionList(database),
+          ),
+      ],
+    );
+  }
+
+  Widget _collectionList(String database) {
+    final colors = context.colors;
+    final typo = context.typo;
+    final pending = _collections[database];
+    if (pending == null) return const SizedBox.shrink();
+    return FutureBuilder<List<String>>(
+      future: pending,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return _hint('Loading…');
+        }
+        if (snap.hasError) {
+          return _hint(_errorMessage(snap.error), error: true);
+        }
+        final names = snap.data ?? const [];
+        if (names.isEmpty) return _hint('No collections.');
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final name in names)
+              HoverTap(
+                onTap: () => _open(database, name),
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+                child: Row(
+                  children: [
+                    Icon(Icons.data_object, size: 11, color: colors.text4),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        name,
+                        overflow: TextOverflow.ellipsis,
+                        style: typo.mono.copyWith(
+                          fontSize: 11.5,
+                          color: colors.text2,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 

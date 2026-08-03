@@ -1,3 +1,4 @@
+import 'package:cockpit/app/core/ui/overlay/app_popover_handler.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/app_tooltip.dart';
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
@@ -10,6 +11,11 @@ Widget host({required double scale, required Widget child}) => ShadcnApp(
   theme: buildTheme(
     brightness: Brightness.dark,
   ).copyWith(platform: () => TargetPlatform.macOS),
+  // Mesmos handlers do app real — é quem converte a âncora pro espaço do
+  // Overlay (que vive dentro do zoom).
+  popoverHandler: const AppPopoverOverlayHandler(),
+  menuHandler: const AppPopoverOverlayHandler(),
+  tooltipHandler: const AppPopoverOverlayHandler(),
   builder: (context, appChild) {
     if ((scale - 1.0).abs() < 0.001) return appChild!;
     final mq = MediaQuery.of(context);
@@ -64,9 +70,48 @@ void main() {
     await tester.pumpWidget(host(scale: 21 / 14, child: tip));
     final triggerRect = tester.getRect(find.byType(AppTooltip));
     final balloonRect = await showBalloon(tester);
-    // ignore: avoid_print
-    print('trigger: $triggerRect balloon: $balloonRect');
     expect((balloonRect.center.dx - triggerRect.center.dx).abs(), lessThan(30));
     expect(balloonRect.top - triggerRect.bottom, inInclusiveRange(0, 36));
   });
+
+  // Caso dos Select/menus: popover SEM `position`, ancorado no próprio widget
+  // (o handler mede a âncora). Era o que abria deslocado com zoom ≠ 1.
+  for (final scale in const [1.0, 21 / 14]) {
+    testWidgets('popover ancorado abre colado no trigger — zoom $scale', (
+      tester,
+    ) async {
+      const key = Key('trigger');
+      await tester.pumpWidget(
+        host(
+          scale: scale,
+          child: Builder(
+            builder: (context) => GestureDetector(
+              key: key,
+              behavior: HitTestBehavior.opaque,
+              onTap: () => showPopover<void>(
+                context: context,
+                alignment: Alignment.topLeft,
+                anchorAlignment: Alignment.bottomLeft,
+                builder: (_) => const SizedBox(
+                  width: 120,
+                  height: 40,
+                  child: Text('menu'),
+                ),
+              ),
+              child: const SizedBox(width: 60, height: 20),
+            ),
+          ),
+        ),
+      );
+      final triggerRect = tester.getRect(find.byKey(key));
+      await tester.tap(find.byKey(key));
+      // pump manual (não pumpAndSettle): com o handler do shadcn o ticker de
+      // `follow` roda pra sempre e o settle nunca chega.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      final popoverRect = tester.getRect(find.text('menu'));
+      expect((popoverRect.left - triggerRect.left).abs(), lessThan(12));
+      expect(popoverRect.top - triggerRect.bottom, inInclusiveRange(-4, 24));
+    });
+  }
 }

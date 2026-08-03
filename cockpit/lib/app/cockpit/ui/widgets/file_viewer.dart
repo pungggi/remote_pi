@@ -17,13 +17,15 @@ import 'package:cockpit/app/core/ui/menu/editor_menu_bridge.dart';
 import 'package:cockpit/app/core/ui/settings_controller.dart';
 import 'package:cockpit/app/core/ui/widgets/code_editing_controller.dart';
 import 'package:cockpit/app/core/ui/widgets/code_highlight.dart';
+import 'package:cockpit/app/core/ui/widgets/selectable_scroll.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/media_view.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
 import 'package:flutter_modular/flutter_modular.dart';
-// SelectionArea (Material) envolve o scroll do markdown/código → seleção +
-// auto-scroll com âncora estável (content-space). SelectionContainer.disabled
-// (via shadcn/widgets) tira o gutter de números da seleção.
+// SelectionArea (Material) fica SEMPRE dentro do scroll (markdown via
+// SelectableScroll, código em volta do Text) — em volta do scroll a seleção
+// escorrega ao rolar com Interface size != 14; ver [SelectableScroll].
+// SelectionContainer.disabled (via shadcn/widgets) tira o gutter da seleção.
 import 'package:flutter/material.dart' show SelectionArea;
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
@@ -97,13 +99,21 @@ class _FileViewerState extends State<FileViewer> {
   /// texto não mudou, só o realce).
   bool _settingMatches = false;
 
-  /// LSP: VM (captado uma vez), assinatura de diagnostics e debounce do
-  /// didChange. `_diagnostics` espelha o último batch deste documento — vale pro
-  /// editor (via `_ctrl`) **e** pro viewer read-only.
+  /// LSP: VM (captado uma vez), assinatura de diagnostics, debounce do
+  /// didChange, e tokens semânticos. `_diagnostics` espelha o último batch;
+  /// `_semanticTokens` e `_semanticLegend` são locais (requeridos pro decode).
   CockpitViewModel? _vm;
   StreamSubscription<LspDiagnosticsBatch>? _diagSub;
   Timer? _lspDebounce;
   List<LspDiagnostic> _diagnostics = const <LspDiagnostic>[];
+  List<SemanticRange> _semanticTokens = const <SemanticRange>[];
+
+  /// `true` depois do 1º pedido de semantic tokens pra esta aba. Evita pedir à
+  /// toa pra abas **inativas** (o `IndexedStack` mantém todas montadas, mas só
+  /// a ativa é visível) — igual VSCode, que só computa semantic tokens do
+  /// editor visível. Some abas abertas de uma vez (restauração de sessão) não
+  /// disparam N requests simultâneos ao LSP; só a que o usuário está olhando.
+  bool _semanticTokensRequested = false;
 
   /// `true` quando o documento foi de fato aberto no LSP. Arquivos **fora do
   /// workspace** (abertos por drag&drop do SO) ficam sem language server →
@@ -163,11 +173,12 @@ class _FileViewerState extends State<FileViewer> {
     final vm = context.read<CockpitViewModel>();
     _vm = vm;
     final path = widget.session.path;
-    // Fora do workspace (drop externo) → sem LSP. Mantém o highlight léxico.
-    if (!vm.isInsideProject(widget.session.projectId, path)) {
-      _lspOn = false;
-      return;
-    }
+    // Sem gate por "está dentro do workspace": arquivos externos (classe do SDK
+    // navegada por go-to-definition) são roteados pelo pool ao servidor que já
+    // existe pro projeto — que os conhece, pois são dependências dele. Não sobe
+    // servidor novo com raiz no SDK (isso indexaria o pacote inteiro e travava
+    // a UI). Ver `LspServerPool._rootFor`. Arquivo solto sem workspace nenhum
+    // continua degradando pro highlight léxico, sem crash.
     _lspOn = true;
     final uri = Uri.file(path).toString();
     unawaited(vm.lspOpenDocument(path, text, widget.session.projectId));
@@ -176,6 +187,38 @@ class _FileViewerState extends State<FileViewer> {
       setState(() => _diagnostics = batch.diagnostics);
       _ctrl?.diagnostics = batch.diagnostics;
     });
+    // Pede tokens semânticos logo após abrir — só se a aba já está ATIVA.
+    // Abas de fundo (restauração de sessão abre várias de uma vez) esperam
+    // ficar visíveis antes de pedir (ver `didUpdateWidget`), evitando N
+    // requests simultâneos ao mesmo servidor por causa de abas que o usuário
+    // nem está olhando ainda.
+    if (widget.active) _requestSemanticTokens();
+  }
+
+  /// Pede tokens semânticos do documento ao LSP e guarda em `_semanticTokens`.
+  void _requestSemanticTokens() {
+    final vm = _vm;
+    final path = widget.session.path;
+    if (vm == null || !_lspOn) return;
+    _semanticTokensRequested = true;
+    // Versão do buffer no momento do pedido. Os offsets dos tokens só valem pra
+    // ESTE conteúdo; se o usuário digitar enquanto o servidor responde, aplicá-los
+    // pintaria as letras erradas. Compara por valor (não identidade): mesmo
+    // conteúdo = offsets válidos, mesmo que a instância da String tenha trocado.
+    final requestedFor = _ctrl?.text;
+    unawaited(
+      vm.lspSemanticTokensFull(path).then((tokens) {
+        if (!mounted) return;
+        if (_ctrl?.text != requestedFor) return; // resposta obsoleta → descarta
+        // Converte `SemanticToken` pra `SemanticRange` (offsets já estão lineares).
+        final ranges = <SemanticRange>[
+          for (final t in tokens.tokens)
+            SemanticRange(t.start, t.end, t.tokenType),
+        ];
+        setState(() => _semanticTokens = ranges);
+        _ctrl?.semanticTokens = ranges;
+      }),
+    );
   }
 
   @override
@@ -204,6 +247,8 @@ class _FileViewerState extends State<FileViewer> {
       _diagSub?.cancel();
       _diagSub = null;
       _diagnostics = const <LspDiagnostic>[];
+      _semanticTokens = const <SemanticRange>[];
+      _semanticTokensRequested = false;
 
       // Recria o controller com o novo conteúdo.
       final text = _editableText;
@@ -244,6 +289,12 @@ class _FileViewerState extends State<FileViewer> {
     }
     // Virou a aba focada (seleção da tab) → joga o foco no editor.
     if (widget.focused && !old.focused) _focusEditorIfActive();
+    // Virou a aba ATIVA (troca de tab) e ainda não pedimos semantic tokens
+    // (aba ficou em segundo plano desde a abertura) → pede agora, só pra quem
+    // o usuário está de fato olhando.
+    if (widget.active && !old.active && !_semanticTokensRequested) {
+      _requestSemanticTokens();
+    }
   }
 
   /// `true` quando há editor visível (texto/código sempre; markdown/svg só em
@@ -343,12 +394,19 @@ class _FileViewerState extends State<FileViewer> {
     // Buffer mudou com a busca aberta → os offsets deslocaram; recasa.
     if (_findOpen && _findCtrl.text.isNotEmpty) _recomputeFind(reveal: false);
     // Edição do usuário → notifica o LSP (debounced p/ juntar rajada de teclas).
+    // Junto, re-pede semantic tokens (mesmo debounce).
     final ctrl = _ctrl;
     if (ctrl == null) return;
     if (!_lspOn) return;
     _lspDebounce?.cancel();
-    _lspDebounce = Timer(const Duration(milliseconds: 400), () {
-      _vm?.lspChangeDocument(widget.session.path, ctrl.text);
+    _lspDebounce = Timer(const Duration(milliseconds: 400), () async {
+      // `await` no didChange ANTES de pedir tokens: sem isso o request saía
+      // junto com a notificação e o servidor respondia pela versão ANTERIOR do
+      // documento — os offsets vinham deslocados e a cor caía nas letras
+      // erradas (o texto já digitado "piscava" a cada rodada).
+      await _vm?.lspChangeDocument(widget.session.path, ctrl.text);
+      if (!mounted) return;
+      _requestSemanticTokens();
     });
   }
 
@@ -668,7 +726,12 @@ class _FileViewerState extends State<FileViewer> {
       FileViewMarkdown(:final text) =>
         editingNow
             ? _editor()
-            : SelectionArea(child: _Scroll(child: AgentMarkdown(text))),
+            // SelectionArea vive DENTRO do scroll (SelectableScroll) — em volta
+            // dela a seleção escorrega ao rolar com Interface size != 14.
+            : SelectableScroll(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                child: AgentMarkdown(text),
+              ),
       FileViewSvg(:final text) =>
         editingNow ? _editor() : _SvgPreview(source: text),
       FileViewText(:final text, :final language) =>
@@ -678,6 +741,7 @@ class _FileViewerState extends State<FileViewer> {
                 text: text,
                 language: language,
                 diagnostics: _diagnostics,
+                semanticTokens: _semanticTokens,
               ),
       FileViewImage(:final path) => _ImageView(path: path),
       FileViewAudio(:final path) => MediaView(
@@ -787,6 +851,9 @@ class _FileViewerState extends State<FileViewer> {
                 ? _findMatches[_findIndex].start
                 : null,
             revealMatchTick: _findRevealTick,
+            onGoToDefinition: (pos) {
+              _vm?.goToDefinition(widget.session.path, pos.line, pos.character);
+            },
           ),
         ),
         if (_findOpen)
@@ -939,19 +1006,6 @@ class _Segmented extends StatelessWidget {
   }
 }
 
-class _Scroll extends StatelessWidget {
-  const _Scroll({required this.child});
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-      child: child,
-    );
-  }
-}
-
 /// Visualizador read-only de texto/código com **gutter de número de linha** à
 /// esquerda (fixo na horizontal) e **scroll horizontal** pro conteúdo quando a
 /// linha é longa. O texto segue selecionável; os números, não.
@@ -960,6 +1014,7 @@ class _TextView extends StatefulWidget {
     required this.text,
     this.language,
     this.diagnostics = const <LspDiagnostic>[],
+    this.semanticTokens = const <SemanticRange>[],
   });
 
   final String text;
@@ -969,6 +1024,9 @@ class _TextView extends StatefulWidget {
 
   /// Diagnostics do LSP a sublinhar (mesmo do editor).
   final List<LspDiagnostic> diagnostics;
+
+  /// Tokens semânticos do LSP a colorir (mesmos do editor).
+  final List<SemanticRange> semanticTokens;
 
   @override
   State<_TextView> createState() => _TextViewState();
@@ -1001,6 +1059,7 @@ class _TextViewState extends State<_TextView> {
       language: widget.language,
       baseStyle: codeStyle,
       diagnostics: diagnosticRangesFor(widget.text, widget.diagnostics),
+      semanticTokens: widget.semanticTokens,
     );
     final numStyle = typo.mono.copyWith(
       color: syntax.base.withValues(alpha: 0.4),
@@ -1014,58 +1073,53 @@ class _TextViewState extends State<_TextView> {
     // **pinada no rodapé do viewport** (não some ao fim do conteúdo). O scroll
     // horizontal é aninhado dentro do vertical (`depth == 1`), por isso o
     // `notificationPredicate` filtra por profundidade. A vertical fica na borda.
-    // SelectionArea (não SelectableText): a seleção fica ancorada na posição de
-    // conteúdo do parágrafo. Durante o autoscroll do drag, o SingleChildScrollView
-    // vertical fica DENTRO da SelectionArea, então o offset muda mas a âncora
-    // inicial não escorrega junto (bug do SelectableText, que guarda a âncora em
-    // coordenadas globais e não re-projeta ao rolar).
+    // SelectionArea (não SelectableText) fica no ponto MAIS INTERNO — dentro dos
+    // dois scrolls, em volta só do código. Envolvendo os scrolls, a seleção
+    // escorrega ao rolar com Interface size != 14; ver [SelectableScroll].
     return ColoredBox(
       color: syntax.background,
-      child: SelectionArea(
+      child: Scrollbar(
+        controller: _horizontal,
+        thumbVisibility: true,
+        scrollbarOrientation: ScrollbarOrientation.bottom,
+        notificationPredicate: (notification) => notification.depth == 1,
         child: Scrollbar(
-          controller: _horizontal,
-          thumbVisibility: true,
-          scrollbarOrientation: ScrollbarOrientation.bottom,
-          notificationPredicate: (notification) => notification.depth == 1,
-          child: Scrollbar(
+          controller: _vertical,
+          child: SingleChildScrollView(
             controller: _vertical,
-            child: SingleChildScrollView(
-              controller: _vertical,
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Gutter — números à direita, fixo (não rola na horizontal).
-                  // Fora da seleção pra não sujar o texto copiado com os números.
-                  SelectionContainer.disabled(
-                    child: Padding(
-                      padding: const EdgeInsets.only(left: 14, right: 14),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          for (var i = 1; i <= lineCount; i++)
-                            Text('$i', style: numStyle),
-                        ],
-                      ),
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Gutter — números à direita, fixo (não rola na horizontal).
+                // Fora da seleção pra não sujar o texto copiado com os números.
+                SelectionContainer.disabled(
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 14, right: 14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        for (var i = 1; i <= lineCount; i++)
+                          Text('$i', style: numStyle),
+                      ],
                     ),
                   ),
-                  Container(
-                    width: 1,
-                    color: syntax.base.withValues(alpha: 0.15),
-                  ),
-                  // Código — rola na horizontal quando a linha estoura; selecionável.
-                  Expanded(
-                    child: SingleChildScrollView(
-                      controller: _horizontal,
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.only(left: 14, right: 16),
+                ),
+                Container(width: 1, color: syntax.base.withValues(alpha: 0.15)),
+                // Código — rola na horizontal quando a linha estoura; selecionável.
+                Expanded(
+                  child: SingleChildScrollView(
+                    controller: _horizontal,
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.only(left: 14, right: 16),
+                    child: SelectionArea(
                       child: codeSpan == null
                           ? Text(widget.text, style: codeStyle)
                           : Text.rich(codeSpan),
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),

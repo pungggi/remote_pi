@@ -11,7 +11,8 @@ import 'package:flutter/foundation.dart';
 /// 1. Copia o helper `cockpit-hook` empacotado no app (compilado pelo
 ///    `macos/build_hook.sh` / passo de build do Windows) para um caminho estável
 ///    (`~/.cockpit/bin/cockpit-hook[.exe]`) — o `settings.json` aponta pra cópia,
-///    não pro bundle (sobrevive a update/move). Recopia só quando o tamanho muda.
+///    não pro bundle (sobrevive a update/move). Recopia quando o **conteúdo**
+///    difere (tamanho igual não significa binário igual — ver [_sameContent]).
 /// 2. Faz **append idempotente** de um entry marcado (`_cockpit`) em cada evento
 ///    de hook, sem nunca reescrever a lista (preserva hooks do usuário/iTerm2/
 ///    plugins). Re-rodar remove o entry antigo nosso e re-adiciona — não duplica.
@@ -44,7 +45,7 @@ class ClaudeHookInstallerImpl implements ClaudeHookInstaller {
       return const Failure<void, String>('HOME não resolvido');
     }
     try {
-      final helperPath = await _ensureHelper(home);
+      final helperPath = await _ensureHelper();
       if (helperPath == null) {
         return const Failure<void, String>(
           'helper cockpit-hook não encontrado',
@@ -53,30 +54,35 @@ class ClaudeHookInstallerImpl implements ClaudeHookInstaller {
       await _installHooks(home: home, helperPath: helperPath);
       // CLI interna `cockpit`: materializa o binário e, se veio, instala a skill
       // que ensina o agente a usá-lo. Best-effort — não é fatal pro boot.
-      await _ensureCli(home);
+      await _ensureCli();
       return const Success<void, String>(null);
     } catch (e) {
       return Failure<void, String>('$e');
     }
   }
 
-  /// Copia o helper empacotado para `~/.cockpit/bin/cockpit-hook[.exe]`.
-  /// Recopia só se o tamanho difere. Devolve o caminho, ou `null` se o binário
-  /// não está no bundle (ex.: dev sem o passo de build) e não há cópia prévia.
-  Future<String?> _ensureHelper(String home) async {
+  /// Copia o helper empacotado para `~/.cockpit/bin/cockpit-hook[.exe]` —
+  /// diretório compartilhado entre builds de propósito (ver [cockpitHookDir]).
+  /// Devolve o caminho, ou `null` se o binário não está no bundle (ex.: dev sem
+  /// o passo de build) e não há cópia prévia.
+  Future<String?> _ensureHelper() async {
     final name = Platform.isWindows ? 'cockpit-hook.exe' : 'cockpit-hook';
-    return _materialize(home, bundledName: name, destName: name);
+    final dir = cockpitHookDir();
+    if (dir == null) return null;
+    return _materialize(dir, bundledName: name, destName: name);
   }
 
-  /// Materializa a CLI interna `cockpit` em `~/.cockpit/bin/cockpit[.exe]` (o
-  /// fonte é empacotado como `cockpit-cli` pra não colidir com `cockpit.app`) e,
+  /// Materializa a CLI interna `cockpit` em `~/.cockpit/bin[-debug]/cockpit[.exe]`
+  /// (o fonte é empacotado como `cockpit-cli` pra não colidir com `cockpit.app`) e,
   /// se materializou, roda `cockpit install-skill` (idempotente) pra a skill
   /// nascer instalada. Silencioso: falha aqui não pode derrubar o boot.
-  Future<void> _ensureCli(String home) async {
+  Future<void> _ensureCli() async {
     final bundledName = Platform.isWindows ? 'cockpit-cli.exe' : 'cockpit-cli';
     final destName = Platform.isWindows ? 'cockpit.exe' : 'cockpit';
+    final dir = cockpitCliDir();
+    if (dir == null) return;
     final path = await _materialize(
-      home,
+      dir,
       bundledName: bundledName,
       destName: destName,
     );
@@ -88,22 +94,26 @@ class ClaudeHookInstallerImpl implements ClaudeHookInstaller {
     }
   }
 
-  /// Copia um binário empacotado ([bundledName]) para `~/.cockpit/bin/[destName]`.
-  /// Recopia só se o tamanho difere. Devolve o caminho, ou `null` se não está no
-  /// bundle (ex.: dev sem o passo de build) e não há cópia prévia.
+  /// Copia um binário empacotado ([bundledName]) para `[destDirPath]/[destName]`.
+  /// Devolve o caminho, ou `null` se não está no bundle (ex.: dev sem o passo de
+  /// build) e não há cópia prévia.
+  ///
+  /// **Tamanho não decide se está atualizado.** Dois exe AOT do Dart compilados
+  /// de fontes diferentes saem com frequência com o byte count idêntico (o
+  /// snapshot é padded), então a checagem antiga por `length()` deixava a cópia
+  /// velha pra trás em silêncio — o app novo rodando com a CLI de semanas atrás.
+  /// Comparamos o conteúdo e só recopiamos quando difere de verdade.
   Future<String?> _materialize(
-    String home, {
+    String destDirPath, {
     required String bundledName,
     required String destName,
   }) async {
-    final destDir = Directory('$home/.cockpit/bin');
+    final destDir = Directory(destDirPath);
     final dest = File('${destDir.path}/$destName');
 
     final bundled = _bundledHelper(bundledName);
     if (bundled != null && await bundled.exists()) {
-      final srcLen = await bundled.length();
-      final upToDate = await dest.exists() && await dest.length() == srcLen;
-      if (!upToDate) {
+      if (!await _sameContent(bundled, dest)) {
         await destDir.create(recursive: true);
         await bundled.copy(dest.path);
         await _chmodExec(dest.path);
@@ -114,6 +124,25 @@ class ClaudeHookInstallerImpl implements ClaudeHookInstaller {
     // Dev / sem bundle: usa cópia pré-existente (colocada manualmente).
     if (await dest.exists()) return _hookPath(dest.path);
     return null;
+  }
+
+  /// `true` quando [dest] já é byte-a-byte igual a [src]. O tamanho é só o
+  /// descarte barato; quem decide é a comparação de conteúdo.
+  Future<bool> _sameContent(File src, File dest) async {
+    if (!await dest.exists()) return false;
+    if (await src.length() != await dest.length()) return false;
+    try {
+      final a = await src.readAsBytes();
+      final b = await dest.readAsBytes();
+      for (var i = 0; i < a.length; i++) {
+        if (a[i] != b[i]) return false;
+      }
+      return true;
+    } catch (_) {
+      // Ilegível por qualquer motivo: trata como desatualizado e recopia — o
+      // custo é uma cópia extra, o risco oposto é ficar com binário velho.
+      return false;
+    }
   }
 
   /// Normaliza o caminho para o `command` do hook usando **forward slashes**.

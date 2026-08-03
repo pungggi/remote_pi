@@ -64,7 +64,7 @@ Module buildFooModule(/* deps async resolvidas no main */) => createModule(
     + `ConnectivityViewModel`.
   - **vários primitivos** ambíguos (`String`...): um **value object injetável**
     (ex.: `UpdateTarget`).
-- **Valores async** (Hive boxes, `PiSpawnConfig`, versão) são resolvidos no `main`
+- **Valores async** (stores JSON, `PiSpawnConfig`, versão) são resolvidos no `main`
   e passados às factories `buildXModule(...)` — `register` é síncrono.
 - Registre a feature no `app_module.dart` com `c.module(fooModule)`.
 

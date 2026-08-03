@@ -7,6 +7,8 @@ import 'package:cockpit/app/cockpit/domain/contracts/url_opener.dart';
 import 'package:cockpit/app/cockpit/domain/entities/update_info.dart';
 import 'package:cockpit/app/cockpit/domain/value_objects/semver.dart';
 import 'package:cockpit/app/cockpit/domain/value_objects/update_target.dart';
+import 'package:cockpit/app/core/domain/entities/app_settings.dart';
+import 'package:cockpit/app/core/ui/settings_controller.dart';
 import 'package:flutter/foundation.dart';
 
 /// Dono do mini card de atualização do rail. Tem **três modos**, decididos pela
@@ -39,6 +41,11 @@ class UpdateViewModel extends ChangeNotifier {
   final UrlOpener _opener;
   final UpdateTarget _target;
   final SelfUpdater _selfUpdater;
+  SettingsController? _settingsController;
+
+  void attachSettings(SettingsController controller) {
+    _settingsController = controller;
+  }
 
   /// Versão do app rodando (de package_info, resolvida no boot).
   String get currentVersion => _target.version;
@@ -157,12 +164,30 @@ class UpdateViewModel extends ChangeNotifier {
       await _selfUpdater.checkForUpdates(inBackground: false);
       return;
     }
-    await _runCheck();
+    await _runCheck(force: true);
   }
 
   /// Uma passada de checagem (boot ou periódica).
-  Future<void> _runCheck() async {
-    if (_disposed || !hasUpdateChannel) return;
+  Future<void> _runCheck({bool force = false}) async {
+    if (_disposed) return;
+
+    final freq =
+        _settingsController?.settings.updateCheckFrequency ??
+            UpdateCheckFrequency.never;
+    if (!force) {
+      if (freq == UpdateCheckFrequency.never) return;
+
+      final lastCheck = _settingsController?.settings.lastUpdateCheckTime;
+      if (lastCheck != null) {
+        final now = DateTime.now();
+        final diff = now.difference(lastCheck);
+        if (freq == UpdateCheckFrequency.daily && diff.inDays < 1) return;
+        if (freq == UpdateCheckFrequency.weekly && diff.inDays < 7) return;
+        if (freq == UpdateCheckFrequency.monthly && diff.inDays < 30) return;
+      }
+    }
+
+    _settingsController?.setLastUpdateCheckTime(DateTime.now());
     if (isSelfUpdate) {
       _selfSub ??= _selfUpdater.changes.listen(_onSelfUpdateChange);
       if (!_selfInitialized) {

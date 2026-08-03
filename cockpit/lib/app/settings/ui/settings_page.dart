@@ -400,6 +400,21 @@ class _GeneralPanel extends StatelessWidget {
                   ],
                 ),
               ),
+              _Section(
+                label: 'Updates',
+                child: _Card(
+                  children: [
+                    _Row(
+                      title: 'Check for updates',
+                      description: 'How often Cockpit should look for new versions.',
+                      trailing: _UpdateCheckDropdown(
+                        value: s.updateCheckFrequency,
+                        onChanged: controller.setUpdateCheckFrequency,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
               const _StorageSection(),
               const _DiagnosticsSection(),
             ],
@@ -553,7 +568,7 @@ class _StorageSectionState extends State<_StorageSection> {
     setState(() => _busy = true);
     // Copia os dados atuais pra nova pasta (se estiver vazia) — evita a
     // surpresa de "meus projetos sumiram" após o restart.
-    await StorageLocation.migrateHiveTo(picked);
+    await StorageLocation.migrateStateTo(picked);
     await StorageLocation.setOverrideRoot(picked);
     if (!mounted) return;
     setState(() => _busy = false);
@@ -1465,6 +1480,41 @@ class _SyntaxDropdown extends StatelessWidget {
       label: _labels[value]!,
       onTap: () async {
         final picked = await showAppMenu<SyntaxThemeId>(
+          context,
+          minWidth: 180,
+          items: [
+            for (final e in _labels.entries)
+              AppMenuItem(
+                value: e.key,
+                label: e.value,
+                selected: e.key == value,
+              ),
+          ],
+        );
+        if (picked != null) onChanged(picked);
+      },
+    );
+  }
+}
+
+class _UpdateCheckDropdown extends StatelessWidget {
+  const _UpdateCheckDropdown({required this.value, required this.onChanged});
+  final UpdateCheckFrequency value;
+  final ValueChanged<UpdateCheckFrequency> onChanged;
+
+  static const _labels = <UpdateCheckFrequency, String>{
+    UpdateCheckFrequency.daily: 'Daily',
+    UpdateCheckFrequency.weekly: 'Weekly',
+    UpdateCheckFrequency.monthly: 'Monthly',
+    UpdateCheckFrequency.never: 'Never',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    return _DropdownChip(
+      label: _labels[value]!,
+      onTap: () async {
+        final picked = await showAppMenu<UpdateCheckFrequency>(
           context,
           minWidth: 180,
           items: [

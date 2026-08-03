@@ -61,17 +61,19 @@ class SystemPermissionsImpl implements SystemPermissions {
         requestSoundPermission: false,
       ),
     );
-    await _plugin.initialize(settings);
+    await _plugin.initialize(settings: settings);
     _initialized = true;
   }
 
   Future<void> _showTest() async {
     await _ensureInitialized();
     await _plugin.show(
-      _testId++,
-      'Cockpit',
-      'Notifications enabled — you will see agent alerts here.',
-      const NotificationDetails(macOS: DarwinNotificationDetails()),
+      id: _testId++,
+      title: 'Cockpit',
+      body: 'Notifications enabled — you will see agent alerts here.',
+      notificationDetails: const NotificationDetails(
+        macOS: DarwinNotificationDetails(),
+      ),
     );
   }
 }

@@ -1,25 +1,24 @@
 import 'dart:io';
 
-import 'package:cockpit/app/cockpit/data/repositories/hive_project_repository.dart';
+import 'package:cockpit/app/cockpit/data/repositories/json_project_repository.dart';
 import 'package:cockpit/app/cockpit/data/repositories/project_schema_migrator.dart';
 import 'package:cockpit/app/cockpit/domain/entities/realm.dart';
+import 'package:cockpit/app/core/data/setup/json_state_store.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive/hive.dart';
 
 void main() {
   late Directory tmp;
-  late Box<dynamic> projects;
-  late Box<dynamic> layouts;
+  late JsonStateStore projects;
+  late JsonStateStore layouts;
 
   setUp(() async {
     tmp = await Directory.systemTemp.createTemp('migrator_test');
-    Hive.init(tmp.path);
-    projects = await Hive.openBox<dynamic>('projects_test');
-    layouts = await Hive.openBox<dynamic>('layouts_test');
+    projects = await JsonStateStore.open(tmp.path, 'projects_test');
+    layouts = await JsonStateStore.open(tmp.path, 'layouts_test');
   });
 
   tearDown(() async {
-    await Hive.deleteFromDisk();
+    JsonStateStore.resetCacheForTesting();
     await tmp.delete(recursive: true);
   });
 
@@ -37,7 +36,7 @@ void main() {
     const path = '/Users/x/proj';
     await projects.put(path, legacyProject(path));
     await layouts.put(path, '{"tree":{}}');
-    await projects.put(HiveProjectRepository.lastSelectedPrefix, path);
+    await projects.put(JsonProjectRepository.lastSelectedPrefix, path);
 
     await const ProjectSchemaMigrator().run(projects, layouts);
 
@@ -58,10 +57,10 @@ void main() {
     expect(layouts.get(newId), '{"tree":{}}');
 
     // Last-selected legado → per-realm do Default, apontando pro id novo.
-    expect(projects.get(HiveProjectRepository.lastSelectedPrefix), isNull);
+    expect(projects.get(JsonProjectRepository.lastSelectedPrefix), isNull);
     expect(
       projects.get(
-        '${HiveProjectRepository.lastSelectedPrefix}::${Realm.defaultId}',
+        '${JsonProjectRepository.lastSelectedPrefix}::${Realm.defaultId}',
       ),
       newId,
     );
@@ -84,7 +83,7 @@ void main() {
     'last-selected legado apontando pro Cockpit sintético é preservado',
     () async {
       await projects.put(
-        HiveProjectRepository.lastSelectedPrefix,
+        JsonProjectRepository.lastSelectedPrefix,
         '__cockpit__',
       );
 
@@ -92,11 +91,11 @@ void main() {
 
       expect(
         projects.get(
-          '${HiveProjectRepository.lastSelectedPrefix}::${Realm.defaultId}',
+          '${JsonProjectRepository.lastSelectedPrefix}::${Realm.defaultId}',
         ),
         '__cockpit__',
       );
-      expect(projects.get(HiveProjectRepository.lastSelectedPrefix), isNull);
+      expect(projects.get(JsonProjectRepository.lastSelectedPrefix), isNull);
     },
   );
 

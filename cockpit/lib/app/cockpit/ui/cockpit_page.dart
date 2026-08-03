@@ -16,6 +16,7 @@ import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/settings_controller.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
 import 'package:cockpit/app/core/utils/native_folder_picker.dart';
+import 'package:flutter/gestures.dart' show PointerDownEvent, kBackMouseButton;
 import 'package:flutter/services.dart'
     show
         HardwareKeyboard,
@@ -27,6 +28,11 @@ import 'package:flutter/services.dart'
 import 'package:cockpit/app/core/ui/widgets/app_tooltip.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:flutter_modular/flutter_modular.dart';
+import 'package:cockpit/app/core/domain/result.dart';
+import 'package:cockpit/app/cockpit/domain/contracts/ssh_tunnel.dart';
+import 'package:cockpit/app/cockpit/domain/services/db_query_service.dart';
+import 'package:cockpit/app/cockpit/ui/viewmodels/database_viewmodel.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/ssh_prompts.dart';
 
 /// Shell do Cockpit: top bar + rail de projetos + multiplexador (árvore de
 /// splits). Cada folha é uma [PaneView] com abas; cada aba é um agente.
@@ -84,7 +90,9 @@ class _CockpitPageState extends State<CockpitPage> {
     // Dispara o carregamento inicial dos ViewModels page-scoped ao montar a rota.
     // Os módulos provêm via `.new`, então não encadeiam mais `..init()`/`..check()`.
     context.read<CockpitViewModel>().init();
-    context.read<UpdateViewModel>().check();
+    final updateVm = context.read<UpdateViewModel>();
+    updateVm.attachSettings(context.read<SettingsController>());
+    updateVm.check();
     // Publica o estado do workspace no menu File (New Agent / New Terminal): só
     // habilitam quando há workspace ativo. Re-sincroniza a cada mudança da VM.
     _workspaceMenu = context.read<WorkspaceMenuBridge>();
@@ -119,7 +127,35 @@ class _CockpitPageState extends State<CockpitPage> {
       _tasksMin,
       _tasksMax,
     );
+    _wireSshPrompts();
   }
+
+  /// Liga os prompts de SSH (plano 54) ao motor de queries. É aqui e não no
+  /// módulo porque eles precisam de `BuildContext` — e é o que separa a GUI
+  /// (pode perguntar) da CLI (não pode: prompts nulos → erro honesto).
+  void _wireSshPrompts() {
+    final service = _dbService = context.read<DatabaseViewModel>().service;
+    service
+      ..passphrasePrompt = (connectionName, keyPath) async {
+        if (!mounted) return null;
+        return showSshPassphraseDialog(
+          context,
+          connectionName: connectionName,
+          keyPath: keyPath,
+        );
+      }
+      ..hostKeyPrompt = (endpoint, fingerprint) async {
+        if (!mounted) return HostKeyVerdict.reject;
+        return showSshHostKeyDialog(
+          context,
+          endpoint: endpoint,
+          fingerprint: fingerprint,
+        );
+      };
+  }
+
+  /// Capturado no initState pra uso seguro no dispose (sem `context`).
+  DbQueryService? _dbService;
 
   SettingsController? _settings;
   Map<String, String> _lastLspCommands = const <String, String>{};
@@ -246,6 +282,12 @@ class _CockpitPageState extends State<CockpitPage> {
     _settings?.removeListener(_syncCockpit);
     _menuVm?.removeListener(_syncWorkspaceMenu);
     _workspaceMenu?.setWorkspace(hasWorkspace: false);
+    // Túneis SSH abertos morrem com o shell — e os prompts vão junto, senão
+    // ficariam apontando pra um contexto desmontado.
+    _dbService
+      ?..passphrasePrompt = null
+      ..hostKeyPrompt = null
+      ..closeSshTunnels();
     if (requestFocusActiveComposer == _focusActiveComposer) {
       requestFocusActiveComposer = null;
     }
@@ -662,6 +704,14 @@ class _CockpitPageState extends State<CockpitPage> {
     return true;
   }
 
+  /// Botão lateral "voltar" do mouse (side button, `kBackMouseButton`) reativa
+  /// a aba anterior da pane focada — mesma navegação de `goToDefinition`.
+  /// `Listener` só observa (não compete na arena de gestos), então não afeta
+  /// clique/drag normal de nenhum widget descendente.
+  void _onPointerDown(PointerDownEvent event) {
+    if (event.buttons & kBackMouseButton != 0) _vm.goBackInPane();
+  }
+
   @override
   Widget build(BuildContext context) {
     final vm = context.watch<CockpitViewModel>();
@@ -674,241 +724,253 @@ class _CockpitPageState extends State<CockpitPage> {
       );
     }
 
-    return CallbackShortcuts(
-      bindings: _focusComposerBindings(),
-      // Focus(autofocus) garante que a página esteja na cadeia de foco mesmo
-      // antes de clicar em algo — senão o atalho ⌘L não dispara num agente
-      // recém-aberto (nada focado ainda).
-      child: Focus(
-        autofocus: true,
-        child: Scaffold(
-          backgroundColor: colors.bg,
-          child: Column(
-            children: [
-              CockpitTopbar(
-                projectName: vm.selectedDisplayTitle ?? 'Cockpit',
-                railVisible: vm.railVisible,
-                treeVisible: vm.treeVisible,
-                onToggleRail: vm.toggleRail,
-                onToggleTree: vm.toggleTree,
-                filesEnabled: !vm.isSystemTerminal(vm.selectedProjectId),
-              ),
-              Expanded(
-                child: Row(
-                  children: [
-                    if (vm.railVisible)
-                      Stack(
-                        children: [
-                          ProjectsRail(
-                            width: _railWidth,
-                            projects: vm.rootProjects,
-                            worktreesOf: vm.worktreesOf,
-                            selectedId: vm.selectedProjectId,
-                            notificationCount: vm.notificationCount,
-                            gitInfo: vm.gitInfo,
-                            rootsSummary: vm.rootsGitSummary,
-                            forkOriginName: vm.forkOriginName,
-                            rootsOf: (id) => [
-                              for (final r in vm.rootsOf(id))
-                                (
-                                  path: r,
-                                  name: r.split('/').last,
-                                  git: vm.gitInfoForRoot(r),
-                                ),
-                            ],
-                            onSelect: vm.selectProject,
-                            onAdd: _createWorkspace,
-                            onConfigure: _configureProject,
-                            onDelete: _deleteProject,
-                            onCreateWorktree: _createWorktree,
-                            onRemoveWorktree: _removeWorktree,
-                            onUpdateWorktree: _updateWorktree,
-                            onForkWorktree: _forkWorktree,
-                            onMergeWorktree: _mergeWorktree,
-                            onSync: _syncProject,
-                            onPull: _pullProject,
-                            onPush: _pushProject,
-                            onReorder: (moved, target, before) =>
-                                vm.reorderWorkspace(
-                                  moved,
-                                  target,
-                                  before: before,
-                                ),
-                            onOpenSettings: () =>
-                                context.pushNamed(RoutePaths.settings),
-                            realms: vm.realms,
-                            activeRealm: vm.activeRealm,
-                            onSwitchRealm: (id) =>
-                                unawaited(vm.switchRealm(id)),
-                            onCreateRealm: _createRealm,
-                            onManageRealms: _manageRealms,
-                            moveTargetsOf: (projectId) =>
-                                _moveTargets(vm, projectId),
-                            onMoveToRealm: (projectId, realmId) => unawaited(
-                              vm.moveWorkspaceToRealm(projectId, realmId),
-                            ),
-                            onTogglePin: (projectId) =>
-                                unawaited(vm.togglePin(projectId)),
-                            cockpit: vm.cockpitWorkspace,
-                            onSelectCockpit: () =>
-                                vm.selectProject(Project.cockpitId),
-                          ),
-                          // Alça de arraste na borda direita (direita = alarga).
-                          Positioned(
-                            right: 0,
-                            top: 0,
-                            bottom: 0,
-                            child: _ResizeHandle(
-                              onDelta: (dx) => setState(() {
-                                _railWidth = (_railWidth + dx).clamp(
-                                  _railMin,
-                                  _railMax,
-                                );
-                              }),
-                            ),
-                          ),
-                        ],
-                      ),
-                    Expanded(
-                      child: vm.selectedProjectId == null
-                          ? WelcomeView(onCreateWorkspace: _createWorkspace)
-                          : IndexedStack(
-                              index: _activeIndex(vm),
-                              sizing: StackFit.expand,
-                              children: [
-                                // Um multiplexador por projeto — todos montados, só
-                                // o ativo pintado → estado preservado ao trocar.
-                                for (final project in vm.projects)
-                                  KeyedSubtree(
-                                    key: ValueKey(project.id),
-                                    child: ColoredBox(
-                                      color: colors.border,
-                                      child: _multiplexer(vm, project.id),
-                                    ),
+    return Listener(
+      onPointerDown: _onPointerDown,
+      child: CallbackShortcuts(
+        bindings: _focusComposerBindings(),
+        // Focus(autofocus) garante que a página esteja na cadeia de foco mesmo
+        // antes de clicar em algo — senão o atalho ⌘L não dispara num agente
+        // recém-aberto (nada focado ainda).
+        child: Focus(
+          autofocus: true,
+          child: Scaffold(
+            backgroundColor: colors.bg,
+            child: Column(
+              children: [
+                CockpitTopbar(
+                  projectName: vm.selectedDisplayTitle ?? 'Cockpit',
+                  railVisible: vm.railVisible,
+                  treeVisible: vm.treeVisible,
+                  onToggleRail: vm.toggleRail,
+                  onToggleTree: vm.toggleTree,
+                  filesEnabled: !vm.isSystemTerminal(vm.selectedProjectId),
+                ),
+                Expanded(
+                  child: Row(
+                    children: [
+                      if (vm.railVisible)
+                        Stack(
+                          children: [
+                            ProjectsRail(
+                              width: _railWidth,
+                              projects: vm.rootProjects,
+                              worktreesOf: vm.worktreesOf,
+                              selectedId: vm.selectedProjectId,
+                              notificationCount: vm.notificationCount,
+                              gitInfo: vm.gitInfo,
+                              rootsSummary: vm.rootsGitSummary,
+                              forkOriginName: vm.forkOriginName,
+                              rootsOf: (id) => [
+                                for (final r in vm.rootsOf(id))
+                                  (
+                                    path: r,
+                                    name: r.split('/').last,
+                                    git: vm.gitInfoForRoot(r),
                                   ),
                               ],
+                              onSelect: vm.selectProject,
+                              onAdd: _createWorkspace,
+                              onConfigure: _configureProject,
+                              onDelete: _deleteProject,
+                              onCreateWorktree: _createWorktree,
+                              onRemoveWorktree: _removeWorktree,
+                              onUpdateWorktree: _updateWorktree,
+                              onForkWorktree: _forkWorktree,
+                              onMergeWorktree: _mergeWorktree,
+                              onSync: _syncProject,
+                              onPull: _pullProject,
+                              onPush: _pushProject,
+                              onReorder: (moved, target, before) =>
+                                  vm.reorderWorkspace(
+                                    moved,
+                                    target,
+                                    before: before,
+                                  ),
+                              onOpenSettings: () =>
+                                  context.pushNamed(RoutePaths.settings),
+                              realms: vm.realms,
+                              activeRealm: vm.activeRealm,
+                              onSwitchRealm: (id) =>
+                                  unawaited(vm.switchRealm(id)),
+                              onCreateRealm: _createRealm,
+                              onManageRealms: _manageRealms,
+                              moveTargetsOf: (projectId) =>
+                                  _moveTargets(vm, projectId),
+                              onMoveToRealm: (projectId, realmId) => unawaited(
+                                vm.moveWorkspaceToRealm(projectId, realmId),
+                              ),
+                              onTogglePin: (projectId) =>
+                                  unawaited(vm.togglePin(projectId)),
+                              cockpit: vm.cockpitWorkspace,
+                              onSelectCockpit: () =>
+                                  vm.selectProject(Project.cockpitId),
                             ),
-                    ),
-                    // Cockpit (sem pasta) nunca mostra a árvore/tasks/busca,
-                    // mesmo com `treeVisible` persistido de outro workspace.
-                    if (vm.treeVisible &&
-                        !vm.isSystemTerminal(vm.selectedProjectId))
-                      Stack(
-                        children: [
-                          FileTreePanel(
-                            // Pasta do workspace; reseta ao trocar de workspace.
-                            key: ValueKey(vm.selectedProject?.path ?? ''),
-                            width: _treeWidth,
-                            rootPath: vm.selectedProject?.path ?? '',
-                            // Roots derivadas (multi-root = seções por repo).
-                            roots: [
-                              for (final r
-                                  in vm.selectedProject == null
-                                      ? const <String>[]
-                                      : vm.rootsOf(vm.selectedProject!.id))
-                                WorkspaceRoot(
-                                  path: r,
-                                  name: r.split('/').last,
-                                  git: vm.gitInfoForRoot(r),
-                                ),
-                            ],
-                            onStageFile: vm.stageFile,
-                            onStageFiles: vm.stageFiles,
-                            onUnstageFile: vm.unstageFile,
-                            onUnstageFiles: vm.unstageFiles,
-                            onDiscardFile: vm.discardFile,
-                            isNewGitFile: vm.isNewGitFile,
-                            onCommitFile: vm.commitFile,
-                            onCommitStaged: vm.commitStaged,
-                            onLoadCommits: vm.recentCommits,
-                            onLoadCommitMessage: vm.commitMessage,
-                            revision: vm.fileTreeRevision,
-                            selectedPath: vm.selectedFileInTree,
-                            listChildren: vm.listChildren,
-                            gitStatusOf: vm.gitStatusForPath,
-                            onOpenFile: (path) =>
-                                vm.openFile(path, isPreview: false),
-                            onTapFile: vm.openFile, // clique único = preview
-                            onSelectFile:
-                                vm.selectFileInTree, // atualiza highlight
-                            onClearSelection: vm.clearFileSelection,
-                            revealPath: vm.treeRevealPath,
-                            revealGen: vm.treeRevealGen,
-                            onOpenDiff: (path) =>
-                                vm.openDiff(path, isPreview: false),
-                            onTapDiff: vm.openDiff, // clique único = preview
-                            isGitRepo:
-                                vm.selectedProject != null &&
-                                vm.isGitRepo(vm.selectedProject!.id),
-                            changedPaths: vm.changedAbsolutePaths(),
-                            stagedPaths: vm.stagedAbsolutePaths(),
-                            unstagedPaths: vm.unstagedAbsolutePaths(),
-                            onOpenWith: vm.openWithDefaultApp,
-                            onCreateInFolder: (sub, terminal) =>
-                                vm.newTabIn(sub, terminal: terminal),
-                            onCreate: (parentDir, name, isFolder) => isFolder
-                                ? vm.createDirIn(parentDir, name)
-                                : vm.createFileIn(parentDir, name),
-                            onRename: vm.renamePath,
-                            onDelete: vm.deletePath,
-                            onMove: vm.movePath,
-                            onCopy: vm.copyToClipboard,
-                            onCut: vm.cutToClipboard,
-                            onPaste: vm.pasteInto,
-                            canPaste: vm.canPaste,
-                            searchPanel: vm.selectedProject == null
-                                ? null
-                                : ContentSearchPanel(
-                                    fill: true,
-                                    search: vm.searchContent,
-                                    onOpenResult: vm.openSearchResult,
-                                    focusSignal: _searchFocusSignal,
-                                  ),
-                            searchFocusSignal: _searchFocusSignal,
-                            databasePanel: vm.selectedProject == null
-                                ? null
-                                : DbPanel(
-                                    workspaceId: vm.selectedProject!.id,
-                                    workspaceRoot: vm.selectedProject!.path,
-                                  ),
-                            tasksPanel: vm.selectedProject == null
-                                ? null
-                                : TasksPanel(
-                                    cwd: vm.selectedProject!.path,
-                                    listHeight: _tasksHeight,
-                                    onResizeDelta: (dy) => setState(() {
-                                      _tasksHeight = (_tasksHeight - dy).clamp(
-                                        _tasksMin,
-                                        _tasksMax,
-                                      );
-                                    }),
-                                    onResizeEnd: () => context
-                                        .read<SettingsController>()
-                                        .setTasksPanelHeight(_tasksHeight),
-                                  ),
-                            footer: const _LspStatusBar(),
-                          ),
-                          // Alça de arraste sobre a borda esquerda do painel
-                          // (esquerda = alarga; direita = estreita).
-                          Positioned(
-                            left: 0,
-                            top: 0,
-                            bottom: 0,
-                            child: _ResizeHandle(
-                              onDelta: (dx) => setState(() {
-                                _treeWidth = (_treeWidth - dx).clamp(
-                                  _treeMin,
-                                  _treeMax,
-                                );
-                              }),
+                            // Alça de arraste na borda direita (direita = alarga).
+                            Positioned(
+                              right: 0,
+                              top: 0,
+                              bottom: 0,
+                              child: _ResizeHandle(
+                                onDelta: (dx) => setState(() {
+                                  _railWidth = (_railWidth + dx).clamp(
+                                    _railMin,
+                                    _railMax,
+                                  );
+                                }),
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
+                      Expanded(
+                        child: vm.selectedProjectId == null
+                            ? WelcomeView(onCreateWorkspace: _createWorkspace)
+                            : IndexedStack(
+                                index: _activeIndex(vm),
+                                sizing: StackFit.expand,
+                                children: [
+                                  // Um multiplexador por projeto — todos montados, só
+                                  // o ativo pintado → estado preservado ao trocar.
+                                  for (final project in vm.projects)
+                                    KeyedSubtree(
+                                      key: ValueKey(project.id),
+                                      child: ColoredBox(
+                                        color: colors.border,
+                                        child: _multiplexer(vm, project.id),
+                                      ),
+                                    ),
+                                ],
+                              ),
                       ),
-                  ],
+                      // Cockpit (sem pasta) nunca mostra a árvore/tasks/busca,
+                      // mesmo com `treeVisible` persistido de outro workspace.
+                      if (vm.treeVisible &&
+                          !vm.isSystemTerminal(vm.selectedProjectId))
+                        Stack(
+                          children: [
+                            FileTreePanel(
+                              // Pasta do workspace; reseta ao trocar de workspace.
+                              key: ValueKey(vm.selectedProject?.path ?? ''),
+                              width: _treeWidth,
+                              rootPath: vm.selectedProject?.path ?? '',
+                              // Roots derivadas (multi-root = seções por repo).
+                              roots: [
+                                for (final r
+                                    in vm.selectedProject == null
+                                        ? const <String>[]
+                                        : vm.rootsOf(vm.selectedProject!.id))
+                                  WorkspaceRoot(
+                                    path: r,
+                                    name: r.split('/').last,
+                                    git: vm.gitInfoForRoot(r),
+                                  ),
+                              ],
+                              onStageFile: vm.stageFile,
+                              onStageFiles: vm.stageFiles,
+                              onUnstageFile: vm.unstageFile,
+                              onUnstageFiles: vm.unstageFiles,
+                              onDiscardFile: vm.discardFile,
+                              isNewGitFile: vm.isNewGitFile,
+                              onCommitFile: vm.commitFile,
+                              onCommitStaged: vm.commitStaged,
+                              onLoadCommits: vm.recentCommits,
+                              onLoadCommitMessage: vm.commitMessage,
+                              revision: vm.fileTreeRevision,
+                              selectedPath: vm.selectedFileInTree,
+                              listChildren: vm.listChildren,
+                              gitStatusOf: vm.gitStatusForPath,
+                              onOpenFile: (path) =>
+                                  vm.openFile(path, isPreview: false),
+                              onTapFile: vm.openFile, // clique único = preview
+                              onSelectFile:
+                                  vm.selectFileInTree, // atualiza highlight
+                              onClearSelection: vm.clearFileSelection,
+                              revealPath: vm.treeRevealPath,
+                              revealGen: vm.treeRevealGen,
+                              onOpenDiff: (path) =>
+                                  vm.openDiff(path, isPreview: false),
+                              onTapDiff: vm.openDiff, // clique único = preview
+                              isGitRepo:
+                                  vm.selectedProject != null &&
+                                  vm.isGitRepo(vm.selectedProject!.id),
+                              changedPaths: vm.changedAbsolutePaths(),
+                              stagedPaths: vm.stagedAbsolutePaths(),
+                              unstagedPaths: vm.unstagedAbsolutePaths(),
+                              onOpenWith: vm.openWithDefaultApp,
+                              onOpenLayout: (path) async {
+                                final res = await vm.applyLayoutFile(path);
+                                if (!context.mounted) return;
+                                if (res case Failure(:final error)) {
+                                  await showInfoDialog(
+                                    context,
+                                    title: 'Open layout',
+                                    message: error,
+                                  );
+                                }
+                              },
+                              onCreateInFolder: (sub, terminal) =>
+                                  vm.newTabIn(sub, terminal: terminal),
+                              onCreate: (parentDir, name, isFolder) => isFolder
+                                  ? vm.createDirIn(parentDir, name)
+                                  : vm.createFileIn(parentDir, name),
+                              onRename: vm.renamePath,
+                              onDelete: vm.deletePath,
+                              onMove: vm.movePath,
+                              onCopy: vm.copyToClipboard,
+                              onCut: vm.cutToClipboard,
+                              onPaste: vm.pasteInto,
+                              canPaste: vm.canPaste,
+                              searchPanel: vm.selectedProject == null
+                                  ? null
+                                  : ContentSearchPanel(
+                                      fill: true,
+                                      search: vm.searchContent,
+                                      onOpenResult: vm.openSearchResult,
+                                      focusSignal: _searchFocusSignal,
+                                    ),
+                              searchFocusSignal: _searchFocusSignal,
+                              databasePanel: vm.selectedProject == null
+                                  ? null
+                                  : DbPanel(
+                                      workspaceId: vm.selectedProject!.id,
+                                      workspaceRoot: vm.selectedProject!.path,
+                                    ),
+                              tasksPanel: vm.selectedProject == null
+                                  ? null
+                                  : TasksPanel(
+                                      cwd: vm.selectedProject!.path,
+                                      listHeight: _tasksHeight,
+                                      onResizeDelta: (dy) => setState(() {
+                                        _tasksHeight = (_tasksHeight - dy)
+                                            .clamp(_tasksMin, _tasksMax);
+                                      }),
+                                      onResizeEnd: () => context
+                                          .read<SettingsController>()
+                                          .setTasksPanelHeight(_tasksHeight),
+                                    ),
+                              footer: const _LspStatusBar(),
+                            ),
+                            // Alça de arraste sobre a borda esquerda do painel
+                            // (esquerda = alarga; direita = estreita).
+                            Positioned(
+                              left: 0,
+                              top: 0,
+                              bottom: 0,
+                              child: _ResizeHandle(
+                                onDelta: (dx) => setState(() {
+                                  _treeWidth = (_treeWidth - dx).clamp(
+                                    _treeMin,
+                                    _treeMax,
+                                  );
+                                }),
+                              ),
+                            ),
+                          ],
+                        ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

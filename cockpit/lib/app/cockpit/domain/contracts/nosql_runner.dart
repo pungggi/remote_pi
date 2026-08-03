@@ -23,9 +23,15 @@ abstract interface class NoSqlRunner {
   });
 
   /// Mongo: roda `command` via `runCommand` → documento de resposta.
+  ///
+  /// [database] sobrepõe o database alvo. Ausente = o da URL da conexão (e,
+  /// faltando esse, o fallback do runner). Existe porque URL de Atlas
+  /// (`mongodb+srv://…/?…`) costuma vir **sem** path de database: quem browseia
+  /// escolhe um e passa aqui.
   Future<Object?> mongo(
     DbConnection conn,
     Map<String, dynamic> command, {
     String? password,
+    String? database,
   });
 }

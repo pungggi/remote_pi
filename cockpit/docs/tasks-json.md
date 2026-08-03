@@ -85,6 +85,7 @@ subir na árvore), então:
 | `command`          | string   | **sim**     | —           | Executável base (ex.: `npm`, `flutter`). |
 | `args`             | string[] | não         | `[]`        | Args base, antes do profile. |
 | `cwd`              | string   | não         | raiz/topo   | Pasta de execução, **relativa à pasta do `tasks.json`**. Omitido → herda o `cwd` top-level, senão a raiz. Absoluto também aceito. |
+| `platforms`        | string \| string[] | não | todos  | SOs onde a task é **visível**: `macos`, `windows`, `linux`. Omitido → todos. Ex.: `"platforms": "windows"` ou `["windows", "linux"]`. |
 | `kind`             | string   | não         | `oneShot`   | `watch` (processo vivo, ex.: dev-server) ou `oneShot` (roda e termina). |
 | `interactiveKeys`  | array    | não         | `[]`        | Teclas enviadas ao stdin (ver abaixo). |
 | `watch`            | object   | não         | `null`      | "Reload ao salvar" (ver abaixo). Omitido em ferramentas que já observam (Vite/Next). |

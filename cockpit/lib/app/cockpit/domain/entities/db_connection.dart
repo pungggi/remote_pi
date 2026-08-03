@@ -1,3 +1,5 @@
+import 'ssh_tunnel_config.dart';
+
 /// Engine de banco suportado pela DB tab (plano 51). A ordem é a do popup do
 /// "+" no painel Database; novos engines (MSSQL…) entram aqui + no registry.
 enum DbEngine {
@@ -37,6 +39,10 @@ enum DbEngine {
     DbEngine.mssql => true,
     DbEngine.redis || DbEngine.mongo => false,
   };
+
+  /// Engines que aceitam túnel SSH (plano 54): todos menos SQLite, que é
+  /// arquivo local — "SQLite remoto" seria sshfs, explicitamente não-objetivo.
+  bool get supportsSshTunnel => this != DbEngine.sqlite;
 
   /// Scheme da URL (difere do [name] no Mongo: `mongodb://`).
   String get scheme => this == DbEngine.mongo ? 'mongodb' : name;
@@ -81,6 +87,10 @@ enum DbConnectionOrigin {
   detected,
 }
 
+/// Sentinela do [DbConnection.copyWith] pra distinguir "não mexe no túnel" de
+/// "remove o túnel" (`null` explícito) num parâmetro nullable.
+const Object _unset = Object();
+
 /// Uma conexão de banco do workspace. A forma canônica de armazenamento é a
 /// **URL** (`sqlite:./app.db`, `postgres://user@host:5432/db?sslmode=require`)
 /// — particularidades por engine viajam como query params. **Nunca** carrega
@@ -95,6 +105,7 @@ class DbConnection {
     this.origin = DbConnectionOrigin.registered,
     this.access = DbAccess.read,
     this.agents = true,
+    this.ssh,
   });
 
   /// Conexão sqlite a partir de um path (registrada ou detectada).
@@ -132,6 +143,7 @@ class DbConnection {
     bool srv = false,
     String query = '',
     bool tls = false,
+    SshTunnelConfig? ssh,
   }) {
     // SRV (Atlas): scheme `mongodb+srv` e URL sem porta (proibida no formato).
     // Redis liga TLS pelo scheme (`rediss://`), os demais por query param.
@@ -153,6 +165,7 @@ class DbConnection {
       origin: origin,
       access: access,
       agents: agents,
+      ssh: ssh,
     );
   }
 
@@ -172,6 +185,8 @@ class DbConnection {
       // Ausente no JSON legado → read (seguro por padrão; escrever é opt-in).
       access: DbAccess.fromName(json['access'] as String?),
       agents: json['agents'] as bool? ?? true,
+      // Ausente (todo databases.json pré-plano 54) → conexão TCP direta.
+      ssh: SshTunnelConfig.fromJson(json['ssh']),
     );
   }
 
@@ -187,6 +202,14 @@ class DbConnection {
   /// `false` = invisível/recusada na CLI (`db list` omite, comandos falham);
   /// GUI (painel, tab `.dbq`, browsers) segue vendo normalmente.
   final bool agents;
+
+  /// Túnel SSH opcional (plano 54). `null` = TCP direto. Quando presente,
+  /// [host]/[port] passam a ser resolvidos **a partir do bastion** — é por
+  /// isso que `localhost` numa conexão tunelada significa o localhost *do
+  /// servidor SSH*, não o da máquina do usuário.
+  final SshTunnelConfig? ssh;
+
+  bool get hasSshTunnel => ssh != null;
 
   /// Path do arquivo sqlite (só [DbEngine.sqlite]); relativo à raiz do
   /// workspace quando registrado assim.
@@ -250,9 +273,8 @@ class DbConnection {
 
   /// Alvo curto pra exibição na lista do painel (path ou host:porta; SRV não
   /// tem porta).
-  String get displayTarget => engine == DbEngine.sqlite
-      ? sqlitePath
-      : (isSrv ? host : '$host:$port');
+  String get displayTarget =>
+      engine == DbEngine.sqlite ? sqlitePath : (isSrv ? host : '$host:$port');
 
   Map<String, Object?> toJson() => {
     'name': name,
@@ -263,14 +285,20 @@ class DbConnection {
     'savePassword': savePassword,
     'access': access.name,
     'agents': agents,
+    // Chave ausente (e não `null`) quando não há túnel: `save()` reescreve a
+    // entrada inteira, então remover o túnel remove o bloco do arquivo.
+    if (ssh != null) 'ssh': ssh!.toJson(),
   };
 
+  /// [ssh] segue a sentinela [_unset]: omitido preserva o túnel atual, `null`
+  /// explícito remove.
   DbConnection copyWith({
     String? name,
     String? url,
     bool? savePassword,
     DbAccess? access,
     bool? agents,
+    Object? ssh = _unset,
   }) => DbConnection(
     name: name ?? this.name,
     engine: url == null ? engine : _engineFromUrl(url),
@@ -279,7 +307,55 @@ class DbConnection {
     origin: origin,
     access: access ?? this.access,
     agents: agents ?? this.agents,
+    ssh: identical(ssh, _unset) ? this.ssh : ssh as SshTunnelConfig?,
   );
+
+  /// Cópia que roteia o driver por um **proxy SOCKS5** local, preservando a
+  /// URL original — host, SRV e todo o resto ficam como estão.
+  ///
+  /// É o caminho do Mongo: como o driver descobre os membros do replica set
+  /// pelo `hello` e passa a discar os hostnames reais, redirecionar host/port
+  /// (o [withEndpoint]) não alcança os outros nós. Com proxy, é o driver que
+  /// escolhe o destino e o túnel só roteia — `mongodb+srv://` inclusive.
+  ///
+  /// Requer o driver com suporte a SOCKS5 (`proxyHost`/`proxyPort` da spec dos
+  /// drivers MongoDB). Sem ele, o próprio driver recusa a opção — falha alta,
+  /// nunca conexão direta silenciosa.
+  DbConnection withSocksProxy(String proxyHost, int proxyPort) {
+    final uri = _uri;
+    final params = Map<String, String>.of(uri.queryParameters)
+      ..['proxyHost'] = proxyHost
+      ..['proxyPort'] = '$proxyPort';
+    return DbConnection(
+      name: name,
+      engine: engine,
+      url: uri.replace(queryParameters: params).toString(),
+      savePassword: savePassword,
+      origin: origin,
+      access: access,
+      agents: agents,
+    );
+  }
+
+  /// Cópia apontando pra outro endpoint TCP, preservando scheme, userinfo,
+  /// database e query params. É o que o [DbQueryService] usa pra redirecionar
+  /// a conexão à ponta local do túnel — o driver recebe uma URL normal e não
+  /// sabe que há SSH no caminho.
+  ///
+  /// O túnel **não** viaja na cópia: a conexão redirecionada já *está* dentro
+  /// dele, e carregá-lo adiante convidaria a tunelar o túnel.
+  DbConnection withEndpoint(String host, int port) {
+    final rebuilt = _uri.replace(host: host, port: port).toString();
+    return DbConnection(
+      name: name,
+      engine: engine,
+      url: rebuilt,
+      savePassword: savePassword,
+      origin: origin,
+      access: access,
+      agents: agents,
+    );
+  }
 
   /// Query param que liga TLS por engine (`null` = não é por query: Redis é
   /// pelo scheme `rediss://`, sqlite não tem TLS).

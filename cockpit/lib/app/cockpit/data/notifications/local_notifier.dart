@@ -2,9 +2,21 @@ import 'package:cockpit/app/cockpit/domain/contracts/notifier.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:media_kit/media_kit.dart';
 
-/// Notificações nativas via `flutter_local_notifications` (macOS first) + chime
-/// in-app via `media_kit` (cross-platform: macOS/Windows/Linux).
+/// Notificações nativas via `flutter_local_notifications` (macOS/Windows/Linux)
+/// + chime in-app via `media_kit` (cross-platform).
 class LocalNotifier implements Notifier {
+  /// AppUserModelID do Cockpit no Windows. Mesmo valor do `app_id` do
+  /// empacotamento (`windows/packaging/exe/make_config.yaml`) e do bundle id
+  /// do macOS — identifica o app na central de notificações.
+  static const String _windowsAppUserModelId = 'work.jacobmoura.cockpit';
+
+  /// GUID fixo que o Windows usa pra registrar o callback de ativação do
+  /// notificador (COM CLSID). Gerado uma única vez — **NÃO pode mudar entre
+  /// releases**, senão o Windows trata como um notificador novo e perde o
+  /// registro/histórico do usuário.
+  static const String _windowsNotifierGuid =
+      '88faed92-a013-44b2-a814-7dd1aebf7d59';
+
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
   int _id = 0;
@@ -27,8 +39,15 @@ class LocalNotifier implements Notifier {
         defaultPresentSound: true,
       ),
       linux: LinuxInitializationSettings(defaultActionName: 'Open'),
+      // Sem este bloco a plataforma Windows nunca é inicializada e todo
+      // `show()` lança LateInitializationError (issue #91).
+      windows: WindowsInitializationSettings(
+        appName: 'Cockpit',
+        appUserModelId: _windowsAppUserModelId,
+        guid: _windowsNotifierGuid,
+      ),
     );
-    await _plugin.initialize(settings);
+    await _plugin.initialize(settings: settings);
   }
 
   @override
@@ -38,16 +57,17 @@ class LocalNotifier implements Notifier {
   }) async {
     final subtitle = workspace.isEmpty ? agentName : '$agentName · $workspace';
     await _plugin.show(
-      _id++,
-      'Agent finished',
-      subtitle,
-      const NotificationDetails(
+      id: _id++,
+      title: 'Agent finished',
+      body: subtitle,
+      notificationDetails: const NotificationDetails(
         macOS: DarwinNotificationDetails(
           presentAlert: true,
           presentBadge: true,
           presentSound: true,
         ),
         linux: LinuxNotificationDetails(),
+        windows: WindowsNotificationDetails(),
       ),
     );
   }

@@ -6,6 +6,7 @@ import 'package:anaki_redis/anaki_redis.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/nosql_runner.dart';
 import 'package:cockpit/app/cockpit/domain/entities/db_connection.dart';
 import 'package:cockpit/app/cockpit/domain/entities/db_result.dart';
+import 'package:flutter/foundation.dart';
 
 /// Executor **CLI-only** de comandos NoSQL/cache via anakiORM (Redis, Mongo).
 /// Não passa pelo contrato SQL `DbDriver` — devolve o reply cru, normalizado
@@ -30,6 +31,9 @@ class NoSqlRunnerImpl implements NoSqlRunner {
     final port = conn.port;
     final user = conn.user.isEmpty ? null : conn.user;
     final db = int.tryParse(conn.database) ?? 0;
+    // `rediss://` liga TLS pelo scheme — sem repassar, a conexão "segura" ia
+    // em claro silenciosamente.
+    final tls = conn.useTls;
     return _guard(
       () => Isolate.run(() async {
         final client = AnakiRedis(
@@ -38,6 +42,7 @@ class NoSqlRunnerImpl implements NoSqlRunner {
           username: user,
           password: password,
           db: db,
+          tls: tls,
         );
         await client.open();
         try {
@@ -67,6 +72,7 @@ class NoSqlRunnerImpl implements NoSqlRunner {
     final port = conn.port;
     final user = conn.user.isEmpty ? null : conn.user;
     final db = int.tryParse(conn.database) ?? 0;
+    final tls = conn.useTls;
     final result = await _guard(
       () => Isolate.run(() async {
         final client = AnakiRedis(
@@ -75,6 +81,7 @@ class NoSqlRunnerImpl implements NoSqlRunner {
           username: user,
           password: password,
           db: db,
+          tls: tls,
         );
         await client.open();
         try {
@@ -98,11 +105,18 @@ class NoSqlRunnerImpl implements NoSqlRunner {
     DbConnection conn,
     Map<String, dynamic> command, {
     String? password,
+    String? database,
   }) async {
-    final host = conn.host;
-    final port = conn.port;
-    final user = conn.user.isEmpty ? null : conn.user;
-    final database = conn.database;
+    // Conecta pela **URI**, não por campos soltos: só assim `mongodb+srv://`
+    // (Atlas), TLS e query params como `authSource` sobrevivem. A forma antiga
+    // (host/port/user/pass/db) descartava tudo isso — Atlas nunca conectava e
+    // `?authSource=admin` autenticava contra o banco errado.
+    final uri = _mongoUri(conn, password);
+    // Escolha explícita do chamador (seletor de database do painel) vence a
+    // URL; sem ela, o fallback histórico.
+    final target = (database != null && database.isNotEmpty)
+        ? database
+        : _mongoDatabase(conn);
     return _guard(
       () => Isolate.run(() async {
         // extendedJsonCodec OFF (plano 53, decisão C): replies mantêm
@@ -110,13 +124,7 @@ class NoSqlRunnerImpl implements NoSqlRunner {
         // collection browser e saída canônica no CLI (ObjectId como hex cru
         // era ambíguo). Comandos de entrada já são extended JSON do chamador.
         final mongo = AnakiMongoDb(
-          MongoDriver(
-            host: host,
-            port: port,
-            username: user,
-            password: password,
-            database: database,
-          ),
+          MongoDriver.uri(uri, database: target),
           extendedJsonCodec: false,
         );
         await mongo.open();
@@ -127,6 +135,42 @@ class NoSqlRunnerImpl implements NoSqlRunner {
         }
       }),
     );
+  }
+
+  /// Expostos pra teste: montar a URI é a parte fácil de errar (senha com
+  /// `@`/`:` quebrando a authority) e a única que dá pra exercitar sem um
+  /// Mongo de verdade.
+  @visibleForTesting
+  static String mongoUriFor(DbConnection conn, String? password) =>
+      _mongoUri(conn, password);
+
+  @visibleForTesting
+  static String mongoDatabaseFor(DbConnection conn) => _mongoDatabase(conn);
+
+  /// URI de conexão do Mongo com a senha resolvida embutida.
+  ///
+  /// A senha pode vir do cofre (fora da URL) e o construtor por URI não aceita
+  /// credencial em parâmetro separado, então ela é injetada no userinfo aqui.
+  /// Nunca é persistida: esta string vive só dentro da chamada.
+  static String _mongoUri(DbConnection conn, String? password) {
+    if (password == null || password.isEmpty) return conn.url;
+    final uri = Uri.parse(conn.url);
+    // Senha já embutida na própria URL: nada a fazer.
+    if (uri.userInfo.contains(':')) return conn.url;
+    final user = Uri.encodeComponent(conn.user);
+    return uri
+        .replace(userInfo: '$user:${Uri.encodeComponent(password)}')
+        .toString();
+  }
+
+  /// Banco alvo. URLs de Atlas costumam vir sem path (`…mongodb.net/?retry…`)
+  /// e o driver exige um banco explícito; nesse caso cai no `authSource` (que
+  /// é onde o usuário existe) e, por último, em `admin` — presente em qualquer
+  /// deployment, o que mantém `ping`/`listDatabases` funcionando.
+  static String _mongoDatabase(DbConnection conn) {
+    if (conn.database.isNotEmpty) return conn.database;
+    final authSource = Uri.parse(conn.url).queryParameters['authSource'];
+    return (authSource != null && authSource.isNotEmpty) ? authSource : 'admin';
   }
 
   Future<Object?> _guard(Future<Object?> Function() run) async {

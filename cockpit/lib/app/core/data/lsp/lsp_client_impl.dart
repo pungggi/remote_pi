@@ -7,9 +7,26 @@ import 'package:cockpit/app/core/data/lsp/lsp_process_registry.dart';
 import 'package:cockpit/app/core/data/setup/remote_pi_resolver.dart';
 import 'package:cockpit/app/core/domain/contracts/lsp_client.dart';
 import 'package:cockpit/app/core/domain/entities/lsp_diagnostic.dart';
+import 'package:cockpit/app/core/domain/entities/lsp_semantic_tokens.dart';
 import 'package:cockpit/app/core/domain/exceptions/lsp_error.dart';
 import 'package:cockpit/app/core/domain/result.dart';
 import 'package:flutter/foundation.dart';
+
+/// Tipos/modificadores padrão da spec LSP (3.16+) — anunciados no handshake pra
+/// satisfazer servers que exigem `tokenTypes`/`tokenModifiers` não-vazios
+/// (ex: Dart analysis server). O servidor usa a *legend* própria dele na
+/// resposta (índices na `semanticTokensProvider.legend`), então esta lista só
+/// precisa declarar que o client entende o vocabulário padrão.
+const List<String> _kSemanticTokenTypes = <String>[
+  'namespace', 'type', 'class', 'enum', 'interface', 'struct', 'typeParameter',
+  'parameter', 'variable', 'property', 'enumMember', 'event', 'function',
+  'method', 'macro', 'keyword', 'modifier', 'comment', 'string', 'number',
+  'regexp', 'operator', 'decorator',
+];
+const List<String> _kSemanticTokenModifiers = <String>[
+  'declaration', 'definition', 'readonly', 'static', 'deprecated', 'abstract',
+  'async', 'modification', 'documentation', 'defaultLibrary',
+];
 
 /// Implementação de [LspClient] sobre `dart:io` `Process`. Dona do ciclo de vida
 /// de **um** language server: spawn, escrita no stdin (framing
@@ -41,12 +58,16 @@ class LspClientImpl implements LspClient {
   StreamSubscription<Map<String, dynamic>>? _stdoutSub;
   StreamSubscription<String>? _stderrSub;
   bool _initialized = false;
+  SemanticTokensLegend? _semanticLegend;
 
   @override
   Stream<LspDiagnosticsBatch> get diagnostics => _diagnostics.stream;
 
   @override
   bool get isRunning => _process != null;
+
+  @override
+  SemanticTokensLegend? get semanticTokensLegend => _semanticLegend;
 
   @override
   Future<Result<void, LspError>> start() async {
@@ -93,11 +114,11 @@ class LspClientImpl implements LspClient {
   }
 
   /// `initialize` → `initialized`. Anuncia as capabilities mínimas que usamos
-  /// (publishDiagnostics e, na Wave 3, formatting). `positionEncoding` fica no
+  /// (publishDiagnostics, semanticTokens, formatting). `positionEncoding` fica no
   /// default (utf-16) — alinhado com as code units da `String` Dart.
   Future<void> _handshake() async {
     final rootUri = Uri.directory(rootPath).toString();
-    await _request('initialize', <String, dynamic>{
+    final result = await _request('initialize', <String, dynamic>{
       'processId': pid,
       'rootUri': rootUri,
       'workspaceFolders': <Map<String, dynamic>>[
@@ -111,9 +132,34 @@ class LspClientImpl implements LspClient {
             'dynamicRegistration': false,
           },
           'formatting': <String, dynamic>{'dynamicRegistration': false},
+          // Spec exige `requests`/`tokenTypes`/`tokenModifiers`/`formats` —
+          // sem eles o Dart analysis server rejeita o `initialize` inteiro
+          // (params.capabilities.textDocument.semanticTokens.formats must
+          // not be undefined) e o servidor nunca sobe.
+          'semanticTokens': <String, dynamic>{
+            'dynamicRegistration': false,
+            'requests': <String, dynamic>{'full': true},
+            'tokenTypes': _kSemanticTokenTypes,
+            'tokenModifiers': _kSemanticTokenModifiers,
+            'formats': <String>['relative'],
+          },
         },
       },
     });
+    // Captura a legenda de semantic tokens da resposta. `legend` vem
+    // ANINHADA dentro de `semanticTokensProvider` (não nos campos direto) —
+    // ex: `semanticTokensProvider: {legend: {tokenTypes, tokenModifiers},
+    // full: ..., range: ...}`.
+    if (result is Map<String, dynamic>) {
+      final serverCaps = result['capabilities'] as Map<String, dynamic>?;
+      final semTokens = serverCaps?['semanticTokensProvider'];
+      if (semTokens is Map<String, dynamic>) {
+        final legend = semTokens['legend'];
+        if (legend is Map<String, dynamic>) {
+          _semanticLegend = SemanticTokensLegend.fromJson(legend);
+        }
+      }
+    }
     _notify('initialized', <String, dynamic>{});
     _initialized = true;
   }
@@ -163,6 +209,39 @@ class LspClientImpl implements LspClient {
   ) async {
     try {
       return Success(await _request(method, params));
+    } on LspError catch (error) {
+      return Failure(error);
+    } catch (error, stackTrace) {
+      return Failure(LspError('$error', cause: error, stackTrace: stackTrace));
+    }
+  }
+
+  @override
+  Future<Result<Object?, LspError>> semanticTokensFull(String path) async {
+    try {
+      final result = await _request('textDocument/semanticTokens/full', {
+        'textDocument': {'uri': _uri(path)},
+      });
+      return Success(result);
+    } on LspError catch (error) {
+      return Failure(error);
+    } catch (error, stackTrace) {
+      return Failure(LspError('$error', cause: error, stackTrace: stackTrace));
+    }
+  }
+
+  @override
+  Future<Result<Object?, LspError>> definition(
+    String path, {
+    required int line,
+    required int character,
+  }) async {
+    try {
+      final result = await _request('textDocument/definition', {
+        'textDocument': {'uri': _uri(path)},
+        'position': {'line': line, 'character': character},
+      });
+      return Success(result);
     } on LspError catch (error) {
       return Failure(error);
     } catch (error, stackTrace) {
