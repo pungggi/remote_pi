@@ -4,7 +4,11 @@ export type PairErrorCode =
   | "token_unknown"
   | "internal_error";
 
-export type StreamingBehavior = "steer";
+/** Plan/127 — delivery mode for a user_message while the room is working.
+ *  `"steer"` injects into the active streaming turn (a mid-flight correction);
+ *  `"followUp"` queues the message to start a fresh turn after the current
+ *  one ends. Omitted entirely on idle sends (a normal fresh turn). */
+export type StreamingBehavior = "steer" | "followUp";
 
 export type QueuedMessageItem = {
   id: string;

@@ -80,7 +80,7 @@ void main() {
           body: Align(
             alignment: Alignment.bottomCenter,
             child: InputBar(
-              onSend: (text) {},
+              onSend: (text, _) {},
               attachment: vm,
               onOpenAttach: channelOpen ? () {} : null,
             ),
@@ -167,7 +167,7 @@ void main() {
               child: InputBar(
                 attachment: vm,
                 onOpenAttach: () {},
-                onSend: (text) {
+                onSend: (text, _) {
                   sentText = text;
                   final imgs = vm.takeImagesForSend();
                   sent = imgs.isEmpty ? null : imgs.first; // mirrors chat_page wiring

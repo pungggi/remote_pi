@@ -24,6 +24,7 @@ class UserBubble extends StatelessWidget {
     final isPending = message.status == UserMsgStatus.pending;
     final isFailed = message.status == UserMsgStatus.failed;
     final isSteering = message.steering;
+    final isFollowUp = message.followUp;
     // Plan/30 — when an image is attached the bubble becomes an ImageBubble
     // (thumbnail + caption); otherwise the existing text card.
     final image = message.image;
@@ -50,23 +51,60 @@ class UserBubble extends StatelessWidget {
                         borderRadius: BorderRadius.circular(12),
                         border: isFailed
                             ? Border.all(color: colors.error, width: 1)
+                            : isSteering
+                            ? Border.all(
+                                color: colors.accent.withValues(alpha: 0.5),
+                                width: 1,
+                              )
+                            : isFollowUp
+                            ? Border.all(
+                                color: colors.muted.withValues(alpha: 0.5),
+                                width: 1,
+                              )
                             : null,
                       ),
                       padding: const EdgeInsets.symmetric(
                         horizontal: 13,
                         vertical: 10,
                       ),
-                      // Selectable (so the user can copy their own
-                      // message) AND link-aware — bare HTTP(S) URLs become
-                      // tappable. The agent reply is handled by AgentMarkdown.
-                      child: LinkifiedText(
-                        message.text,
-                        style: typo.sansBody.copyWith(color: colors.text),
-                        linkStyle: typo.sansBody.copyWith(
-                          color: colors.accent,
-                          decoration: TextDecoration.underline,
-                          decorationColor: colors.accent,
-                        ),
+                      // Selectable (so the user can copy their own message) AND
+                      // link-aware — bare HTTP(S) URLs become tappable. The
+                      // agent reply is handled by AgentMarkdown.
+                      // Plan/127 — steer/follow-up bubbles carry a type glyph
+                      // (route / clock) so the delivery mode is visible at a
+                      // glance; normal bubbles render text-only as before.
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (isSteering || isFollowUp) ...[
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2, right: 7),
+                              child: Icon(
+                                isSteering
+                                    ? LucideIcons.route
+                                    : LucideIcons.clock,
+                                size: 13,
+                                color: isSteering
+                                    ? colors.accent
+                                    : colors.muted,
+                              ),
+                            ),
+                          ],
+                          Flexible(
+                            child: LinkifiedText(
+                              message.text,
+                              style: typo.sansBody.copyWith(
+                                color: colors.text,
+                              ),
+                              linkStyle: typo.sansBody.copyWith(
+                                color: colors.accent,
+                                decoration: TextDecoration.underline,
+                                decorationColor: colors.accent,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
             ),
@@ -87,7 +125,11 @@ class UserBubble extends StatelessWidget {
                       ),
                       const SizedBox(width: 6),
                       Text(
-                        isSteering ? 'steering…' : 'sending…',
+                        isFollowUp
+                            ? 'queued · next turn'
+                            : isSteering
+                            ? 'steering…'
+                            : 'sending…',
                         style: typo.sansBody.copyWith(
                           color: colors.muted,
                           fontSize: 11,

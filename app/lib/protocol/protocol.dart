@@ -564,12 +564,14 @@ class WireImage {
 }
 
 enum UserMessageStreamingBehavior {
-  steer;
+  steer,
+  followUp;
 
   /// Mirrors the Pi wire shape. Keep permissive parsing for forward-compat.
   static UserMessageStreamingBehavior? fromWire(String? raw) {
     return switch (raw) {
       'steer' => UserMessageStreamingBehavior.steer,
+      'followUp' => UserMessageStreamingBehavior.followUp,
       _ => null,
     };
   }
@@ -577,6 +579,7 @@ enum UserMessageStreamingBehavior {
   String get wireValue {
     return switch (this) {
       UserMessageStreamingBehavior.steer => 'steer',
+      UserMessageStreamingBehavior.followUp => 'followUp',
     };
   }
 }

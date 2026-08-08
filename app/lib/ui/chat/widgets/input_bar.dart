@@ -37,6 +37,10 @@ enum VoiceHint {
   permissionDenied,
 }
 
+/// Plan/127 — composer delivery mode while the room is working.
+/// Steer injects into the active turn; Follow-up queues behind it.
+enum _SteerMode { steer, followUp }
+
 class InputBar extends StatefulWidget {
   final bool disabled; // offline or no peer
   final bool streaming; // show cancel instead of send
@@ -45,7 +49,9 @@ class InputBar extends StatefulWidget {
   /// (replaces the generic "Send a message…" so the user always sees which
   /// model a send will use). Null/empty → falls back to "Send a message…".
   final String? model;
-  final void Function(String text) onSend;
+  /// Plan/127 — carries the chosen delivery mode while working (steer |
+  /// followUp); null on idle sends (a normal fresh turn).
+  final void Function(String text, UserMessageStreamingBehavior? behavior) onSend;
   final VoidCallback? onCancel;
   final VoidCallback? onOpenQuickActions;
   final VoidCallback? onStartAudio;
@@ -135,6 +141,9 @@ class _InputBarState extends State<InputBar> {
   late final FocusNode _focusNode = FocusNode(onKeyEvent: _onComposerKey);
   bool _empty = true;
   bool _cancelArmed = false;
+  // Plan/127 — composer delivery mode while working (Steer | Follow-up).
+  // Defaults to Steer; reset per working turn in didUpdateWidget.
+  _SteerMode _steerMode = _SteerMode.steer;
   // True while the hold-to-talk gesture is active. Lets `_beginVoice` tell
   // whether the user is still holding once `startRecording` resolves — if not
   // (the permission prompt ended the hold), the recording is discarded.
@@ -165,6 +174,10 @@ class _InputBarState extends State<InputBar> {
     if (!identical(old.voice, widget.voice)) {
       _transcriptSub?.cancel();
       _subscribeTranscripts();
+    }
+    // Plan/127 — each new working turn starts the toggle at Steer (default).
+    if (widget.streaming && !old.streaming) {
+      _steerMode = _SteerMode.steer;
     }
   }
 
@@ -218,7 +231,14 @@ class _InputBarState extends State<InputBar> {
     final hasImage = widget.attachment?.hasImage ?? false;
     if (text.isEmpty && !hasImage) return;
     _controller.clear();
-    widget.onSend(text);
+    // Plan/127 — while working, deliver in the toggle's chosen mode; while
+    // idle, a normal send (null).
+    final behavior = widget.streaming
+        ? (_steerMode == _SteerMode.followUp
+            ? UserMessageStreamingBehavior.followUp
+            : UserMessageStreamingBehavior.steer)
+        : null;
+    widget.onSend(text, behavior);
   }
 
   /// Plan/109 — send the current draft with a one-shot model override.
@@ -463,6 +483,11 @@ class _InputBarState extends State<InputBar> {
                       ? () => widget.onClearQueued?.call(item.id)
                       : null,
                 ),
+              if (widget.streaming && canInteract && !showStrip)
+                _SteerModeToggle(
+                  mode: _steerMode,
+                  onChanged: (m) => setState(() => _steerMode = m),
+                ),
               Row(
                 children: [
                   _QuickActionsButton(
@@ -522,7 +547,9 @@ class _InputBarState extends State<InputBar> {
                         hintText: widget.disabled
                             ? 'Offline…'
                             : widget.streaming
-                            ? 'Steer current response…'
+                            ? (_steerMode == _SteerMode.followUp
+                                ? 'Queue a follow-up…'
+                                : 'Steer current response…')
                             : hasImage
                             ? 'Add a caption…'
                             : (widget.model != null &&
@@ -715,6 +742,91 @@ class _QueuedMessagePreview extends StatelessWidget {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Plan/127 — segmented [Steer | Follow-up] toggle shown above the composer
+/// while the room is working. Steer injects into the active turn (route
+/// glyph, accent); Follow-up queues behind it (clock glyph). Full-width so
+/// both targets are unambiguous one-taps; selection is owned by the composer.
+class _SteerModeToggle extends StatelessWidget {
+  const _SteerModeToggle({required this.mode, required this.onChanged});
+
+  final _SteerMode mode;
+  final ValueChanged<_SteerMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    Widget segment({
+      required _SteerMode value,
+      required IconData icon,
+      required String label,
+    }) {
+      final selected = mode == value;
+      final fg = selected ? colors.onAccent : colors.muted2;
+      return Expanded(
+        child: Tooltip(
+          message: label,
+          child: InkWell(
+            onTap: () => onChanged(value),
+            borderRadius: BorderRadius.circular(9),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: selected ? colors.accent : Colors.transparent,
+                borderRadius: BorderRadius.circular(9),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 14, color: fg),
+                  const SizedBox(width: 6),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontFamily: kMonoFamily,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: fg,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(left: 4, right: 4, bottom: 8),
+      child: Container(
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: colors.inputFill,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: colors.border),
+        ),
+        padding: const EdgeInsets.all(3),
+        child: Row(
+          children: [
+            segment(
+              value: _SteerMode.steer,
+              icon: LucideIcons.route,
+              label: 'Steer',
+            ),
+            segment(
+              value: _SteerMode.followUp,
+              icon: LucideIcons.clock,
+              label: 'Follow-up',
+            ),
+          ],
         ),
       ),
     );

@@ -38,6 +38,23 @@ void main() {
       expect(msg.image, isNotNull);
     });
 
+    test('plan/127: MessageRecord (user follow-up) survives roundtrip', () {
+      final r = MessageRecord(
+        id: 'u-followup',
+        seq: 5,
+        role: MsgRole.user,
+        text: 'then also run the tests',
+        ts: DateTime.fromMillisecondsSinceEpoch(1700),
+        followUp: true,
+      );
+      final back = MessageRecord.fromJson(r.toJson());
+      expect(back.followUp, isTrue);
+      expect(back.steering, isFalse);
+      final msg = back.toChatMessage() as UserMsg;
+      expect(msg.followUp, isTrue);
+      expect(msg.steering, isFalse);
+    });
+
     test('MessageRecord (tool) survives roundtrip', () {
       final r = MessageRecord(
         id: 'tc1',

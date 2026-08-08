@@ -229,6 +229,166 @@ void main() {
   });
 
   test(
+    'plan/127: followUp send keeps active working target and sets wire behavior',
+    () async {
+      final s = await setup();
+      s.ch.push(UserInput(id: 'u1', text: 'primary'));
+      await _settle();
+
+      await s.sync.sendMessage(
+        'then also run the tests',
+        streamingBehavior: UserMessageStreamingBehavior.followUp,
+      );
+      await _settle();
+
+      final sent = s.ch.sent.whereType<UserMessage>().lastWhere(
+        (m) => m.text == 'then also run the tests',
+      );
+      expect(sent.streamingBehavior, UserMessageStreamingBehavior.followUp);
+      final row = messages(s.epk).singleWhere((r) => r.id == sent.id);
+      expect(row.pending, isTrue);
+      expect(row.followUp, isTrue);
+      expect((row.toChatMessage() as UserMsg).followUp, isTrue);
+      // Like steer, a follow-up does not start a fresh turn / cursor.
+      expect(s.sync.workingReplyTo, 'u1');
+      expect(s.sync.streaming, isNotNull);
+      expect(s.sync.streaming!.inReplyTo, 'u1');
+
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'plan/127: followUp echo confirms row without replacing working turn',
+    () async {
+      final s = await setup();
+      s.ch.push(UserInput(id: 'u1', text: 'primary'));
+      await _settle();
+      expect(s.sync.workingReplyTo, 'u1');
+
+      await s.sync.sendMessage(
+        'then also run the tests',
+        streamingBehavior: UserMessageStreamingBehavior.followUp,
+      );
+      await _settle();
+      final sent = s.ch.sent.whereType<UserMessage>().lastWhere(
+        (m) => m.text == 'then also run the tests',
+      );
+
+      s.ch.push(
+        UserInput(
+          id: sent.id,
+          text: 'then also run the tests',
+          streamingBehavior: UserMessageStreamingBehavior.followUp,
+        ),
+      );
+      await _settle();
+
+      // Echo only confirms the row; the active streaming bubble / cancel
+      // target are untouched (the follow-up's own turn streams later).
+      expect(s.sync.workingReplyTo, 'u1');
+      expect(s.sync.streaming, isNotNull);
+      expect(s.sync.streaming!.inReplyTo, 'u1');
+      final rows = messages(s.epk);
+      expect(rows, hasLength(2));
+      final row = rows.where((r) => r.id == sent.id).single;
+      expect(row.pending, isFalse);
+      expect(row.followUp, isTrue);
+
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'plan/127: foreign-device followUp echo carries the marker (cross-owner)',
+    () async {
+      final s = await setup();
+      s.ch.push(UserInput(id: 'u1', text: 'primary'));
+      await _settle();
+
+      // Another paired owner sent a follow-up; the echo reaches this device,
+      // which has no local optimistic row for it. It must still render as a
+      // follow-up bubble (clock marker), not a normal one.
+      s.ch.push(
+        UserInput(
+          id: 'fu-foreign',
+          text: 'queued from the other phone',
+          streamingBehavior: UserMessageStreamingBehavior.followUp,
+        ),
+      );
+      await _settle();
+
+      final row = messages(s.epk).singleWhere((r) => r.id == 'fu-foreign');
+      expect(row.pending, isFalse);
+      expect(row.followUp, isTrue, reason: 'foreign echo must carry the marker');
+      expect((row.toChatMessage() as UserMsg).followUp, isTrue);
+
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'plan/127: session_history reconnect preserves the followUp marker',
+    () async {
+      final s = await setup();
+      s.ch.push(UserInput(id: 'u1', text: 'primary'));
+      await _settle();
+
+      await s.sync.sendMessage(
+        'then also run the tests',
+        streamingBehavior: UserMessageStreamingBehavior.followUp,
+      );
+      await _settle();
+      final sent = s.ch.sent.whereType<UserMessage>().lastWhere(
+        (m) => m.text == 'then also run the tests',
+      );
+      s.ch.push(
+        UserInput(
+          id: sent.id,
+          text: 'then also run the tests',
+          streamingBehavior: UserMessageStreamingBehavior.followUp,
+        ),
+      );
+      await _settle();
+      expect(
+        messages(s.epk).singleWhere((r) => r.id == sent.id).followUp,
+        isTrue,
+        reason: 'precondition: marker set before reconnect',
+      );
+
+      // Reconnect/reload: Pi's session_history user events carry no
+      // streaming_behavior, so the follow-up would otherwise rebuild as a
+      // plain row and the marker would be wiped.
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync-reconnect',
+          sessionStartedAt: 0,
+          events: [
+            UserInputEvt(ts: 1, id: 'u1', text: 'primary'),
+            UserInputEvt(ts: 2, id: sent.id, text: 'then also run the tests'),
+          ],
+          eos: true,
+        ),
+      );
+      await _settle();
+
+      final row = messages(s.epk).singleWhere((r) => r.id == sent.id);
+      expect(
+        row.followUp,
+        isTrue,
+        reason: 'history reconcile must preserve the followUp marker',
+      );
+      expect((row.toChatMessage() as UserMsg).followUp, isTrue);
+
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
     'steer_consumed clears one steering label, not every queued steer',
     () async {
       final s = await setup();

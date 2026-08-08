@@ -259,6 +259,50 @@ void main() {
     },
   );
 
+  test(
+    'plan/127: explicit followUp behavior is passed through and preserves target',
+    () async {
+      final ch = _FakeChannel();
+      final storage = _FakeStorage();
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+      );
+      final boxes = LocalBoxes();
+      final sync = SyncService(conn, boxes);
+      final read = SessionReadRepository(boxes);
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+      await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
+
+      conn.adopt(ch, _peer);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      final vm = ChatViewModel(read, sync, conn, prefs, storage);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      ch.push(UserInput(id: 'u1', text: 'primary'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(vm.isWorking, isTrue);
+      final originalTarget = vm.cancelTargetId;
+
+      await vm.sendMessage(
+        'then run tests',
+        streamingBehavior: UserMessageStreamingBehavior.followUp,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      final sent = ch.sent.whereType<UserMessage>().lastWhere(
+        (m) => m.text == 'then run tests',
+      );
+      expect(sent.streamingBehavior, UserMessageStreamingBehavior.followUp);
+      expect(vm.cancelTargetId, equals(originalTarget));
+
+      vm.dispose();
+      sync.dispose();
+      conn.dispose();
+    },
+  );
+
   test('queued state and commands roundtrip through ChatViewModel', () async {
     final ch = _FakeChannel();
     final storage = _FakeStorage();

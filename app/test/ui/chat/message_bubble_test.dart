@@ -6,6 +6,7 @@ import 'package:app/ui/chat/widgets/agent_markdown.dart';
 import 'package:app/ui/chat/widgets/copy_button.dart';
 import 'package:app/ui/chat/widgets/linkified_text.dart';
 import 'package:app/ui/chat/widgets/message_bubble.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -197,6 +198,49 @@ void main() {
     await tester.pump();
     expect(find.text('steering…'), findsOneWidget);
   });
+
+  testWidgets(
+    'plan/127: pending follow-up bubble shows queued label + clock icon',
+    (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: UserBubble(
+              UserMsg(
+                id: 'u1',
+                text: 'then run tests',
+                status: UserMsgStatus.pending,
+                followUp: true,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('queued · next turn'), findsOneWidget);
+      expect(find.byIcon(LucideIcons.clock), findsOneWidget);
+      expect(find.text('steering…'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'plan/127: confirmed follow-up bubble keeps clock icon, no pending label',
+    (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: UserBubble(
+              UserMsg(id: 'u1', text: 'accepted follow-up', followUp: true),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.byIcon(LucideIcons.clock), findsOneWidget);
+      // Confirmed (echoed) follow-up shows no pending label.
+      expect(find.text('queued · next turn'), findsNothing);
+    },
+  );
 
   testWidgets('pending normal bubble keeps sending label', (tester) async {
     await tester.pumpWidget(

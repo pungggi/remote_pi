@@ -21,6 +21,13 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   became a three-way toggle — Always / When charging (default) / Off — with
   a native charging probe + 60 s poll. Roughly halves inbound radio wakeups
   with no change to message delivery.
+- **Steer vs Follow-up choice while working (plan 127)** — while the agent
+  is working, a segmented **[Steer | Follow-up]** toggle above the composer
+  lets you queue a message as the **next** turn (clock icon, "queued · next
+  turn") instead of injecting into the running one (route icon; steer stays
+  the default). Follow-ups drain in FIFO order when the current turn ends,
+  attributed to their own bubble, and render consistently across paired
+  devices. Image attachments on follow-ups are deferred to a later slice.
 
 ---
 

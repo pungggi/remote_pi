@@ -80,6 +80,12 @@ export type BufferMsg = {
 
 export type PendingSteer = { id: string; text: string };
 
+/** Plan/127 — a follow-up user_message held until the running turn ends.
+ *  Echoed to owners immediately (a committed follow-up bubble); its turn is
+ *  started by `_maybeDrainFollowUp` on turn_end, which sets currentTurnId to
+ *  its id so the streaming chunks attribute correctly. */
+export type PendingFollowUp = { id: string; text: string };
+
 export type AndroidQueuedItem = QueuedMessageItem & { editable: true };
 
 export type MeshEnvelope = { id: string; from: string; re: string | null; body: unknown };
@@ -137,6 +143,7 @@ export interface ExtensionState {
   pendingSteers: PendingSteer[];
   lastConsumedSteerText: string | null;
   queuedItems: AndroidQueuedItem[];
+  pendingFollowUps: PendingFollowUp[];
 
   // pi api + bridges
   pi: ExtensionAPI | null;
@@ -210,6 +217,7 @@ export const ext: ExtensionState = {
   pendingSteers: [],
   lastConsumedSteerText: null,
   queuedItems: [],
+  pendingFollowUps: [],
 
   // pi api + bridges
   pi: null,
@@ -280,6 +288,7 @@ export function resetExtensionState(): void {
     pendingSteers: [],
     lastConsumedSteerText: null,
     queuedItems: [],
+    pendingFollowUps: [],
     pi: null,
     extensionUiBridge: null,
     stopAutoListener: null,

@@ -2,6 +2,7 @@
 // chat input bar.
 
 import 'package:app/domain/session_state.dart';
+import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/widgets/input_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
@@ -21,7 +22,7 @@ void main() {
           body: InputBar(
             disabled: disabled,
             streaming: streaming,
-            onSend: (_) {},
+            onSend: (_, _) {},
             onCancel: () {},
             onOpenQuickActions: onOpenQuickActions,
           ),
@@ -154,7 +155,7 @@ void main() {
           body: InputBar(
             disabled: false,
             streaming: true,
-            onSend: (text) => sent = text,
+            onSend: (text, _) => sent = text,
             onCancel: () {},
             onSetQueued: (text) => queued = text,
           ),
@@ -192,7 +193,7 @@ void main() {
                 createdAt: DateTime.fromMillisecondsSinceEpoch(1),
               ),
             ],
-            onSend: (_) {},
+            onSend: (_, _) {},
             onCancel: () {},
             onClearQueued: (id) => cleared = id,
           ),
@@ -228,7 +229,7 @@ void main() {
                 createdAt: DateTime.fromMillisecondsSinceEpoch(1),
               ),
             ],
-            onSend: (_) {},
+            onSend: (_, _) {},
             onCancel: () {},
             onClearQueued: (_) {},
           ),
@@ -253,7 +254,7 @@ void main() {
           body: InputBar(
             disabled: false,
             streaming: true,
-            onSend: (text) => sent = text,
+            onSend: (text, _) => sent = text,
             onCancel: () {},
           ),
         ),
@@ -272,6 +273,94 @@ void main() {
     await tester.pump();
     expect(sent, 'quick follow-up');
   });
+
+  // Plan/127 — while working, a segmented [Steer | Follow-up] toggle sits
+  // above the field; the chosen mode drives the delivery behavior of the send.
+  testWidgets(
+    'plan/127: default steer while streaming sends steer behavior',
+    (tester) async {
+      UserMessageStreamingBehavior? behavior;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: InputBar(
+              disabled: false,
+              streaming: true,
+              onSend: (_, b) => behavior = b,
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      // Toggle is visible while streaming.
+      expect(find.text('Steer'), findsOneWidget);
+      expect(find.text('Follow-up'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), 'refine');
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('input-bar-action')));
+      await tester.pump();
+      expect(behavior, UserMessageStreamingBehavior.steer);
+    },
+  );
+
+  testWidgets(
+    'plan/127: selecting Follow-up sends followUp behavior',
+    (tester) async {
+      UserMessageStreamingBehavior? behavior;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: InputBar(
+              disabled: false,
+              streaming: true,
+              onSend: (_, b) => behavior = b,
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      // Switch the toggle to Follow-up.
+      await tester.tap(find.text('Follow-up'));
+      await tester.pump();
+      final field = tester.widget<TextField>(find.byType(TextField));
+      expect(field.decoration?.hintText, 'Queue a follow-up…');
+
+      await tester.enterText(find.byType(TextField), 'then run tests');
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('input-bar-action')));
+      await tester.pump();
+      expect(behavior, UserMessageStreamingBehavior.followUp);
+    },
+  );
+
+  testWidgets(
+    'plan/127: toggle hidden while idle; idle send is normal (null behavior)',
+    (tester) async {
+      UserMessageStreamingBehavior? behavior;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: InputBar(
+              disabled: false,
+              streaming: false,
+              onSend: (_, b) => behavior = b,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Steer'), findsNothing);
+      expect(find.text('Follow-up'), findsNothing);
+      await tester.enterText(find.byType(TextField), 'hi');
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('input-bar-action')));
+      await tester.pump();
+      expect(behavior, isNull);
+    },
+  );
 
   testWidgets('tap fires onOpenQuickActions', (tester) async {
     var tapped = 0;
@@ -310,7 +399,7 @@ void main() {
           body: InputBar(
             disabled: false,
             streaming: false,
-            onSend: sent.add,
+            onSend: (text, _) => sent.add(text),
             onCancel: () {},
           ),
         ),
@@ -356,7 +445,7 @@ void main() {
           body: InputBar(
             disabled: false,
             streaming: true,
-            onSend: sent.add,
+            onSend: (text, _) => sent.add(text),
             onCancel: () {},
           ),
         ),

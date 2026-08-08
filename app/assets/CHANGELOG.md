@@ -13,7 +13,12 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
-- (nothing yet)
+- **Steer vs Follow-up choice while working (plan 127)** — while the agent
+  is working, a segmented **[Steer | Follow-up]** toggle above the composer
+  lets you queue a message as the **next** turn (clock icon, "queued · next
+  turn") instead of injecting into the running one (route icon; steer stays
+  the default). Follow-ups drain in order when the current turn ends and
+  render consistently across paired devices.
 
 ---
 
