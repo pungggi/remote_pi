@@ -79,6 +79,11 @@ class MessageRecord {
   /// Local-only hint: this pending user row was sent while the Pi was busy.
   final bool steering;
 
+  /// Plan/127 — local-only hint: this user row was sent as a follow-up
+  /// (queued behind the running turn). Persistent marker for display; it is
+  /// not cleared by the steer-consumed lifecycle (unlike [steering]).
+  final bool followUp;
+
   /// Plan/32 - tokens reclaimed by a compaction (compaction rows only).
   final int? tokensBefore;
 
@@ -94,6 +99,7 @@ class MessageRecord {
     required this.ts,
     this.pending = false,
     this.steering = false,
+    this.followUp = false,
     this.tokensBefore,
   });
 
@@ -106,6 +112,7 @@ class MessageRecord {
     MessageFile? file,
     bool? pending,
     bool? steering,
+    bool? followUp,
   }) => MessageRecord(
     id: id,
     seq: seq ?? this.seq,
@@ -118,6 +125,7 @@ class MessageRecord {
     ts: ts,
     pending: pending ?? this.pending,
     steering: steering ?? this.steering,
+    followUp: followUp ?? this.followUp,
     tokensBefore: tokensBefore,
   );
 
@@ -133,6 +141,7 @@ class MessageRecord {
     'ts': ts.millisecondsSinceEpoch,
     'pending': pending,
     if (steering) 'steering': true,
+    if (followUp) 'followUp': true,
     if (tokensBefore != null) 'tokens_before': tokensBefore,
   };
 
@@ -164,6 +173,7 @@ class MessageRecord {
       ts: DateTime.fromMillisecondsSinceEpoch((j['ts'] as num).toInt()),
       pending: (j['pending'] as bool?) ?? false,
       steering: (j['steering'] as bool?) ?? false,
+      followUp: (j['followUp'] as bool?) ?? false,
       tokensBefore: (j['tokens_before'] as num?)?.toInt(),
     );
   }
@@ -177,6 +187,7 @@ class MessageRecord {
           text: text,
           status: pending ? UserMsgStatus.pending : UserMsgStatus.confirmed,
           steering: steering,
+          followUp: followUp,
           image: image,
         );
       case MsgRole.assistant:

@@ -335,13 +335,16 @@ class ChatViewModel extends ViewModel<ChatState> {
     String text, {
     List<MessageImage>? images,
     ({String provider, String id})? model,
+    UserMessageStreamingBehavior? streamingBehavior,
   }) =>
       _sync.sendMessage(
         text,
         images: images,
-        streamingBehavior: isWorking
-            ? UserMessageStreamingBehavior.steer
-            : null,
+        // Plan/127 — the composer toggle passes the explicit choice while
+        // working (steer | followUp). Callers that don't pass one get the
+        // legacy auto-derive (steer while busy, else a normal turn).
+        streamingBehavior: streamingBehavior ??
+            (isWorking ? UserMessageStreamingBehavior.steer : null),
         model: model,
       );
 

@@ -206,6 +206,10 @@ class SyncService extends Service {
     final id = _newId();
     final now = DateTime.now();
     final isSteer = streamingBehavior == UserMessageStreamingBehavior.steer;
+    final isFollowUp = streamingBehavior == UserMessageStreamingBehavior.followUp;
+    // Both steer and follow-up are sent while the room is busy and must NOT
+    // start a fresh assistant turn / cursor (steer injects; follow-up queues).
+    final isDeferred = isSteer || isFollowUp;
     // Plan/105 — the DB record + preview carry the FIRST image only (the DB
     // message row is single-image); the wire message carries all of them. The
     // relay echoes the full set, so the row is replaced with every image on echo.
@@ -224,9 +228,10 @@ class SyncService extends Service {
           ts: now,
           pending: true,
           steering: isSteer,
+          followUp: isFollowUp,
         ),
       );
-      if (!isSteer) {
+      if (!isDeferred) {
         _setWorking(true, preview: _preview(text, first), replyTo: id);
       }
       // Arm the no-echo backstop for this row. The timeout is keyed off the
@@ -248,9 +253,9 @@ class SyncService extends Service {
     // "thinking" gap before the first agent_chunk (pre-31 behavior). In-memory
     // only (#7) — never written to the DB. agent_chunk appends; agent_done
     // clears it (even for a text-less, tool-only turn).
-    // Steering messages should not create a new cursor, because they do not
-    // start a fresh assistant turn.
-    if (!isSteer) {
+    // Steering/follow-up messages should not create a new cursor, because
+    // they do not start a fresh assistant turn (steer injects; follow-up queues).
+    if (!isDeferred) {
       _emitStreaming(StreamingMessage(inReplyTo: id));
     }
     debugPrint('[msg-send] id=$id text=${_preview(text, first)}');
@@ -634,8 +639,11 @@ class SyncService extends Service {
                   ts: DateTime.now(),
                 ),
         );
-        // Steering input should not start/replace the working turn bubble.
-        if (streamingBehavior == UserMessageStreamingBehavior.steer) {
+        // Steering/follow-up input should not start/replace the working turn
+        // bubble (steer injects into the running turn; follow-up queues behind
+        // it — its own turn streams later, attributed to this id).
+        if (streamingBehavior == UserMessageStreamingBehavior.steer ||
+            streamingBehavior == UserMessageStreamingBehavior.followUp) {
           _setActivity(SessionActivity.working, preview: text);
         } else {
           _setWorking(true, preview: text, replyTo: id);

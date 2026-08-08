@@ -75,6 +75,11 @@ class UserMsg extends ChatMessage {
   final UserMsgStatus status;
   final bool steering;
 
+  /// Plan/127 — this message was sent as a follow-up (queued behind the
+  /// running turn). Persistent display marker; distinct from [steering]
+  /// (which is transient and cleared on consume).
+  final bool followUp;
+
   /// Plan/30 — optional attached image (one max). `null` for text-only
   /// messages, which is every message before this feature.
   final MessageImage? image;
@@ -84,14 +89,16 @@ class UserMsg extends ChatMessage {
     required this.text,
     this.status = UserMsgStatus.confirmed,
     this.steering = false,
+    this.followUp = false,
     this.image,
   });
 
-  UserMsg copyWith({UserMsgStatus? status, bool? steering}) => UserMsg(
+  UserMsg copyWith({UserMsgStatus? status, bool? steering, bool? followUp}) => UserMsg(
     id: id,
     text: text,
     status: status ?? this.status,
     steering: steering ?? this.steering,
+    followUp: followUp ?? this.followUp,
     image: image,
   );
 
@@ -102,10 +109,11 @@ class UserMsg extends ChatMessage {
       other.text == text &&
       other.status == status &&
       other.steering == steering &&
+      other.followUp == followUp &&
       other.image == image;
 
   @override
-  int get hashCode => Object.hash(id, text, status, steering, image);
+  int get hashCode => Object.hash(id, text, status, steering, followUp, image);
 }
 
 class AssistantMsg extends ChatMessage {

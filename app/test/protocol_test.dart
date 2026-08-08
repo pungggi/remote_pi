@@ -362,6 +362,17 @@ void main() {
       expect(decoded['streaming_behavior'], 'steer');
     });
 
+    test('plan/127: UserMessage with followUp behavior includes streaming_behavior', () {
+      final msg = UserMessage(
+        id: 'test-id-followup',
+        text: 'then also run the tests',
+        streamingBehavior: UserMessageStreamingBehavior.followUp,
+      );
+      final decoded =
+          jsonDecode(encodeClient(msg).trim()) as Map<String, dynamic>;
+      expect(decoded['streaming_behavior'], 'followUp');
+    });
+
     test('ApproveTool encodes decision as string', () {
       final msg = ApproveTool(
         id: 'x',
@@ -440,6 +451,18 @@ void main() {
               })
               as UserInput;
       expect(msg.streamingBehavior, UserMessageStreamingBehavior.steer);
+    });
+
+    test('plan/127: user_message echo with followUp behavior parses on UserInput', () {
+      final msg =
+          ServerMessage.fromJson({
+                'type': 'user_message',
+                'id': 'u-followup',
+                'text': 'then run tests',
+                'streaming_behavior': 'followUp',
+              })
+              as UserInput;
+      expect(msg.streamingBehavior, UserMessageStreamingBehavior.followUp);
     });
 
     test('unknown streaming_behavior is ignored (compatibility)', () {

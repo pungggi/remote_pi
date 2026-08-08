@@ -61,7 +61,7 @@ void main() {
         home: Scaffold(
           body: Align(
             alignment: Alignment.bottomCenter,
-            child: InputBar(onSend: (_) {}, voice: vm, onVoiceHint: hints.add),
+            child: InputBar(onSend: (_, _) {}, voice: vm, onVoiceHint: hints.add),
           ),
         ),
       ),
