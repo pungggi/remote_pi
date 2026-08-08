@@ -9,7 +9,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::AppState;
 use crate::auth::challenge::{
@@ -394,7 +394,9 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     Message::Text(fwd_line),
                                     conn_id,
                                 ) {
-                                    warn!(
+                                    // Normal during peer/room churn (was ~94% of the log at warn!);
+                                    // debug-only. Re-enable at RUST_LOG=debug when diagnosing routing.
+                                    debug!(
                                         from = %peer_short,
                                         dest = %dest_tail,
                                         room = %dest_room,
