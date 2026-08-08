@@ -637,6 +637,15 @@ class SyncService extends Service {
                       ? null
                       : MessageImage(data: image.data, mime: image.mime),
                   ts: DateTime.now(),
+                  // Plan/127 — a foreign-device echo (no local optimistic
+                  // row) must carry the delivery marker so every owner
+                  // renders the same steer/follow-up bubble from the echoed
+                  // streaming_behavior.
+                  steering:
+                      streamingBehavior == UserMessageStreamingBehavior.steer,
+                  followUp:
+                      streamingBehavior ==
+                      UserMessageStreamingBehavior.followUp,
                 ),
         );
         // Steering/follow-up input should not start/replace the working turn
@@ -825,19 +834,35 @@ class SyncService extends Service {
     final historyIds = {for (final r in rows) _key(r.role, r.id)};
     await _enqueue(() async {
       final box = await _boxes.msgsBox(epk, room);
+      // Plan/127 — session_history user events carry no streaming_behavior,
+      // so without this a reconnect/reload would rebuild follow-up/steer rows
+      // as plain messages and wipe the persistent delivery marker. Carry the
+      // existing local followUp/steering flags over (keyed by user message id)
+      // before reconciling history.
+      final localFollowUp = <String>{};
+      final localSteering = <String>{};
       // Preserve local pending user rows the Pi hasn't echoed yet.
       final preserved = <MessageRecord>[];
       for (final v in box.values) {
         final r = MessageRecord.fromJson(_coerce(v));
-        if (r.role == MsgRole.user &&
-            r.pending &&
-            !historyIds.contains(_key(r.role, r.id))) {
-          preserved.add(r);
+        if (r.role == MsgRole.user) {
+          if (r.followUp) localFollowUp.add(r.id);
+          if (r.steering) localSteering.add(r.id);
+          if (r.pending && !historyIds.contains(_key(r.role, r.id))) {
+            preserved.add(r);
+          }
         }
       }
       // Desired ordered state: history (seq = index) then preserved pending.
       final desired = <MessageRecord>[
-        for (var i = 0; i < rows.length; i++) rows[i].copyWith(seq: i),
+        for (var i = 0; i < rows.length; i++)
+          rows[i].copyWith(
+            seq: i,
+            followUp: rows[i].role == MsgRole.user &&
+                localFollowUp.contains(rows[i].id),
+            steering: rows[i].role == MsgRole.user &&
+                localSteering.contains(rows[i].id),
+          ),
         for (var j = 0; j < preserved.length; j++)
           preserved[j].copyWith(seq: rows.length + j),
       ];
