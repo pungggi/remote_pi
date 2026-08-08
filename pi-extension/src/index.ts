@@ -3757,6 +3757,22 @@ export function _routeClientMessageFrom(
       // room is already working. Tell the SDK this is steering; otherwise it
       // rejects the message as a normal busy prompt. Seed a fallback id so
       // later chunks/done have a target instead of being dropped.
+      //
+      // Plan/127 — a follow-up with an image is rejected up front. Image
+      // attachments are not supported on follow-ups in this slice, and
+      // letting it reach the image branch below would inject the message as
+      // steer into the running turn (wrong attribution). Reject explicitly
+      // so the client can surface the limitation instead of mis-delivering.
+      if (isFollowUp && msg.images && msg.images.length > 0) {
+        sender.send({
+          type: "error",
+          code: "unsupported_followup_image",
+          in_reply_to: msg.id,
+          message:
+            "Follow-up messages with image attachments are not supported yet; send the image as a normal message or a steer.",
+        });
+        break;
+      }
       if (msg.images && msg.images.length > 0) {
         void _deliverImageUserMessage(sender, msg, shouldSteer).catch((error) => {
           const detail = error instanceof Error ? error.message : String(error);
@@ -3767,8 +3783,11 @@ export function _routeClientMessageFrom(
 
       // Plan/127 — follow-up while busy: hold the message and drain it on
       // turn_end so its turn is attributed to this id (not the running one).
-      // While idle, fall through to a normal send below.
-      if (isFollowUp && ext.currentTurnId !== null) {
+      // "Busy" is recognized by EITHER signal: an active turn id OR
+      // myRoomMeta.working — the reconnect state where the turn started while
+      // no owner was attached, so we never learned its id. While idle, fall
+      // through to a normal send below.
+      if (isFollowUp && _isBusyForQueueDrain()) {
         ext.pendingFollowUps.push({ id: msg.id, text: msg.text });
         _echoUserMessage(msg, false);
         break;

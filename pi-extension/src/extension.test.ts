@@ -2183,6 +2183,88 @@ describe("multi-channel broadcast (W2D)", () => {
     });
   });
 
+  test("plan/127: followUp with an image is rejected, not injected as steer", async () => {
+    await _pairForTest("ownerA__1234567890");
+    const harness = captureEventHarness();
+    const sendUserMessage = vi.fn();
+    _setPiForTest({ sendUserMessage, sendMessage: () => undefined });
+
+    // Seed a running turn so the room is busy.
+    harness.handler("input")({ type: "input", text: "primary", source: "interactive" });
+    harness.handler("turn_start")({ type: "turn_start", turnIndex: 0, timestamp: 0 });
+    await new Promise<void>((r) => setImmediate(r));
+    const seededTurnId = _getCurrentTurnIdForTest();
+    expect(seededTurnId).toBeTruthy();
+
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+    relayRef.current!.emit("message", JSON.stringify({
+      peer: "ownerA__1234567890",
+      ct: Buffer.from(JSON.stringify({
+        type: "user_message",
+        id: "msg-followup-image",
+        text: "then also look at this",
+        streaming_behavior: "followUp",
+        images: [{ data: "QUJD", mime: "image/png" }],
+      })).toString("base64"),
+    }));
+    await new Promise<void>((r) => setImmediate(r));
+
+    // Rejected up front — never handed to the agent …
+    expect(sendUserMessage).not.toHaveBeenCalled();
+    // … the running turn still owns the slot (no steer injection) …
+    expect(_getCurrentTurnIdForTest()).toBe(seededTurnId);
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt);
+    // … an explicit unsupported error is surfaced …
+    const err = sent.find((d) => d.inner.type === "error");
+    expect(err?.inner).toMatchObject({
+      type: "error",
+      code: "unsupported_followup_image",
+      in_reply_to: "msg-followup-image",
+    });
+    // … and no follow-up bubble is echoed.
+    expect(sent.some((d) => d.inner.type === "user_message")).toBe(false);
+  });
+
+  test("plan/127: followUp while working-but-no-turn-id (reconnect) is queued", async () => {
+    await _pairForTest("ownerA__1234567890");
+    const harness = captureEventHarness();
+    const sendUserMessage = vi.fn();
+    _setPiForTest({ sendUserMessage, sendMessage: () => undefined });
+
+    // Reconnect state: the room is working (turn_start published working=true)
+    // but we never learned the running turn's id — no input/user_message seeded
+    // currentTurnId. A follow-up here must still queue, not inject as steer.
+    harness.handler("turn_start")({ type: "turn_start", turnIndex: 0, timestamp: 0 });
+    await new Promise<void>((r) => setImmediate(r));
+    expect(_getCurrentTurnIdForTest()).toBeNull();
+
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+    relayRef.current!.emit("message", JSON.stringify({
+      peer: "ownerA__1234567890",
+      ct: Buffer.from(JSON.stringify({
+        type: "user_message",
+        id: "msg-followup-reconnect",
+        text: "queue this for after",
+        streaming_behavior: "followUp",
+      })).toString("base64"),
+    }));
+    await new Promise<void>((r) => setImmediate(r));
+
+    // Queued — not injected into the running turn.
+    expect(sendUserMessage).not.toHaveBeenCalled();
+    // We still don't know the running turn's id, so the slot stays null.
+    expect(_getCurrentTurnIdForTest()).toBeNull();
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt);
+    const echo = sent.find((d) => d.inner.type === "user_message");
+    expect(echo?.inner).toMatchObject({
+      type: "user_message",
+      id: "msg-followup-reconnect",
+      streaming_behavior: "followUp",
+    });
+  });
+
   test("plan/43: persisted user message clears the oldest pending steer", async () => {
     await _pairForTest("ownerA__1234567890");
     const sendUserMessage = vi.fn();
