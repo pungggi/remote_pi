@@ -286,7 +286,10 @@ Acceptance:
 
 ## Future work
 
-- Add `followUp` mode and a user-visible choice if product testing shows both are
-  useful.
+- ~~Add `followUp` mode and a user-visible choice if product testing shows both are
+  useful.~~ **Done in [plan/127](127-steer-followup-choice.md)** — a segmented
+  [Steer | Follow-up] toggle now ships, with an extension-side drain (mirroring
+  the queued-message machinery) so a follow-up's turn is attributed to its own
+  bubble, plus distinct route/clock markers across owners.
 - Add full mobile `ask_user` prompt cards using `extension_ui_request` /
   `extension_ui_response`.
