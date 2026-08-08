@@ -368,14 +368,16 @@ function _republishRoomMeta(): void {
 }
 
 function _echoUserMessage(msg: ClientUserMessage, forceSteer = false): void {
+  // Plan/127 — echo the inbound streaming_behavior (steer | followUp) so
+  // every owner renders the matching bubble. `forceSteer` (queued-message
+  // drain) coerces to steer for back-compat.
+  const echoBehavior = forceSteer ? "steer" : msg.streaming_behavior;
   _broadcastToActive({
     type: "user_message",
     id: msg.id,
     text: msg.text,
     ...(msg.images && msg.images.length > 0 ? { images: msg.images } : {}),
-    ...(forceSteer || msg.streaming_behavior === "steer"
-      ? { streaming_behavior: "steer" as const }
-      : {}),
+    ...(echoBehavior ? { streaming_behavior: echoBehavior } : {}),
     // Plan/109 — echo the one-shot override model so other owners see it.
     ...(msg.model ? { model: msg.model } : {}),
   });
@@ -642,6 +644,32 @@ function _maybeDrainQueuedItem(): void {
     return;
   }
   _echoUserMessage(msg, false);
+}
+
+/**
+ * Plan/127 — drain one pending follow-up when the room is idle. Mirrors
+ * `_maybeDrainQueuedItem`: sets `currentTurnId` to the follow-up id BEFORE
+ * waking the agent, so the follow-up's turn streams back attributed to that
+ * id (the app already rendered the committed follow-up bubble at send time).
+ * The follow-up is NOT re-echoed here — it was echoed when the app sent it.
+ */
+function _maybeDrainFollowUp(): void {
+  if (_isBusyForQueueDrain()) return;
+  const item = ext.pendingFollowUps.shift();
+  if (!item) return;
+  const previousTurnId = ext.currentTurnId;
+  ext.currentTurnId = item.id;
+  const wake = _wakeAgent(item.text, `app follow-up user_message id=${item.id}`);
+  if (!wake.ok) {
+    ext.currentTurnId = previousTurnId;
+    ext.pendingFollowUps = [item, ...ext.pendingFollowUps];
+    _broadcastToActive({
+      type: "error",
+      code: "internal_error",
+      in_reply_to: item.id,
+      message: `Agent rejected follow-up message: ${wake.detail}`,
+    });
+  }
 }
 
 /** Test-only override of the message buffer. */
@@ -1089,6 +1117,7 @@ function _goIdle(byeReason?: import("./protocol/types.js").ByeReason): void {
   ext.currentTurnId = null;
   ext.pendingReceivedImagePreviews.length = 0;
   ext.pendingSteers = [];
+  ext.pendingFollowUps = [];
   ext.lastConsumedSteerText = null;
   _resetQueuedItems();
 
@@ -1149,6 +1178,7 @@ function _onRelayClose(closedRelay: RelayClient): void {
   ext.peerShort = "";
   ext.currentTurnId = null;
   ext.pendingSteers = [];
+  ext.pendingFollowUps = [];
   ext.lastConsumedSteerText = null;
   _resetQueuedItems();
 
@@ -1930,6 +1960,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     flushPendingReceivedImagePreviews();
     ext.lastConsumedSteerText = null;
     _maybeDrainQueuedItem();
+    _maybeDrainFollowUp();
 
     // agent_end listeners finish before pi-agent-core clears its active run.
     // Defer mesh delivery to the next event-loop turn so triggerTurn cannot
@@ -1975,6 +2006,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     }
     _refreshContextUsage();
     _maybeDrainQueuedItem();
+    _maybeDrainFollowUp();
     // Plan/109 — restore the live model after a one-shot override turn.
     void _revertModelOverride();
   });
@@ -2007,6 +2039,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // (3) Working ends.
     _publishWorking(false);
     _maybeDrainQueuedItem();
+    _maybeDrainFollowUp();
   });
 
   // Re-capture the freshest base ctx on every session replacement so compact
@@ -3690,6 +3723,7 @@ export function _routeClientMessageFrom(
       }
       _upsertQueuedItem({ id: msg.id, text, editable: true, created_at: Date.now() });
       _maybeDrainQueuedItem();
+      _maybeDrainFollowUp();
       break;
     }
     case "queued_message_clear":
@@ -3711,7 +3745,11 @@ export function _routeClientMessageFrom(
       // image bubble. No-image path is byte-identical to before (no `images`
       // key on the wire).
       const requestedSteer = msg.streaming_behavior === "steer";
-      const inferredBusySteer = !requestedSteer && ext.myRoomMeta?.working === true;
+      const isFollowUp = msg.streaming_behavior === "followUp";
+      // Plan/127 — a follow-up must NOT be inferred as steer; it queues
+      // behind the running turn instead of injecting into it.
+      const inferredBusySteer =
+        !requestedSteer && !isFollowUp && ext.myRoomMeta?.working === true;
       const shouldSteer = requestedSteer || inferredBusySteer;
       // A reconnecting app can correctly send `steer` while our mirror has no
       // turn id (for example, the turn started while no owner was attached).
@@ -3724,6 +3762,15 @@ export function _routeClientMessageFrom(
           const detail = error instanceof Error ? error.message : String(error);
           console.error(`[remote-pi] failed delivering image message id=${msg.id}: ${detail}`);
         });
+        break;
+      }
+
+      // Plan/127 — follow-up while busy: hold the message and drain it on
+      // turn_end so its turn is attributed to this id (not the running one).
+      // While idle, fall through to a normal send below.
+      if (isFollowUp && ext.currentTurnId !== null) {
+        ext.pendingFollowUps.push({ id: msg.id, text: msg.text });
+        _echoUserMessage(msg, false);
         break;
       }
 
@@ -4024,6 +4071,7 @@ function _handleSessionSync(
 function _resetSessionForNew(inReplyTo: string): void {
   ext.messageBuffer = [];
   ext.pendingSteers = [];
+  ext.pendingFollowUps = [];
   ext.lastConsumedSteerText = null;
   _resetQueuedItems({ broadcast: true });
   ext.sessionStartedAt = Date.now();

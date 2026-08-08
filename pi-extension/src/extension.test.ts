@@ -2072,6 +2072,117 @@ describe("multi-channel broadcast (W2D)", () => {
     },
   );
 
+  test(
+    "plan/127: followUp while busy is queued, not injected; echo carries followUp",
+    async () => {
+      await _pairForTest("ownerA__1234567890");
+      const harness = captureEventHarness();
+      const sendUserMessage = vi.fn();
+      _setPiForTest({ sendUserMessage, sendMessage: () => undefined });
+
+      // Seed a running turn so the room is busy.
+      harness.handler("input")({ type: "input", text: "primary", source: "interactive" });
+      harness.handler("turn_start")({ type: "turn_start", turnIndex: 0, timestamp: 0 });
+      await new Promise<void>((r) => setImmediate(r));
+      const seededTurnId = _getCurrentTurnIdForTest();
+      expect(seededTurnId).toBeTruthy();
+
+      const sendsBefore = relayRef.current!.send.mock.calls.length;
+      relayRef.current!.emit("message", JSON.stringify({
+        peer: "ownerA__1234567890",
+        ct: Buffer.from(JSON.stringify({
+          type: "user_message",
+          id: "msg-followup",
+          text: "then also run the tests",
+          streaming_behavior: "followUp",
+        })).toString("base64"),
+      }));
+      await new Promise<void>((r) => setImmediate(r));
+
+      // Queued — not handed to the agent yet.
+      expect(sendUserMessage).not.toHaveBeenCalled();
+      // The running turn still owns the slot (steer would have kept it too;
+      // a followUp must never overwrite it).
+      expect(_getCurrentTurnIdForTest()).toBe(seededTurnId);
+      // Echo renders the committed follow-up bubble for every owner.
+      const sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+        .map((c) => c[0] as string).map(decodeSentCt);
+      const echo = sent.find((d) => d.inner.type === "user_message");
+      expect(echo?.inner).toMatchObject({
+        type: "user_message",
+        id: "msg-followup",
+        text: "then also run the tests",
+        streaming_behavior: "followUp",
+      });
+    },
+  );
+
+  test(
+    "plan/127: turn_end drains a queued followUp and attributes its turn to it",
+    async () => {
+      await _pairForTest("ownerA__1234567890");
+      const harness = captureEventHarness();
+      const sendUserMessage = vi.fn();
+      _setPiForTest({ sendUserMessage, sendMessage: () => undefined });
+
+      harness.handler("input")({ type: "input", text: "primary", source: "interactive" });
+      harness.handler("turn_start")({ type: "turn_start", turnIndex: 0, timestamp: 0 });
+      await new Promise<void>((r) => setImmediate(r));
+
+      relayRef.current!.emit("message", JSON.stringify({
+        peer: "ownerA__1234567890",
+        ct: Buffer.from(JSON.stringify({
+          type: "user_message",
+          id: "msg-followup",
+          text: "then also run the tests",
+          streaming_behavior: "followUp",
+        })).toString("base64"),
+      }));
+      await new Promise<void>((r) => setImmediate(r));
+      expect(sendUserMessage).not.toHaveBeenCalled();
+
+      // Turn ends → the follow-up drains and starts its own turn.
+      harness.handler("agent_end")({ type: "agent_end" });
+      harness.handler("turn_end")({ type: "turn_end", turnIndex: 0, timestamp: 0 });
+      await new Promise<void>((r) => setImmediate(r));
+
+      expect(sendUserMessage).toHaveBeenCalledWith("then also run the tests", undefined);
+      // The new turn is attributed to the follow-up id so app chunks target it.
+      expect(_getCurrentTurnIdForTest()).toBe("msg-followup");
+    },
+  );
+
+  test("plan/127: followUp while idle behaves as a normal send", async () => {
+    await _pairForTest("ownerA__1234567890");
+    const sendUserMessage = vi.fn();
+    _setPiForTest({ sendUserMessage, sendMessage: () => undefined });
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+
+    relayRef.current!.emit("message", JSON.stringify({
+      peer: "ownerA__1234567890",
+      ct: Buffer.from(JSON.stringify({
+        type: "user_message",
+        id: "msg-followup-idle",
+        text: "fresh follow-up",
+        streaming_behavior: "followUp",
+      })).toString("base64"),
+    }));
+    await new Promise<void>((r) => setImmediate(r));
+
+    // Idle → starts a turn now (deliverAs is ignored by the SDK when idle;
+    // the app-originated handoff always carries one).
+    expect(sendUserMessage).toHaveBeenCalledWith("fresh follow-up", { deliverAs: "steer" });
+    expect(_getCurrentTurnIdForTest()).toBe("msg-followup-idle");
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt);
+    const echo = sent.find((d) => d.inner.type === "user_message");
+    expect(echo?.inner).toMatchObject({
+      type: "user_message",
+      id: "msg-followup-idle",
+      streaming_behavior: "followUp",
+    });
+  });
+
   test("plan/43: persisted user message clears the oldest pending steer", async () => {
     await _pairForTest("ownerA__1234567890");
     const sendUserMessage = vi.fn();

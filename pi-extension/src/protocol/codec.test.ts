@@ -114,4 +114,14 @@ describe("encodeClient roundtrip", () => {
     };
     expect(JSON.parse(encodeClient(msg).trim())).toEqual(msg);
   });
+
+  test("plan/127: user_message with followUp streaming behavior", () => {
+    const msg = {
+      type: "user_message" as const,
+      id: "018f9c2b",
+      text: "then also run the tests",
+      streaming_behavior: "followUp" as const,
+    };
+    expect(JSON.parse(encodeClient(msg).trim())).toEqual(msg);
+  });
 });
