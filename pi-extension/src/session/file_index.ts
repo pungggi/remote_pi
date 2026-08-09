@@ -179,6 +179,27 @@ function asString(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
+/** Parse one transcript line into metadata, or null if not a `message` line. */
+function parseLine(offset: number, line: Buffer): FileIndexEntry | null {
+  if (line.length === 0) return null;
+  let obj: unknown;
+  try {
+    obj = JSON.parse(line.toString("utf8"));
+  } catch {
+    return null; // unparseable line — skip, never throw
+  }
+  if (!obj || typeof obj !== "object") return null;
+  const o = obj as { type?: unknown; message?: unknown };
+  if (o.type !== "message" || !o.message || typeof o.message !== "object") return null;
+  const m = o.message as { timestamp?: unknown; role?: unknown };
+  return {
+    ts: asNumber(m.timestamp),
+    role: asString(m.role),
+    byteOffset: offset,
+    byteLen: line.length,
+  };
+}
+
 /** Build the in-RAM index (metadata only) for one file, with INDEX_MAX cap. */
 async function collectEntries(path: string, startOffset: number): Promise<{
   entries: FileIndexEntry[];
@@ -186,23 +207,8 @@ async function collectEntries(path: string, startOffset: number): Promise<{
 }> {
   const entries: FileIndexEntry[] = [];
   const resumeOffset = await scanLines(path, startOffset, (offset, line) => {
-    if (line.length === 0) return;
-    let obj: unknown;
-    try {
-      obj = JSON.parse(line.toString("utf8"));
-    } catch {
-      return; // unparseable line — skip, never throw
-    }
-    if (!obj || typeof obj !== "object") return;
-    const o = obj as { type?: unknown; message?: unknown };
-    if (o.type !== "message" || !o.message || typeof o.message !== "object") return;
-    const m = o.message as { timestamp?: unknown; role?: unknown };
-    entries.push({
-      ts: asNumber(m.timestamp),
-      role: asString(m.role),
-      byteOffset: offset,
-      byteLen: line.length,
-    });
+    const e = parseLine(offset, line);
+    if (e) entries.push(e);
   });
   return { entries, resumeOffset };
 }
@@ -311,6 +317,58 @@ export async function readMessages(path: string, entries: FileIndexEntry[]): Pro
 // Opaque tokens threaded by the app. `off:<offset>` for file entries (stable:
 // the file is append-only so a byte offset never moves); `ram:<i>` for entries
 // served from the in-RAM tail (only the newest page ever contains them).
+
+/**
+ * Plan/128 (review C3) — serve one backward page STRICTLY BELOW the capped
+ * index floor by streaming the transcript from offset 0. Used only when
+ * `INDEX_MAX` has dropped the oldest metadata (`olderDropped`) and the cursor
+ * points at/below the retained window, so the advertised durable full-history
+ * behavior holds even past the cap. O(bytes up to the cursor) time, O(limit)
+ * memory — the common path stays index-based; this only runs on the rare deep
+ * pagination into the cap-dropped region.
+ *
+ * Returns the `limit` entries strictly older than the cursor's byte offset,
+ * whether even-older entries remain (`hasMore`), the cursor of the page's
+ * oldest entry (`nextBefore`), and the ts of the most-recent `user` entry
+ * before the page (so the caller can seed the mapper with a stable reply id —
+ * review C2). Returns null on a read error (caller falls back to the RAM tail).
+ */
+export async function streamPageBefore(
+  path: string,
+  before: Cursor,
+  limit: number,
+): Promise<{
+  entries: FileIndexEntry[];
+  hasMore: boolean;
+  nextBefore?: Cursor;
+  precedingUserTs: number | null;
+} | null> {
+  const targetOffset = before.kind === "off" ? before.offset : Number.POSITIVE_INFINITY;
+  const window: FileIndexEntry[] = [];
+  let count = 0;
+  // Last `user` ts among entries shifted out of the window (i.e. strictly
+  // older than the page) — the reply target for an assistant at the page start.
+  let precedingUserTs: number | null = null;
+  const STOP = new Error("streamPageBefore:stop");
+  try {
+    await scanLines(path, 0, (offset, line) => {
+      if (offset >= targetOffset) throw STOP; // reached the cursor — done
+      const e = parseLine(offset, line);
+      if (!e) return;
+      if (window.length >= limit) {
+        const shifted = window.shift()!;
+        if (shifted.role === "user") precedingUserTs = shifted.ts;
+      }
+      window.push(e);
+      count++;
+    });
+  } catch (e) {
+    if (e !== STOP) return null; // real read error → caller falls back
+  }
+  const hasMore = count > limit;
+  const nextBefore = window.length > 0 ? { kind: "off" as const, offset: window[0]!.byteOffset } : undefined;
+  return { entries: window, hasMore, nextBefore, precedingUserTs };
+}
 
 export type Cursor = { kind: "off"; offset: number } | { kind: "ram"; index: number };
 

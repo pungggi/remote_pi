@@ -3949,6 +3949,30 @@ describe("session sync", () => {
     });
   });
 
+  test("mapping (plan/128 C2): precedingUserId seeds the first assistant's reply id (stable across page boundaries)", () => {
+    const ts = 1_700_000_000_000;
+    // A page that STARTS with an assistant whose user msg is in an older page.
+    // Without the seed, in_reply_to would be the unstable `sync_<assistant-ts>`.
+    const events = _mapAgentMessagesToEvents(
+      [{ role: "assistant", content: [{ type: "text", text: "hi back" }], timestamp: ts + 5 }],
+      `sync_${ts}`, // the user msg id from the older page
+    );
+    expect(events).toHaveLength(1);
+    expect((events[0] as { in_reply_to: string }).in_reply_to).toBe(`sync_${ts}`);
+  });
+
+  test("mapping (plan/128 C2): an in-page user still wins over the stale seed", () => {
+    const ts = 1_700_000_000_000;
+    const events = _mapAgentMessagesToEvents(
+      [
+        { role: "user", content: "in-page user", timestamp: ts + 1 },
+        { role: "assistant", content: [{ type: "text", text: "reply" }], timestamp: ts + 2 },
+      ],
+      `sync_${ts - 100}`, // stale seed; the in-page user must override it
+    );
+    expect((events[1] as { in_reply_to: string }).in_reply_to).toBe(`sync_${ts + 1}`);
+  });
+
   test("pair_ok carries session_started_at = _sessionStartedAt", async () => {
     const beforePair = Date.now();
     await _pairForTest("peer-ss-5");

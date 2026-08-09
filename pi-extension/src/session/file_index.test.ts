@@ -12,6 +12,7 @@ import {
   refreshIndex,
   resolveCurrentSessionFile,
   sessionsRoot,
+  streamPageBefore,
   type FileIndex,
 } from "./file_index.js";
 
@@ -265,3 +266,66 @@ describe("file_index resolveCurrentSessionFile", () => {
 
 // keep an explicit reference so unused-import lint of the type stays satisfied
 export type _KeepFileIndex = FileIndex;
+
+describe("file_index streamPageBefore (plan/128 review C3)", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await tmpDir();
+  });
+  afterEach(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  it("serves the `limit` entries strictly before the cursor + hasMore + preceding user ts", async () => {
+    const path = join(dir, "s.jsonl");
+    // u1(1) a1(2) u2(3) a2(4) u3(5) a3(6)
+    await writeFile(
+      path,
+      [
+        msgLine("user", 1, "u1"),
+        msgLine("assistant", 2, [{ type: "text", text: "a1" }]),
+        msgLine("user", 3, "u2"),
+        msgLine("assistant", 4, [{ type: "text", text: "a2" }]),
+        msgLine("user", 5, "u3"),
+        msgLine("assistant", 6, [{ type: "text", text: "a3" }]),
+      ].join("\n") + "\n",
+    );
+    const idx = await buildIndex(path);
+    const cursorU3 = idx.entries[4]!; // u3
+    const page = await streamPageBefore(path, { kind: "off", offset: cursorU3.byteOffset }, 2);
+    expect(page).not.toBeNull();
+    // last 2 entries strictly before u3 = u2(3), a2(4)
+    expect(page!.entries.map((e) => e.ts)).toEqual([3, 4]);
+    expect(page!.hasMore).toBe(true); // 4 entries before the cursor > limit 2
+    expect(page!.nextBefore).toEqual({ kind: "off", offset: idx.entries[2]!.byteOffset }); // u2
+    expect(page!.precedingUserTs).toBe(1); // u1: last user older than the page
+  });
+
+  it("hasMore=false when fewer than `limit` entries precede the cursor", async () => {
+    const path = join(dir, "s.jsonl");
+    await writeFile(
+      path,
+      [msgLine("user", 1, "u1"), msgLine("assistant", 2, [{ type: "text", text: "a1" }])].join("\n") + "\n",
+    );
+    const idx = await buildIndex(path);
+    const page = await streamPageBefore(path, { kind: "off", offset: idx.entries[1]!.byteOffset }, 5);
+    expect(page!.entries.map((e) => e.ts)).toEqual([1]);
+    expect(page!.hasMore).toBe(false);
+    expect(page!.precedingUserTs).toBeNull(); // page starts at the file's first entry
+  });
+});
+
+describe("file_index readMessages (plan/128 review C4)", () => {
+  it("rejects on an unreadable file so the handler's RAM fallback can run", async () => {
+    const dir = await tmpDir();
+    try {
+      await expect(
+        readMessages(join(dir, "does-not-exist.jsonl"), [
+          { byteOffset: 0, byteLen: 10, ts: 0, role: "user" },
+        ]),
+      ).rejects.toThrow(/ENOENT|no such file/i);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

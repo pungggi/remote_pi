@@ -942,6 +942,102 @@ void main() {
   );
 
   test(
+    'plan/128 (review C1): a Pi RESTART restamps session_started_at but re-sends '
+    'OVERLAPPING rows ⇒ NO wipe (durability preserved)',
+    () async {
+      final s = await setup();
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 's1',
+          sessionStartedAt: 1000,
+          events: const [
+            UserInputEvt(ts: 1, id: 'u1', text: 'one'),
+            AgentMessageEvt(ts: 2, inReplyTo: 'a1', text: 'r1'),
+            UserInputEvt(ts: 3, id: 'u2', text: 'two'),
+          ],
+          eos: true,
+        ),
+      );
+      await _settle();
+      expect(messages(s.epk).map((r) => r.id), ['u1', 'a1', 'u2']);
+
+      // Pi restarts: fresh session_started_at (Date.now()), SAME transcript.
+      // The newest-page sync re-sends u2 (overlap) + a brand-new u3.
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 's2',
+          sessionStartedAt: 9999,
+          events: const [
+            UserInputEvt(ts: 3, id: 'u2', text: 'two'), // OVERLAP ⇒ not a new session
+            UserInputEvt(ts: 4, id: 'u3', text: 'three'),
+          ],
+          eos: true,
+        ),
+      );
+      await _settle();
+      expect(
+        messages(s.epk).map((r) => r.id),
+        ['u1', 'a1', 'u2', 'u3'],
+        reason: 'restart re-sends an overlapping row ⇒ no wipe; u1/a1 survive',
+      );
+      expect(
+        index(s.epk)?.sessionStartedAt?.millisecondsSinceEpoch,
+        9999,
+        reason: 'stored session_started_at still advances',
+      );
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'plan/128 (review C5): a result-only page then a request page merge into '
+    'one COMPLETE tool row (name+args+result)',
+    () async {
+      final s = await setup();
+      // Newest page has ONLY the result (no request) ⇒ 'unknown' tool row.
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 's1',
+          sessionStartedAt: 1000,
+          events: const [
+            ToolResultEvt(ts: 2, toolCallId: 'tc1', result: '42'),
+          ],
+          eos: true,
+        ),
+      );
+      await _settle();
+      var t = messages(s.epk).firstWhere((r) => r.id == 'tc1');
+      expect(t.tool?.tool, 'unknown', reason: 'result-only page ⇒ unknown name');
+      expect(t.tool?.result, '42');
+
+      // Older page brings the request ⇒ merge fills in the name + args.
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 's2',
+          sessionStartedAt: 1000,
+          events: const [
+            ToolRequestEvt(
+              ts: 1,
+              toolCallId: 'tc1',
+              tool: 'bash',
+              args: {'cmd': 'ls'},
+            ),
+          ],
+          eos: true,
+        ),
+      );
+      await _settle();
+      t = messages(s.epk).firstWhere((r) => r.id == 'tc1');
+      expect(t.tool?.tool, 'bash', reason: 'request filled in the tool name');
+      expect(t.tool?.args, {'cmd': 'ls'});
+      expect(t.tool?.result, '42', reason: 'result preserved across the merge');
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
     'plan/128: a growing server window MERGES — existing rows keep their seq '
     'and rows that scrolled off the server window are kept locally '
     '(durability)',

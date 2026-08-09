@@ -880,8 +880,42 @@ class SyncService extends Service {
       // (`session_started_at` differs from the one we persisted for this
       // (epk, room) and is non-zero — a fresh conversation). A `0` value means
       // a legacy/no-session Pi: treat as "nothing new", never wipe.
-      final isNewSession =
-          started != 0 && _storedSessionStartedAtDiffers(epk, room, started);
+      // Plan/128 (review C1) — DON'T wipe on a bare session_started_at change:
+      // a Pi PROCESS RESTART restamps it (Date.now()) even though the SAME
+      // transcript is resumed, which would discard already-loaded history —
+      // the core durability scenario. Treat it as a new session only when the
+      // incoming page is also CONTENT-DISJOINT from local (no id overlap ⇒ not
+      // a restart re-send) AND it's a newest-page sync (a backward loadMore's
+      // older rows are disjoint by id but are the same session, excluded by
+      // ts). A restart re-sends rows we already have ⇒ overlap ⇒ no wipe.
+      var isNewSession = started != 0 &&
+          _storedSessionStartedAtDiffers(epk, room, started) &&
+          _idToSeq.isNotEmpty;
+      if (isNewSession) {
+        final overlaps =
+            rows.any((r) => _idToSeq.containsKey(_key(r.role, r.id)));
+        if (overlaps) {
+          isNewSession = false;
+        } else {
+          // A loadMore page is disjoint by id but is the same session; its max
+          // ts is strictly older than the local box's newest — exclude it.
+          int? localMax;
+          for (final k in box.keys) {
+            final t = MessageRecord.fromJson(_coerce(box.get(k)))
+                .ts
+                .millisecondsSinceEpoch;
+            if (localMax == null || t > localMax) localMax = t;
+          }
+          final incomingMax = rows.fold<int>(
+            0,
+            (m, r) {
+              final t = r.ts.millisecondsSinceEpoch;
+              return t > m ? t : m;
+            },
+          );
+          if (localMax != null && incomingMax < localMax) isNewSession = false;
+        }
+      }
       if (isNewSession) {
         await box.clear();
         _idToSeq.clear();
@@ -903,7 +937,8 @@ class SyncService extends Service {
         } else {
           // Already have it. History doesn't carry pending/follow-up/steer,
           // so keep the local row verbatim — only confirm delivery if it was a
-          // pending user send the Pi has now echoed back in the replay.
+          // pending user send the Pi has now echoed back, or complete a tool
+          // row whose request/result arrived in separate pages (review C5).
           final curRaw = box.get(existingSeq);
           if (curRaw == null) {
             await box.put(existingSeq, row.copyWith(seq: existingSeq).toJson());
@@ -916,6 +951,16 @@ class SyncService extends Service {
               existingSeq,
               existing.copyWith(pending: false).toJson(),
             );
+          } else if (existing.role == MsgRole.tool &&
+              row.role == MsgRole.tool) {
+            // Plan/128 (review C5) — a tool_request and its tool_result can
+            // split across cursor pages (a result-only page makes an 'unknown'
+            // tool row). Merge whichever side is missing so the persisted tool
+            // event ends up complete (name/args + status/result/error).
+            final merged = _mergeTool(existing, row);
+            if (merged != null) {
+              await box.put(existingSeq, existing.copyWith(tool: merged).toJson());
+            }
           }
         }
       }
@@ -979,6 +1024,40 @@ class SyncService extends Service {
   /// once the box exceeds `cap + headroom`, then trim down to `cap`. 10% of
   /// cap (min 1) so steady-state merges don't evict one row at a time.
   static int _retentionHeadroom(int cap) => math.max(1, cap ~/ 10);
+
+  /// Plan/128 (review C5) — combine a tool_request and tool_result that arrived
+  /// in separate cursor pages into one complete row: name/args from the
+  /// request, status/result/error from the result. Returns null when the local
+  /// row is already at least as complete (no write needed).
+  ToolEventData? _mergeTool(MessageRecord a, MessageRecord b) {
+    final ta = a.tool;
+    final tb = b.tool;
+    if (ta == null || tb == null) return null;
+    bool hasName(ToolEventData t) => t.tool != 'unknown' && t.tool.isNotEmpty;
+    final nameSrc = hasName(ta) ? ta : (hasName(tb) ? tb : ta);
+    final args = ta.args ?? tb.args;
+    final bDone = tb.status == ToolEventStatus.completed ||
+        tb.status == ToolEventStatus.failed;
+    // Prefer the completed side for status/result/error; falls back to `ta`.
+    final status = bDone ? tb.status : ta.status;
+    final result = bDone ? tb.result : ta.result;
+    final error = bDone ? tb.error : ta.error;
+    if (nameSrc.tool == ta.tool &&
+        args == ta.args &&
+        status == ta.status &&
+        result == ta.result &&
+        error == ta.error) {
+      return null; // local row already complete; no write
+    }
+    return ToolEventData(
+      toolCallId: ta.toolCallId,
+      tool: nameSrc.tool,
+      args: args,
+      status: status,
+      result: result,
+      error: error,
+    );
+  }
 
   List<MessageRecord> _convertHistory(List<SessionHistoryEvent> events) {
     final out = <MessageRecord>[];

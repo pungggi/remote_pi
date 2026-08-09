@@ -80,6 +80,7 @@ import {
   resolveCurrentSessionFile,
   refreshIndex,
   readMessages,
+  streamPageBefore,
   decodeCursor,
   encodeCursor,
   type FileIndexEntry,
@@ -4136,7 +4137,7 @@ async function _pageHistory(
     ext.historyIndex = null;
   }
 
-  type Slot = { kind: "file"; ts: number; offset: number; byteLen: number } | { kind: "ram"; ts: number; bufIndex: number };
+  type Slot = { kind: "file"; ts: number; role: string; offset: number; byteLen: number } | { kind: "ram"; ts: number; role: string; bufIndex: number };
   // File slots are ts-sorted (the file is append-only ⇒ byteOffset order == ts
   // order); RAM-supplement slots are ts-sorted (messageBuffer is append-only ⇒
   // chronological). Synthetic compaction markers live only in the RAM tail and
@@ -4144,12 +4145,12 @@ async function _pageHistory(
   // ts-MERGE the two sorted sequences rather than concatenate. Cost is O(N+M)
   // over metadata only — no message bodies, no per-row reads.
   const fileSlots: Slot[] = [];
-  if (idx) for (const fe of idx.entries) fileSlots.push({ kind: "file", ts: fe.ts, offset: fe.byteOffset, byteLen: fe.byteLen });
+  if (idx) for (const fe of idx.entries) fileSlots.push({ kind: "file", ts: fe.ts, role: fe.role, offset: fe.byteOffset, byteLen: fe.byteLen });
   const ramSlots: Slot[] = [];
   for (let i = 0; i < ext.messageBuffer.length; i++) {
     const m = ext.messageBuffer[i];
     if (!idx || !idx.keys.has(`${_tsOf(m)}:${_roleOf(m)}`)) {
-      ramSlots.push({ kind: "ram", ts: _tsOf(m), bufIndex: i });
+      ramSlots.push({ kind: "ram", ts: _tsOf(m), role: _roleOf(m), bufIndex: i });
     }
   }
   const slots: Slot[] = [];
@@ -4164,6 +4165,37 @@ async function _pageHistory(
   // Decode cursor → position of the boundary entry in the unified (ts-sorted)
   // list; the page is the `limit` entries strictly older than it.
   const cursor = decodeCursor(before);
+
+  // Plan/128 (review C3) — the index cap drops the oldest metadata; a cursor
+  // at/below the retained floor can't be served from `idx.entries`. Stream the
+  // file from offset 0 to serve those on-disk entries so paging below the cap
+  // still works (the durable-full-history promise holds past INDEX_MAX). Only
+  // runs when capped AND the cursor is a file offset at/below the floor; the
+  // common path stays index-based. A read error here propagates to the outer
+  // handler's RAM fallback (review C4).
+  if (
+    idx &&
+    idx.olderDropped &&
+    cursor &&
+    cursor.kind === "off" &&
+    idx.entries.length > 0 &&
+    cursor.offset <= idx.entries[0]!.byteOffset
+  ) {
+    const streamed = await streamPageBefore(idx.path, { kind: "off", offset: cursor.offset }, limit);
+    if (streamed) {
+      const pageMsgs = streamed.entries.length > 0
+        ? await readMessages(idx.path, streamed.entries)
+        : [];
+      const precedingUserId = streamed.precedingUserTs != null ? `sync_${streamed.precedingUserTs}` : undefined;
+      return {
+        events: _mapAgentMessagesToEvents(pageMsgs, precedingUserId),
+        hasMore: streamed.hasMore,
+        nextBefore: streamed.nextBefore ? encodeCursor(streamed.nextBefore) : undefined,
+      };
+    }
+    // stream read failed → fall through; the index path degrades gracefully.
+  }
+
   let endIdx: number;
   if (!cursor) {
     endIdx = slots.length;
@@ -4182,8 +4214,23 @@ async function _pageHistory(
 
   const startIdx = Math.max(0, endIdx - limit);
   const pageSlots = slots.slice(startIdx, endIdx);
-  const hasMore = startIdx > 0;
-  const nextBefore = hasMore ? _slotCursor(slots[startIdx]) : undefined;
+  // Plan/128 (review C3) — `olderDropped` means older entries remain on disk
+  // even when the page reaches the index floor (startIdx === 0); advertise
+  // has_more and point nextBefore at the floor so the next page streams below it.
+  const hasMore = startIdx > 0 || idx?.olderDropped === true;
+  const nextBefore = hasMore && slots.length > 0 ? _slotCursor(slots[Math.max(0, startIdx)]!) : undefined;
+
+  // Plan/128 (review C2) — seed the mapper with the user id immediately BEFORE
+  // the page so an assistant at the page start (whose user msg sits in an older
+  // page) still replies to the right id. `sync_<ts>` is stable (derived from the
+  // user msg's ts), so the assistant's merge key is invariant under page shifts.
+  let precedingUserId: string | undefined;
+  for (let i = Math.min(startIdx, slots.length) - 1; i >= 0; i--) {
+    if (slots[i]!.role === "user") {
+      precedingUserId = `sync_${slots[i]!.ts}`;
+      break;
+    }
+  }
 
   // Read page messages: file byte-ranges in one batch + RAM entries directly.
   const pageFileEntries = pageSlots
@@ -4191,13 +4238,12 @@ async function _pageHistory(
     .map<FileIndexEntry>((s) => ({ byteOffset: s.offset, byteLen: s.byteLen, ts: 0, role: "" }));
   const fileMsgByOffset = new Map<number, BufferMsg>();
   if (idx && pageFileEntries.length > 0) {
-    try {
-      const msgs = await readMessages(idx.path, pageFileEntries);
-      for (let i = 0; i < pageFileEntries.length; i++) {
-        if (msgs[i]) fileMsgByOffset.set(pageFileEntries[i].byteOffset, msgs[i]);
-      }
-    } catch {
-      // best-effort: serve whatever RAM slots remain in the page
+    // Plan/128 (review C4) — let a range-read failure propagate to the outer
+    // handler's RAM fallback. Swallowing it would advance next_before/has_more
+    // over an empty/partial page, making the client skip undelivered events.
+    const msgs = await readMessages(idx.path, pageFileEntries);
+    for (let i = 0; i < pageFileEntries.length; i++) {
+      if (msgs[i]) fileMsgByOffset.set(pageFileEntries[i].byteOffset, msgs[i]);
     }
   }
 
@@ -4214,7 +4260,7 @@ async function _pageHistory(
     }
   }
 
-  return { events: _mapAgentMessagesToEvents(pageMsgs), hasMore, nextBefore };
+  return { events: _mapAgentMessagesToEvents(pageMsgs, precedingUserId), hasMore, nextBefore };
 }
 
 function _tsOf(m: BufferMsg): number {
@@ -4293,9 +4339,13 @@ function _imagesFromContent(content: unknown): WireImage[] {
  */
 export function _mapAgentMessagesToEvents(
   messages: BufferMsg[],
+  precedingUserId?: string,
 ): SessionHistoryEvent[] {
   const events: SessionHistoryEvent[] = [];
-  let lastUserId: string | null = null;
+  // Plan/128 (review C2) — seed with the user id immediately before this page
+  // (passed by _pageHistory) so an assistant at the page start replies to a
+  // stable id instead of a page-boundary-dependent fallback.
+  let lastUserId: string | null = precedingUserId ?? null;
 
   for (const m of messages) {
     const ts = typeof m.timestamp === "number" ? m.timestamp : 0;
