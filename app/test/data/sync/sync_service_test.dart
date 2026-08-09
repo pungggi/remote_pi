@@ -64,7 +64,10 @@ void main() {
   Future<
     ({ConnectionManager conn, _FakeChannel ch, SyncService sync, String epk})
   >
-  setup({Duration pendingSendTimeout = const Duration(seconds: 20)}) async {
+  setup({
+    Duration pendingSendTimeout = const Duration(seconds: 20),
+    int? localHistoryMax,
+  }) async {
     final ch = _FakeChannel();
     final conn = ConnectionManager(
       factory: (_, _) async => ch,
@@ -76,6 +79,7 @@ void main() {
       conn,
       boxes,
       pendingSendTimeout: pendingSendTimeout,
+      localHistoryMax: localHistoryMax,
     );
     final epk = 'epk_sync_${++_counter}';
     conn.adopt(
@@ -1212,6 +1216,143 @@ void main() {
       s.sync.dispose();
     },
   );
+
+  // ── Plan/128 step 6: local retention cap (default off) ──────────────────
+  group('plan/128 step 6: local retention cap', () {
+    List<SessionHistoryEvent> userEvents(int n) => [
+      for (var i = 1; i <= n; i++) UserInputEvt(ts: i, id: 'u$i', text: 'm$i'),
+    ];
+
+    test(
+      'cap set: once the box exceeds cap+headroom, the OLDEST rows (by ts) '
+      'are evicted down to cap; newest kept',
+      () async {
+        // cap=10 ⇒ headroom = max(1, 1) = 1 ⇒ trigger when box.length > 11.
+        final s = await setup(localHistoryMax: 10);
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 's1',
+            sessionStartedAt: 1000,
+            events: userEvents(12),
+            eos: true,
+          ),
+        );
+        await _settle();
+        // 12 landed → evict the 2 oldest by ts (u1, u2) → cap (10) kept.
+        expect(
+          messages(s.epk).map((r) => r.id),
+          [for (var i = 3; i <= 12; i++) 'u$i'],
+        );
+        s.conn.dispose();
+        s.sync.dispose();
+      },
+    );
+
+    test(
+      'cap default OFF (null): the box grows without bound — no eviction',
+      () async {
+        final s = await setup(); // no localHistoryMax
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 's1',
+            sessionStartedAt: 1000,
+            events: userEvents(12),
+            eos: true,
+          ),
+        );
+        await _settle();
+        expect(
+          messages(s.epk).map((r) => r.id),
+          [for (var i = 1; i <= 12; i++) 'u$i'],
+        );
+        s.conn.dispose();
+        s.sync.dispose();
+      },
+    );
+
+    test(
+      'cap hysteresis: at exactly cap+headroom nothing is evicted (no '
+      'one-row-at-a-time thrash)',
+      () async {
+        // cap=10, headroom=1 ⇒ boundary at 11. 11 rows ⇒ no eviction.
+        final s = await setup(localHistoryMax: 10);
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 's1',
+            sessionStartedAt: 1000,
+            events: userEvents(11),
+            eos: true,
+          ),
+        );
+        await _settle();
+        expect(
+          messages(s.epk).length,
+          11,
+          reason: 'at cap+headroom (11), no eviction yet',
+        );
+        s.conn.dispose();
+        s.sync.dispose();
+      },
+    );
+
+    test(
+      'eviction cleans the dedupe index: a re-sent evicted id re-appends '
+      'at a FRESH seq (no stale-slot resurrection)',
+      () async {
+        final s = await setup(localHistoryMax: 10);
+        // 12 → evict the 2 oldest by ts (u1, u2) → box u3..u12 (10), _nextSeq=12.
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 's1',
+            sessionStartedAt: 1000,
+            events: userEvents(12),
+            eos: true,
+          ),
+        );
+        await _settle();
+        expect(
+          messages(s.epk).map((r) => r.id),
+          [for (var i = 3; i <= 12; i++) 'u$i'],
+        );
+        // Re-sync sends the EVICTED u1 back. With _idToSeq cleaned, u1
+        // re-appends at a fresh seq (12); without cleanup it would resurrect
+        // at the vacant seq 0. Box is now 11 (== cap+headroom) ⇒ no eviction.
+        s.ch.push(
+          SessionHistory(
+            inReplyTo: 's2',
+            sessionStartedAt: 1000,
+            events: [
+              UserInputEvt(ts: 1, id: 'u1', text: 'm1'),
+              ...[
+                for (var i = 3; i <= 12; i++)
+                  UserInputEvt(ts: i, id: 'u$i', text: 'm$i'),
+              ],
+            ],
+            eos: true,
+          ),
+        );
+        await _settle();
+        final m = messages(s.epk);
+        expect(
+          m.any((r) => r.id == 'u1'),
+          isTrue,
+          reason: 'evicted u1 re-appended when the server re-sent it',
+        );
+        expect(
+          m.firstWhere((r) => r.id == 'u1').seq,
+          greaterThanOrEqualTo(12),
+          reason: 'fresh seq, not the resurrected stale slot (0)',
+        );
+        expect(
+          m.length,
+          11,
+          reason: 'box at cap+headroom; no over-eviction',
+        );
+        s.conn.dispose();
+        s.sync.dispose();
+      },
+    );
+  });
 
   // Plan/32 safety net — a sent message whose echo never comes back must not
   // spin forever; the optimistic bubble is removed SILENTLY after the timeout.

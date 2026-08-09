@@ -101,12 +101,23 @@ class SyncService extends Service {
   // timers are armed only when a send is actually attempted online, and
   // cancelled on echo, user-cancel, session switch, and dispose.
   final Duration pendingSendTimeout;
+
+  /// Plan/128 step 6 — optional on-device retention cap (rows/session).
+  /// Default off (null): the box grows without bound (history is durable +
+  /// append-only). When set (>0), each history merge trims the OLDEST rows
+  /// (by ts; seq isn't chronological under backward paging) once the box
+  /// exceeds cap+headroom, bounding storage for very long sessions. Resolved
+  /// from `REMOTE_PI_LOCAL_HISTORY_MAX` at the wiring site
+  /// (config/dependencies.dart). See plan/128 step 6.
+  final int? localHistoryMax;
+
   final Map<String, Timer> _pendingSendTimers = {};
 
   SyncService(
     this._conn,
     this._boxes, {
     this.pendingSendTimeout = const Duration(seconds: 20),
+    this.localHistoryMax,
   }) {
     _connSub = _conn.statusStream.listen(_onStatus);
     _roomsSub = _conn.roomsStream.listen((_) {
@@ -908,6 +919,38 @@ class SyncService extends Service {
           }
         }
       }
+      // Plan/128 step 6 — optional local retention cap. Trim the OLDEST rows
+      // (by ts; seq isn't chronological under backward paging) once the box
+      // exceeds cap+headroom, down to `cap`. Hysteresis (cap+headroom trigger,
+      // cap floor) avoids evicting on every single merge. Default off (null)
+      // ⇒ the box grows without bound. Cost is O(N log N) with N = box.length,
+      // and only runs when over the trigger, so steady-state merges skip it.
+      final cap = localHistoryMax;
+      if (cap != null &&
+          cap > 0 &&
+          box.length > cap + _retentionHeadroom(cap)) {
+        final byTs = <MapEntry<int, DateTime>>[];
+        for (final k in box.keys) {
+          final seq = (k as num).toInt();
+          byTs.add(
+            MapEntry(seq, MessageRecord.fromJson(_coerce(box.get(k))).ts),
+          );
+        }
+        byTs.sort((a, b) {
+          final t = a.value.compareTo(b.value);
+          return t != 0 ? t : a.key.compareTo(b.key);
+        });
+        final evictCount = box.length - cap;
+        final victims = <int>{};
+        for (final e in byTs.take(evictCount)) {
+          victims.add(e.key);
+          await box.delete(e.key);
+        }
+        // Drop dedupe entries pointing at evicted seqs so a later re-sync of
+        // an evicted id re-appends cleanly instead of resurrecting at a stale
+        // (now-vacant) seq.
+        _idToSeq.removeWhere((_, seq) => victims.contains(seq));
+      }
       _indexLoaded = true;
     });
     if (_activeEpk == epk && _activeRoomId == room) {
@@ -931,6 +974,11 @@ class SyncService extends Service {
     ).sessionStartedAt;
     return stored != null && stored.millisecondsSinceEpoch != started;
   }
+
+  /// Hysteresis headroom for the retention cap (plan/128 step 6): evict only
+  /// once the box exceeds `cap + headroom`, then trim down to `cap`. 10% of
+  /// cap (min 1) so steady-state merges don't evict one row at a time.
+  static int _retentionHeadroom(int cap) => math.max(1, cap ~/ 10);
 
   List<MessageRecord> _convertHistory(List<SessionHistoryEvent> events) {
     final out = <MessageRecord>[];

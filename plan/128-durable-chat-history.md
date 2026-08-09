@@ -1,8 +1,9 @@
 # Plan 128: Durable, performant offline chat history
 
-> **Status (implementation):** Steps 1–5 done + tested. Step 6 (optional local
-> retention cap) deferred. Default page size is **2000** (not 500/100); the
-> durable index ts-merges interspersed compaction markers with the RAM tail.
+> **Status (implementation):** Steps 1–6 done + tested. Default page size is
+> **2000** (not 500/100); the durable index ts-merges interspersed compaction
+> markers with the RAM tail. Step 6 (local retention cap, default **off**) is
+> behind `REMOTE_PI_LOCAL_HISTORY_MAX`.
 >
 > Extends [plan/111](./111-history-pagination.md) (pagination) and supersedes
 > the "mirror cache" model from [plan/16](./16-mirror-cache.md).
@@ -203,6 +204,13 @@ on `_cmdStart`.
 6. **(Optional, behind flag) local retention cap**.
    - AC: with cap set, box stays ≤ cap+headroom; oldest evicted; reads/merge stay
      correct; default off.
+   - **Done.** `SyncService.localHistoryMax` (wired from
+     `--dart-define=REMOTE_PI_LOCAL_HISTORY_MAX=N`, default off). On each history
+     merge, once the box exceeds `cap + headroom` (headroom = 10% of cap, min 1)
+     it trims the oldest rows **by ts** (seq isn't chronological under backward
+     paging) down to `cap`, and cleans the dedupe index so a re-sent evicted id
+     re-appends at a fresh seq. 4 tests (evict-newest-kept, default-off,
+     hysteresis-boundary, dedupe-cleanup).
 
 ## DoD
 
