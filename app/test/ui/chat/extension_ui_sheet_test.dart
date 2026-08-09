@@ -252,4 +252,207 @@ void main() {
     expect(rect.top, greaterThanOrEqualTo(0));
     expect(rect.bottom, lessThanOrEqualTo(screenHeight(tester)));
   });
+
+  // ── Plan/128 — notes (pi-ask `n` / Shift+N) ─────────────────────────────────
+
+  testWidgets('a question note alone enables Submit and is sent as note', (
+    tester,
+  ) async {
+    final sent = <ExtensionUiResponse>[];
+    await pumpSheet(
+      tester,
+      request: _richRequest(),
+      onRespond: (r) async => sent.add(r),
+    );
+    expect(submitEnabled(tester), isFalse);
+
+    // The "Add note" affordance sits below the custom field; scroll it into the
+    // sheet's viewport before tapping (it's clipped at the partial extent).
+    await tester.ensureVisible(find.text('Add note'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add note')); // opens the question note editor
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Add a note to this answer…'),
+      'see context above',
+    );
+    await tester.pump();
+
+    expect(
+      submitEnabled(tester),
+      isTrue,
+      reason: 'a question note is a valid answer without any selection',
+    );
+    await tester.tap(submitButton());
+    await tester.pump();
+
+    expect(sent, hasLength(1));
+    expect(sent.single.ask!.answers['goal']!.note, 'see context above');
+    expect(sent.single.ask!.answers['goal']!.values, isEmpty);
+    expect(sent.single.ask!.answers['goal']!.customText, isNull);
+  });
+
+  testWidgets('an option note is sent for the selected option', (tester) async {
+    final sent = <ExtensionUiResponse>[];
+    await pumpSheet(
+      tester,
+      request: _richRequest(),
+      onRespond: (r) async => sent.add(r),
+    );
+
+    await tester.tap(find.text('Beta'));
+    await tester.pump();
+    // Question note + the selected option's note affordance.
+    expect(find.text('Add note'), findsNWidgets(2));
+
+    // The selected option's note affordance precedes the question note in the
+    // widget tree (it renders inside the option tile, above the custom field).
+    await tester.ensureVisible(find.text('Add note').at(0));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add note').at(0)); // Beta's option note
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Note for this option…'),
+      'pick b',
+    );
+    await tester.pump();
+
+    await tester.tap(submitButton());
+    await tester.pump();
+
+    expect(sent, hasLength(1));
+    final ans = sent.single.ask!.answers['goal']!;
+    expect(ans.values, ['b']);
+    expect(ans.optionNotes, {'b': 'pick b'});
+    expect(ans.note, isNull);
+  });
+
+  testWidgets(
+    'option note affordance appears only for a selected option',
+    (tester) async {
+      await pumpSheet(tester, request: _richRequest());
+      expect(
+        find.text('Add note'),
+        findsOneWidget,
+        reason: 'only the question note before any selection',
+      );
+
+      await tester.tap(find.text('Beta'));
+      await tester.pump();
+      expect(
+        find.text('Add note'),
+        findsNWidgets(2),
+        reason: 'question note + the selected option note',
+      );
+    },
+  );
+
+  testWidgets(
+    'custom text on a single question drops the option note (values empty)',
+    (tester) async {
+      final sent = <ExtensionUiResponse>[];
+      await pumpSheet(
+        tester,
+        request: _richRequest(),
+        onRespond: (r) async => sent.add(r),
+      );
+
+      await tester.tap(find.text('Beta'));
+      await tester.pump();
+      // The option note affordance precedes the question note in the tree.
+      await tester.ensureVisible(find.text('Add note').at(0));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Add note').at(0));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Note for this option…'),
+        'why b',
+      );
+      await tester.pump();
+
+      // Custom text overrides the single selection: values becomes empty, so
+      // the option note rides nothing and must be dropped — matching pi-ask's
+      // serializeAnswer (option notes survive for selected options only).
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Type your own…'),
+        'my own',
+      );
+      await tester.pump();
+
+      await tester.tap(submitButton());
+      await tester.pump();
+
+      final ans = sent.single.ask!.answers['goal']!;
+      expect(ans.customText, 'my own');
+      expect(ans.values, isEmpty);
+      expect(ans.optionNotes, isEmpty);
+    },
+  );
+
+  testWidgets('a filled note collapses to a chip and reopens on tap', (
+    tester,
+  ) async {
+    await pumpSheet(tester, request: _richRequest());
+
+    await tester.ensureVisible(find.text('Add note'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add note')); // question note editor
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Add a note to this answer…'),
+      'kept',
+    );
+    await tester.pump();
+
+    // Collapse (expand_less) keeps the text → the note renders as a chip, not
+    // an open field and not the "Add note" button.
+    await tester.tap(find.byIcon(Icons.expand_less));
+    await tester.pump();
+    expect(find.text('kept'), findsOneWidget, reason: 'chip shows the note');
+    expect(
+      find.text('Add note'),
+      findsNothing,
+      reason: 'closed + filled shows the chip, not the empty affordance',
+    );
+
+    // Tapping the chip reopens the editor with the text preserved.
+    await tester.ensureVisible(find.text('kept'));
+    await tester.tap(find.text('kept'));
+    await tester.pumpAndSettle();
+    final reopened = find
+        .byType(TextField)
+        .evaluate()
+        .where((e) => (e.widget as TextField).controller?.text == 'kept')
+        .toList();
+    expect(reopened, hasLength(1), reason: 'editor reopened with the note text');
+  });
+
+  testWidgets('Remove note clears it and reverts to the Add note affordance', (
+    tester,
+  ) async {
+    final sent = <ExtensionUiResponse>[];
+    await pumpSheet(
+      tester,
+      request: _richRequest(),
+      onRespond: (r) async => sent.add(r),
+    );
+
+    await tester.ensureVisible(find.text('Add note'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add note'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Add a note to this answer…'),
+      'temp',
+    );
+    await tester.pump();
+    expect(submitEnabled(tester), isTrue, reason: 'note alone enables Submit');
+
+    // Remove note wipes it and closes → back to the empty affordance, nothing
+    // answered. (find.byTooltip disambiguates from the header close button.)
+    await tester.tap(find.byTooltip('Remove note'));
+    await tester.pump();
+    expect(find.text('Add note'), findsOneWidget);
+    expect(submitEnabled(tester), isFalse);
+  });
 }

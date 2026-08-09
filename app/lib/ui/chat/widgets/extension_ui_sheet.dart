@@ -50,6 +50,14 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
   final Map<String, Set<String>> _selected = {};
   // Rich: question id → custom text controller (lazily created, disposed).
   final Map<String, TextEditingController> _custom = {};
+  // Plan/128 — pi-ask notes. Question-level note (Shift+N equivalent), keyed by
+  // question id. Lazily created + disposed like [_custom].
+  final Map<String, TextEditingController> _questionNotes = {};
+  // Plan/128 — per-option note (n equivalent), keyed by "questionId\x1Fvalue"
+  // (unit separator so option values containing "|" can't collide).
+  final Map<String, TextEditingController> _optionNotes = {};
+  // Plan/128 — inline note editors currently expanded (compose key → open).
+  final Set<String> _openNotes = {};
   // Degraded (no ask envelope) state.
   String? _singleValue;
   final TextEditingController _textController = TextEditingController();
@@ -106,6 +114,12 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
     for (final c in _custom.values) {
       c.dispose();
     }
+    for (final c in _questionNotes.values) {
+      c.dispose();
+    }
+    for (final c in _optionNotes.values) {
+      c.dispose();
+    }
     _textController.dispose();
     _sheetController.dispose();
     super.dispose();
@@ -138,6 +152,15 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
   TextEditingController _customFor(String qid) =>
       _custom.putIfAbsent(qid, TextEditingController.new);
 
+  // Plan/128 — note controllers. Lazy + disposed in dispose().
+  TextEditingController _questionNoteFor(String qid) =>
+      _questionNotes.putIfAbsent(qid, TextEditingController.new);
+
+  TextEditingController _optionNoteFor(String qid, String value) =>
+      _optionNotes.putIfAbsent(_optionKey(qid, value), TextEditingController.new);
+
+  String _optionKey(String qid, String value) => '$qid\x1F$value';
+
   bool _isMulti(AskQuestionWire q) =>
       q.type == AskQuestionWireType.multi ||
       q.presentedType == AskQuestionWireType.multi;
@@ -146,8 +169,11 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
     final ask = _ask;
     if (ask != null) {
       for (final q in ask.questions) {
+        // Plan/128 — a question note alone is a valid answer in pi-ask (a note
+        // can exist without a selected option), so it enables Submit too.
         if ((_selected[q.id]?.isNotEmpty ?? false) ||
-            _customFor(q.id).text.trim().isNotEmpty) {
+            _customFor(q.id).text.trim().isNotEmpty ||
+            _questionNoteFor(q.id).text.trim().isNotEmpty) {
           return true;
         }
       }
@@ -209,8 +235,32 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
             ? selected
             : (custom.isNotEmpty ? const <String>[] : selected);
         final customText = custom.isEmpty ? null : custom;
-        if (values.isEmpty && customText == null) continue;
-        answers[q.id] = AskAnswerWire(values: values, customText: customText);
+
+        // Plan/128 — question note rides regardless of selection (pi-ask keeps
+        // a note-only answer). A note is the only thing that can make an
+        // otherwise-empty question count, so it gates the `continue` too.
+        final note = _questionNoteFor(q.id).text.trim();
+        // Option notes only survive for options that actually made it into the
+        // answer: pi-ask's serializeAnswer keeps optionNotes for selected
+        // options only. Use `values` (not the raw `_selected` set) so a
+        // single-select customText that overrides the selection drops the
+        // option note too, matching pi-ask exactly.
+        final inAnswer = values.toSet();
+        final optionNotes = <String, String>{};
+        for (final o in q.options) {
+          final n = _optionNoteFor(q.id, o.value).text.trim();
+          if (n.isNotEmpty && inAnswer.contains(o.value)) {
+            optionNotes[o.value] = n;
+          }
+        }
+
+        if (values.isEmpty && customText == null && note.isEmpty) continue;
+        answers[q.id] = AskAnswerWire(
+          values: values,
+          customText: customText,
+          note: note.isEmpty ? null : note,
+          optionNotes: optionNotes,
+        );
       }
       return ExtensionUiResponse(
         id: id,
@@ -424,6 +474,15 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
             ),
           ),
         ),
+        const SizedBox(height: 8),
+        // Plan/128 — question note (pi-ask Shift+N). A note annotates the
+        // whole answer and is valid even without a selection.
+        _noteEditor(
+          context,
+          controller: _questionNoteFor(q.id),
+          key: q.id,
+          hint: 'Add a note to this answer…',
+        ),
       ],
     );
   }
@@ -440,81 +499,214 @@ class _ExtensionUiSheetState extends State<ExtensionUiSheet> {
     final selected = sel.contains(o.value);
     final isPreview = q.type == AskQuestionWireType.preview;
 
-    return InkWell(
-      onTap: _submitting ? null : () => _toggle(q.id, o.value, multi),
-      borderRadius: BorderRadius.circular(10),
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: BoxDecoration(
-          color: selected
-              ? colors.accent.withValues(alpha: 0.10)
-              : colors.surface,
-          border: Border.all(
-            color: selected ? colors.accent : colors.border,
-            width: selected ? 1.6 : 1,
-          ),
+    // Plan/128 — the tile is a Column so the option-note editor can sit as a
+    // sibling BELOW the InkWell (not inside it). Putting it inside would make
+    // tapping the note affordance toggle the selection.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          onTap: _submitting ? null : () => _toggle(q.id, o.value, multi),
           borderRadius: BorderRadius.circular(10),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: selected
+                  ? colors.accent.withValues(alpha: 0.10)
+                  : colors.surface,
+              border: Border.all(
+                color: selected ? colors.accent : colors.border,
+                width: selected ? 1.6 : 1,
+              ),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(
-                  multi
-                      ? (selected
-                            ? Icons.check_box
-                            : Icons.check_box_outline_blank)
-                      : (selected
-                            ? Icons.radio_button_checked
-                            : Icons.radio_button_unchecked),
-                  size: 20,
-                  color: selected ? colors.accent : colors.muted,
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    o.label,
-                    style: text.bodyLarge?.copyWith(
-                      fontWeight: FontWeight.w600,
+                Row(
+                  children: [
+                    Icon(
+                      multi
+                          ? (selected
+                                ? Icons.check_box
+                                : Icons.check_box_outline_blank)
+                          : (selected
+                                ? Icons.radio_button_checked
+                                : Icons.radio_button_unchecked),
+                      size: 20,
+                      color: selected ? colors.accent : colors.muted,
                     ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        o.label,
+                        style: text.bodyLarge?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                if (o.description != null && o.description!.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 30),
+                    child: Text(
+                      o.description!,
+                      style: text.bodyMedium?.copyWith(color: colors.muted),
+                    ),
+                  ),
+                ],
+                if (isPreview && o.preview != null && o.preview!.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: colors.codeBg,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: colors.border),
+                    ),
+                    child: Text(
+                      o.preview!,
+                      style: TextStyle(
+                        fontFamily: kMonoFamily,
+                        fontSize: 12,
+                        color: colors.text,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+        // Plan/128 — per-option note (pi-ask `n`). Only for a selected option:
+        // pi-ask's serializeAnswer keeps option notes for selected options only,
+        // so annotating an unselected one would be silently dropped on submit.
+        // Indented to sit under the option label (past the caret icon).
+        if (selected)
+          Padding(
+            padding: const EdgeInsets.only(top: 8, left: 30),
+            child: _noteEditor(
+              context,
+              controller: _optionNoteFor(q.id, o.value),
+              key: _optionKey(q.id, o.value),
+              hint: 'Note for this option…',
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// Plan/128 — inline, expandable note editor shared by question notes
+  /// (Shift+N equivalent) and per-option notes (n equivalent). Three visual
+  /// states: closed + empty → an "Add note" affordance; closed + filled → a
+  /// tappable chip that reopens the editor; open → a multiline TextField.
+  /// [key] is the compose id tracked in [_openNotes].
+  Widget _noteEditor(
+    BuildContext context, {
+    required TextEditingController controller,
+    required String key,
+    required String hint,
+  }) {
+    final colors = context.colors;
+    final text = Theme.of(context).textTheme;
+    final hasText = controller.text.trim().isNotEmpty;
+    final open = _openNotes.contains(key);
+
+    if (open) {
+      return TextField(
+        controller: controller,
+        enabled: !_submitting,
+        minLines: 1,
+        maxLines: 4,
+        autofocus: true,
+        onChanged: (_) => setState(() {}),
+        decoration: InputDecoration(
+          isDense: true,
+          hintText: hint,
+          prefixIcon: const Icon(Icons.note_alt_outlined, size: 18),
+          // Plan/128 — Collapse (expand_less) closes the editor but keeps the
+          // text, which is what surfaces the "filled chip" state below. Clear
+          // (x) wipes the text and stays open. Clear only shows when there's
+          // text; an empty editor collapses straight back to "Add note".
+          suffixIcon: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (hasText)
+                IconButton(
+                  tooltip: 'Remove note',
+                  icon: const Icon(Icons.close, size: 18),
+                  onPressed: _submitting
+                      ? null
+                      : () {
+                          controller.clear();
+                          setState(() => _openNotes.remove(key));
+                        },
+                ),
+              IconButton(
+                tooltip: 'Collapse',
+                icon: const Icon(Icons.expand_less, size: 18),
+                onPressed: _submitting
+                    ? null
+                    : () => setState(() => _openNotes.remove(key)),
+              ),
+            ],
+          ),
+          border: const OutlineInputBorder(),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        ),
+      );
+    }
+
+    if (hasText) {
+      // Collapsed but filled → chip; tap reopens the editor.
+      return Align(
+        alignment: Alignment.centerLeft,
+        child: InkWell(
+          onTap: _submitting
+              ? null
+              : () => setState(() => _openNotes.add(key)),
+          borderRadius: BorderRadius.circular(16),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: colors.accent.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(16),
+              border:
+                  Border.all(color: colors.accent.withValues(alpha: 0.4)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.note_alt, size: 14, color: colors.accent),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    controller.text.trim(),
+                    style: text.labelMedium?.copyWith(color: colors.accent),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
             ),
-            if (o.description != null && o.description!.isNotEmpty) ...[
-              const SizedBox(height: 4),
-              Padding(
-                padding: const EdgeInsets.only(left: 30),
-                child: Text(
-                  o.description!,
-                  style: text.bodyMedium?.copyWith(color: colors.muted),
-                ),
-              ),
-            ],
-            if (isPreview && o.preview != null && o.preview!.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: colors.codeBg,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: colors.border),
-                ),
-                child: Text(
-                  o.preview!,
-                  style: TextStyle(
-                    fontFamily: kMonoFamily,
-                    fontSize: 12,
-                    color: colors.text,
-                  ),
-                ),
-              ),
-            ],
-          ],
+          ),
         ),
+      );
+    }
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: TextButton.icon(
+        onPressed: _submitting
+            ? null
+            : () => setState(() => _openNotes.add(key)),
+        icon: const Icon(Icons.note_add, size: 18),
+        label: const Text('Add note'),
       ),
     );
   }
