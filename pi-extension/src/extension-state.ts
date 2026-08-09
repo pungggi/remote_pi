@@ -31,6 +31,7 @@ import type { MeshNode } from "./session/mesh_node.js";
 import type { SelfRevoke } from "./mesh/self_revoke.js";
 import type { MeshTopologySnapshot } from "./mesh/siblings.js";
 import type { AcquiredLock } from "./session/cwd_lock.js";
+import type { FileIndex } from "./session/file_index.js";
 import type { ExtensionUiBridge } from "./extension_ui_bridge.js";
 import type { Ed25519Keypair } from "./pairing/crypto.js";
 import type { QueuedMessageItem, ThinkingLevel, WireGitStatus } from "./protocol/types.js";
@@ -140,6 +141,9 @@ export interface ExtensionState {
   agentRunGeneration: number;
   currentTurnId: string | null;
   messageBuffer: BufferMsg[];
+  /** Plan/128 — cached durable `.jsonl` index (metadata only); the volatile
+   *  in-RAM tail stays in `messageBuffer`. Null until first `session_sync`. */
+  historyIndex: FileIndex | null;
   pendingSteers: PendingSteer[];
   lastConsumedSteerText: string | null;
   queuedItems: AndroidQueuedItem[];
@@ -214,6 +218,7 @@ export const ext: ExtensionState = {
   agentRunGeneration: 0,
   currentTurnId: null,
   messageBuffer: [],
+  historyIndex: null,
   pendingSteers: [],
   lastConsumedSteerText: null,
   queuedItems: [],
@@ -285,6 +290,7 @@ export function resetExtensionState(): void {
     agentRunGeneration: 0,
     currentTurnId: null,
     messageBuffer: [],
+    historyIndex: null,
     pendingSteers: [],
     lastConsumedSteerText: null,
     queuedItems: [],

@@ -530,6 +530,54 @@ Longo prazo:
 
 ---
 
+## Histórico de sessão (`session_sync`) — plan/128
+
+O histórico de chat é **durável**: a pi-extension serve o transcript
+`.jsonl` que o próprio Pi grava em
+`$PI_CODING_AGENT_DIR/sessions/<encode(cwd)>/<ts>_<uuid>.jsonl` (append-only,
+uma linha por mensagem persistida: `{type:'message', message:{...}}`), e não
+mais só o buffer em-RAM volátil. Assim um restart do processo Pi não zera o
+histórico visto pelo celular. A app faz **merge append-only** (nunca substitui),
+então offline/restart preserva o que já foi carregado.
+
+### Wire — app → pi-extension
+
+```jsonc
+// Página mais recente (legado: omitir `limit`/`before`). Omitir `limit` faz o
+// servidor servir seu default (alguns milhares — payload guard, não a janela
+// de 30 antiga).
+{ "type": "session_sync", "id": "<uuid>" }
+
+// Paginação para trás: `before` é o cursor opaco devolvido no `next_before` da
+// página anterior (`off:<byteOffset>` para eventos do arquivo,
+// `ram:<bufIndex>` para a cauda em-RAM).
+{ "type": "session_sync", "id": "<uuid>", "limit": 500, "before": "off:12345" }
+```
+
+### Wire — pi-extension → app
+
+```jsonc
+{ "type": "session_history", "in_reply_to": "<uuid>",
+  "session_started_at": 1782000000000,
+  "events": [ /* ≤ limit, oldest-first ao paginar para trás */ ],
+  "eos": true,
+  "truncated": true,            // alias de `has_more` (back-compat)
+  "has_more": true,             // existem eventos mais antigos
+  "next_before": "off:12345" }  // cursor da próxima página mais antiga;
+                                 // ausente quando não há mais nada mais antigo
+```
+
+### Compatibilidade (retroativa)
+
+- App novo + extensão velha: a app envia `before`; a extensão velha ignora e
+devolve as N mais recentes (clamp de 30). A app faz merge (não wipe) e só não
+consegue paginar para trás.
+- App velha + extensão nova: ignora `has_more`/`next_before` e comporta-se como
+hoje. `truncated` continua presente como alias.
+- Detalhes e orçamento de performance: [`plan/128-durable-chat-history.md`](plan/128-durable-chat-history.md).
+
+---
+
 ## Implementações de referência
 
 - **Relay** (Rust, axum): [`relay/src/`](relay/src/)

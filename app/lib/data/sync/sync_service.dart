@@ -9,7 +9,6 @@
 // the finalized message lands in the box on `agent_done`.
 
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:app/data/local/boxes.dart';
@@ -76,10 +75,11 @@ class SyncService extends Service {
   bool _truncated = false;
   final StreamController<bool> _truncatedController =
       StreamController<bool>.broadcast();
-  // Plan/111 — progressive sync limit: start at 100, multiply by 5 on each
-  // "load more" action (100 → 500 → 2500 → 12500). Reset to base on normal sync.
-  static const int _baseSyncLimit = 100;
-  int _currentSyncLimit = _baseSyncLimit;
+  // Plan/128 — backward paging via cursor. `_nextBefore` threads the server's
+  // `next_before`; loadMore sends it as `before` to fetch the next older page.
+  // `_truncated` (mirrored from the server's `has_more`) gates the UI affordance.
+  static const int _loadMorePageSize = 500;
+  String? _nextBefore;
 
   // Whether the active session's agent is currently producing a reply. Spans
   // the WHOLE turn (send/echo → agent_done), not just the token-streaming
@@ -168,7 +168,7 @@ class SyncService extends Service {
       _truncated = false;
       _truncatedController.add(false);
     }
-    _currentSyncLimit = _baseSyncLimit;
+    _nextBefore = null;
     _activeEpk = epk;
     _activeRoomId = room;
     await _loadIndex();
@@ -402,10 +402,11 @@ class SyncService extends Service {
     });
   }
 
-  /// Plan/111 — request session history with optional "load more" for
-  /// pagination. Normal sync uses base limit (100); loadMore multiplies
-  /// by 5 each tap (100 → 500 → 2500 → ...). The server clamps to its
-  /// env cap (REMOTE_PI_SYNC_LIMIT, default 30).
+  /// Plan/128 — request session history. Normal sync asks for the newest page
+  /// (limit omitted ⇒ the server serves its default, a few thousand); the
+  /// durable append-only merge dedups on reconnect. `loadMore` pages OLDER
+  /// history via the `before` cursor (threaded from the server's `next_before`),
+  /// and is a no-op when there's no cursor or no more to load.
   void requestSync({bool loadMore = false}) {
     final ch = _conn.channel;
     if (ch == null || _activeEpk == null) {
@@ -414,14 +415,17 @@ class SyncService extends Service {
     }
     _pendingSyncRequest = false;
 
-    final limit = loadMore ? _currentSyncLimit * 5 : _baseSyncLimit;
-    if (!loadMore) {
-      _currentSyncLimit = _baseSyncLimit; // Reset on normal sync
+    if (loadMore) {
+      if (_nextBefore == null) return; // nothing paged yet / no more to load
+      ch.send(SessionSync(
+        id: _newId(),
+        limit: _loadMorePageSize,
+        before: _nextBefore,
+      ));
     } else {
-      _currentSyncLimit = limit; // Remember for next "load more"
+      _nextBefore = null; // newest page: discard any stale cursor
+      ch.send(SessionSync(id: _newId()));
     }
-
-    ch.send(SessionSync(id: _newId(), limit: limit));
   }
 
   /// Plan/28 — `session_new` acked: wipe the active session's rows + index.
@@ -439,7 +443,7 @@ class SyncService extends Service {
       _truncated = false;
       _truncatedController.add(false);
     }
-    _currentSyncLimit = _baseSyncLimit;
+    _nextBefore = null;
     await _enqueue(() async {
       if (_activeEpk != epk || _activeRoomId != room) return;
       final box = await _boxes.msgsBox(epk, room);
@@ -824,94 +828,108 @@ class SyncService extends Service {
   Future<void> _applyHistory(SessionHistory h) async {
     final epk = _activeEpk;
     if (epk == null) return;
-    // Plan/111 — track and emit truncation state.
+    // Plan/111/128 — track truncation (mirrors the server's `has_more`) and
+    // thread the backward-paging cursor for `loadMore`.
     if (h.truncated != _truncated) {
       _truncated = h.truncated;
       _truncatedController.add(_truncated);
     }
+    _nextBefore = h.nextBefore;
     final room = _activeRoomId;
     final rows = _convertHistory(h.events);
-    final historyIds = {for (final r in rows) _key(r.role, r.id)};
+    final started = h.sessionStartedAt;
     await _enqueue(() async {
+      if (_activeEpk != epk || _activeRoomId != room) return;
+      // Safety net: never merge before the dedupe index is loaded from the
+      // box, or every existing row would look "new" and re-append as a
+      // duplicate. `_loadIndex` (via activate) always runs first on the
+      // serialized write chain, so this only guards an out-of-order frame.
+      if (!_indexLoaded) {
+        debugPrint('[history] drop frame: index not loaded yet');
+        return;
+      }
       final box = await _boxes.msgsBox(epk, room);
-      // Plan/127 — session_history user events carry no streaming_behavior,
-      // so without this a reconnect/reload would rebuild follow-up/steer rows
-      // as plain messages and wipe the persistent delivery marker. Carry the
-      // existing local followUp/steering flags over (keyed by user message id)
-      // before reconciling history.
-      final localFollowUp = <String>{};
-      final localSteering = <String>{};
-      // Preserve local pending user rows the Pi hasn't echoed yet.
-      final preserved = <MessageRecord>[];
-      for (final v in box.values) {
-        final r = MessageRecord.fromJson(_coerce(v));
-        if (r.role == MsgRole.user) {
-          if (r.followUp) localFollowUp.add(r.id);
-          if (r.steering) localSteering.add(r.id);
-          if (r.pending && !historyIds.contains(_key(r.role, r.id))) {
-            preserved.add(r);
+
+      // Plan/128 — durable append-only merge. The box is NO LONGER a
+      // substitutive mirror of the server's in-memory buffer. Each history
+      // row is merged by `<role>:<id>`: a row new to this box appends at
+      // `_nextSeq`; a row we already have is left untouched (its local content
+      // is at least as rich as the replay — tool results, follow-up/steer
+      // flags — so we never downgrade it). NOTHING is deleted on a
+      // same-session sync.
+      //
+      // This fixes two symptoms at once:
+      //  - "disappears offline / after Pi restart": an empty server history
+      //    (buffer wiped by a process restart) used to delete every local row;
+      //    now an empty `events` list with an unchanged session is a no-op.
+      //  - "only the latest 30": rows that scrolled off the server window are
+      //    kept locally instead of being reaped on the next reconnect.
+      //
+      // The ONLY path that clears the box is a genuine session change
+      // (`session_started_at` differs from the one we persisted for this
+      // (epk, room) and is non-zero — a fresh conversation). A `0` value means
+      // a legacy/no-session Pi: treat as "nothing new", never wipe.
+      final isNewSession =
+          started != 0 && _storedSessionStartedAtDiffers(epk, room, started);
+      if (isNewSession) {
+        await box.clear();
+        _idToSeq.clear();
+        _nextSeq = 0;
+      }
+
+      for (final row in rows) {
+        final mapKey = _key(row.role, row.id);
+        final existingSeq = _idToSeq[mapKey];
+        if (existingSeq == null) {
+          // New to this box → append. `_nextSeq` is a monotonic storage
+          // identity; it stays chronological for the initial sync + live
+          // appends (the only paths in this step). Backward paging
+          // (plan/128 step 5) will switch display ordering to `ts` so older
+          // pages can slot in correctly.
+          final seq = _nextSeq++;
+          _idToSeq[mapKey] = seq;
+          await box.put(seq, row.copyWith(seq: seq).toJson());
+        } else {
+          // Already have it. History doesn't carry pending/follow-up/steer,
+          // so keep the local row verbatim — only confirm delivery if it was a
+          // pending user send the Pi has now echoed back in the replay.
+          final curRaw = box.get(existingSeq);
+          if (curRaw == null) {
+            await box.put(existingSeq, row.copyWith(seq: existingSeq).toJson());
+            continue;
+          }
+          final existing = MessageRecord.fromJson(_coerce(curRaw));
+          if (existing.pending && !row.pending) {
+            _pendingSendTimers.remove(row.id)?.cancel();
+            await box.put(
+              existingSeq,
+              existing.copyWith(pending: false).toJson(),
+            );
           }
         }
       }
-      // Desired ordered state: history (seq = index) then preserved pending.
-      final desired = <MessageRecord>[
-        for (var i = 0; i < rows.length; i++)
-          rows[i].copyWith(
-            seq: i,
-            followUp: rows[i].role == MsgRole.user &&
-                localFollowUp.contains(rows[i].id),
-            steering: rows[i].role == MsgRole.user &&
-                localSteering.contains(rows[i].id),
-          ),
-        for (var j = 0; j < preserved.length; j++)
-          preserved[j].copyWith(seq: rows.length + j),
-      ];
-      // Reconcile the box to `desired` with the MINIMUM number of writes.
-      //
-      // The old path did `box.clear()` + re-put every row. Hive emits a watch
-      // event per deleted AND per put key, so the read repo re-emitted ~2N
-      // times — tearing the whole list down to EMPTY and rebuilding it — on
-      // EVERY SessionHistory the relay re-delivered (which it does on every
-      // reconnect). That was the flicker/"embaralha e some". Diffing instead
-      // means a re-sent identical history produces ZERO box writes → ZERO
-      // emits → no rebuild; a changed history only rewrites the rows that
-      // actually differ.
-      for (final k in box.keys.toList()) {
-        if ((k as num).toInt() >= desired.length) {
-          await box.delete(k);
-        }
-      }
-      for (var i = 0; i < desired.length; i++) {
-        final newJson = desired[i].toJson();
-        final curRaw = box.get(i);
-        // Normalise the stored value through fromJson→toJson so the compare is
-        // independent of however Hive ordered the persisted map.
-        final curNorm = curRaw == null
-            ? null
-            : jsonEncode(MessageRecord.fromJson(_coerce(curRaw)).toJson());
-        if (curNorm != jsonEncode(newJson)) {
-          await box.put(i, newJson);
-        }
-      }
-      if (_activeEpk == epk && _activeRoomId == room) {
-        _idToSeq
-          ..clear()
-          ..addEntries([
-            for (var i = 0; i < desired.length; i++)
-              MapEntry(_key(desired[i].role, desired[i].id), i),
-          ]);
-        _nextSeq = desired.length;
-        _indexLoaded = true;
-      }
+      _indexLoaded = true;
     });
     if (_activeEpk == epk && _activeRoomId == room) {
-      final started = h.sessionStartedAt;
       _updateIndex(
         (cur) => cur.copyWith(
           sessionStartedAt: DateTime.fromMillisecondsSinceEpoch(started),
         ),
       );
     }
+  }
+
+  /// Plan/128 — true if the session we persisted for `(epk, room)` has a
+  /// different `session_started_at` than [started] (i.e. a new conversation
+  /// started on the Pi). Sync read of the index box. False when nothing is
+  /// stored yet (first sync) — the first contact never clears.
+  bool _storedSessionStartedAtDiffers(String epk, String room, int started) {
+    final raw = _boxes.sessionsIndexBox().get(LocalBoxes.sessionKey(epk, room));
+    if (raw is! Map) return false;
+    final stored = SessionIndexRecord.fromJson(
+      raw.cast<String, dynamic>(),
+    ).sessionStartedAt;
+    return stored != null && stored.millisecondsSinceEpoch != started;
   }
 
   List<MessageRecord> _convertHistory(List<SessionHistoryEvent> events) {

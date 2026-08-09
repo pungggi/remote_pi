@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import type { ClientMessage } from "./protocol/types.js";
 import { fileURLToPath } from "node:url";
 import { getCapabilities, setCapabilities } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
@@ -218,6 +219,7 @@ const {
   _setSessionStartedAtForTest,
   _hasPendingReconnect,
   _getMessageBufferForTest,
+  _resetHistoryIndexForTest,
   _setCurrentModelForTest,
   _setPiForTest,
   _getCurrentTurnIdForTest,
@@ -241,6 +243,7 @@ const {
   CTRL_PREFIX,
 } = indexModule;
 const { acquireCwdLock } = await import("./session/cwd_lock.js");
+const { encodeCwd } = await import("./session/file_index.js");
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -3689,7 +3692,7 @@ describe("session sync", () => {
     });
   });
 
-  test("no limit in request → server uses env default (30)", async () => {
+  test("no limit in request → server returns all events up to default (plan/128: 500)", async () => {
     delete process.env["REMOTE_PI_SYNC_LIMIT"];
     await _pairForTest("peer-ss-mirror-1");
 
@@ -3705,7 +3708,7 @@ describe("session sync", () => {
     ]);
 
     const sendsBefore = relayRef.current!.send.mock.calls.length;
-    routeClientMessage(
+    await routeClientMessage(
       { type: "session_sync", id: "req-2" },
       { abort: () => undefined },
     );
@@ -3733,7 +3736,7 @@ describe("session sync", () => {
     _setMessageBufferForTest(messages);
 
     const sendsBefore = relayRef.current!.send.mock.calls.length;
-    routeClientMessage(
+    await routeClientMessage(
       { type: "session_sync", id: "req-3", limit: 3 },
       { abort: () => undefined },
     );
@@ -3763,7 +3766,7 @@ describe("session sync", () => {
     _setMessageBufferForTest(messages);
 
     const sendsBefore = relayRef.current!.send.mock.calls.length;
-    routeClientMessage(
+    await routeClientMessage(
       { type: "session_sync", id: "req-4", limit: 100 },
       { abort: () => undefined },
     );
@@ -3794,7 +3797,7 @@ describe("session sync", () => {
     );
 
     const sendsBefore = relayRef.current!.send.mock.calls.length;
-    routeClientMessage(
+    await routeClientMessage(
       { type: "session_sync", id: "req-5" },
       { abort: () => undefined },
     );
@@ -3806,8 +3809,8 @@ describe("session sync", () => {
     expect(h.inner["truncated"]).toBe(false);
   });
 
-  test("buffer with 50 events + env=30 → returns 30, truncated:true", async () => {
-    delete process.env["REMOTE_PI_SYNC_LIMIT"];  // default 30
+  test("buffer with 50 events + REMOTE_PI_SYNC_LIMIT=30 → returns 30, truncated:true (payload guard)", async () => {
+    process.env["REMOTE_PI_SYNC_LIMIT"] = "30";
     await _pairForTest("peer-ss-mirror-5");
 
     const ts = 1_700_000_000_000;
@@ -3821,7 +3824,7 @@ describe("session sync", () => {
     );
 
     const sendsBefore = relayRef.current!.send.mock.calls.length;
-    routeClientMessage(
+    await routeClientMessage(
       { type: "session_sync", id: "req-6" },
       { abort: () => undefined },
     );
@@ -3834,6 +3837,8 @@ describe("session sync", () => {
     expect(events[0]!.ts).toBe(ts + 20);   // last 30 of 50 (indices 20..49)
     expect(events[29]!.ts).toBe(ts + 49);
     expect(h.inner["truncated"]).toBe(true);
+
+    delete process.env["REMOTE_PI_SYNC_LIMIT"];
   });
 
   test("REMOTE_PI_SYNC_LIMIT=10 → server respects env override", async () => {
@@ -3851,7 +3856,7 @@ describe("session sync", () => {
     );
 
     const sendsBefore = relayRef.current!.send.mock.calls.length;
-    routeClientMessage(
+    await routeClientMessage(
       { type: "session_sync", id: "req-7" },
       { abort: () => undefined },
     );
@@ -5742,6 +5747,121 @@ describe("relay reconnect", () => {
   });
 });
 
+// ── durable .jsonl history (plan/128) ────────────────────────────────────────
+
+describe("session sync durable history (plan/128)", () => {
+  let tmpAgentDir: string;
+  let savedAgentDir: string | undefined;
+  let sessionDir: string;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    _resetHistoryIndexForTest();
+    savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+    tmpAgentDir = mkdtempSync(join(tmpdir(), "pi-durable-"));
+    process.env.PI_CODING_AGENT_DIR = tmpAgentDir;
+    // mirror the real layout: <root>/sessions/<encodeCwd(cwd)>/
+    sessionDir = join(tmpAgentDir, "sessions", encodeCwd(process.cwd()));
+    mkdirSync(sessionDir, { recursive: true });
+    await _pairForTest("peer-durable");
+    _setSessionStartedAtForTest(1_700_000_000_000);
+  });
+
+  afterEach(() => {
+    if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
+    _resetHistoryIndexForTest();
+    rmSync(tmpAgentDir, { recursive: true, force: true });
+  });
+
+  function msgLine(role: string, ts: number, text: string, extra: Record<string, unknown> = {}): string {
+    // assistants persist content as a block array (the mapper drops string content);
+    // user/toolResult keep a plain string like the real transcript.
+    const content = role === "assistant" ? [{ type: "text", text }] : text;
+    return JSON.stringify({ type: "message", message: { role, timestamp: ts, content, ...extra } });
+  }
+
+  /** Route one session_sync and return the parsed session_history inner object. */
+  async function syncOnce(
+    id: string,
+    limit?: number,
+    before?: string,
+  ): Promise<{
+    events: Array<{ ts: number; type: string; text?: string; summary?: string }>;
+    has_more?: boolean;
+    next_before?: string;
+    truncated?: boolean;
+  }> {
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+    const req = { type: "session_sync", id } as Extract<ClientMessage, { type: "session_sync" }>;
+    if (limit !== undefined) req.limit = limit;
+    if (before) req.before = before;
+    await routeClientMessage(req, { abort: () => undefined });
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore).map((c) => c[0] as string);
+    return sent.map(decodeSentCt).find((d) => d.inner.type === "session_history")!
+      .inner as Awaited<ReturnType<typeof syncOnce>>;
+  }
+
+  test("pages the full transcript from the durable file with cursor threading (oldest-first)", async () => {
+    writeFileSync(
+      join(sessionDir, "1_test.jsonl"),
+      [1, 2, 3, 4, 5, 6].map((n) => msgLine(n % 2 ? "user" : "assistant", 1000 + n, `m${n}`)).join("\n") + "\n",
+    );
+    _setMessageBufferForTest([]); // pure durable path
+
+    // page size 2: newest page = m5,m6; has_more true; next_before threads back.
+    const p0 = await syncOnce("d-1", 2);
+    expect(p0.events.map((e) => e.text)).toEqual(["m5", "m6"]);
+    expect(p0.has_more).toBe(true);
+    expect(p0.truncated).toBe(true); // back-compat alias of has_more
+    expect(p0.next_before).toBeTruthy();
+
+    const p1 = await syncOnce("d-2", 2, p0.next_before);
+    expect(p1.events.map((e) => e.text)).toEqual(["m3", "m4"]);
+    expect(p1.has_more).toBe(true);
+
+    const p2 = await syncOnce("d-3", 2, p1.next_before);
+    expect(p2.events.map((e) => e.text)).toEqual(["m1", "m2"]);
+    expect(p2.has_more).toBe(false);
+    expect(p2.next_before).toBeUndefined();
+  });
+
+  test("dedups the RAM tail against the file and ts-merges interspersed compaction", async () => {
+    // file: m1..m4 (user/assistant alternating)
+    writeFileSync(
+      join(sessionDir, "1_test.jsonl"),
+      [1, 2, 3, 4].map((n) => msgLine(n % 2 ? "user" : "assistant", 1000 + n * 10, `m${n}`)).join("\n") + "\n",
+    );
+    // RAM tail: m3 OVERLAPS the file (dedup), a compaction marker is INTERSPERSED
+    // (ts between m2 and m3, synthetic so never in file), and m5 is unflushed-newest.
+    _setMessageBufferForTest([
+      { role: "user", content: "m3", timestamp: 1030 }, // key 1030:user ∈ file → deduped
+      { role: "compaction", content: "C", timestamp: 1025, tokensBefore: 500 } as unknown as object,
+      { role: "assistant", content: [{ type: "text", text: "m5" }], timestamp: 1050 },
+    ]);
+
+    const p = await syncOnce("d-merge");
+    // unified ts-order: m1(10), m2(20), C(25), m3(30), m4(40), m5(50) — m3 once, C interspersed
+    const labels = p.events.map((e) => (e.type === "compaction" ? e.summary : e.text));
+    expect(labels).toEqual(["m1", "m2", "C", "m3", "m4", "m5"]);
+    expect(p.events.map((e) => e.type)).toEqual([
+      "user_input", "agent_message", "compaction", "user_input", "agent_message", "agent_message",
+    ]);
+    expect(p.has_more).toBe(false);
+  });
+
+  test("falls back to the RAM tail when no transcript exists on disk", async () => {
+    // no .jsonl written → resolveCurrentSessionFile returns null → RAM-tail-only.
+    _setMessageBufferForTest([
+      { role: "user", content: "only ram", timestamp: 42 },
+      { role: "assistant", content: [{ type: "text", text: "reply" }], timestamp: 43 },
+    ]);
+    const p = await syncOnce("d-ram");
+    expect(p.events.map((e) => e.text)).toEqual(["only ram", "reply"]);
+    expect(p.has_more).toBe(false);
+  });
+});
+
 // ── cumulative message buffer (post-fix 15) ───────────────────────────────────
 
 describe("cumulative buffer", () => {
@@ -5801,7 +5921,7 @@ describe("cumulative buffer", () => {
     const sessionTs = baseTs;
     _setSessionStartedAtForTest(sessionTs);
     const sendsBefore = relayRef.current!.send.mock.calls.length;
-    routeClientMessage(
+    await routeClientMessage(
       { type: "session_sync", id: "mt-1" },
       { abort: () => undefined },
     );
@@ -5846,7 +5966,7 @@ describe("cumulative buffer", () => {
 
     _setSessionStartedAtForTest(baseTs);
     const sendsBefore = relayRef.current!.send.mock.calls.length;
-    routeClientMessage(
+    await routeClientMessage(
       { type: "session_sync", id: "mix-1" },
       { abort: () => undefined },
     );
@@ -5899,7 +6019,7 @@ describe("cumulative buffer", () => {
 
     _setSessionStartedAtForTest(ts);
     const sendsBefore = relayRef.current!.send.mock.calls.length;
-    routeClientMessage(
+    await routeClientMessage(
       { type: "session_sync", id: "t-1" },
       { abort: () => undefined },
     );

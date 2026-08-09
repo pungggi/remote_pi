@@ -816,6 +816,237 @@ void main() {
     s.sync.dispose();
   });
 
+  // ── Plan/128: durable append-only merge ─────────────────────────────────
+
+  test(
+    'plan/128: an EMPTY session_history with an UNCHANGED session does NOT '
+    'wipe the local box (the offline / Pi-restart disappear bug)',
+    () async {
+      final s = await setup();
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync1',
+          sessionStartedAt: 1000,
+          events: const [
+            UserInputEvt(ts: 1, id: 'u1', text: 'hi'),
+            AgentMessageEvt(ts: 2, inReplyTo: 'a1', text: 'hello'),
+          ],
+          eos: true,
+        ),
+      );
+      await _settle();
+      expect(messages(s.epk), hasLength(2));
+
+      // Pi process restarted → server buffer wiped → relay re-delivers EMPTY
+      // history with the SAME session_started_at. The old substitutive code
+      // deleted every local row; the merge must be a no-op.
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync2',
+          sessionStartedAt: 1000,
+          events: const [],
+          eos: true,
+        ),
+      );
+      await _settle();
+      expect(
+        messages(s.epk),
+        hasLength(2),
+        reason: 'empty history, same session → local rows preserved',
+      );
+
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'plan/128: a legacy Pi (session_started_at == 0) returning empty history '
+    'does NOT wipe the local box',
+    () async {
+      final s = await setup();
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync1',
+          sessionStartedAt: 1000,
+          events: const [UserInputEvt(ts: 1, id: 'u1', text: 'hi')],
+          eos: true,
+        ),
+      );
+      await _settle();
+      expect(messages(s.epk), hasLength(1));
+
+      // Legacy/no-session Pi echoes session_started_at: 0 + empty events.
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync2',
+          sessionStartedAt: 0,
+          events: const [],
+          eos: true,
+        ),
+      );
+      await _settle();
+      expect(
+        messages(s.epk),
+        hasLength(1),
+        reason: 'session_started_at == 0 → never treat as a new session',
+      );
+
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'plan/128: a genuine session_started_at change clears the box and seeds '
+    'the new conversation (new session started on the Pi)',
+    () async {
+      final s = await setup();
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync1',
+          sessionStartedAt: 1000,
+          events: const [UserInputEvt(ts: 1, id: 'old1', text: 'old turn')],
+          eos: true,
+        ),
+      );
+      await _settle();
+      expect(messages(s.epk).map((r) => r.id), ['old1']);
+
+      // User started a NEW session on the Pi → fresh session_started_at.
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync2',
+          sessionStartedAt: 2000,
+          events: const [UserInputEvt(ts: 10, id: 'new1', text: 'new turn')],
+          eos: true,
+        ),
+      );
+      await _settle();
+
+      final m = messages(s.epk);
+      expect(
+        m.map((r) => r.id),
+        ['new1'],
+        reason: 'old conversation cleared; only the new session remains',
+      );
+      expect(index(s.epk)?.sessionStartedAt?.millisecondsSinceEpoch, 2000);
+
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'plan/128: a growing server window MERGES — existing rows keep their seq '
+    'and rows that scrolled off the server window are kept locally '
+    '(durability)',
+    () async {
+      final s = await setup();
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync1',
+          sessionStartedAt: 1000,
+          events: const [
+            UserInputEvt(ts: 1, id: 'u1', text: 'one'),
+            AgentMessageEvt(ts: 2, inReplyTo: 'a1', text: 'resp1'),
+          ],
+          eos: true,
+        ),
+      );
+      await _settle();
+      final u1seq = messages(s.epk).firstWhere((r) => r.id == 'u1').seq;
+      expect(u1seq, 0);
+
+      // Server window grew by one turn; u1/a1 still present. Merge must NOT
+      // re-seq the existing rows.
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync2',
+          sessionStartedAt: 1000,
+          events: const [
+            UserInputEvt(ts: 1, id: 'u1', text: 'one'),
+            AgentMessageEvt(ts: 2, inReplyTo: 'a1', text: 'resp1'),
+            UserInputEvt(ts: 3, id: 'u2', text: 'two'),
+            AgentMessageEvt(ts: 4, inReplyTo: 'a2', text: 'resp2'),
+          ],
+          eos: true,
+        ),
+      );
+      await _settle();
+
+      final m = messages(s.epk);
+      expect(m.map((r) => r.id), ['u1', 'a1', 'u2', 'a2']);
+      expect(
+        m.firstWhere((r) => r.id == 'u1').seq,
+        u1seq,
+        reason: 'existing rows keep their storage identity',
+      );
+
+      // Server window slid: u1 dropped server-side, but u1 must SURVIVE
+      // locally (durability) while u3 appends.
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync3',
+          sessionStartedAt: 1000,
+          events: const [
+            AgentMessageEvt(ts: 2, inReplyTo: 'a1', text: 'resp1'),
+            UserInputEvt(ts: 3, id: 'u2', text: 'two'),
+            AgentMessageEvt(ts: 4, inReplyTo: 'a2', text: 'resp2'),
+            UserInputEvt(ts: 5, id: 'u3', text: 'three'),
+          ],
+          eos: true,
+        ),
+      );
+      await _settle();
+      expect(
+        messages(s.epk).map((r) => r.id),
+        ['u1', 'a1', 'u2', 'a2', 'u3'],
+        reason: 'u1 (dropped server-side) is kept locally; u3 appends',
+      );
+
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'plan/128: a history replay confirms a pending user send (clears '
+    'pending, no duplicate)',
+    () async {
+      final s = await setup();
+      await s.sync.sendMessage('hi');
+      await _settle();
+      final sent = s.ch.sent.whereType<UserMessage>().lastWhere(
+        (m) => m.text == 'hi',
+      );
+      expect(
+        messages(s.epk).firstWhere((r) => r.id == sent.id).pending,
+        isTrue,
+        reason: 'precondition: optimistic row is pending',
+      );
+
+      // Relay replays history that includes our send → pending must clear and
+      // no duplicate row may appear.
+      s.ch.push(
+        SessionHistory(
+          inReplyTo: 'sync1',
+          sessionStartedAt: 1000,
+          events: [UserInputEvt(ts: 1, id: sent.id, text: 'hi')],
+          eos: true,
+        ),
+      );
+      await _settle();
+
+      final rows = messages(s.epk).where((r) => r.id == sent.id).toList();
+      expect(rows, hasLength(1), reason: 'no duplicate');
+      expect(rows.first.pending, isFalse, reason: 'history replay confirms send');
+
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
   test(
     'switching the writer to a new session: a late frame from the OLD '
     "connection is dropped — it neither writes the new box nor appears in the "
