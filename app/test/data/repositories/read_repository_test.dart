@@ -60,6 +60,45 @@ void main() {
     },
   );
 
+  test(
+    'watchMessages orders by (ts, seq) so backward-paged older rows render first (plan/128)',
+    () async {
+      final boxes = LocalBoxes();
+      final repo = SessionReadRepository(boxes);
+      final epk = 'epk_ts_${++_c}';
+      final box = await boxes.msgsBox(epk, 'main');
+
+      MessageRecord msgAt(int seq, String id, String text, int tsMs) =>
+          MessageRecord(
+            id: id,
+            seq: seq,
+            role: MsgRole.user,
+            text: text,
+            ts: DateTime.fromMillisecondsSinceEpoch(tsMs),
+          );
+
+      // seq 0 = newest (ts 200), arrives first (normal sync).
+      await box.put(0, msgAt(0, 'a', 'newest', 200).toJson());
+      final stream = repo.watchMessages(epk, 'main');
+      final emissions = <List<MessageRecord>>[];
+      final sub = stream.listen(emissions.add);
+      await Future<void>.delayed(Duration.zero);
+      expect(emissions.last.map((m) => m.text), ['newest']);
+
+      // seq 1 = OLDER (ts 100), arrives later (backward page) — must render first.
+      await box.put(1, msgAt(1, 'b', 'older', 100).toJson());
+      await Future<void>.delayed(Duration.zero);
+      expect(emissions.last.map((m) => m.text), ['older', 'newest']);
+
+      // seq 2 = OLDEST (ts 50), arrives last — renders first of all.
+      await box.put(2, msgAt(2, 'c', 'oldest', 50).toJson());
+      await Future<void>.delayed(Duration.zero);
+      expect(emissions.last.map((m) => m.text), ['oldest', 'older', 'newest']);
+
+      await sub.cancel();
+    },
+  );
+
   test('watchRuntime reflects writes for the (epk, room) key', () async {
     final boxes = LocalBoxes();
     final repo = SessionReadRepository(boxes);

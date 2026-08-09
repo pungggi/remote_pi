@@ -197,7 +197,11 @@ export type ClientMessage =
   | { type: "approve_tool"; id: string; tool_call_id: string; decision: "allow" | "deny" }
   | { type: "cancel"; id: string; target_id: string }
   | { type: "ping"; id: string }
-  | { type: "session_sync"; id: string; limit?: number }
+  // Plan/128 — `before` is an opaque backward cursor (the app threads the
+  // `next_before` it received). Omitted ⇒ newest N (legacy shape). The
+  // server now honors `limit` up to a payload-guard max instead of clamping
+  // to the old 30-event window.
+  | { type: "session_sync"; id: string; limit?: number; before?: string }
   // Plan/28 — Typed app actions on the paired Pi session. Each carries a
   // structured payload (no string parsing) and gets either `action_ok` or
   // `action_error` back. Visible side-effects (chat output, model change
@@ -419,6 +423,13 @@ export type ServerMessage =
       events: SessionHistoryEvent[];
       eos: boolean;
       truncated: boolean;
+      // Plan/128 — cursor pagination for durable full-history paging.
+      // `next_before` is the cursor to send back to fetch the page OLDER than
+      // this one (omitted when nothing older remains). `has_more` is the
+      // boolean form of `truncated`. Both optional for back-compat with older
+      // clients/servers; `truncated` mirrors `has_more`.
+      next_before?: string;
+      has_more?: boolean;
     }
   // Plan/28 — Replies for typed app actions.
   // `action_ok` / `action_error` carry the original `ActionName` so the

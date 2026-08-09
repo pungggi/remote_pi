@@ -52,6 +52,16 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:remote_pi_identity/remote_pi_identity.dart';
 
+// Plan/128 step 6 — optional on-device history retention cap (rows/session).
+// Default OFF (null): the box grows without bound (history is durable +
+// append-only). Override at build time:
+//   flutter build apk --debug --dart-define=REMOTE_PI_LOCAL_HISTORY_MAX=2000
+final int? _localHistoryMax = () {
+  const raw = String.fromEnvironment('REMOTE_PI_LOCAL_HISTORY_MAX');
+  final n = int.tryParse(raw);
+  return (n != null && n > 0) ? n : null;
+}();
+
 final _injector = CustomInjector();
 
 /// Direct injector access — only for bootstrap, tests, and deep-link handlers.
@@ -149,6 +159,8 @@ Future<void> setupDependencies() async {
     () => SyncService(
       _injector.get<ConnectionManager>(),
       _injector.get<LocalBoxes>(),
+      // Plan/128 step 6 — optional on-device retention cap (default off).
+      localHistoryMax: _localHistoryMax,
     ),
   );
   _injector.addRepository<SessionReadRepository>(

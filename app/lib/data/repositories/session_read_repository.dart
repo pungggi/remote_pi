@@ -76,8 +76,15 @@ class SessionReadRepository extends Repository {
   }
 
   static List<MessageRecord> _sorted(Map<int, MessageRecord> byKey) {
-    final keys = byKey.keys.toList()..sort();
-    return [for (final k in keys) byKey[k]!];
+    // Plan/128 — order by (ts, seq): primary ts so backward-paged OLDER rows
+    // (appended later at a higher seq) still render before newer ones; seq
+    // tiebreak keeps same-ts events in stable insertion order.
+    final entries = byKey.entries.toList()
+      ..sort((a, b) {
+        final byTs = a.value.ts.compareTo(b.value.ts);
+        return byTs != 0 ? byTs : a.key.compareTo(b.key);
+      });
+    return [for (final e in entries) e.value];
   }
 
   static Map<String, dynamic> _coerce(dynamic raw) {

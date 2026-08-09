@@ -715,13 +715,17 @@ class PairRequest extends ClientMessage {
 class SessionSync extends ClientMessage {
   final String id;
   final int? limit;
-  SessionSync({required this.id, this.limit});
+  /// Plan/128 — opaque backward-paging cursor. Thread the `next_before` the
+  /// server returned; omit for the newest page (legacy shape).
+  final String? before;
+  SessionSync({required this.id, this.limit, this.before});
 
   @override
   Map<String, dynamic> toJson() => {
     'type': 'session_sync',
     'id': id,
     if (limit != null) 'limit': limit,
+    if (before != null) 'before': before,
   };
 }
 
@@ -1482,12 +1486,16 @@ class SessionHistory extends ServerMessage {
   final List<SessionHistoryEvent> events;
   final bool eos;
   final bool truncated;
+  /// Plan/128 — cursor to send back as `before` for the next OLDER page.
+  /// Absent when nothing older remains. `truncated` mirrors `has_more`.
+  final String? nextBefore;
   SessionHistory({
     required this.inReplyTo,
     required this.sessionStartedAt,
     required this.events,
     required this.eos,
     this.truncated = false,
+    this.nextBefore,
   });
 
   factory SessionHistory.fromJson(Map<String, dynamic> j) => SessionHistory(
@@ -1498,7 +1506,10 @@ class SessionHistory extends ServerMessage {
         .toList(),
     eos: j['eos'] as bool,
     // Tolerate absence during the protocol transition window.
-    truncated: (j['truncated'] as bool?) ?? false,
+    truncated: (j['truncated'] as bool?) ??
+        (j['has_more'] as bool?) ??
+        false,
+    nextBefore: j['next_before'] as String?,
   );
 }
 

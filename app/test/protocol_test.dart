@@ -535,4 +535,56 @@ void main() {
       expect(noVision.vision, isFalse);
     });
   });
+
+  group('plan/128 cursor pagination', () {
+    test('SessionSync threads before + limit in toJson (omits when absent)', () {
+      final newest = SessionSync(id: 'r1');
+      expect(jsonDecode(jsonEncode(newest.toJson())), {
+        'type': 'session_sync',
+        'id': 'r1',
+      });
+      final paged = SessionSync(id: 'r2', limit: 500, before: 'off:123');
+      expect(jsonDecode(jsonEncode(paged.toJson())), {
+        'type': 'session_sync',
+        'id': 'r2',
+        'limit': 500,
+        'before': 'off:123',
+      });
+    });
+
+    test('SessionHistory decodes next_before + has_more→truncated, tolerates absence', () {
+      final full = ServerMessage.fromJson({
+        'type': 'session_history',
+        'in_reply_to': 'r1',
+        'session_started_at': 1700,
+        'events': [],
+        'eos': true,
+        'has_more': true,
+        'next_before': 'off:42',
+      }) as SessionHistory;
+      expect(full.truncated, isTrue); // mirrors has_more
+      expect(full.nextBefore, 'off:42');
+
+      final legacy = ServerMessage.fromJson({
+        'type': 'session_history',
+        'in_reply_to': 'r1',
+        'session_started_at': 1700,
+        'events': [],
+        'eos': true,
+        'truncated': true,
+      }) as SessionHistory;
+      expect(legacy.truncated, isTrue);
+      expect(legacy.nextBefore, isNull);
+
+      final bare = ServerMessage.fromJson({
+        'type': 'session_history',
+        'in_reply_to': 'r1',
+        'session_started_at': 1700,
+        'events': [],
+        'eos': true,
+      }) as SessionHistory;
+      expect(bare.truncated, isFalse);
+      expect(bare.nextBefore, isNull);
+    });
+  });
 }
