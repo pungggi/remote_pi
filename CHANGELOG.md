@@ -28,6 +28,13 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   the default). Follow-ups drain in FIFO order when the current turn ends,
   attributed to their own bubble, and render consistently across paired
   devices. Image attachments on follow-ups are deferred to a later slice.
+- **Notes on `ask_user` answers (plan 128)** — the clarification sheet now
+  lets you attach a note to a question (pi-ask `Shift+N`) and to a selected
+  option (pi-ask `n`), as an inline expandable "Add note" field with a chip
+  when filled. A question note alone is a valid answer; an option note rides
+  only its selected option (custom text on a single-select question still
+  overrides the selection and drops it, matching pi-ask). The wire already
+  carried `note` / `optionNotes` end-to-end — this fills the missing UI.
 
 ---
 
