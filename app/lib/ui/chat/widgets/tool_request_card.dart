@@ -90,7 +90,9 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
     );
   }
 
-  /// Collapsed view: minimal row with tool name + status icon + chevron.
+  /// Collapsed view: single tight line — status icon + tool name + chevron.
+  /// Plan/110 — used to be a `ListTile` (~56px, read as ~3 lines on a phone);
+  /// now a compact `Row` so a batch of tool calls takes one line each.
   Widget _buildCollapsedRow(
     BuildContext context,
     Color color,
@@ -99,28 +101,36 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
     final typo = context.typo;
     return GestureDetector(
       onTap: _toggleExpanded,
+      behavior: HitTestBehavior.opaque,
       child: Container(
         decoration: BoxDecoration(
           color: colors.surface,
           border: Border.all(color: color, width: 1),
           borderRadius: BorderRadius.circular(12),
         ),
-        child: ListTile(
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          leading: Icon(_statusIcon(), color: color, size: 18),
-          title: Text(
-            widget.tool.tool,
-            style: typo.mono.copyWith(
-              color: colors.text,
-              fontSize: 13,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        child: Row(
+          children: [
+            Icon(_statusIcon(), color: color, size: 16),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                widget.tool.tool,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: typo.mono.copyWith(
+                  color: colors.text,
+                  fontSize: 13,
+                ),
+              ),
             ),
-          ),
-          trailing: Icon(
-            LucideIcons.chevronRight,
-            color: colors.muted,
-            size: 16,
-          ),
+            const SizedBox(width: 8),
+            Icon(
+              LucideIcons.chevronRight,
+              color: colors.muted,
+              size: 16,
+            ),
+          ],
         ),
       ),
     );

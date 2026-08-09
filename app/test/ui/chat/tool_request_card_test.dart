@@ -1,10 +1,34 @@
+import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/ui/chat/widgets/tool_request_card.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:provider/provider.dart';
 
-Widget _wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
+/// Wraps the card with a [Preferences] provider. [collapse] defaults to false
+/// (expanded) — the existing assertions target the expanded view (status label,
+/// code block, outcome line). Plan/110's collapsed case passes `collapse: true`.
+Widget _wrap(Widget child, {bool collapse = false}) {
+  return MaterialApp(
+    home: Scaffold(
+      body: ChangeNotifierProvider<Preferences>(
+        create: (_) => _TestPrefs(collapse),
+        child: child,
+      ),
+    ),
+  );
+}
+
+/// Test-only prefs: overrides [Preferences.collapseToolCalls] without touching
+/// secure storage (the real [Preferences.load] path needs a plugin + async boot
+/// that the widget harness doesn't set up).
+class _TestPrefs extends Preferences {
+  _TestPrefs(this._collapseToolCalls);
+  final bool _collapseToolCalls;
+  @override
+  bool get collapseToolCalls => _collapseToolCalls;
+}
 
 const _bashTool = ToolEvent(
   id: 'tc1',
@@ -154,6 +178,50 @@ void main() {
       // pending defaults
       await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _bashTool)));
       expect(outcomeColor(tester, '⏳ Running…'), AppColors.dark.accent);
+    });
+
+    // Plan/110 — a collapsed tool call is a single tight line, not the old
+    // chunky ~56px ListTile that read as ~3 rows on a phone.
+    testWidgets('collapsed is a single compact line, no details', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _wrap(const ToolRequestCard(tool: _bashTool), collapse: true),
+      );
+      // Tool name shows once (raw case); expanded-only chrome is absent.
+      expect(find.text('Bash'), findsOneWidget);
+      expect(find.text('BASH'), findsNothing);
+      expect(find.text('RUNNING'), findsNothing);
+      expect(find.text('ls -la'), findsNothing); // args hidden when collapsed
+      // Regression guard: the row must be one line — well under the old
+      // ListTile's ~56px, never a 3-line card.
+      final rect = tester.getRect(find.byType(ToolRequestCard));
+      expect(rect.height, lessThan(44));
+    });
+
+    // Regression: the render-only test above would still pass if the compact
+    // GestureDetector's onTap were broken — users couldn't expand to see the
+    // args + outcome the card promises. Verify the collapsed → expanded
+    // transition actually fires and reveals the details.
+    testWidgets('collapsed expands on tap to reveal args + outcome', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _wrap(const ToolRequestCard(tool: _bashTool), collapse: true),
+      );
+      // Starts collapsed: expanded-only chrome is absent.
+      expect(find.text('BASH'), findsNothing);
+      expect(find.text('ls -la'), findsNothing);
+      expect(find.text('⏳ Running…'), findsNothing);
+
+      // Tap the card -> toggles _expanded.
+      await tester.tap(find.byType(ToolRequestCard));
+      await tester.pump();
+
+      // Now expanded: uppercased tool name, the command, and the outcome line.
+      expect(find.text('BASH'), findsOneWidget);
+      expect(find.text('ls -la'), findsOneWidget);
+      expect(find.text('⏳ Running…'), findsOneWidget);
     });
   });
 }
