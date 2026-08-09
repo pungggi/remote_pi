@@ -198,5 +198,30 @@ void main() {
       final rect = tester.getRect(find.byType(ToolRequestCard));
       expect(rect.height, lessThan(44));
     });
+
+    // Regression: the render-only test above would still pass if the compact
+    // GestureDetector's onTap were broken — users couldn't expand to see the
+    // args + outcome the card promises. Verify the collapsed → expanded
+    // transition actually fires and reveals the details.
+    testWidgets('collapsed expands on tap to reveal args + outcome', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _wrap(const ToolRequestCard(tool: _bashTool), collapse: true),
+      );
+      // Starts collapsed: expanded-only chrome is absent.
+      expect(find.text('BASH'), findsNothing);
+      expect(find.text('ls -la'), findsNothing);
+      expect(find.text('⏳ Running…'), findsNothing);
+
+      // Tap the card -> toggles _expanded.
+      await tester.tap(find.byType(ToolRequestCard));
+      await tester.pump();
+
+      // Now expanded: uppercased tool name, the command, and the outcome line.
+      expect(find.text('BASH'), findsOneWidget);
+      expect(find.text('ls -la'), findsOneWidget);
+      expect(find.text('⏳ Running…'), findsOneWidget);
+    });
   });
 }
