@@ -49,8 +49,9 @@ class ChatViewModel extends ViewModel<ChatState> {
   StreamingMessage? _streaming;
   bool _working = false;
   List<QueuedMsg> _queuedMessages = const [];
-  // Plan/100 — interactive extension_ui_request awaiting an answer (ask_user).
-  ExtensionUiRequest? _pendingUiRequest;
+  // Plan/129 — the pending ask_user request itself now lives in the
+  // SyncService (durable SSOT — SyncService.currentExtensionUiRequest) and is
+  // read live in [_compose]. We only track the submit-result error here.
   // Plan/100 — last submit-result error for the pending request (null when none
   // / resolved). Surfaced to the modal so the user can retry instead of staring
   // at a closed/dismissed flow that's still blocked on desktop.
@@ -255,32 +256,36 @@ class ChatViewModel extends ViewModel<ChatState> {
     _recompute();
   }
 
-  /// Plan/100 — interactive extension_ui_request arrived (ask_user via pi-ask).
-  ///
-  /// A `notify` whose id matches the open request is either:
-  ///  - a `completed` dismiss (notify_type absent/info) → close the modal, OR
-  ///  - a submit-result warning (notify_type warning/error) → keep the modal
-  ///    open and surface the message so the user can retry.
-  /// Any non-notify request opens/replaces the modal (and clears a prior error).
+  /// Plan/100/129 — extension_ui_request changed. The request itself is the
+  /// SyncService's durable SSOT (read live in [_compose]); here we only react
+  /// to submit-result feedback so the modal can show a retry message:
+  ///  - a warning/error `notify` matching the open request → surface its
+  ///    message (the flow stays open for retry),
+  ///  - a completed/info `notify` that RESOLVES the open flow (the SyncService
+  ///    drops the current request), or any new interactive request → clear
+  ///    the error. A stand-alone notify for some OTHER flow is ignored, so it
+  ///    can't hide this flow's rejection reason.
   void _onExtensionUiRequest(ExtensionUiRequest req) {
     if (req.method == ExtensionUiMethod.notify) {
-      final matchesOpen =
-          _pendingUiRequest != null && req.id == _pendingUiRequest!.id;
-      if (matchesOpen) {
-        final isWarning =
-            req.notifyType == 'warning' || req.notifyType == 'error';
-        if (isWarning) {
+      final isWarning =
+          req.notifyType == 'warning' || req.notifyType == 'error';
+      if (isWarning) {
+        final current = _sync.currentExtensionUiRequest;
+        if (current != null && req.id == current.id) {
           _pendingUiError = (req.message?.isNotEmpty ?? false)
               ? req.message
               : 'Answer was not accepted.';
-        } else {
-          _pendingUiRequest = null;
+        }
+      } else {
+        // Only clear the error when the open flow actually resolved — i.e.
+        // the SyncService dropped the current request. A stand-alone notify
+        // for another flow leaves the current request untouched, so we must
+        // not hide this flow's rejection reason (plan/129 review).
+        if (_sync.currentExtensionUiRequest == null) {
           _pendingUiError = null;
         }
       }
-      // Unmatched notifies (stand-alone notices) are ignored in v1.
     } else {
-      _pendingUiRequest = req;
       _pendingUiError = null;
     }
     _recompute();
@@ -323,7 +328,7 @@ class ChatViewModel extends ViewModel<ChatState> {
       model: room?.model,
       contextUsage: room?.contextUsage,
       queuedMessages: _queuedMessages,
-      pendingUiRequest: _pendingUiRequest,
+      pendingUiRequest: _sync.currentExtensionUiRequest,
       pendingUiError: _pendingUiError,
       truncated: _truncated,
     );

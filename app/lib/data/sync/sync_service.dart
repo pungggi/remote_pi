@@ -63,6 +63,15 @@ class SyncService extends Service {
   final StreamController<ExtensionUiRequest> _extensionUiController =
       StreamController<ExtensionUiRequest>.broadcast();
 
+  // Plan/129 — durable current extension_ui_request (ask_user) for the active
+  // session. The stream above is broadcast: an event fired with no
+  // ChatViewModel mounted (app backgrounded, cold-start still on Home, or a
+  // session_sync replay mid-reconnect) hits no listener and is lost. Holding
+  // the current value here makes it the SSOT the ChatViewModel reads in its
+  // `_compose`, so a request that arrived while no listener existed still
+  // surfaces when the chat next opens.
+  ExtensionUiRequest? _currentExtensionUiRequest;
+
   List<QueuedMsg> _queuedMessages = const [];
   final StreamController<List<QueuedMsg>> _queuedController =
       StreamController<List<QueuedMsg>>.broadcast();
@@ -141,6 +150,12 @@ class SyncService extends Service {
   /// a full-screen modal and replies via [respondExtensionUi].
   Stream<ExtensionUiRequest> get extensionUiRequestStream =>
       _extensionUiController.stream;
+
+  /// Plan/129 — the current pending ask_user request for the active session
+  /// (null when none / after the flow resolved). Durable SSOT — see
+  /// [_currentExtensionUiRequest].
+  ExtensionUiRequest? get currentExtensionUiRequest =>
+      _currentExtensionUiRequest;
   List<QueuedMsg> get queuedMessages => _queuedMessages;
   String? get queuedText =>
       _queuedMessages.isEmpty ? null : _queuedMessages.first.text;
@@ -204,6 +219,32 @@ class SyncService extends Service {
     if (_working) {
       _working = false;
       if (!_workingController.isClosed) _workingController.add(false);
+    }
+    // Plan/129 — a pending ask_user belongs to the session we just left; drop
+    // it so it can't surface in the next chat. The new session's own request
+    // (if any) arrives on its stream / session_sync replay.
+    _currentExtensionUiRequest = null;
+  }
+
+  /// Plan/129 — apply an inbound [ExtensionUiRequest] to the durable current
+  /// state (the SSOT the ChatViewModel reads). A `notify` whose id matches the
+  /// open flow clears it on completion (info/absent type); a warning/error
+  /// notify is a no-op here — the flow stays open for retry and the retry
+  /// message is tracked in the ChatViewModel. Any other (interactive) request
+  /// opens/replaces it. Unmatched stand-alone notifies are ignored in v1.
+  void _handleExtensionUiRequest(ExtensionUiRequest req) {
+    if (req.method == ExtensionUiMethod.notify) {
+      final matchesOpen = _currentExtensionUiRequest != null &&
+          req.id == _currentExtensionUiRequest!.id;
+      if (matchesOpen) {
+        final isWarning =
+            req.notifyType == 'warning' || req.notifyType == 'error';
+        if (!isWarning) {
+          _currentExtensionUiRequest = null;
+        }
+      }
+    } else {
+      _currentExtensionUiRequest = req;
     }
   }
 
@@ -781,8 +822,11 @@ class SyncService extends Service {
         _writeCompaction(summary, tokensBefore, ts);
 
       case ExtensionUiRequest():
-        // Plan/100 — transient interactive prompt (ask_user via pi-ask).
-        // Surface to the UI; never persist (it's a live request, not history).
+        // Plan/100/129 — update the durable current request (SSOT), then ping
+        // live listeners. The cached value survives no-listener windows
+        // (backgrounded / cold-start / mid-reconnect); the broadcast stream
+        // alone does not.
+        _handleExtensionUiRequest(msg);
         _extensionUiController.add(msg);
         break;
       case Pong():

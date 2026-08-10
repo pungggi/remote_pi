@@ -127,15 +127,20 @@ void main() {
     await _dir.delete(recursive: true);
   });
 
+  /// Plan/129 — everything up to (but not including) the ChatViewModel, so a
+  /// test can push a request into the channel BEFORE any viewmodel exists
+  /// (reproducing "ask fired while the app was backgrounded / on Home").
   Future<
     ({
       _FakeChannel ch,
       ConnectionManager conn,
       SyncService sync,
-      ChatViewModel vm,
+      SessionReadRepository read,
+      Preferences prefs,
+      _FakeStorage storage,
     })
   >
-  harness() async {
+  parts() async {
     final ch = _FakeChannel();
     final storage = _FakeStorage();
     final conn = ConnectionManager(
@@ -151,9 +156,33 @@ void main() {
 
     conn.adopt(ch, _peer);
     await Future<void>.delayed(const Duration(milliseconds: 30));
-    final vm = ChatViewModel(read, sync, conn, prefs, storage);
+    // Bind the writer to this peer/room now, so a ChatViewModel created later
+    // hits activate()'s early-return (no _resetTurnState) — mirroring a real
+    // chat re-entry where the SyncService is already bound.
+    await sync.activate(_peer.remoteEpk, 'main');
+    return (
+      ch: ch,
+      conn: conn,
+      sync: sync,
+      read: read,
+      prefs: prefs,
+      storage: storage,
+    );
+  }
+
+  Future<
+    ({
+      _FakeChannel ch,
+      ConnectionManager conn,
+      SyncService sync,
+      ChatViewModel vm,
+    })
+  >
+  harness() async {
+    final p = await parts();
+    final vm = ChatViewModel(p.read, p.sync, p.conn, p.prefs, p.storage);
     await Future<void>.delayed(const Duration(milliseconds: 50));
-    return (ch: ch, conn: conn, sync: sync, vm: vm);
+    return (ch: p.ch, conn: p.conn, sync: p.sync, vm: vm);
   }
 
   test(
@@ -253,6 +282,65 @@ void main() {
   );
 
   test(
+    "unmatched completed/info notify does not clear another flow's rejection (plan/129 review)",
+    () async {
+      final h = await harness();
+
+      h.ch.push(_request('tool:f1'));
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      // f1 rejected → error surfaces, modal stays open.
+      h.ch.push(
+        const ExtensionUiRequest(
+          id: 'tool:f1',
+          method: ExtensionUiMethod.notify,
+          message: 'Unknown option value.',
+          notifyType: 'warning',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      var state = h.vm.state as ChatReady;
+      expect(state.pendingUiRequest?.id, 'tool:f1');
+      expect(state.pendingUiError, 'Unknown option value.');
+
+      // A stand-alone completed notify for a DIFFERENT flow must not hide f1's
+      // rejection — f1 is still open and unresolved.
+      h.ch.push(
+        const ExtensionUiRequest(
+          id: 'tool:other',
+          method: ExtensionUiMethod.notify,
+          message: 'Clarification resolved.',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      state = h.vm.state as ChatReady;
+      expect(state.pendingUiRequest?.id, 'tool:f1', reason: 'still open');
+      expect(
+        state.pendingUiError,
+        'Unknown option value.',
+        reason: 'rejection reason preserved',
+      );
+
+      // The matched completed notify (f1 itself) does clear it.
+      h.ch.push(
+        const ExtensionUiRequest(
+          id: 'tool:f1',
+          method: ExtensionUiMethod.notify,
+          message: 'Clarification resolved.',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      state = h.vm.state as ChatReady;
+      expect(state.pendingUiRequest, isNull);
+      expect(state.pendingUiError, isNull);
+
+      h.vm.dispose();
+      h.sync.dispose();
+      h.conn.dispose();
+    },
+  );
+
+  test(
     'respond with no live channel fails fast with a retryable error',
     () async {
       final ch = _FakeChannel();
@@ -303,4 +391,69 @@ void main() {
     h.sync.dispose();
     h.conn.dispose();
   });
+
+  test(
+    'request that arrived with no viewmodel mounted still shows (plan/129)',
+    () async {
+      // Reproduces the bug: ask_user fires while the app is backgrounded /
+      // cold-started on Home — no ChatViewModel is listening on the broadcast
+      // stream. The durable SyncService cache must surface it when the chat
+      // later opens.
+      final p = await parts();
+
+      // No viewmodel yet: push straight into the channel (broadcast stream,
+      // no listener). SyncService caches it.
+      p.ch.push(_request('tool:f1'));
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      // Now mount the chat (late).
+      final vm = ChatViewModel(p.read, p.sync, p.conn, p.prefs, p.storage);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      final state = vm.state as ChatReady;
+      expect(
+        state.pendingUiRequest?.id,
+        'tool:f1',
+        reason: 'a request missed live must surface on late mount',
+      );
+
+      vm.dispose();
+      p.sync.dispose();
+      p.conn.dispose();
+    },
+  );
+
+  test(
+    'a flow that resolved while unmounted is not re-surfaced (plan/129)',
+    () async {
+      // No phantom sheet: the completed notify cleared the cache before the
+      // viewmodel mounted.
+      final p = await parts();
+
+      p.ch.push(_request('tool:f1'));
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      p.ch.push(
+        const ExtensionUiRequest(
+          id: 'tool:f1',
+          method: ExtensionUiMethod.notify,
+          message: 'Clarification resolved.',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      final vm = ChatViewModel(p.read, p.sync, p.conn, p.prefs, p.storage);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      final state = vm.state as ChatReady;
+      expect(
+        state.pendingUiRequest,
+        isNull,
+        reason: 'a resolved flow must not haunt a late mount',
+      );
+
+      vm.dispose();
+      p.sync.dispose();
+      p.conn.dispose();
+    },
+  );
 }
