@@ -261,8 +261,10 @@ class ChatViewModel extends ViewModel<ChatState> {
   /// to submit-result feedback so the modal can show a retry message:
   ///  - a warning/error `notify` matching the open request → surface its
   ///    message (the flow stays open for retry),
-  ///  - a completed/info `notify`, or any new interactive request → clear the
-  ///    error.
+  ///  - a completed/info `notify` that RESOLVES the open flow (the SyncService
+  ///    drops the current request), or any new interactive request → clear
+  ///    the error. A stand-alone notify for some OTHER flow is ignored, so it
+  ///    can't hide this flow's rejection reason.
   void _onExtensionUiRequest(ExtensionUiRequest req) {
     if (req.method == ExtensionUiMethod.notify) {
       final isWarning =
@@ -275,7 +277,13 @@ class ChatViewModel extends ViewModel<ChatState> {
               : 'Answer was not accepted.';
         }
       } else {
-        _pendingUiError = null;
+        // Only clear the error when the open flow actually resolved — i.e.
+        // the SyncService dropped the current request. A stand-alone notify
+        // for another flow leaves the current request untouched, so we must
+        // not hide this flow's rejection reason (plan/129 review).
+        if (_sync.currentExtensionUiRequest == null) {
+          _pendingUiError = null;
+        }
       }
     } else {
       _pendingUiError = null;

@@ -282,6 +282,65 @@ void main() {
   );
 
   test(
+    "unmatched completed/info notify does not clear another flow's rejection (plan/129 review)",
+    () async {
+      final h = await harness();
+
+      h.ch.push(_request('tool:f1'));
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      // f1 rejected → error surfaces, modal stays open.
+      h.ch.push(
+        const ExtensionUiRequest(
+          id: 'tool:f1',
+          method: ExtensionUiMethod.notify,
+          message: 'Unknown option value.',
+          notifyType: 'warning',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      var state = h.vm.state as ChatReady;
+      expect(state.pendingUiRequest?.id, 'tool:f1');
+      expect(state.pendingUiError, 'Unknown option value.');
+
+      // A stand-alone completed notify for a DIFFERENT flow must not hide f1's
+      // rejection — f1 is still open and unresolved.
+      h.ch.push(
+        const ExtensionUiRequest(
+          id: 'tool:other',
+          method: ExtensionUiMethod.notify,
+          message: 'Clarification resolved.',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      state = h.vm.state as ChatReady;
+      expect(state.pendingUiRequest?.id, 'tool:f1', reason: 'still open');
+      expect(
+        state.pendingUiError,
+        'Unknown option value.',
+        reason: 'rejection reason preserved',
+      );
+
+      // The matched completed notify (f1 itself) does clear it.
+      h.ch.push(
+        const ExtensionUiRequest(
+          id: 'tool:f1',
+          method: ExtensionUiMethod.notify,
+          message: 'Clarification resolved.',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      state = h.vm.state as ChatReady;
+      expect(state.pendingUiRequest, isNull);
+      expect(state.pendingUiError, isNull);
+
+      h.vm.dispose();
+      h.sync.dispose();
+      h.conn.dispose();
+    },
+  );
+
+  test(
     'respond with no live channel fails fast with a retryable error',
     () async {
       final ch = _FakeChannel();
