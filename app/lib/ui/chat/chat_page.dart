@@ -281,9 +281,9 @@ class ChatPage extends StatelessWidget {
                         ),
                       ),
                     ],
-                    // Plan/115 — context-window fill, shown only while the
-                    // agent is working (percent colored by pressure).
-                    if (isWorking && usage != null) ...[
+                    // Plan/115 — context-window fill, shown whenever usage
+                    // is known (percent colored by pressure).
+                    if (usage != null) ...[
                       const SizedBox(width: 6),
                       Text(
                         usage.percent != null ? '${usage.percent}%' : '·',
