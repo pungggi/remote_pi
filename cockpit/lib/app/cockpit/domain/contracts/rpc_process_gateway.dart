@@ -1,6 +1,5 @@
 import 'package:cockpit/app/core/domain/contracts/service.dart';
 import 'package:cockpit/app/cockpit/domain/entities/agent_snapshot.dart';
-import 'package:cockpit/app/cockpit/domain/entities/context_usage.dart';
 import 'package:cockpit/app/cockpit/domain/entities/pi_command.dart';
 import 'package:cockpit/app/cockpit/domain/entities/pi_model.dart';
 import 'package:cockpit/app/cockpit/domain/entities/prompt_image.dart';
@@ -97,9 +96,6 @@ abstract class RpcProcessGateway implements Service {
 
   /// `get_messages` — mensagens da sessão atual, já mapeadas pro transcript.
   Future<Result<List<TranscriptMessage>, RpcError>> getMessages();
-
-  /// `get_session_stats` — uso da janela de contexto (pode ser `null`).
-  Future<Result<ContextUsage?, RpcError>> sessionStats();
 
   /// Envia um controle de relay diretamente no stdin, sem envolver o LLM nem
   /// aparecer no transcript. [verb]: `relay:on` | `relay:off` | `relay:toggle`
