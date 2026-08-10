@@ -669,8 +669,6 @@ class _AgentComposerState extends State<AgentComposer> {
                       // Effort só pra modelos com raciocínio (senão o pi não usa).
                       if (session.model?.reasoning ?? false)
                         _EffortChip(session: session, enabled: controlsEnabled),
-                      // Bolinha de uso do contexto (enche conforme a janela enche).
-                      _ContextGauge(session: session),
                       _RelayButton(session: session),
                       const Spacer(),
                       // Spinner + cronômetro do turno (só enquanto trabalha).
@@ -1010,106 +1008,6 @@ class _TurnIndicatorState extends State<_TurnIndicator> {
       ),
     );
   }
-}
-
-/// Bolinha de uso do contexto: um disco que enche conforme a janela de contexto
-/// se aproxima do limite (verde→âmbar→vermelho). Tooltip mostra a porcentagem.
-/// `percent` vem na escala 0–100 (ver [ContextUsage]).
-class _ContextGauge extends StatelessWidget {
-  const _ContextGauge({required this.session});
-  final AgentSession session;
-
-  @override
-  Widget build(BuildContext context) {
-    final percent = session.contextUsage?.percent;
-    if (percent == null) return const SizedBox.shrink();
-    final colors = context.colors;
-    final fraction = (percent / 100).clamp(0.0, 1.0);
-    final fill = fraction >= 0.9
-        ? colors.error
-        : (fraction >= 0.75 ? colors.warn : colors.accentText);
-    final pct = percent.toStringAsFixed(percent < 10 ? 1 : 0);
-    return AppTooltip(
-      message: 'Context: $pct% of the window',
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        child: SizedBox(
-          width: 14,
-          height: 14,
-          child: CustomPaint(
-            painter: _GaugePainter(
-              fraction: fraction,
-              fill: fill,
-              track: colors.border2,
-              ring: colors.text3,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _GaugePainter extends CustomPainter {
-  _GaugePainter({
-    required this.fraction,
-    required this.fill,
-    required this.track,
-    required this.ring,
-  });
-
-  final double fraction;
-  final Color fill;
-  final Color track;
-  final Color ring;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = size.center(Offset.zero);
-    final radius = size.width / 2;
-
-    // Fundo (vazio).
-    canvas.drawCircle(
-      center,
-      radius,
-      Paint()
-        ..color = track
-        ..style = PaintingStyle.fill,
-    );
-
-    // Preenchimento: fatia de pizza crescendo do topo no sentido horário.
-    if (fraction > 0) {
-      final path = Path()
-        ..moveTo(center.dx, center.dy)
-        ..arcTo(
-          Rect.fromCircle(center: center, radius: radius),
-          -math.pi / 2,
-          fraction * 2 * math.pi,
-          false,
-        )
-        ..close();
-      canvas.drawPath(
-        path,
-        Paint()
-          ..color = fill
-          ..style = PaintingStyle.fill,
-      );
-    }
-
-    // Contorno (mais visível).
-    canvas.drawCircle(
-      center,
-      radius - 0.6,
-      Paint()
-        ..color = ring
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.3,
-    );
-  }
-
-  @override
-  bool shouldRepaint(_GaugePainter old) =>
-      old.fraction != fraction || old.fill != fill;
 }
 
 class _BarIcon extends StatelessWidget {

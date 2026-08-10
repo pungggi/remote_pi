@@ -56,7 +56,6 @@ class _AgentEditDialogState extends State<_AgentEditDialog> {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final session = widget.session;
-    final ctx = session.contextUsage;
 
     return AlertDialog(
       title: Text(
@@ -107,12 +106,6 @@ class _AgentEditDialogState extends State<_AgentEditDialog> {
               _InfoRow('Folder', session.workingDirectory),
               _InfoRow('Model', session.model?.name ?? '—'),
               _InfoRow('State', _statusLabel(session.status)),
-              _InfoRow(
-                'Context',
-                ctx?.percent != null
-                    ? '${ctx!.percent!.toStringAsFixed(ctx.percent! < 10 ? 1 : 0)}%  (${ctx.tokens ?? "?"}/${ctx.contextWindow})'
-                    : '—',
-              ),
             ],
           ),
         ),

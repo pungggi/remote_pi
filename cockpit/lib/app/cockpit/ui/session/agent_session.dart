@@ -3,7 +3,6 @@ import 'dart:convert';
 
 import 'package:cockpit/app/cockpit/domain/contracts/rpc_gateway_factory.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/rpc_process_gateway.dart';
-import 'package:cockpit/app/cockpit/domain/entities/context_usage.dart';
 import 'package:cockpit/app/cockpit/domain/entities/pi_command.dart';
 import 'package:cockpit/app/cockpit/domain/entities/pi_model.dart';
 import 'package:cockpit/app/cockpit/domain/entities/prompt_image.dart';
@@ -102,7 +101,6 @@ class AgentSession extends PaneItem {
   List<PiCommand> _commands = const <PiCommand>[];
   PiModel? _model;
   ThinkingLevel _thinking = ThinkingLevel.off;
-  ContextUsage? _ctx;
 
   /// `true` quando o agente fechou um turno e o usuário ainda não olhou — move
   /// a evidência na aba e conta pro badge do workspace.
@@ -154,7 +152,6 @@ class AgentSession extends PaneItem {
   List<PiCommand> get commands => _commands;
   PiModel? get model => _model;
   ThinkingLevel get thinking => _thinking;
-  ContextUsage? get contextUsage => _ctx;
 
   // ---- lifecycle ------------------------------------------------------------
 
@@ -251,7 +248,6 @@ class AgentSession extends PaneItem {
       (_) {
         _entries.clear();
         _resetOpenBuffers();
-        _ctx = null;
         sessionPath = null;
         _addInfo('new session');
         notifyListeners();
@@ -276,7 +272,6 @@ class AgentSession extends PaneItem {
       (error) => _addInfo('failed to compact: ${error.message}', isError: true),
     );
     notifyListeners();
-    unawaited(_refreshStats()); // o contexto mudou
   }
 
   Future<void> changeModel(PiModel model) async {
@@ -294,7 +289,6 @@ class AgentSession extends PaneItem {
       },
     );
     notifyListeners();
-    unawaited(_refreshStats());
   }
 
   Future<void> changeThinking(ThinkingLevel level) async {
@@ -448,7 +442,6 @@ class AgentSession extends PaneItem {
       _thinking = snapshot.thinkingLevel;
     }, (_) {});
     notifyListeners();
-    unawaited(_refreshStats());
     // Reaplicar preferências do usuário (persistidas do boot anterior).
     unawaited(_applyPreferred());
   }
@@ -475,16 +468,6 @@ class AgentSession extends PaneItem {
     }
   }
 
-  Future<void> _refreshStats() async {
-    final gateway = _gateway;
-    if (gateway == null || !isAlive) return;
-    final result = await gateway.sessionStats();
-    result.fold((usage) {
-      if (usage != null) _ctx = usage;
-    }, (_) {});
-    notifyListeners();
-  }
-
   // ---- fold do stream -------------------------------------------------------
 
   void _onEvent(RpcEvent event) {
@@ -503,7 +486,6 @@ class AgentSession extends PaneItem {
         if (wasStreaming && startedAt != null) {
           _add(WorkedEntry(DateTime.now().difference(startedAt)));
         }
-        unawaited(_refreshStats());
         if (wasStreaming) onTurnEnd?.call();
       case RpcTurnStart():
         _resetOpenBuffers();

@@ -86,14 +86,6 @@ Future<void> main(List<String> args) async {
     },
   );
 
-  final stats = await gateway.sessionStats();
-  stats.fold(
-    (usage) => stdout.writeln(
-      '[context] ${usage?.tokens}/${usage?.contextWindow} = ${usage?.percent}%',
-    ),
-    (e) => stdout.writeln('[context] erro: ${e.message}'),
-  );
-
   stdout.writeln('--- killing ---');
   await gateway.kill();
   stdout.writeln('--- killed ---');

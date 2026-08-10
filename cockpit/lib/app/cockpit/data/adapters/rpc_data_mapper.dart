@@ -1,5 +1,4 @@
 import 'package:cockpit/app/cockpit/domain/entities/agent_snapshot.dart';
-import 'package:cockpit/app/cockpit/domain/entities/context_usage.dart';
 import 'package:cockpit/app/cockpit/domain/entities/pi_command.dart';
 import 'package:cockpit/app/cockpit/domain/entities/pi_model.dart';
 import 'package:cockpit/app/cockpit/domain/entities/thinking_level.dart';
@@ -7,8 +6,8 @@ import 'package:cockpit/app/cockpit/domain/entities/transcript_message.dart';
 
 /// Converte os `data` das respostas request/response do RPC em entidades de
 /// domínio. Separado do [RpcEventMapper] (que cuida do stream de eventos);
-/// aqui é o payload de `get_available_models`/`get_state`/`set_model`/
-/// `get_session_stats`. Único lugar que vê esse wire format.
+/// aqui é o payload de `get_available_models`/`get_state`/`set_model`. Único
+/// lugar que vê esse wire format.
 class RpcDataMapper {
   const RpcDataMapper();
 
@@ -67,19 +66,6 @@ class RpcDataMapper {
       model: model(map['model']),
       thinkingLevel: ThinkingLevel.fromWire(map['thinkingLevel'] as String?),
       isStreaming: map['isStreaming'] == true,
-    );
-  }
-
-  ContextUsage? contextUsage(Object? data) {
-    if (data is! Map) return null;
-    final usage = data['contextUsage'];
-    if (usage is! Map) return null;
-    final window = (usage['contextWindow'] as num?)?.toInt();
-    if (window == null) return null;
-    return ContextUsage(
-      tokens: (usage['tokens'] as num?)?.toInt(),
-      contextWindow: window,
-      percent: (usage['percent'] as num?)?.toDouble(),
     );
   }
 

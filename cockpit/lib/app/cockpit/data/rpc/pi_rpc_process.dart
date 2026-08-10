@@ -9,7 +9,6 @@ import 'package:cockpit/app/core/data/rpc/jsonl_line_splitter.dart';
 import 'package:cockpit/app/core/data/setup/remote_pi_resolver.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/rpc_process_gateway.dart';
 import 'package:cockpit/app/cockpit/domain/entities/agent_snapshot.dart';
-import 'package:cockpit/app/cockpit/domain/entities/context_usage.dart';
 import 'package:cockpit/app/cockpit/domain/entities/pi_command.dart';
 import 'package:cockpit/app/cockpit/domain/entities/pi_model.dart';
 import 'package:cockpit/app/cockpit/domain/entities/prompt_image.dart';
@@ -345,12 +344,6 @@ class PiRpcProcess implements RpcProcessGateway {
       _guard(() async {
         await _request({'type': 'set_thinking_level', 'level': level.wire});
       });
-
-  @override
-  Future<Result<ContextUsage?, RpcError>> sessionStats() => _guard(() async {
-    final response = await _request({'type': 'get_session_stats'});
-    return _dataMapper.contextUsage(response['data']);
-  });
 
   @override
   Future<Result<void, RpcError>> abort() => _guard(() async {
