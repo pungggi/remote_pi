@@ -36,6 +36,18 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   overrides the selection and drops it, matching pi-ask). The wire already
   carried `note` / `optionNotes` end-to-end — this fills the missing UI.
 
+### Fixed
+
+- **`ask_user` sheet not appearing when backgrounded / on relaunch (plan 129)**
+  — a clarification fired while the app was backgrounded or just relaunched was
+  silently dropped (and never recovered): the request was delivered to a
+  broadcast stream whose only listener was the per-route `ChatViewModel`, so
+  with no chat open there was nothing to receive it — and even the plan/100
+  reconnect replay landed on Home, with no listener. The current request is now
+  a durable value in `SyncService` (mirroring `streaming`/`working`), so a
+  missed request surfaces when the chat next opens; a flow that already resolved
+  is correctly not re-surfaced.
+
 ---
 
 ## [0.2.0] — 2026-07-30
