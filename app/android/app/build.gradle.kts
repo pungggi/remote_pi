@@ -59,6 +59,17 @@ android {
     }
 
     buildTypes {
+        // Debug builds get their own applicationId + a distinct versionName so
+        // a debug APK can be installed ALONGSIDE the release app (different
+        // signature ⇒ same package would always fail with
+        // INSTALL_FAILED_UPDATE_INCOMPATIBLE) and updates in place over prior
+        // debug builds (pinned CI debug keystore — see
+        // .github/piper-debug-keystore.b64). First run after this change needs
+        // one final uninstall of any pre-suffix debug install.
+        debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
         release {
             signingConfig = if (hasReleaseKeystore) {
                 signingConfigs.getByName("release")
