@@ -1,0 +1,85 @@
+# Rolling debug APK do app Piper (app/).
+#
+# Trigger: push em main que toque app/ (ou este arquivo) + workflow_dispatch.
+# Produz: release fixa `debug` (prerelease) com RemotePi-debug.apk sempre
+# atualizado (--clobber) + SHA256SUMS. URL estável — "sempre um debug APK":
+#   https://github.com/<repo>/releases/download/debug/RemotePi-debug.apk
+#
+# Complementa o app-release.yml (tags app-v*), que também publica um
+# RemotePi-debug.apk por versão. Sem keystore aqui — debug-signed por design.
+
+name: app-debug
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - ".github/workflows/app-debug.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: app-debug
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: "3.44.4"
+  DEBUG_TAG: debug
+
+jobs:
+  debug-apk:
+    name: APK debug (rolling)
+    runs-on: ubuntu-24.04
+    defaults: { run: { working-directory: app } }
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Build APK debug
+        run: |
+          flutter pub get
+          flutter build apk --debug
+
+      - name: Publica na release fixa `debug`
+        run: |
+          VERSION=$(grep '^version:' pubspec.yaml | awk '{print $2}' | cut -d+ -f1)
+          SHA7=${GITHUB_SHA::7}
+          mkdir -p out
+          cp build/app/outputs/flutter-apk/app-debug.apk out/RemotePi-debug.apk
+          (cd out && sha256sum RemotePi-debug.apk > SHA256SUMS)
+          NOTES="Rolling debug build — Piper ${VERSION} @ ${SHA7} (${GITHUB_SHA}).
+          Debug-signed, logs verbosos. Substituído a cada push em main que toque app/."
+          if gh release view "$DEBUG_TAG" >/dev/null 2>&1; then
+            gh release upload "$DEBUG_TAG" out/RemotePi-debug.apk out/SHA256SUMS --clobber
+            gh release edit "$DEBUG_TAG" --notes "$NOTES"
+          else
+            gh release create "$DEBUG_TAG" out/RemotePi-debug.apk out/SHA256SUMS \
+              --target "$GITHUB_SHA" \
+              --title "Piper debug (rolling)" \
+              --notes "$NOTES" \
+              --prerelease --latest=false
+          fi
+          cat out/SHA256SUMS
+
+      - name: Resumo
+        run: |
+          {
+            echo "## Rolling debug APK publicado"
+            echo ""
+            echo "URL estável: https://github.com/${GITHUB_REPOSITORY}/releases/download/${DEBUG_TAG}/RemotePi-debug.apk"
+            echo "Commit: ${GITHUB_SHA}"
+          } >> "$GITHUB_STEP_SUMMARY"
