@@ -11,6 +11,25 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-08-14
+
+### Security
+
+- **Signed messages (plan 130)** — every message between the app and the
+  Pi is now cryptographically signed by the sender's device key. A
+  compromised or malicious relay can no longer impersonate your paired
+  Pi (or the app): after the first verified signed message, unsigned
+  frames from that peer are rejected automatically. Transition-safe —
+  pairs with an older Pi keep working until both sides upgrade.
+- **Insecure-connection warning** — while connected over a plaintext
+  `ws://` relay (the default home-LAN dial), a persistent banner on Home
+  warns that traffic is readable on this network. Use an `https://` or
+  overlay (Tailscale) relay to clear it.
+- **Hardened relay** — message-size limits, an auth-handshake timeout,
+  and mesh-membership gating for presence/room metadata (other relay
+  clients can no longer see your PC's sessions without being paired into
+  your mesh). Requires relay 0.3.x deployed alongside.
+
 ### Added
 
 - **Steer vs Follow-up choice while working (plan 127)** — while the agent
