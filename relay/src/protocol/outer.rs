@@ -24,6 +24,10 @@ pub struct OuterEnvelope {
     /// can. Absent in legacy frames → forwarded as absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sig: Option<String>,
+    /// Sender epoch-ms timestamp covered by `sig` (v2 scheme — replay
+    /// window + recipient binding). Forwarded verbatim like `sig`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ts: Option<u64>,
 }
 
 /// Nome da env var que sobrescreve o teto do outer envelope (inteiro em MiB).
@@ -113,6 +117,19 @@ mod tests {
         assert!(reserialized.contains("\"sig\":\"U0lH\""));
         // And serializing a None envelope omits the field (legacy wire shape).
         assert!(!serde_json::to_string(&legacy).unwrap().contains("sig"));
+    }
+
+    #[test]
+    fn ts_round_trips_and_defaults_to_none() {
+        // v2 frames carry the sender's epoch-ms next to sig — forwarded verbatim.
+        let v2 = parse_line(r#"{"peer":"abc","ct":"AAA=","sig":"U0lH","ts":1739577600000}"#)
+            .unwrap();
+        assert_eq!(v2.ts, Some(1_739_577_600_000));
+        assert!(serde_json::to_string(&v2).unwrap().contains("\"ts\":1739577600000"));
+        // Legacy frames omit it entirely.
+        let legacy = parse_line(r#"{"peer":"abc","ct":"AAA="}"#).unwrap();
+        assert!(legacy.ts.is_none());
+        assert!(!serde_json::to_string(&legacy).unwrap().contains("ts"));
     }
 
     #[test]

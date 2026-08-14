@@ -108,9 +108,32 @@ class PlainPeerChannel implements IChannel, IControlLink, ITransportSecurityInfo
     }
   }
 
+  /// Replay defense (PR #24 follow-up #1): bounded LRU of delivered inner
+  /// message ids. A replayed frame — even one inside the v2 freshness
+  /// window — carries an already-seen id and is dropped. Ids are
+  /// client-generated UUIDs, never legitimately reused. Map preserves
+  /// insertion order; evict oldest past the cap.
+  static const int _seenIdsCap = 2048;
+  final _seenIds = <String>{};
+
+  bool _seenBefore(dynamic id) {
+    if (id is! String || id.isEmpty) return false;
+    if (_seenIds.contains(id)) return true;
+    if (_seenIds.length >= _seenIdsCap) {
+      _seenIds.remove(_seenIds.first);
+    }
+    _seenIds.add(id);
+    return false;
+  }
+
   void _handleFrame(Uint8List bytes) {
     try {
       final msg = decodeServer(utf8.decode(bytes));
+      if (_seenBefore((msg as dynamic).id)) {
+        // Replayed server frame — drop before it corrupts UI state
+        // (duplicate agent_chunks, duplicate echoes).
+        return;
+      }
       if (!_controller.isClosed) _controller.add(msg);
     } on UnsupportedTypeException {
       // Forward-compat: surface unknown server types as ErrorMessage.

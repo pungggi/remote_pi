@@ -19,6 +19,7 @@
  * via `~/.pi/piper/config.json` `projects.roots`.
  */
 import { resolve, sep } from "node:path";
+import { realpathSync } from "node:fs";
 import { projectsRoots } from "../config.js";
 import { listWorktrees } from "./worktree_registry.js";
 
@@ -28,15 +29,38 @@ function isUnder(child: string, parent: string): boolean {
   return child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
 }
 
-/** All paths a remote action may target. Test seam; production reads config. */
+/** All paths a remote action may target. Test seam; production reads config.
+ *
+ *  PR #24 follow-up (#5): roots and targets are compared on `realpathSync`
+ *  (symlinks resolved) — a cwd that walks through a symlink pointing OUTSIDE
+ *  a root no longer passes, which was a policy bypass (`resolve` only
+ *  normalizes syntax, it does not follow links). Roots that don't exist (or
+ *  can't be resolved) fall back to their syntactic form — harmless: nothing
+ *  can exist beneath them until they do. */
 export function allowedRemoteCwds(): string[] {
-  const roots = projectsRoots().map((root) => resolve(root));
-  const worktrees = listWorktrees().map((entry) => resolve(entry.path));
-  return [...roots, ...worktrees];
+  const realRoots = projectsRoots().map((root) => {
+    const abs = resolve(root);
+    try { return realpathSync(abs); } catch { return abs; }
+  });
+  const realWorktrees = listWorktrees()
+    .map((entry) => resolve(entry.path))
+    .map((abs) => {
+      try { return realpathSync(abs); } catch { return abs; }
+    });
+  return [...realRoots, ...realWorktrees];
 }
 
 /** Policy verdict for a remote-supplied cwd. */
 export function remoteCwdAllowed(cwd: string): boolean {
-  const target = resolve(cwd);
+  let target: string;
+  try {
+    // The target must EXIST for realpath to resolve — a remote action will
+    // spawn inside it, so a dangling path is rejected here rather than
+    // later. (Callers already existence-check first; this is defense in
+    // depth.)
+    target = realpathSync(resolve(cwd));
+  } catch {
+    return false;
+  }
   return allowedRemoteCwds().some((allowed) => isUnder(target, allowed));
 }

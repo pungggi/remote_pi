@@ -483,8 +483,11 @@ Detalhes em `plan/04-pairing.md`.
 
 - **Relay vê plaintext do conteúdo atual**. TLS protege o trânsito, mas App↔Pi usa `ct` como Base64 de JSON em claro (pode ser encaminhado sem parse, não é ciphertext), e conteúdo Pi↔Pi, controle/routing/erros e membership assinada são parseados em memória pelo relay conforme necessário. Operador vê quem manda para quem e o conteúdo. Mitigação: **self-hosting** do relay (open source)
 - **Não há E2E** entre app e pi-extension nem entre Pis cross-PC. **Não afirmamos E2E em copy nenhuma do produto**
-- **Sem confidencialidade E2E, mas COM autenticidade de remetente end-to-end (security fix 2026-08)**: o campo opcional `sig` do envelope externo App↔Pi é Ed25519(`"piper/inner/v1
-" + ct`) com a MESMA chave do handshake WS do remetente; o destinatário verifica contra o `peer` que o relay afirmou e o relay repassa `sig` verbatim (não forja, não stripa). Relay comprometido ainda LÊ tudo, mas não forja um remetente pareado: após o primeiro `sig` válido o receptor ratchet (`signing: true` em `peers.json`/`PeerRecord`) passa a descartar frames sem assinatura desse peer. Transição: peers legados sem assinatura seguem aceitos até o app atualizado re-parear/assinar
+- **Sem confidencialidade E2E, mas COM autenticidade de remetente end-to-end (security fix 2026-08 + follow-up PR #24)**: o envelope externo App↔Pi carrega `sig`/`ts` opcionais. **v2** (corrente): `sig` = Ed25519(`"piper/inner/v2
+<dest-pubkey>
+<ts-ms>
+<ct>`) com a MESMA chave do handshake WS do remetente — vincula o DESTINATÁRIO (frame assinado pro Pi A não verifica no Pi B do mesmo Owner) e carrega janela de frescor de 10 min (anti-replay, reforçada por dedup de `id` interno por LRU no receptor). **v1** (app 1.3.0, transição): Ed25519(`"piper/inner/v1
+" + ct`), só vincula o remetente; aceito de peers ainda não ratchetados. O relay repassa `sig`/`ts` verbatim (não forja, não stripa — stripar ativa o drop de unsigned). Relay comprometido ainda LÊ tudo, mas não forja remetente nem redireciona comando entre Pis do mesmo Owner; replay morre na janela de `ts`/dedup
 - **LAN dial padrão é `ws://` plaintext (plan/115)**: na mesma WLAN um sniffer lê todo o tráfego. O app agora exibe banner persistente "Insecure connection" enquanto Online por transporte não-confidencial (fix 2026-08); `https://`/loopback não o disparam
 - **Headless Linux** (Docker, VPS sem D-Bus session): Pi-key cai pra arquivo `0600` em disco com warning loud. Atacante com acesso ao user pode ler. Recomenda-se GNOME Keyring / KWallet pra hardening real
 - **Backup encriptado completo** (Time Machine, iCloud Drive criptografado etc) pode carregar a Keychain. Atacante precisa do user passphrase do backup

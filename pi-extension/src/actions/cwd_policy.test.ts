@@ -5,7 +5,11 @@
  * mocked so the policy is exercised as a pure containment function.
  */
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { sep } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, sep } from "node:path";
+
+
 
 let roots: string[] = [];
 let worktrees: string[] = [];
@@ -55,10 +59,14 @@ describe("remoteCwdAllowed (security fix 2026-08)", () => {
 
   test("allows registered worktrees even outside the roots", () => {
     roots = [`${HOME}${sep}source`];
-    worktrees = [`${HOME}${sep}worktrees${sep}remote_pi_work`];
-    expect(remoteCwdAllowed(`${HOME}${sep}worktrees${sep}remote_pi_work`)).toBe(true);
+    // realpath semantics (PR #24 follow-up #5) require the target to exist —
+    // use real temp dirs outside any root.
+    const wt = mkdtempSync(join(tmpdir(), "wt-"));
+    worktrees = [wt];
+    expect(remoteCwdAllowed(wt)).toBe(true);
     // ...but not arbitrary siblings of a registered worktree.
-    expect(remoteCwdAllowed(`${HOME}${sep}worktrees${sep}other`)).toBe(false);
+    const stranger = mkdtempSync(join(tmpdir(), "other-"));
+    expect(remoteCwdAllowed(stranger)).toBe(false);
   });
 
   test("rejects everything when no roots are configured", () => {

@@ -20,6 +20,13 @@ pub type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 /// port and returns that port. Mesh storage is `:memory:` for these tests —
 /// use the helper in `tests/mesh_test.rs` when you need a persistent DB.
 pub async fn start_relay() -> u16 {
+    start_relay_with_state().await.0
+}
+
+/// Same as [start_relay] but also returns the live [AppState] — for tests
+/// that need to inspect/drive server-side managers directly (subscription
+/// re-validation sweep).
+pub async fn start_relay_with_state() -> (u16, relay::AppState) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let mesh = Arc::new(MeshStore::open_in_memory().unwrap());
@@ -42,7 +49,7 @@ pub async fn start_relay() -> u16 {
         port,
         heartbeat_interval: std::time::Duration::from_secs(60),
     };
-    let app = build_router(state);
+    let app = build_router(state.clone());
     tokio::spawn(async move {
         let _ = axum::serve(
             listener,
@@ -52,7 +59,7 @@ pub async fn start_relay() -> u16 {
     });
     // Give axum a moment to start accepting.
     tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
-    port
+    (port, state)
 }
 
 /// Connects using a caller-supplied key and room_id, completes the full auth handshake.

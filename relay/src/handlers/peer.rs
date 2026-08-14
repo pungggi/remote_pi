@@ -424,14 +424,15 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                 let dest_tail =
                                     dest_peer[dest_peer.len().saturating_sub(8)..].to_string();
                                 // Rewrite: recipient sees sender's peer_id + sender's room_id.
-                                // `sig` (inner sender signature, security fix 2026-08) is
-                                // forwarded verbatim — the relay cannot forge it and must
-                                // not strip it.
+                                // `sig` (inner sender signature, security fix 2026-08) and `ts`
+                                // (v2 freshness) are forwarded verbatim — the relay cannot
+                                // forge them and must not strip them.
                                 let rewritten = OuterEnvelope {
                                     peer: peer_id.clone(),
                                     room: room_id.clone(),
                                     ct: env.ct,
                                     sig: env.sig,
+                                    ts: env.ts,
                                 };
                                 let fwd_line = serde_json::to_string(&rewritten)
                                     .expect("OuterEnvelope serialisation is infallible");

@@ -52,7 +52,7 @@ import {
   conditionalRemovePeer,
   type PeerRecord,
 } from "./pairing/storage.js";
-import { signInnerCt, verifyInnerSig } from "./transport/inner_sig.js";
+import { signInnerCtV2, verifyInnerEnvelope } from "./transport/inner_sig.js";
 import { MeshClient } from "./mesh/client.js";
 import {
   canonicalizeEd25519PublicKey,
@@ -1570,7 +1570,19 @@ function _warmSigningRatchet(): void {
   void listPeers()
     .then((peers) => {
       for (const peer of peers) {
-        if (peer?.signing === true) _signingRatchet.set(peer.remote_epk, true);
+        if (peer?.signing !== true) continue;
+        // PR #24 follow-up (#3): key the ratchet by the CANONICAL spelling —
+        // peers.json preserves raw handles (possibly base64url) while the
+        // relay asserts standard base64. Raw-keyed entries would never match
+        // at verify time and the ratchet would silently vanish on restart.
+        try {
+          _signingRatchet.set(
+            canonicalizeEd25519PublicKey(peer.remote_epk, "stored Owner public key"),
+            true,
+          );
+        } catch {
+          // Unparseable handle — cannot match any relay peer id; skip.
+        }
       }
     })
     .catch(() => {
@@ -1584,10 +1596,17 @@ function _innerSigPolicy() {
   _warmSigningRatchet();
   return {
     keypair: kp,
+    ownPeerId: Buffer.from(kp.publicKey).toString("base64"),
+    now: () => Date.now(),
     requiresSignature: (peerId: string) => _signingRatchet.get(peerId) === true,
-    onSignatureVerified: (peerId: string) => {
-      if (_signingRatchet.get(peerId) === true) return;
+    onSignaturePresent: (peerId: string) => {
+      // Flip in-memory synchronously (review #4 — close the async gap before
+      // verification completes). Persisting waits for a VALID v2 signature:
+      // a present-but-garbage sig flips only the in-memory flag, which is
+      // equivalent to the relay stripping future sigs — no new power.
       _signingRatchet.set(peerId, true);
+    },
+    onSignatureVerified: (peerId: string) => {
       void markPeerSigning(peerId).catch(() => {
         // Best-effort persist — the in-memory flag already enforces for this
         // process; peers.json catches up on the next verified frame or restart.
@@ -1596,33 +1615,58 @@ function _innerSigPolicy() {
   };
 }
 
+/** Verdict for auto-listener paths (pair_request + reconnect). */
+type InboundOuterVerdict =
+  | { ok: true; version: 1 | 2 }
+  | { ok: false };
+
 /**
  * Verifies an inbound outer envelope for the paths that bypass a live
  * PlainPeerChannel (pair_request + reconnect, both in the auto-listener).
- *   sig present + valid    → true (and flips the ratchet)
- *   sig present + INVALID  → false (drop — tampering or corruption)
- *   sig absent             → true only when the peer hasn't ratcheted
+ *   sig present + valid v2 → ok (dest-bound, fresh; persists the ratchet)
+ *   sig present + valid v1 → ok (legacy transition — sender-bound only)
+ *   sig present + INVALID  → drop (tampering, cross-peer redirect, stale)
+ *   sig absent             → ok only when the peer hasn't ratcheted
  */
 function _verifyInboundOuter(
   peer: string,
   ct: string,
   sig: string | undefined,
-): boolean {
+  ts: unknown,
+): InboundOuterVerdict {
   const policy = _innerSigPolicy();
-  if (!policy) return true; // pre-start — legacy behavior
+  if (!policy) return { ok: true, version: 1 }; // pre-start — legacy behavior
   if (typeof sig === "string" && sig.length > 0) {
-    if (!verifyInnerSig(peer, ct, sig).ok) return false;
-    policy.onSignatureVerified(peer);
-    return true;
+    policy.onSignaturePresent(peer);
+    const verdict = verifyInnerEnvelope(
+      peer,
+      policy.ownPeerId,
+      ct,
+      sig,
+      ts,
+      policy.now(),
+    );
+    if (!verdict.ok) return { ok: false };
+    if (verdict.version === 2) policy.onSignatureVerified(peer);
+    return { ok: true, version: verdict.version };
   }
-  return !policy.requiresSignature(peer);
+  return policy.requiresSignature(peer) ? { ok: false } : { ok: true, version: 1 };
 }
 
 /** Signs a raw outer envelope body when the cached keypair is available. */
-function _signedOuterBody(peer: string, ct: string): Record<string, string> {
+function _signedOuterBody(
+  peer: string,
+  ct: string,
+): Record<string, string | number> {
   const kp = ext.cachedEd25519;
   if (!kp) return { peer, ct };
-  return { peer, ct, sig: signInnerCt(kp.secretKey, ct) };
+  const ts = Date.now();
+  return {
+    peer,
+    ct,
+    ts,
+    sig: signInnerCtV2(kp.secretKey, peer, ts, ct),
+  };
 }
 
 function _installAutoListener(relay: RelayClient): () => void {
@@ -1633,7 +1677,7 @@ function _installAutoListener(relay: RelayClient): () => void {
     ext.relay === relay &&
     ext.relayLifecycleGeneration === listenerGeneration;
   const onMsg = async (line: string) => {
-    let outer: { peer?: string; ct?: string; sig?: string };
+    let outer: { peer?: string; ct?: string; sig?: string; ts?: unknown };
     try { outer = JSON.parse(line) as { peer?: string; ct?: string; sig?: string }; }
     catch { return; }
 
@@ -1660,10 +1704,17 @@ function _installAutoListener(relay: RelayClient): () => void {
 
     if (inner.type === "pair_request") {
       // Security fix 2026-08 — a pair_request with a BAD signature is dropped
-      // outright; a valid one ratchets the peer to `signing` (below); an
-      // unsigned one is the legacy path (token still gates pairing).
-      if (!_verifyInboundOuter(appPeerId, outer.ct, outer.sig)) return;
-      await _handlePairRequest(relay, appPeerId, inner, hasListenerAuthority, outer.sig);
+      // outright; a valid v2 one ratchets the peer to `signing` (below); a
+      // v1/unsigned one is the legacy path (token still gates pairing).
+      const verdict = _verifyInboundOuter(appPeerId, outer.ct, outer.sig, outer.ts);
+      if (!verdict.ok) return;
+      await _handlePairRequest(
+        relay,
+        appPeerId,
+        inner,
+        hasListenerAuthority,
+        verdict.version === 2,
+      );
       return;
     }
 
@@ -1675,7 +1726,7 @@ function _installAutoListener(relay: RelayClient): () => void {
     if (known) {
       // Security fix 2026-08 — same gate as the live channel applies (invalid
       // sig drops; unsigned drops once the peer has ratcheted).
-      if (!_verifyInboundOuter(appPeerId, outer.ct, outer.sig)) return;
+      if (!_verifyInboundOuter(appPeerId, outer.ct, outer.sig, outer.ts).ok) return;
       const channel = _attachOwner(relay, appPeerId, known.name);
       // The PlainPeerChannel listener for this owner won't have seen the
       // line that triggered the attach (we already consumed it); route
@@ -1731,7 +1782,7 @@ async function _handlePairRequest(
   appPeerId: string,
   inner: Extract<ClientMessage, { type: "pair_request" }>,
   hasListenerAuthority: () => boolean,
-  pairSig?: string,
+  pairSignedV2?: boolean,
 ): Promise<void> {
   const sendInner = (msg: ServerMessage) => {
     const ct = Buffer.from(JSON.stringify(msg)).toString("base64");
@@ -1767,10 +1818,10 @@ async function _handlePairRequest(
       name: inner.device_name,
       remote_epk: appPeerId,
       paired_at: pairedAt,
-      // Security fix 2026-08 — the pair frame arrived signed (verified by the
-      // auto-listener) → this peer demonstrates signing support; enforce
-      // signatures from now on.
-      ...(pairSig ? { signing: true } : {}),
+      // Security fix 2026-08 — the pair frame arrived with a VALID v2
+      // signature (dest-bound, fresh — verified by the auto-listener) → this
+      // peer speaks the new scheme; enforce signatures from now on.
+      ...(pairSignedV2 ? { signing: true } : {}),
     });
     if (!hasListenerAuthority()) return;
     _refreshPairingsCache();
