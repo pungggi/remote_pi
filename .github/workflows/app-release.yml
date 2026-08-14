@@ -80,6 +80,15 @@ jobs:
           storeFile=signing/remotepi-release.jks
           EOF
 
+      - name: Restaura keystore de debug (assinatura estável)
+        run: |
+          # Mesma chave do canal rolling (app-debug.yml) — o RemotePi-debug.apk
+          # de cada release compartilha assinatura com os builds rolling, para
+          # atualizar in-place sem desinstalar.
+          mkdir -p "$HOME/.android"
+          base64 -d ../.github/piper-debug-keystore.b64 > "$HOME/.android/debug.keystore"
+          echo "ANDROID_USER_HOME=$HOME/.android" >> "$GITHUB_ENV"
+
       - name: Build APK release + debug
         run: |
           flutter pub get

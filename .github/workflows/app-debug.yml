@@ -49,10 +49,26 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Restaura keystore de debug (assinatura estável)
+        run: |
+          # Sem isto, cada runner gera um debug.keystore EFÊMERO — cada APK
+          # sai com assinatura diferente e o Android recusa atualizar por
+          # cima (INSTALL_FAILED_UPDATE_INCOMPATIBLE). A chave dedicada é
+          # pública por natureza (credenciais padrão android/android).
+          mkdir -p "$HOME/.android"
+          base64 -d ../.github/piper-debug-keystore.b64 > "$HOME/.android/debug.keystore"
+          echo "ANDROID_USER_HOME=$HOME/.android" >> "$GITHUB_ENV"
+
       - name: Build APK debug
         run: |
           flutter pub get
           flutter build apk --debug
+
+      - name: Assinatura do debug APK (digest p/ conferência)
+        run: |
+          BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          "$ANDROID_HOME/build-tools/$BT/apksigner" verify --print-certs \
+            build/app/outputs/flutter-apk/app-debug.apk | grep -m1 "SHA-256 digest"
 
       - name: Publica na release fixa `debug`
         run: |
