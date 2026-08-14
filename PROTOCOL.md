@@ -483,7 +483,7 @@ Detalhes em `plan/04-pairing.md`.
 
 - **Relay vê plaintext do conteúdo atual**. TLS protege o trânsito, mas App↔Pi usa `ct` como Base64 de JSON em claro (pode ser encaminhado sem parse, não é ciphertext), e conteúdo Pi↔Pi, controle/routing/erros e membership assinada são parseados em memória pelo relay conforme necessário. Operador vê quem manda para quem e o conteúdo. Mitigação: **self-hosting** do relay (open source)
 - **Não há E2E** entre app e pi-extension nem entre Pis cross-PC. **Não afirmamos E2E em copy nenhuma do produto**
-- **Sem confidencialidade E2E, mas COM autenticidade de remetente end-to-end (security fix 2026-08 + follow-up PR #24)**: o envelope externo App↔Pi carrega `sig`/`ts` opcionais. **v2** (corrente): `sig` = Ed25519(`"piper/inner/v2
+- **Sem confidencialidade E2E, mas COM autenticidade de remetente end-to-end (security fix 2026-08 + follow-up PR #24)**: o envelope externo App↔Pi carrega `sig`/`sig2`/`ts` opcionais (dual-sign, follow-up PR #25: `sig` permanece v1 para destinatários legados; `sig2` é o v2 preferido; após um `sig2` verificado, frames v1-only desse peer são tratados como downgrade-strip e descartados). **v2** (corrente): `sig` = Ed25519(`"piper/inner/v2
 <dest-pubkey>
 <ts-ms>
 <ct>`) com a MESMA chave do handshake WS do remetente — vincula o DESTINATÁRIO (frame assinado pro Pi A não verifica no Pi B do mesmo Owner) e carrega janela de frescor de 10 min (anti-replay, reforçada por dedup de `id` interno por LRU no receptor). **v1** (app 1.3.0, transição): Ed25519(`"piper/inner/v1

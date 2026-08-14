@@ -113,6 +113,26 @@ Six findings from the Augment code review on the merged PR — all addressed on
 Wire note: the outer envelope gained an optional `ts` (u64, forwarded
 verbatim like `sig`). Deploy order unchanged: relay → extension → app.
 
+### PR #25 review follow-up (second round — dual-sign)
+
+1. **Mixed-rollout break (high)** — v2-only signing broke BOTH directions
+   (old app drops new-Pi frames; old Pi drops new-app frames). Now every
+   sender dual-signs: `sig` stays v1 (legacy recipients verify it), `sig2`
+   (+`ts`) carries the v2 binding. Recipients verify `sig2` strictly when
+   present (no v1 fallback — a legit sender signs both); a `sig`-only frame
+   from a peer that already demonstrated v2 is a downgrade strip → drop.
+2. **Restart warm race (high)** — the persisted ratchet loads asynchronously;
+   unsigned-frame decisions now await the warm promise in the auto-listener
+   (`_awaitRatchetWarm`), closing the post-restart strip/forge window.
+3. **Reconnect replay bypass (high)** — the auto-listener reconnect path
+   routed `inner` directly, skipping dedup. It now routes through
+   `channel.deliverVerified(ct)` and the seen-id LRU moved to the POLICY
+   (survives channel re-creation); the app's dedup is static for the same
+   reason. Test hook `_resetInnerSigStateForTest` keeps suites isolated.
+
+Wire: outer envelope gained optional `sig2`; relay forwards it verbatim.
+Deploy order unchanged: relay → extension → app.
+
 ## Rollout notes
 
 Deploy order: **relay first** (forwarding `sig` is additive), then extension

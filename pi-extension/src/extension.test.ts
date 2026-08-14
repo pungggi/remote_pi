@@ -220,6 +220,7 @@ vi.mock("./mesh/self_revoke.js", async (importOriginal) => {
 
 // Import AFTER mocks
 const indexModule = await import("./index.js");
+const { _resetInnerSigStateForTest } = indexModule;
 const {
   default: extension,
   _getState,
@@ -420,6 +421,7 @@ describe("extension default export", () => {
 
 describe("state machine + pair_request flow", () => {
   beforeEach(async () => {
+    _resetInnerSigStateForTest();
     vi.clearAllMocks();
     _knownPeers.length = 0;
     _addedPeers.length = 0;
@@ -767,6 +769,7 @@ describe("contract fixtures: pair_*", () => {
 
 describe("/remote-pi revoke", () => {
   beforeEach(async () => {
+    _resetInnerSigStateForTest();
     vi.clearAllMocks();
     _knownPeers.length = 0;
     _addedPeers.length = 0;
@@ -1213,6 +1216,7 @@ async function _pairForTestWithCtx(
 
 describe("multi-channel broadcast (W2D)", () => {
   beforeEach(async () => {
+    _resetInnerSigStateForTest();
     vi.clearAllMocks();
     _knownPeers.length = 0;
     _addedPeers.length = 0;

@@ -150,10 +150,46 @@ export function verifyInnerSig(
 }
 
 /**
+ * Full inbound policy for one outer envelope (dual-sig scheme, PR #25
+ * review follow-up #1). Wire:
+ *   `sig`  — v1 signature (legacy, sender-bound). ALWAYS present from new
+ *            senders so old recipients (app 1.3.0 / pre-#25 Pis) verify fine.
+ *   `sig2` — v2 signature (dest-bound + ts-windowed), with `ts` alongside.
+ *   A recipient that sees `sig2` verifies it STRICTLY (no v1 fallback — a
+ *   legit sender always produces a valid pair); `sig`-only frames are the
+ *   legacy/transition path. Senders drop `sig2` never; a relay stripping
+ *   `sig2` is caught by the peer-v2 ratchet (v1-only from a v2 peer drops).
+ */
+export type VerifyDualResult =
+  | { ok: true; version: 1 | 2 }
+  | { ok: false; reason: "bad_pubkey" | "bad_sig_b64" | "mismatch" | "stale" | "bad_ts" | "no_signature" };
+
+export function verifyInnerDual(
+  senderPkB64: string,
+  ownPkB64: string,
+  ct: string,
+  sig1Raw: unknown,
+  sig2Raw: unknown,
+  tsRaw: unknown,
+  nowMs: number,
+): VerifyDualResult {
+  if (typeof sig2Raw === "string" && sig2Raw.length > 0) {
+    const ts = typeof tsRaw === "number" && Number.isFinite(tsRaw) ? tsRaw : NaN;
+    return verifyInnerSigV2(senderPkB64, ownPkB64, ts, ct, sig2Raw, nowMs);
+  }
+  if (typeof sig1Raw === "string" && sig1Raw.length > 0) {
+    return verifyInnerSig(senderPkB64, ct, sig1Raw);
+  }
+  return { ok: false, reason: "no_signature" };
+}
+
+/**
  * Full inbound policy for one outer envelope. Tries v2 first (requires the
  * frame's `ts` and the recipient's own pubkey), falls back to v1. Callers use
  * the returned version to decide ratcheting (v2-only) and replay handling
  * (v2 already window-checked here).
+ * @deprecated use [verifyInnerDual] — single-sig dispatch cannot express the
+ * dual-sign wire format.
  */
 export function verifyInnerEnvelope(
   senderPkB64: string,

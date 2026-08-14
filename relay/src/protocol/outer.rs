@@ -24,7 +24,12 @@ pub struct OuterEnvelope {
     /// can. Absent in legacy frames → forwarded as absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sig: Option<String>,
-    /// Sender epoch-ms timestamp covered by `sig` (v2 scheme — replay
+    /// v2 signature (PR #25 review #1): dest-bound + ts-windowed, carried
+    /// alongside the legacy `sig` (dual-sign keeps old recipients verifying).
+    /// Forwarded verbatim like `sig`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig2: Option<String>,
+    /// Sender epoch-ms timestamp covered by `sig2` (v2 scheme — replay
     /// window + recipient binding). Forwarded verbatim like `sig`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ts: Option<u64>,
@@ -117,6 +122,22 @@ mod tests {
         assert!(reserialized.contains("\"sig\":\"U0lH\""));
         // And serializing a None envelope omits the field (legacy wire shape).
         assert!(!serde_json::to_string(&legacy).unwrap().contains("sig"));
+    }
+
+    #[test]
+    fn dual_sig_fields_round_trip() {
+        // v2 wire: v1 sig + v2 sig2 + ts coexist; all forwarded verbatim.
+        let line = r#"{"peer":"abc","ct":"AAA=","sig":"U0lH","sig2":"U0lHMg==","ts":1739577600000}"#;
+        let env = parse_line(line).unwrap();
+        assert_eq!(env.sig.as_deref(), Some("U0lH"));
+        assert_eq!(env.sig2.as_deref(), Some("U0lHMg=="));
+        assert_eq!(env.ts, Some(1_739_577_600_000));
+        let out = serde_json::to_string(&env).unwrap();
+        assert!(out.contains("\"sig2\":\"U0lHMg==\""));
+        // Legacy + v1-only frames omit sig2 entirely.
+        let v1 = parse_line(r#"{"peer":"abc","ct":"AAA=","sig":"U0lH"}"#).unwrap();
+        assert!(v1.sig2.is_none());
+        assert!(!serde_json::to_string(&v1).unwrap().contains("sig2"));
     }
 
     #[test]

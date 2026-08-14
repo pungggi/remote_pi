@@ -52,7 +52,7 @@ import {
   conditionalRemovePeer,
   type PeerRecord,
 } from "./pairing/storage.js";
-import { signInnerCtV2, verifyInnerEnvelope } from "./transport/inner_sig.js";
+import { signInnerCt, signInnerCtV2, verifyInnerDual } from "./transport/inner_sig.js";
 import { MeshClient } from "./mesh/client.js";
 import {
   canonicalizeEd25519PublicKey,
@@ -1564,11 +1564,17 @@ function _attachOwner(
 const _signingRatchet = new Map<string, boolean>();
 let _signingRatchetWarm = false;
 
+let _ratchetWarmPromise: Promise<void> | null = null;
+
 function _warmSigningRatchet(): void {
-  if (_signingRatchetWarm) return;
+  if (_signingRatchetWarm || _ratchetWarmPromise) return;
   _signingRatchetWarm = true;
-  void listPeers()
-    .then((peers) => {
+  // PR #25 review #2: the ratchet must be LOADed before any unsigned-frame
+  // decision is made — an async gap here reopens the strip/forge window for
+  // persisted peers right after restart. Auto-listener entry awaits this.
+  _ratchetWarmPromise = (async () => {
+    try {
+      const peers = await listPeers();
       for (const peer of peers) {
         if (peer?.signing !== true) continue;
         // PR #24 follow-up (#3): key the ratchet by the CANONICAL spelling —
@@ -1584,10 +1590,58 @@ function _warmSigningRatchet(): void {
           // Unparseable handle — cannot match any relay peer id; skip.
         }
       }
-    })
-    .catch(() => {
+    } catch {
       _signingRatchetWarm = false; // retry on next policy creation
-    });
+      _ratchetWarmPromise = null;
+    }
+  })();
+}
+
+/** Awaits the ratchet warm-up (instant when already loaded). Every inbound
+ *  unsigned-frame decision waits here — closes the restart race (#25 #2). */
+function _awaitRatchetWarm(): Promise<void> {
+  _warmSigningRatchet();
+  return _ratchetWarmPromise ?? Promise.resolve();
+}
+
+/** Peers that demonstrated v2 (verified sig2) — v1-only from them drops. */
+const _peerV2 = new Map<string, boolean>();
+
+/** Policy-level replay dedup, per peer, bounded LRU (survives reconnects —
+ *  PR #25 review #3). */
+const _seenIdsByPeer = new Map<string, string[]>();
+const _seenIdsByPeerSet = new Map<string, Set<string>>();
+const SEEN_IDS_PER_PEER = 2048;
+
+function _seenIdFor(peerId: string, id: string): boolean {
+  let order = _seenIdsByPeer.get(peerId);
+  let set = _seenIdsByPeerSet.get(peerId);
+  if (!order || !set) {
+    order = [];
+    set = new Set();
+    _seenIdsByPeer.set(peerId, order);
+    _seenIdsByPeerSet.set(peerId, set);
+  }
+  if (set.has(id)) return true;
+  if (order.length >= SEEN_IDS_PER_PEER) {
+    const oldest = order.shift();
+    if (oldest !== undefined) set.delete(oldest);
+  }
+  order.push(id);
+  set.add(id);
+  return false;
+}
+
+/** Test-only: clears the module-level signature-ratchet/v2/dedup state so
+ *  suite tests don't share replay-dedup entries (each test re-pairs the same
+ *  peer id with the same message ids). */
+export function _resetInnerSigStateForTest(): void {
+  _signingRatchet.clear();
+  _signingRatchetWarm = false;
+  _ratchetWarmPromise = null;
+  _peerV2.clear();
+  _seenIdsByPeer.clear();
+  _seenIdsByPeerSet.clear();
 }
 
 function _innerSigPolicy() {
@@ -1599,12 +1653,17 @@ function _innerSigPolicy() {
     ownPeerId: Buffer.from(kp.publicKey).toString("base64"),
     now: () => Date.now(),
     requiresSignature: (peerId: string) => _signingRatchet.get(peerId) === true,
+    peerV2: (peerId: string) => _peerV2.get(peerId) === true,
+    seenId: (peerId: string, id: string) => _seenIdFor(peerId, id),
     onSignaturePresent: (peerId: string) => {
       // Flip in-memory synchronously (review #4 — close the async gap before
       // verification completes). Persisting waits for a VALID v2 signature:
       // a present-but-garbage sig flips only the in-memory flag, which is
       // equivalent to the relay stripping future sigs — no new power.
       _signingRatchet.set(peerId, true);
+    },
+    onV2Verified: (peerId: string) => {
+      _peerV2.set(peerId, true);
     },
     onSignatureVerified: (peerId: string) => {
       void markPeerSigning(peerId).catch(() => {
@@ -1623,32 +1682,34 @@ type InboundOuterVerdict =
 /**
  * Verifies an inbound outer envelope for the paths that bypass a live
  * PlainPeerChannel (pair_request + reconnect, both in the auto-listener).
- *   sig present + valid v2 → ok (dest-bound, fresh; persists the ratchet)
- *   sig present + valid v1 → ok (legacy transition — sender-bound only)
- *   sig present + INVALID  → drop (tampering, cross-peer redirect, stale)
- *   sig absent             → ok only when the peer hasn't ratcheted
+ * Dual-sig scheme: `sig2` strict v2 (dest + ts), `sig`-only = legacy v1
+ * (dropped when the peer is v2-ratcheted — downgrade strip). Callers MUST
+ * have awaited [_awaitRatchetWarm] before calling this (restart race #2).
  */
 function _verifyInboundOuter(
   peer: string,
   ct: string,
   sig: string | undefined,
+  sig2: string | undefined,
   ts: unknown,
 ): InboundOuterVerdict {
   const policy = _innerSigPolicy();
   if (!policy) return { ok: true, version: 1 }; // pre-start — legacy behavior
-  if (typeof sig === "string" && sig.length > 0) {
-    policy.onSignaturePresent(peer);
-    const verdict = verifyInnerEnvelope(
-      peer,
-      policy.ownPeerId,
-      ct,
-      sig,
-      ts,
-      policy.now(),
-    );
+  const hasSig2 = typeof sig2 === "string" && sig2.length > 0;
+  const hasSig = typeof sig === "string" && sig.length > 0;
+  if (hasSig2 || hasSig) policy.onSignaturePresent(peer);
+  if (hasSig2) {
+    const verdict = verifyInnerDual(peer, policy.ownPeerId, ct, sig, sig2, ts, policy.now());
     if (!verdict.ok) return { ok: false };
-    if (verdict.version === 2) policy.onSignatureVerified(peer);
-    return { ok: true, version: verdict.version };
+    policy.onV2Verified(peer);
+    policy.onSignatureVerified(peer);
+    return { ok: true, version: 2 };
+  }
+  if (hasSig) {
+    if (policy.peerV2(peer)) return { ok: false }; // downgrade strip
+    const verdict = verifyInnerDual(peer, policy.ownPeerId, ct, sig, undefined, undefined, policy.now());
+    if (!verdict.ok) return { ok: false };
+    return { ok: true, version: 1 };
   }
   return policy.requiresSignature(peer) ? { ok: false } : { ok: true, version: 1 };
 }
@@ -1660,12 +1721,15 @@ function _signedOuterBody(
 ): Record<string, string | number> {
   const kp = ext.cachedEd25519;
   if (!kp) return { peer, ct };
+  // Dual-sign (PR #25 review #1): v1 `sig` keeps legacy recipients verifying;
+  // v2 `sig2`+`ts` carries the recipient binding + replay window.
   const ts = Date.now();
   return {
     peer,
     ct,
     ts,
-    sig: signInnerCtV2(kp.secretKey, peer, ts, ct),
+    sig: signInnerCt(kp.secretKey, ct),
+    sig2: signInnerCtV2(kp.secretKey, peer, ts, ct),
   };
 }
 
@@ -1677,12 +1741,16 @@ function _installAutoListener(relay: RelayClient): () => void {
     ext.relay === relay &&
     ext.relayLifecycleGeneration === listenerGeneration;
   const onMsg = async (line: string) => {
-    let outer: { peer?: string; ct?: string; sig?: string; ts?: unknown };
+    let outer: { peer?: string; ct?: string; sig?: string; sig2?: string; ts?: unknown };
     try { outer = JSON.parse(line) as { peer?: string; ct?: string; sig?: string }; }
     catch { return; }
 
     if (!outer.peer || !outer.ct) return;
 
+    // PR #25 review #2 — block every unsigned-frame decision until the
+    // persisted ratchet has loaded; right after restart this closes the
+    // window where a forged unsigned frame would pass `requiresSignature`.
+    await _awaitRatchetWarm();
     if (!hasListenerAuthority()) return;
     // Already-attached owners: their PlainPeerChannel handles routing.
     if (ext.activePeers.has(outer.peer)) return;
@@ -1706,7 +1774,7 @@ function _installAutoListener(relay: RelayClient): () => void {
       // Security fix 2026-08 — a pair_request with a BAD signature is dropped
       // outright; a valid v2 one ratchets the peer to `signing` (below); a
       // v1/unsigned one is the legacy path (token still gates pairing).
-      const verdict = _verifyInboundOuter(appPeerId, outer.ct, outer.sig, outer.ts);
+      const verdict = _verifyInboundOuter(appPeerId, outer.ct, outer.sig, outer.sig2, outer.ts);
       if (!verdict.ok) return;
       await _handlePairRequest(
         relay,
@@ -1726,13 +1794,13 @@ function _installAutoListener(relay: RelayClient): () => void {
     if (known) {
       // Security fix 2026-08 — same gate as the live channel applies (invalid
       // sig drops; unsigned drops once the peer has ratcheted).
-      if (!_verifyInboundOuter(appPeerId, outer.ct, outer.sig, outer.ts).ok) return;
+      if (!_verifyInboundOuter(appPeerId, outer.ct, outer.sig, outer.sig2, outer.ts).ok) return;
       const channel = _attachOwner(relay, appPeerId, known.name);
-      // The PlainPeerChannel listener for this owner won't have seen the
-      // line that triggered the attach (we already consumed it); route
-      // it explicitly via the new channel so the sender gets a reply.
-      // Use _liveCtx (session_start-fresh) — not bare ext.lastCtx (#55).
-      _routeClientMessageFrom(channel, inner, (_liveCtx() as typeof _noopCtx) ?? _noopCtx);
+      // PR #25 review #3 — route the triggering ct through the channel's
+      // normal pipeline (parse → POLICY dedup → dispatch) instead of
+      // bypassing _deliver: a reconnect-time replay of a captured frame hits
+      // the same seen-id LRU and is dropped.
+      channel.deliverVerified(outer.ct);
       return;
     }
 

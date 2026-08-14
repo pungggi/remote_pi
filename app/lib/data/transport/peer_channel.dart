@@ -7,6 +7,7 @@
 //   serverMessages stream ← transport.receive() → JSON → ServerMessage
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -108,21 +109,23 @@ class PlainPeerChannel implements IChannel, IControlLink, ITransportSecurityInfo
     }
   }
 
-  /// Replay defense (PR #24 follow-up #1): bounded LRU of delivered inner
-  /// message ids. A replayed frame — even one inside the v2 freshness
-  /// window — carries an already-seen id and is dropped. Ids are
-  /// client-generated UUIDs, never legitimately reused. Map preserves
-  /// insertion order; evict oldest past the cap.
-  static const int _seenIdsCap = 2048;
-  final _seenIds = <String>{};
+  /// Replay defense (PR #24/#25 reviews): ids already delivered are replayed
+  /// frames — drop. STATIC so the cache survives channel re-creation on
+  /// reconnect (review #3/#25 — a fresh channel must not forget replayed
+  /// ids). Bounded FIFO; ids are UUIDs, never legitimately reused.
+  static const int _seenIdsCap = 4096;
+  static final Queue<String> _seenIds = Queue<String>();
+  static final Set<String> _seenIdsSet = <String>{};
 
   bool _seenBefore(dynamic id) {
     if (id is! String || id.isEmpty) return false;
-    if (_seenIds.contains(id)) return true;
+    if (_seenIdsSet.contains(id)) return true;
     if (_seenIds.length >= _seenIdsCap) {
-      _seenIds.remove(_seenIds.first);
+      final oldest = _seenIds.removeFirst();
+      _seenIdsSet.remove(oldest);
     }
     _seenIds.add(id);
+    _seenIdsSet.add(id);
     return false;
   }
 
