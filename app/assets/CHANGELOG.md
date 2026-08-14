@@ -11,6 +11,25 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-08-14
+
+### Security
+
+- **Hardened message signatures (plan 130 follow-up)** — signatures now
+  also bind the recipient Pi (a relay can no longer redirect a signed
+  command to another of your machines) and carry a timestamp so captured
+  messages can't be replayed. Older apps and Pis keep working during the
+  upgrade; a relay attempting to strip or downgrade signatures is detected
+  and the frames are rejected.
+- **Replay protection survives reconnects** — duplicate message IDs are
+  remembered across connection drops on both sides.
+- **Subscription re-validation on the relay** — revoked mesh members stop
+  receiving presence/room updates within ~2 minutes instead of keeping
+  them indefinitely.
+- **Symlink-proof remote working-directory policy** — remote terminal and
+  session starts can no longer escape the configured project roots via
+  symlinked paths.
+
 ## [1.3.0] — 2026-08-14
 
 ### Security
