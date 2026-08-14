@@ -39,6 +39,13 @@ const MAX_CACHE_TTL: Duration = Duration::from_secs(60);
 const NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(1);
 const MAX_CACHE_ENTRIES: usize = 1024;
 
+/// Hard cap on the serialized `envelope` embedded in a `pi_envelope` frame
+/// (security fix 2026-08). Outer WS messages are already capped at 5 MiB by
+/// the WS upgrade config, but that admits broker envelopes far larger than
+/// any legitimate Pi↔Pi frame — this brings the control path in line with
+/// the 4 MiB `ct` ceiling the outer-envelope path enforces.
+pub const MAX_PI_ENVELOPE_BYTES: usize = 4 * 1024 * 1024;
+
 /// In-memory cache that maps `Pi-pubkey → authorization result`. Positive
 /// entries retain one shared union of direct mesh siblings; negative entries
 /// briefly coalesce repeated misses for senders absent from every Owner blob.
@@ -260,6 +267,7 @@ enum TransportErrorReason {
     Offline,
     NotAuthorized,
     BadEnvelope,
+    TooLarge,
 }
 
 impl TransportErrorReason {
@@ -268,6 +276,7 @@ impl TransportErrorReason {
             Self::Offline => "offline",
             Self::NotAuthorized => "not_authorized",
             Self::BadEnvelope => "bad_envelope",
+            Self::TooLarge => "too_large",
         }
     }
 }
@@ -293,6 +302,25 @@ pub async fn handle_pi_envelope(
             ));
         }
     };
+
+    // Size cap (security fix 2026-08): the embedded envelope used to bypass
+    // the 4 MiB `ct` ceiling that outer envelopes enforce. Serialize once to
+    // measure; the input is already bounded by the WS message cap.
+    match serde_json::to_string(envelope) {
+        Ok(serialized) if serialized.len() > MAX_PI_ENVELOPE_BYTES => {
+            return PiForwardResult::TransportError(make_transport_error(
+                Some(envelope),
+                TransportErrorReason::TooLarge,
+            ));
+        }
+        Err(_) => {
+            return PiForwardResult::TransportError(make_transport_error(
+                Some(envelope),
+                TransportErrorReason::BadEnvelope,
+            ));
+        }
+        Ok(_) => {}
+    }
 
     let sender = match canonical_ed25519_public_key(sender_peer_id) {
         Ok(value) => value,
@@ -717,6 +745,33 @@ mod tests {
                 "id": "30000000-0000-4000-8000-000000000003",
                 "re": null,
                 "body": {},
+            },
+        });
+        match handle_pi_envelope(&pi_key(0x0a), &frame, &registry, store, cache).await {
+            PiForwardResult::TransportError(_) => {}
+            PiForwardResult::Forwarded => panic!("must be transport_error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_envelope_is_rejected_before_forwarding() {
+        let registry = Arc::new(PeerRegistry::new(
+            Arc::new(PresenceManager::new()),
+            Arc::new(RoomManager::new()),
+            Arc::new(crate::metrics::FirehoseMetrics::new()),
+        ));
+        let store = Arc::new(MeshStore::open_in_memory().unwrap());
+        let cache = Arc::new(MeshAuthCache::new());
+        let big_body = "x".repeat(MAX_PI_ENVELOPE_BYTES + 1024);
+        let frame = serde_json::json!({
+            "type": "pi_envelope",
+            "to_pc": pi_key(0x0b),
+            "envelope": {
+                "from": "x",
+                "to": "y",
+                "id": "30000000-0000-4000-8000-000000000004",
+                "re": null,
+                "body": { "blob": big_body },
             },
         });
         match handle_pi_envelope(&pi_key(0x0a), &frame, &registry, store, cache).await {

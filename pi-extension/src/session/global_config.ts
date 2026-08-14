@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ipcAddress, usesNamedPipe } from "./ipc.js";
@@ -16,10 +16,29 @@ const SKILLS_DIR = join(HOME_PI_PIPER, "skills");
  */
 export const LOCAL_SESSION_NAME = "local";
 
-/** Ensures the new subdirs exist inside the existing ~/.pi/piper/. */
+/** Ensures the new subdirs exist inside the existing ~/.pi/piper/.
+ *
+ *  Security fix 2026-08: everything under `~/.pi/piper` is created 0700 and
+ *  re-chmodded best-effort even when it pre-existed — the broker + supervisor
+ *  sockets live under `sessions/` and any local user able to traverse the dir
+ *  can otherwise connect and inject envelopes into agent sessions. `mkdir`
+ *  `mode` only applies to dirs it CREATES and is subject to umask, so the
+ *  explicit chmod is what actually guarantees the mode. POSIX only — on
+ *  Windows these calls are harmless no-ops for the permission bits and the
+ *  named-pipe ACL (libuv default: current user + administrators + SYSTEM)
+ *  governs access instead.
+ */
 export function ensureGlobalDirs(): void {
-  mkdirSync(SESSIONS_DIR, { recursive: true });
-  mkdirSync(SKILLS_DIR, { recursive: true });
+  for (const dir of [HOME_PI_PIPER, SESSIONS_DIR, SKILLS_DIR]) {
+    try {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      // Best-effort tighten when the dir pre-existed with looser perms.
+      try { chmodSync(dir, 0o700); } catch { /* Windows / exotic FS — ignore */ }
+    } catch {
+      // Pre-existing path with a FILE at it, etc. — leave to the caller's
+      // own failure when it touches the dir.
+    }
+  }
 }
 
 /**

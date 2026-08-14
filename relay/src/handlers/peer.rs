@@ -13,11 +13,19 @@ use tracing::{debug, info, warn};
 
 use crate::AppState;
 use crate::auth::challenge::{
-    HELLO_TIMEOUT_MS, challenge_line, gen_nonce, parse_hello, verify_auth,
+    AUTH_TIMEOUT_MS, HELLO_TIMEOUT_MS, challenge_line, gen_nonce, parse_hello, verify_auth,
 };
 use crate::lan::lan_candidate_urls;
 use crate::protocol::outer::{OuterEnvelope, parse_line};
 use crate::rooms::{RoomMeta, RoomMetaPatch};
+
+/// Hard ceiling on a single inbound WS message (text or binary). The outer
+/// envelope path already caps `ct` at ~4 MiB (`parse_line`), but control
+/// frames — notably `pi_envelope`, which embeds a full broker envelope —
+/// historically bypassed that check and only the tungstenite default
+/// (~64 MiB) applied. 5 MiB covers a max-size `ct` + wrapper with margin
+/// (security fix 2026-08).
+pub const MAX_WS_MESSAGE_BYTES: usize = 5 * 1024 * 1024;
 
 /// Axum route handler: validates the WebSocket upgrade and hands the upgraded
 /// socket to `handle_peer`, which owns the connection for its lifetime.
@@ -26,7 +34,9 @@ pub async fn ws_handler(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
 ) -> Response {
-    ws.on_upgrade(move |socket| handle_peer(socket, addr, state))
+    ws.max_message_size(MAX_WS_MESSAGE_BYTES)
+        .max_frame_size(MAX_WS_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle_peer(socket, addr, state))
 }
 
 /// Owns one peer's WebSocket connection: hello/challenge/auth → register →
@@ -73,9 +83,17 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
     }
 
     // ── 3. Receive and verify auth ────────────────────────────────────────
-    let auth_text = match stream.next().await {
-        Some(Ok(Message::Text(t))) => t,
-        _ => return,
+    let auth_result =
+        tokio::time::timeout(Duration::from_millis(AUTH_TIMEOUT_MS), stream.next()).await;
+    // Same timeout as hello — a socket that never completes the handshake is
+    // a liveness leak; close it instead of awaiting the auth frame forever
+    // (security fix 2026-08).
+    let auth_text = match auth_result {
+        Ok(Some(Ok(Message::Text(t)))) => t,
+        _ => {
+            warn!(addr = %peer_addr, "no auth received, closing");
+            return;
+        }
     };
 
     if let Err(e) = verify_auth(&nonce, &vk, &auth_text) {
@@ -158,6 +176,29 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
     let mut last_presence_resp: Option<String> = None;
     let mut last_rooms_resp: HashMap<String, String> = HashMap::new();
 
+    // ── Authorization helper (security fix 2026-08) ─────────────────────────
+    // Presence/rooms queries about OTHER peers are metadata disclosure: they
+    // leak online/offline times, cwd, model and git state to any authenticated
+    // relay client, paired or not. Gate them behind the same mesh-membership
+    // check `pi_envelope` forwarding uses: the sender must share an Owner blob
+    // with the target. A peer may always query itself.
+    let authorize_targets = |targets: Vec<String>| {
+        let sender = peer_id.clone();
+        let mesh_auth = mesh_auth.clone();
+        let mesh = mesh.clone();
+        async move {
+            let mut allowed = Vec::with_capacity(targets.len());
+            for target in targets {
+                if target == sender
+                    || mesh_auth.is_authorized(&sender, &target, mesh.clone()).await
+                {
+                    allowed.push(target);
+                }
+            }
+            allowed
+        }
+    };
+
     // ── 4. Routing loop ───────────────────────────────────────────────────
     // Send a WS Ping at the configured interval (default 60 s — plan 125, was
     // 25 s) so NAT/LB idle timers don't close the connection. 60 s beats every
@@ -209,6 +250,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                             match t {
                                 // ── presence control frames (plano 12) ──
                                 "subscribe_presence" => {
+                                    let peers = authorize_targets(peers).await;
                                     presence.subscribe(peer_id.clone(), peers.clone()).await;
                                     // Backfill: push peer_online for any already-online
                                     // peers in the list, so subscribers don't have to
@@ -219,6 +261,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     presence.unsubscribe(&peer_id, peers).await;
                                 }
                                 "presence_check" => {
+                                    let peers = authorize_targets(peers).await;
                                     let states = presence
                                         .snapshot(&peers, |p| registry.is_online(p))
                                         .await;
@@ -244,12 +287,14 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
 
                                 // ── rooms control frames (plano 17) ──
                                 "subscribe_rooms" => {
+                                    let peers = authorize_targets(peers).await;
                                     rooms.subscribe(peer_id.clone(), peers).await;
                                 }
                                 "unsubscribe_rooms" => {
                                     rooms.unsubscribe(&peer_id, peers).await;
                                 }
                                 "rooms_check" => {
+                                    let peers = authorize_targets(peers).await;
                                     for target_peer in &peers {
                                         let active_rooms = registry.rooms_of(target_peer);
                                         let resp = serde_json::json!({
@@ -379,10 +424,14 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                 let dest_tail =
                                     dest_peer[dest_peer.len().saturating_sub(8)..].to_string();
                                 // Rewrite: recipient sees sender's peer_id + sender's room_id.
+                                // `sig` (inner sender signature, security fix 2026-08) is
+                                // forwarded verbatim — the relay cannot forge it and must
+                                // not strip it.
                                 let rewritten = OuterEnvelope {
                                     peer: peer_id.clone(),
                                     room: room_id.clone(),
                                     ct: env.ct,
+                                    sig: env.sig,
                                 };
                                 let fwd_line = serde_json::to_string(&rewritten)
                                     .expect("OuterEnvelope serialisation is infallible");

@@ -24,7 +24,7 @@ class PeerChannelError implements Exception {
   String toString() => 'PeerChannelError: $message';
 }
 
-class PlainPeerChannel implements IChannel, IControlLink {
+class PlainPeerChannel implements IChannel, IControlLink, ITransportSecurityInfo {
   final PeerTransport _transport;
 
   final _controller = StreamController<ServerMessage>.broadcast();
@@ -60,6 +60,18 @@ class PlainPeerChannel implements IChannel, IControlLink {
     } catch (_) {
       // Non-WS transports don't track rooms — fine to ignore.
     }
+  }
+
+  /// Security fix 2026-08 (H2) — forwards transport confidentiality when
+  /// the underlying transport knows it; non-WS test transports default to
+  /// secure (no banner in tests).
+  @override
+  bool get isTransportSecure {
+    final t = _transport;
+    if (t is ITransportSecurityInfo) {
+      return (t as ITransportSecurityInfo).isTransportSecure;
+    }
+    return true;
   }
 
   @override

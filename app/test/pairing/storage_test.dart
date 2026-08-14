@@ -213,6 +213,58 @@ void main() {
     });
   });
 
+  group('PeerRecord.signing (security fix 2026-08)', () {
+    test('defaults to false and is omitted from toJson', () {
+      const r = PeerRecord(
+        remoteEpk: 'epk',
+        sessionName: 'Mac',
+        relayUrl: 'http://192.168.1.10:3000',
+        pairedAt: '2026-01-01T00:00:00.000Z',
+      );
+      expect(r.signing, isFalse);
+      expect(r.toJson().containsKey('signing'), isFalse);
+    });
+
+    test('round-trips through JSON when true', () {
+      const r = PeerRecord(
+        remoteEpk: 'epk',
+        sessionName: 'Mac',
+        relayUrl: 'http://192.168.1.10:3000',
+        pairedAt: '2026-01-01T00:00:00.000Z',
+        signing: true,
+      );
+      final back = PeerRecord.fromJson(r.toJson());
+      expect(back.signing, isTrue);
+    });
+
+    test('legacy record without the field parses as false', () {
+      final back = PeerRecord.fromJson({
+        'remote_epk': 'epk',
+        'session_name': 'Mac',
+        'relay_url': 'http://192.168.1.10:3000',
+        'paired_at': '2026-01-01T00:00:00.000Z',
+      });
+      expect(back.signing, isFalse);
+    });
+
+    test('copyWith flips signing without touching other fields', () {
+      const r = PeerRecord(
+        remoteEpk: 'epk',
+        sessionName: 'Mac',
+        relayUrl: 'http://192.168.1.10:3000',
+        pairedAt: '2026-01-01T00:00:00.000Z',
+      );
+      final flipped = r.copyWith(signing: true);
+      expect(flipped.signing, isTrue);
+      expect(flipped.remoteEpk, r.remoteEpk);
+      expect(flipped.sessionName, r.sessionName);
+      expect(flipped.pairedAt, r.pairedAt);
+      // equality/hash reflect the flag
+      expect(flipped == r, isFalse);
+      expect(flipped == flipped.copyWith(), isTrue);
+    });
+  });
+
   group('PairingStorage.wipeAll (plan 23 sync-reset)', () {
     test('clears every peer + every persisted rooms entry', () async {
       final fake = _FakeSecureStorage();

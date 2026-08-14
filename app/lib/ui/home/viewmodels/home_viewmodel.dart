@@ -34,6 +34,14 @@ class HomeViewModel extends ViewModel<HomeState> {
   StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
   StreamSubscription<ConnectionStatus>? _statusSub;
   bool _relayConnected = false;
+
+  /// Security fix 2026-08 (H2) — Online over a non-confidential transport
+  /// (`ws://` to a non-loopback host). Drives the persistent banner.
+  bool _insecureBannerWanted = false;
+
+  /// `true` when the app is Online over an insecure transport — exposed for
+  /// tests and the banner widget.
+  bool get isTransportInsecure => _insecureBannerWanted;
   bool _disposed = false;
 
   /// Plan/107b — git snapshots keyed `"${standardB64(epk)}|$roomId"`.
@@ -103,11 +111,16 @@ class HomeViewModel extends ViewModel<HomeState> {
 
   /// Emits a HomeList with the reliability-banner flag derived from
   /// [_reliabilityBannerWanted]. Single chokepoint so the banner is correct
-  /// no matter which path produced the HomeList (review #5).
+  /// no matter which path produced the HomeList (review #5). Also derives
+  /// the insecure-transport banner (security fix 2026-08) here.
   void _emitHome(HomeList s) {
     final want = _reliabilityBannerWanted && !_reliabilityDismissed;
     if (s.showReliabilityBanner != want) {
       s = s.copyWith(showReliabilityBanner: want);
+    }
+    final insecureWant = _insecureBannerWanted;
+    if (s.showInsecureTransportBanner != insecureWant) {
+      s = s.copyWith(showInsecureTransportBanner: insecureWant);
     }
     emit(s);
   }
@@ -178,6 +191,13 @@ class HomeViewModel extends ViewModel<HomeState> {
 
   void _onStatus(ConnectionStatus status) {
     final next = status is StatusOnline;
+    // Security fix 2026-08 (H2) — track transport confidentiality at every
+    // status flip; Online means the channel (and its transport) is attached.
+    final insecureNow = next && !_conn.isTransportSecure;
+    if (insecureNow != _insecureBannerWanted) {
+      _insecureBannerWanted = insecureNow;
+      if (state is HomeList) _reemitHomeList();
+    }
     if (next == _relayConnected) {
       _reconcileReliability(next);
       return;
