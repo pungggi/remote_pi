@@ -89,6 +89,20 @@ impl PresenceManager {
             .unwrap_or_default()
     }
 
+    /// Snapshot of every (target, subscriber) pair — the re-validation sweep
+    /// (PR #24 follow-up #6) walks these and prunes pairs whose mesh
+    /// membership disappeared after the subscription was authorized.
+    pub async fn subscription_pairs(&self) -> Vec<(String, String)> {
+        let g = self.inner.lock().await;
+        let mut out = Vec::new();
+        for (target, subscribers) in &g.subscribers_of {
+            for subscriber in subscribers {
+                out.push((target.clone(), subscriber.clone()));
+            }
+        }
+        out
+    }
+
     /// Builds a presence snapshot for `peers`. `is_online` is called while holding
     /// the presence lock, keeping the snapshot consistent.
     pub async fn snapshot(

@@ -94,6 +94,66 @@ impl FromRef<AppState> for Arc<MeshStore> {
     }
 }
 
+/// PR #24 follow-up (#6) — re-validates every presence/rooms subscription
+/// against current mesh membership and prunes the unauthorized ones.
+///
+/// Subscriptions are authorized once, at `subscribe_*` time — but mesh
+/// membership can be revoked later, and unlike `pi_envelope` forwarding
+/// (whose `MeshAuthCache` entries expire after 60 s), a stored subscription
+/// would keep receiving target metadata indefinitely. This sweep closes that
+/// gap; run it on a cadence ≤ the cache TTL. Worst-case revocation latency =
+/// sweep interval + positive-cache TTL. A peer watching itself is always
+/// allowed (mirrors the subscribe-time rule).
+pub async fn prune_unauthorized_subscriptions(state: &AppState) -> usize {
+    async fn collect_unauthorized(
+        pairs: Vec<(String, String)>,
+        state: &AppState,
+    ) -> std::collections::HashMap<String, Vec<String>> {
+        let mut out: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        for (target, subscriber) in pairs {
+            if target == subscriber {
+                continue; // self-watch is always allowed
+            }
+            let still_member = state
+                .mesh_auth
+                .is_authorized(&subscriber, &target, state.mesh.clone())
+                .await;
+            if !still_member {
+                out.entry(subscriber).or_default().push(target);
+            }
+        }
+        out
+    }
+
+    let mut pruned = 0usize;
+
+    let presence_pruned =
+        collect_unauthorized(state.presence.subscription_pairs().await, state).await;
+    for (subscriber, targets) in presence_pruned {
+        pruned += targets.len();
+        tracing::info!(
+            subscriber = %subscriber,
+            count = targets.len(),
+            "mesh membership revoked — pruning presence subscriptions"
+        );
+        state.presence.unsubscribe(&subscriber, targets).await;
+    }
+
+    let rooms_pruned =
+        collect_unauthorized(state.rooms.subscription_pairs().await, state).await;
+    for (subscriber, targets) in rooms_pruned {
+        pruned += targets.len();
+        tracing::info!(
+            subscriber = %subscriber,
+            count = targets.len(),
+            "mesh membership revoked — pruning rooms subscriptions"
+        );
+        state.rooms.unsubscribe(&subscriber, targets).await;
+    }
+
+    pruned
+}
+
 /// Builds the unified axum router: WebSocket upgrade + HTTP API.
 ///
 /// Mount it with `axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())`

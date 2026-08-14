@@ -110,6 +110,15 @@ impl MeshAuthCache {
         });
     }
 
+    /// Drops every cached entry. Operational/test hook: the subscription
+    /// re-validation sweep and `pi_envelope` forwarding observe mesh
+    /// revocations only after the positive TTL expires; clearing forces the
+    /// next lookup to hit the store.
+    pub fn clear(&self) {
+        let mut entries = self.cache_guard();
+        entries.clear();
+    }
+
     fn cached_result(&self, pi_pk: &str) -> Option<AuthorizationResult> {
         let mut entries = self.cache_guard();
         Self::prune_expired(&mut entries, self.ttl);

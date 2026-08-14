@@ -51,7 +51,15 @@ vi.mock("./transport/relay_client.js", () => ({
 
 // ── Mock storage ──────────────────────────────────────────────────────────────
 
-type StoredPeer = { name: string; remote_epk: string; paired_at: string };
+type StoredPeer = {
+  name: string;
+  remote_epk: string;
+  paired_at: string;
+  signing?: boolean;
+};
+// PR #24 follow-up — index.ts persists the signing ratchet via markPeerSigning;
+// mock it so tests never touch the dev machine's real peers.json.
+const _markedSigning: string[] = [];
 const _knownPeers: StoredPeer[] = [];
 const _addedPeers: StoredPeer[] = [];
 const _removedPeers: string[] = [];
@@ -81,6 +89,9 @@ vi.mock("./pairing/storage.js", async (importOriginal) => {
         }))]
         : [],
     ),
+    markPeerSigning: vi.fn().mockImplementation(async (epk: string) => {
+      _markedSigning.push(epk);
+    }),
     addPeer: vi.fn().mockImplementation(async (p: StoredPeer) => {
       _addedPeers.push(p);
       const index = _knownPeers.findIndex((peer) => peer.remote_epk === p.remote_epk);
@@ -209,6 +220,7 @@ vi.mock("./mesh/self_revoke.js", async (importOriginal) => {
 
 // Import AFTER mocks
 const indexModule = await import("./index.js");
+const { _resetInnerSigStateForTest } = indexModule;
 const {
   default: extension,
   _getState,
@@ -409,6 +421,7 @@ describe("extension default export", () => {
 
 describe("state machine + pair_request flow", () => {
   beforeEach(async () => {
+    _resetInnerSigStateForTest();
     vi.clearAllMocks();
     _knownPeers.length = 0;
     _addedPeers.length = 0;
@@ -756,6 +769,7 @@ describe("contract fixtures: pair_*", () => {
 
 describe("/remote-pi revoke", () => {
   beforeEach(async () => {
+    _resetInnerSigStateForTest();
     vi.clearAllMocks();
     _knownPeers.length = 0;
     _addedPeers.length = 0;
@@ -1202,6 +1216,7 @@ async function _pairForTestWithCtx(
 
 describe("multi-channel broadcast (W2D)", () => {
   beforeEach(async () => {
+    _resetInnerSigStateForTest();
     vi.clearAllMocks();
     _knownPeers.length = 0;
     _addedPeers.length = 0;

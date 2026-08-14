@@ -59,6 +59,33 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // PR #24 follow-up (#6) — periodic subscription re-validation. Presence/
+    // rooms subscriptions are authorized at subscribe time only; this sweep
+    // prunes them once mesh membership is revoked (mirrors the `pi_envelope`
+    // 60 s cache TTL; same cadence bounds the worst-case revocation delay).
+    let sweeper_state = relay::AppState {
+        registry: registry.clone(),
+        presence: presence.clone(),
+        rooms: rooms.clone(),
+        mesh: mesh.clone(),
+        mesh_auth: mesh_auth.clone(),
+        metrics: metrics.clone(),
+        port,
+        heartbeat_interval: std::time::Duration::from_secs(heartbeat_secs),
+    };
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(relay::DEFAULT_HEARTBEAT_SECS));
+        interval.tick().await; // first tick is immediate; skip it
+        loop {
+            interval.tick().await;
+            let pruned = relay::prune_unauthorized_subscriptions(&sweeper_state).await;
+            if pruned > 0 {
+                info!(pruned, "subscription re-validation sweep pruned pairs");
+            }
+        }
+    });
+
     let state = relay::AppState {
         registry,
         presence,

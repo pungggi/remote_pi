@@ -7,6 +7,7 @@
 //   serverMessages stream ← transport.receive() → JSON → ServerMessage
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -108,9 +109,34 @@ class PlainPeerChannel implements IChannel, IControlLink, ITransportSecurityInfo
     }
   }
 
+  /// Replay defense (PR #24/#25 reviews): ids already delivered are replayed
+  /// frames — drop. STATIC so the cache survives channel re-creation on
+  /// reconnect (review #3/#25 — a fresh channel must not forget replayed
+  /// ids). Bounded FIFO; ids are UUIDs, never legitimately reused.
+  static const int _seenIdsCap = 4096;
+  static final Queue<String> _seenIds = Queue<String>();
+  static final Set<String> _seenIdsSet = <String>{};
+
+  bool _seenBefore(dynamic id) {
+    if (id is! String || id.isEmpty) return false;
+    if (_seenIdsSet.contains(id)) return true;
+    if (_seenIds.length >= _seenIdsCap) {
+      final oldest = _seenIds.removeFirst();
+      _seenIdsSet.remove(oldest);
+    }
+    _seenIds.add(id);
+    _seenIdsSet.add(id);
+    return false;
+  }
+
   void _handleFrame(Uint8List bytes) {
     try {
       final msg = decodeServer(utf8.decode(bytes));
+      if (_seenBefore((msg as dynamic).id)) {
+        // Replayed server frame — drop before it corrupts UI state
+        // (duplicate agent_chunks, duplicate echoes).
+        return;
+      }
       if (!_controller.isClosed) _controller.add(msg);
     } on UnsupportedTypeException {
       // Forward-compat: surface unknown server types as ErrorMessage.

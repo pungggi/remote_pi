@@ -1,5 +1,5 @@
 import type { ClientMessage, ServerMessage } from "../protocol/types.js";
-import { signInnerCt, verifyInnerSig } from "./inner_sig.js";
+import { signInnerCt, signInnerCtV2, verifyInnerDual } from "./inner_sig.js";
 import type { Ed25519Keypair } from "../pairing/crypto.js";
 import type { RelayClient } from "./relay_client.js";
 
@@ -10,16 +10,19 @@ export interface PeerChannel {
 
 /**
  * Outer envelope shape forwarded by the relay.
- * { "peer": "<sender_peer_id>", "room"?: "<room_id>", "ct": "<base64 JSON inner>", "sig"?: "<base64 sig>" }
+ * { "peer": "<sender_peer_id>", "room"?: "<room_id>", "ct": "<base64 JSON inner>",
+ *   "sig"?: "<base64 sig>", "ts"?: <epoch-ms number> }
  *
  * Post rollback (plano 06): `ct` is base64(JSON.stringify(inner)) — no cipher,
  * no MAC. Relay continues opaque (never JSON.parses ct).
  *
- * Security fix 2026-08: `sig` is the SENDER's Ed25519 signature over the `ct`
- * string (see ./inner_sig.ts) — end-to-end sender authenticity the relay
- * cannot forge. The relay forwards it verbatim (never strips it). Recipients
- * drop frames whose signature is present-but-invalid, and — once the peer's
- * `signing` ratchet is on in peers.json — unsigned frames too.
+ * Security fix 2026-08: `sig` is the SENDER's Ed25519 signature (see
+ * ./inner_sig.ts — v2 binds the RECIPIENT pubkey + a timestamp) — end-to-end
+ * sender authenticity the relay cannot forge and cannot redirect to another
+ * Pi of the same owner. The relay forwards `sig`/`ts` verbatim (never strips
+ * them). Recipients drop frames whose signature is present-but-invalid,
+ * stale (outside the freshness window), bound to a different recipient, or —
+ * once the peer's `signing` ratchet is on in peers.json — unsigned.
  *
  * `room` (plano 17): identifies which Pi room sent the envelope. Lets the
  * relay multiplex N peers with the same Ed25519 pubkey but distinct cwds.
@@ -29,20 +32,45 @@ interface OuterEnvelope {
   peer: string;
   room?: string;
   ct: string;
+  /** v1 signature — sender-bound. Kept on every new-sender frame so legacy
+   *  recipients (app 1.3.0 / pre-#25 Pis) still verify (PR #25 review #1). */
   sig?: string;
+  /** v2 signature — dest-bound + ts-windowed. Preferred by new recipients. */
+  sig2?: string;
+  /** Sender epoch-ms covered by `sig2` (v2). Forwarded verbatim like the sigs. */
+  ts?: number;
 }
 
 /** Inbound signature policy — injected by the host (index.ts). */
 export interface InnerSigPolicy {
   /** This Pi's keypair — signs every outbound frame. */
   keypair: Ed25519Keypair;
+  /** This Pi's own relay peer id (canonical standard-base64 of its public
+   *  key) — the `dest` binding for inbound v2 verification. */
+  ownPeerId: string;
+  /** Testable clock (epoch ms) for the v2 freshness window. */
+  now: () => number;
   /** True when the peer's `signing` ratchet is on → unsigned frames drop.
    *  SYNC against an in-memory cache — delivery must stay synchronous so
    *  handlers can reply within the same tick (tests + app latency). */
   requiresSignature: (peerId: string) => boolean;
-  /** Called when a VALID signature is verified — flips the ratchet
-   *  (in-memory immediately, peers.json best-effort; idempotent). */
+  /** True when this peer has DEMONSTRATED v2 (a verified `sig2`). v1-only
+   *  frames from such a peer are a downgrade strip → drop (review #1). */
+  peerV2: (peerId: string) => boolean;
+  /** Cross-channel replay dedup (review #3 on #25): the seen-id LRU lives
+   *  with the policy — it must survive channel re-creation on reconnect.
+ *  Returns true when `id` was already delivered for this peer. */
+  seenId: (peerId: string, id: string) => boolean;
+  /** Called when ANY signature is present (before verification) — flips the
+   *  unsigned-drop ratchet synchronously so a following unsigned frame can
+   *  never slip through the async gap (review #4 on #24). */
+  onSignaturePresent: (peerId: string) => void;
+  /** Called when a VALID v2 signature is verified — flips the persistence
+   *  ratchet (peers.json best-effort; idempotent). */
   onSignatureVerified: (peerId: string) => void;
+  /** Called when a VALID v2 signature is verified — marks the peer v2-capable
+   *  (in-memory is enough; a restart just re-learns on the next frame). */
+  onV2Verified: (peerId: string) => void;
 }
 
 /**
@@ -91,15 +119,20 @@ export class PlainPeerChannel implements PeerChannel {
     // (W1.C) accept the field. Multi-Pi multiplexing already works via
     // `room_id`/`room_meta` in the WS-level `hello` — outer routing stays by
     // `peer` alone. Re-add the field once downstream is ready.
-    const outer: OuterEnvelope = {
-      peer: this.remotePeerId,
-      ct,
-      // Security fix 2026-08 — sign every outbound frame. Old relays drop
-      // unknown fields (harmless); new relays forward `sig` verbatim.
-      ...(this.sigPolicy
-        ? { sig: signInnerCt(this.sigPolicy.keypair.secretKey, ct) }
-        : {}),
-    };
+    //
+    // Security fix 2026-08 (dual-sig, PR #25 review #1): every outbound frame
+    // carries BOTH signatures — `sig` (v1) so legacy recipients (app 1.3.0,
+    // pre-#25 Pis) keep verifying, `sig2`+`ts` (v2) for the recipient binding
+    // and replay window. Old relays drop the unknown fields (harmless); new
+    // relays forward them verbatim.
+    const outer: OuterEnvelope = { peer: this.remotePeerId, ct };
+    const policy = this.sigPolicy;
+    if (policy) {
+      const ts = policy.now();
+      outer.sig = signInnerCt(policy.keypair.secretKey, ct);
+      outer.sig2 = signInnerCtV2(policy.keypair.secretKey, this.remotePeerId, ts, ct);
+      outer.ts = ts;
+    }
     // Best-effort delivery. The relay WS can be mid-reconnect (idle/NAT drop, or
     // a session_new/session-replacement teardown) when we push a server→app frame
     // — notably the action_ok/action_error ack a handler emits right after
@@ -133,27 +166,66 @@ export class PlainPeerChannel implements PeerChannel {
     if (outer.peer !== this.remotePeerId) return;
     if (!outer.ct) return;
 
-    // Security fix 2026-08 — end-to-end sender verification. `peer` is the
-    // relay-asserted sender pubkey; verify `sig` against it. Three outcomes:
-    //   sig present + valid    → deliver, flip the peer's ratchet once.
-    //   sig present + INVALID  → DROP always (relay tampering or corruption —
-    //                           never deliver a frame whose signature fails).
-    //   sig absent             → deliver only if the peer hasn't demonstrated
-    //                           signing support yet (legacy transition).
-    // Stays synchronous: the ratchet is an in-memory cache warmed at relay
-    // start, so handlers still reply within the same tick.
+    // Security fix 2026-08 + PR #25 review follow-up — end-to-end sender
+    // verification. `peer` is the relay-asserted sender pubkey. Outcomes:
+    //   sig2 present            → flip the unsigned-drop ratchet SYNCHRONOUSLY
+    //                            (review #4/#24: a trailing unsigned frame must
+    //                            not slip past the async gap), then STRICT v2
+    //                            verify (dest + ts). Invalid → drop, NO v1
+    //                            fallback (legit senders sign both; a broken
+    //                            pair means tampering).
+    //   sig only                → if the peer is v2-ratcheted, this is a
+    //                            downgrade strip → drop (review #1/#25).
+    //                            Else legacy v1 transition → verify & deliver.
+    //   both absent             → deliver only pre-ratchet (legacy transition).
+    // Replay dedup lives with the policy so it survives re-attachment.
     const policy = this.sigPolicy;
     if (policy) {
-      if (typeof outer.sig === "string" && outer.sig.length > 0) {
-        const verdict = verifyInnerSig(outer.peer, outer.ct, outer.sig);
+      const hasSig2 = typeof outer.sig2 === "string" && outer.sig2.length > 0;
+      const hasSig = typeof outer.sig === "string" && outer.sig.length > 0;
+      if (hasSig2 || hasSig) policy.onSignaturePresent(outer.peer);
+      if (hasSig2) {
+        const verdict = verifyInnerDual(
+          outer.peer,
+          policy.ownPeerId,
+          outer.ct,
+          outer.sig,
+          outer.sig2,
+          outer.ts,
+          policy.now(),
+        );
         if (!verdict.ok) return;
+        policy.onV2Verified(outer.peer);
         policy.onSignatureVerified(outer.peer);
+        this._deliver(outer.ct);
+        return;
+      }
+      if (hasSig) {
+        if (policy.peerV2(outer.peer)) return; // downgrade strip from a v2 peer
+        const verdict = verifyInnerDual(
+          outer.peer,
+          policy.ownPeerId,
+          outer.ct,
+          outer.sig,
+          undefined,
+          undefined,
+          policy.now(),
+        );
+        if (!verdict.ok) return;
         this._deliver(outer.ct);
         return;
       }
       if (policy.requiresSignature(outer.peer)) return; // ratcheted, unsigned — drop
     }
     this._deliver(outer.ct);
+  }
+
+  /** Auto-listener reconnect path (PR #25 review #3): deliver an
+   *  already-verified ct through the normal pipeline — parse → dedup →
+   *  onMessage — instead of bypassing the channel. Replays of a captured
+   *  frame across a reconnect hit the same policy-level seen-id LRU. */
+  deliverVerified(ct: string): void {
+    this._deliver(ct);
   }
 
   private _deliver(ct: string): void {
@@ -179,6 +251,30 @@ export class PlainPeerChannel implements PeerChannel {
       return;
     }
 
+    // Replay defense (PR #24/#25 reviews): ids already delivered for this
+    // peer are replayed frames — drop. The LRU lives with the POLICY so it
+    // survives channel re-creation on reconnect (review #3/#25); channels
+    // without a policy (tests) keep a per-channel fallback LRU.
+    const id = (msg as Record<string, unknown>).id;
+    if (this.sigPolicy && typeof id === "string") {
+      if (this.sigPolicy.seenId(this.remotePeerId, id)) return;
+    } else if (this._seenBeforeLocal(id)) {
+      return;
+    }
+
     this.onMessage(msg as ClientMessage);
+  }
+
+  /** Fallback per-channel LRU when no policy is injected (test channels). */
+  private readonly _seenLocal = new Map<string, true>();
+  private _seenBeforeLocal(id: unknown): boolean {
+    if (typeof id !== "string" || id.length === 0) return false;
+    if (this._seenLocal.has(id)) return true;
+    if (this._seenLocal.size >= 2048) {
+      const oldest = this._seenLocal.keys().next().value;
+      if (oldest !== undefined) this._seenLocal.delete(oldest);
+    }
+    this._seenLocal.set(id, true);
+    return false;
   }
 }

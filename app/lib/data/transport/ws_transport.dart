@@ -29,6 +29,18 @@ import '../../pairing/pair_request_flow.dart';
 /// `DOMAIN_PREFIX` in pi-extension `src/transport/inner_sig.ts`.
 const String kInnerSigDomain = 'piper/inner/v1\n';
 
+/// v2 domain (PR #24 follow-up) — binds the RECIPIENT pubkey and a timestamp
+/// into the signed bytes: `piper/inner/v2\n<dest>\n<ts>\n<ct>`. Kills the
+/// cross-Pi redirect (a frame signed for Pi A fails on Pi B) and bounds
+/// replay to [kInnerSigMaxAgeMs]. MUST match `DOMAIN_PREFIX_V2` on the
+/// pi-extension side.
+const String kInnerSigDomainV2 = 'piper/inner/v2\n';
+
+/// Replay freshness window for v2 signatures — MUST match `MAX_AGE_MS` in
+/// pi-extension `src/transport/inner_sig.ts` (10 minutes; generous for phone
+/// ↔ PC clock skew, short enough that a captured frame is useless later).
+const int kInnerSigMaxAgeMs = 10 * 60 * 1000;
+
 class WsTransportError implements Exception {
   final String message;
   const WsTransportError(this.message);
@@ -55,6 +67,10 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
   /// Once true, unsigned inbound frames are dropped — a malicious relay
   /// can no longer strip signatures to impersonate the Pi.
   bool _requireSignature = false;
+  /// True once the ratchet flip has been PERSISTED via [_onPeerRatcheted]
+  /// (fires on the first VALID signature; invalid present-sigs flip only
+  /// the in-memory flag, matching the relay's strip-frame power exactly).
+  bool _ratchetPersisted = false;
   void Function()? _onPeerRatcheted;
 
   WsTransport._(this._ws);
@@ -94,8 +110,16 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
     final challengeCompleter = Completer<Map<String, dynamic>>();
     bool authDone = false;
 
-    final sub = ws.stream.listen(
-      (raw) async {
+    // PR #24 follow-up (#4) — `Stream.listen` does NOT await async callbacks,
+    // so an unsigned frame arriving right after a valid signed one could
+    // evaluate `_requireSignature` before the (async) verification flipped
+    // it. Serialize ALL inbound handling through this future chain: frames
+    // are processed strictly in arrival order, each seeing the ratchet
+    // state left by its predecessor. Errors are swallowed to keep the chain
+    // alive (individual frames already handle their own failures).
+    Future<void> inFlight = Future<void>.value();
+
+    Future<void> processFrame(dynamic raw) async {
         // Volume probe: log every frame the relay pushes onto this
         // socket so we can spot firehose patterns (e.g. presence
         // churn, repeated room snapshots) by counting prefix
@@ -139,21 +163,35 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
               '[ws-in] bytes=${rawStr.length} kind=envelope '
               'ct.bytes=${bytes.length}',
             );
-            // Security fix 2026-08 — end-to-end sender verification against
-            // the paired Pi's pubkey. Present+invalid → ALWAYS drop (the
-            // relay forwarding a tampered/foreign-signed frame). Absent → drop
-            // only once the Pi has demonstrated signing (ratchet).
+            // Security fix 2026-08 + PR #25 follow-up — dual-sig verification.
+            //   sig2 present → strict v2 (dest + ts window); invalid → drop,
+            //                           NO v1 fallback (legit senders sign both).
+            //   sig only    → v1 transition, unless the Pi is v2-ratcheted
+            //                           (downgrade strip → drop).
+            //   both absent → drop once ratcheted (relay strip).
+            // The unsigned-drop ratchet flips SYNCHRONOUSLY on sig presence
+            // (serialized chain closes the async-gap race, review #4/#24).
             final sigRaw = frame['sig'];
-            if (sigRaw is String && sigRaw.isNotEmpty) {
-              if (!await transport._verifyInboundSig(ct, sigRaw)) {
+            final sig2Raw = frame['sig2'];
+            final tsRaw = frame['ts'];
+            final hasSig2 = sig2Raw is String && sig2Raw.isNotEmpty;
+            final hasSig = sigRaw is String && sigRaw.isNotEmpty;
+            if (hasSig2 || hasSig) {
+              transport._requireSignature = true;
+              if (!await transport._verifyInboundEnvelope(
+                ct,
+                hasSig ? sigRaw : '',
+                hasSig2 ? sig2Raw : null,
+                tsRaw,
+              )) {
                 debugPrint(
                   '[ws-in] bytes=${rawStr.length} kind=envelope '
                   'sig=INVALID DROPPED',
                 );
                 return;
               }
-              if (!transport._requireSignature) {
-                transport._requireSignature = true;
+              if (!transport._ratchetPersisted) {
+                transport._ratchetPersisted = true;
                 try {
                   transport._onPeerRatcheted?.call();
                 } catch (_) {/* persistence hook is best-effort */}
@@ -185,6 +223,11 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
             '[ws-in] bytes=${rawStr.length} kind=malformed DROPPED err=$e',
           );
         }
+    } // processFrame
+
+    final sub = ws.stream.listen(
+      (raw) {
+        inFlight = inFlight.then((_) => processFrame(raw)).catchError((_) {});
       },
       onError: (e) {
         if (!challengeCompleter.isCompleted) challengeCompleter.completeError(e);
@@ -284,28 +327,71 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
   @override
   Future<void> send(Uint8List data) async {
     final ct = base64.encode(data);
-    // Security fix 2026-08 — sign the exact ct string with the device key
-    // (same key as the WS handshake) so the Pi can verify end-to-end sender
-    // authenticity instead of trusting the relay-asserted `peer` field.
-    final sig = await Ed25519().sign(
+    // Security fix 2026-08 (dual-sign, PR #25 review #1) — every outbound
+    // frame carries BOTH signatures with the device key (same key as the WS
+    // handshake):
+    //   sig  — v1, sender-bound: keeps pre-#25 Pis verifying (they only read
+    //          `sig`; a v2-only scheme breaks the mixed rollout).
+    //   sig2 — v2, dest-bound + ts-windowed: kills cross-Pi redirect + replay
+    //          for upgraded recipients.
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final algo = Ed25519();
+    final sigV1 = await algo.sign(
       utf8.encode('$kInnerSigDomain$ct'),
+      keyPair: _ed25519Key,
+    );
+    final sigV2 = await algo.sign(
+      utf8.encode('$kInnerSigDomainV2$_peerPubkey\n$ts\n$ct'),
       keyPair: _ed25519Key,
     );
     _ws.sink.add(jsonEncode({
       'peer': _peerPubkey,
       'room': _activeRoom,
       'ct': ct,
-      'sig': base64.encode(sig.bytes),
+      'sig': base64.encode(sigV1.bytes),
+      'sig2': base64.encode(sigV2.bytes),
+      'ts': ts,
     }));
   }
 
-  /// Verifies an inbound `sig` over `ct` against the PAIRED Pi's pubkey
-  /// (which the relay asserts in `peer` — and which we dialed).
-  Future<bool> _verifyInboundSig(String ct, String sigB64) async {
+  /// Verifies an inbound envelope's `sig` over `ct` against the PAIRED Pi's
+  /// pubkey (which the relay asserts in `peer` — and which we dialed).
+  /// v2 (`ts` present): dest-bound + freshness window. v1 (no ts): legacy
+  /// sender-bound transition path. Never throws — any parse/decode failure
+  /// is an invalid signature.
+  /// True once the paired Pi demonstrated v2 (a verified `sig2`). v1-only
+  /// frames from such a peer are a relay downgrade strip → dropped.
+  bool _piV2 = false;
+
+  /// Dual-sig inbound verification (PR #25 review #1):
+  ///   sig2 present → STRICT v2 (dest binding + ts window); invalid → drop,
+  ///                 never v1 fallback (legit senders sign both).
+  ///   sig only    → v1 transition path, unless the Pi is v2-ratcheted
+  ///                 (downgrade strip → drop).
+  /// Never throws — any parse/decode failure is an invalid signature.
+  Future<bool> _verifyInboundEnvelope(
+    String ct,
+    String sigB64,
+    String? sig2B64,
+    Object? tsRaw,
+  ) async {
     try {
-      final pkBytes = _b64Decode(_peerPubkey);
-      final pk = SimplePublicKey(pkBytes, type: KeyPairType.ed25519);
-      return await Ed25519().verify(
+      final pk = SimplePublicKey(_b64Decode(_peerPubkey), type: KeyPairType.ed25519);
+      final algo = Ed25519();
+      if (sig2B64 != null && sig2B64.isNotEmpty) {
+        if (tsRaw is! num || tsRaw.toInt() != tsRaw) return false;
+        final ts = tsRaw.toInt();
+        final now = DateTime.now().millisecondsSinceEpoch;
+        if ((now - ts).abs() > kInnerSigMaxAgeMs) return false; // stale replay
+        final ok = await algo.verify(
+          utf8.encode('$kInnerSigDomainV2$_peerPubkey\n$ts\n$ct'),
+          signature: Signature(_b64Decode(sig2B64), publicKey: pk),
+        );
+        if (ok) _piV2 = true; // mark BEFORE returning — next v1-only = strip
+        return ok;
+      }
+      if (_piV2) return false; // v1-only from a v2-capable Pi — downgrade strip
+      return await algo.verify(
         utf8.encode('$kInnerSigDomain$ct'),
         signature: Signature(_b64Decode(sigB64), publicKey: pk),
       );

@@ -79,6 +79,60 @@ state, cwd, model, git snapshot.
   tests for `relayTransportIsSecure` classification and `PeerRecord.signing`
   round-trip.
 
+## PR #24 review follow-up (same day)
+
+Six findings from the Augment code review on the merged PR — all addressed on
+`fix/security-review-followup`:
+
+1. **Replay (high)** — v2 signatures carry a sender timestamp; recipients
+   reject frames outside a 10-minute window AND dedupe inner message `id`s
+   (LRU 2048, per channel) so a replayed frame never executes twice even
+   inside the window. Pi (`peer_channel.ts`) and app (`ws_transport.dart` →
+   `peer_channel.dart`) both.
+2. **Cross-peer injection (high)** — v2 binds the RECIPIENT pubkey into the
+   signed bytes (`piper/inner/v2\n<dest>\n<ts>\n<ct>`): a relay forwarding an
+   owner-signed command from Pi A to Pi B fails verification on B. v1 frames
+   (app 1.3.0) remain accepted during transition — they predate the binding.
+3. **Ratchet lost after restart (high)** — the in-memory ratchet warms from
+   `peers.json` by CANONICAL key (base64url handles normalized);
+   `markPeerSigning` matches records canonically via the new exported
+   `sameOwnerHandle`. Raw-spelling entries can no longer silently miss.
+4. **Async ratchet race (medium)** — app-side inbound handling is serialized
+   through a future chain (strict arrival order), and the ratchet flips
+   SYNCHRONOUSLY when a `sig` is present, before the async verify — a
+   trailing unsigned frame can never slip through the gap.
+5. **Symlink escape (medium)** — `cwd_policy` compares on `realpathSync`
+   (targets must exist; roots fall back to syntactic form when absent).
+   A cwd that traverses a symlink out of a root is rejected.
+6. **One-shot subscription auth (medium)** — relay runs a 60 s
+   `prune_unauthorized_subscriptions` sweep re-checking every stored
+   presence/rooms (target, subscriber) pair against current mesh membership
+   (self-watch always allowed). `MeshAuthCache::clear()` exposed as an ops
+   hook. Worst-case revocation latency = sweep interval + cache TTL.
+
+Wire note: the outer envelope gained an optional `ts` (u64, forwarded
+verbatim like `sig`). Deploy order unchanged: relay → extension → app.
+
+### PR #25 review follow-up (second round — dual-sign)
+
+1. **Mixed-rollout break (high)** — v2-only signing broke BOTH directions
+   (old app drops new-Pi frames; old Pi drops new-app frames). Now every
+   sender dual-signs: `sig` stays v1 (legacy recipients verify it), `sig2`
+   (+`ts`) carries the v2 binding. Recipients verify `sig2` strictly when
+   present (no v1 fallback — a legit sender signs both); a `sig`-only frame
+   from a peer that already demonstrated v2 is a downgrade strip → drop.
+2. **Restart warm race (high)** — the persisted ratchet loads asynchronously;
+   unsigned-frame decisions now await the warm promise in the auto-listener
+   (`_awaitRatchetWarm`), closing the post-restart strip/forge window.
+3. **Reconnect replay bypass (high)** — the auto-listener reconnect path
+   routed `inner` directly, skipping dedup. It now routes through
+   `channel.deliverVerified(ct)` and the seen-id LRU moved to the POLICY
+   (survives channel re-creation); the app's dedup is static for the same
+   reason. Test hook `_resetInnerSigStateForTest` keeps suites isolated.
+
+Wire: outer envelope gained optional `sig2`; relay forwards it verbatim.
+Deploy order unchanged: relay → extension → app.
+
 ## Rollout notes
 
 Deploy order: **relay first** (forwarding `sig` is additive), then extension

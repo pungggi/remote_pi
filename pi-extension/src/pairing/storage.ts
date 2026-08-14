@@ -335,19 +335,40 @@ export async function peerSigningEnforced(remoteEpk: string): Promise<boolean> {
  * with `signing: true` — preserves every other field, including the exact
  * raw `remote_epk` spelling (slot provenance below depends on it).
  */
+/** True when two raw Owner-pubkey spellings denote the SAME key (standard
+ *  vs base64url, padded or not). PR #24 follow-up (#3): peers.json preserves
+ *  raw handles while the relay asserts standard base64 — every lookup that
+ *  crosses that boundary must match canonically, not by string equality. */
+export function sameOwnerHandle(a: string, b: string): boolean {
+  if (a === b) return true;
+  try {
+    return canonicalizeEd25519PublicKey(a, "Owner handle A") ===
+      canonicalizeEd25519PublicKey(b, "Owner handle B");
+  } catch {
+    return false;
+  }
+}
+
 export async function markPeerSigning(remoteEpk: string): Promise<void> {
   await _serializePeerMutation(async () => {
     const peers = await _readPeerContainerStrict();
+    // PR #24 follow-up (#3): match by CANONICAL key, not raw spelling — peers.json
+    // deliberately preserves base64url handles, while callers (the relay-asserted
+    // peer id) speak standard base64. A raw-equality find would silently miss
+    // and the ratchet would never persist.
     const record = peers.find((peer): peer is PeerRecord =>
       !!peer &&
       typeof peer === "object" &&
-      (peer as { remote_epk?: unknown }).remote_epk === remoteEpk,
+      sameOwnerHandle(
+        String((peer as { remote_epk?: unknown }).remote_epk),
+        remoteEpk,
+      ),
     );
     if (!record || record.signing === true) return;
     record.signing = true;
     await mkdir(dirname(PEERS_PATH), { recursive: true });
     writeFileSync(PEERS_PATH, JSON.stringify({ peers }, null, 2));
-    _invalidateOwnerSlot(remoteEpk);
+    _invalidateOwnerSlot(record.remote_epk);
   });
 }
 
