@@ -61,6 +61,13 @@ class HomePage extends StatelessWidget {
               // Plan 116 — sustained-offline (> 60 s) reliability nudge.
               if (state is HomeList && state.showReliabilityBanner)
                 SliverToBoxAdapter(child: _ReliabilityBanner(vm: vm)),
+              // Security fix 2026-08 (H2) — Online but over a plaintext
+              // `ws://` LAN dial: the traffic is readable by anyone on the
+              // same network. Persistent (not dismissable) while true.
+              if (state is HomeList &&
+                  state.showInsecureTransportBanner &&
+                  !state.showReliabilityBanner)
+                const SliverToBoxAdapter(child: _InsecureTransportBanner()),
               switch (state) {
                 HomeLoading() => SliverFillRemaining(
                   hasScrollBody: false,
@@ -860,6 +867,53 @@ class _EmptyState extends StatelessWidget {
 /// Plan 116 — proactive nudge shown after the relay has been non-Online for
 /// > 60 s. Tapping opens the connection-reliability page (battery exemption +
 /// Tailscale deep-links); the ✕ dismisses until the connection recovers.
+/// Security fix 2026-08 (H2) — persistent warning while the app is Online
+/// over a NON-confidential transport: the default LAN dial is `ws://` to the
+/// relay's RFC1918 address. Everything the app sends/receives (chat, code,
+/// images) is readable by any device on the same WLAN, and a MITM holding
+/// the relay key could impersonate the Pi. Not dismissable — it's a
+/// property of the connection, not a nudge; it clears when the user points
+/// the app at `https://` or an overlay (Tailscale) relay and reconnects.
+class _InsecureTransportBanner extends StatelessWidget {
+  const _InsecureTransportBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+      child: Material(
+        color: colors.warning.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(10),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          child: Row(
+            children: [
+              Icon(LucideIcons.shieldAlert, size: 18, color: colors.warning),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text(
+                    'Insecure connection — relay over ws://. '
+                    'Traffic is unencrypted on this network. '
+                    'Use https:// or an overlay (Tailscale) relay.',
+                    style: TextStyle(
+                      fontFamily: kMonoFamily,
+                      fontSize: 12,
+                      color: colors.text,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ReliabilityBanner extends StatelessWidget {
   const _ReliabilityBanner({required this.vm});
   final HomeViewModel vm;

@@ -313,6 +313,42 @@ export interface PeerRecord {
   name: string;
   remote_epk: string; // raw standard/base64url 32B Ed25519 Owner handle; preserved exactly
   paired_at: string;  // ISO-8601
+  /** Security fix 2026-08 — set once this peer has DEMONSTRATED inner-envelope
+   *  signing support (a verified `sig` on any inbound frame, including
+   *  pair_request). Once true, unsigned/invalid-signature frames from this
+   *  peer are dropped: a relay can no longer strip signatures to impersonate
+   *  it. Absent/false = legacy peer, still accepted unsigned (transition).
+   *  Optional so old peers.json files parse unchanged. */
+  signing?: boolean;
+}
+
+/** Reads back a peer's signing ratchet flag (false when unset/unknown). */
+export async function peerSigningEnforced(remoteEpk: string): Promise<boolean> {
+  for (const peer of await listPeers()) {
+    if (peer.remote_epk === remoteEpk) return peer.signing === true;
+  }
+  return false;
+}
+
+/**
+ * Flips a peer's signing ratchet ON (idempotent). Persists the whole record
+ * with `signing: true` — preserves every other field, including the exact
+ * raw `remote_epk` spelling (slot provenance below depends on it).
+ */
+export async function markPeerSigning(remoteEpk: string): Promise<void> {
+  await _serializePeerMutation(async () => {
+    const peers = await _readPeerContainerStrict();
+    const record = peers.find((peer): peer is PeerRecord =>
+      !!peer &&
+      typeof peer === "object" &&
+      (peer as { remote_epk?: unknown }).remote_epk === remoteEpk,
+    );
+    if (!record || record.signing === true) return;
+    record.signing = true;
+    await mkdir(dirname(PEERS_PATH), { recursive: true });
+    writeFileSync(PEERS_PATH, JSON.stringify({ peers }, null, 2));
+    _invalidateOwnerSlot(remoteEpk);
+  });
 }
 
 export async function listPeers(): Promise<PeerRecord[]> {

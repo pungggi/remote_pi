@@ -1,5 +1,7 @@
 mod common;
-use common::{connect_and_auth, connect_and_auth_with_key, start_relay};
+use common::{
+    connect_and_auth, connect_and_auth_with_key, make_mesh_siblings, start_relay,
+};
 
 use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt, StreamExt};
@@ -18,7 +20,9 @@ async fn subscribe_then_peer_connects_pushes_online() {
     use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
     let peer_a = B64.encode(sk_a.verifying_key().to_bytes());
 
-    let (mut ws_b, _) = connect_and_auth(port).await;
+    let (mut ws_b, peer_b) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_a.clone(), peer_b]).await;
 
     // B subscribes to A (A is not connected yet)
     ws_b.send(Message::text(
@@ -52,7 +56,8 @@ async fn peer_disconnects_pushes_offline_with_since_ts() {
     let peer_a = B64.encode(sk_a.verifying_key().to_bytes());
 
     let (ws_a, _) = connect_and_auth_with_key(port, &sk_a).await;
-    let (mut ws_b, _) = connect_and_auth(port).await;
+    let (mut ws_b, peer_b) = connect_and_auth(port).await;
+    make_mesh_siblings(port, &[peer_a.clone(), peer_b]).await;
 
     // B subscribes to A
     ws_b.send(Message::text(
@@ -103,7 +108,8 @@ async fn presence_check_returns_offline_for_unknown_peer() {
     use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
     let peer_a = B64.encode(sk_a.verifying_key().to_bytes());
 
-    let (mut ws_b, _) = connect_and_auth(port).await;
+    let (mut ws_b, peer_b) = connect_and_auth(port).await;
+    make_mesh_siblings(port, &[peer_a.clone(), peer_b]).await;
     ws_b.send(Message::text(
         json!({"type": "presence_check", "peers": [&peer_a]}).to_string(),
     ))
@@ -137,7 +143,8 @@ async fn presence_check_returns_online_for_connected_peer() {
     let peer_a = B64.encode(sk_a.verifying_key().to_bytes());
 
     let (_ws_a, _) = connect_and_auth_with_key(port, &sk_a).await;
-    let (mut ws_b, _) = connect_and_auth(port).await;
+    let (mut ws_b, peer_b) = connect_and_auth(port).await;
+    make_mesh_siblings(port, &[peer_a.clone(), peer_b]).await;
 
     ws_b.send(Message::text(
         json!({"type": "presence_check", "peers": [&peer_a]}).to_string(),
@@ -176,7 +183,8 @@ async fn subscribe_after_peer_already_online_backfills_peer_online() {
     let (_ws_pi, _) = connect_and_auth_with_key(port, &sk_pi).await;
 
     // App connects later, then subscribes.
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
     ws_app
         .send(Message::text(
             json!({"type": "subscribe_presence", "peers": [&peer_pi]}).to_string(),
@@ -211,7 +219,8 @@ async fn second_conn_same_peer_does_not_re_emit_peer_online() {
     let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
 
     // App subscribes first.
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
     ws_app
         .send(Message::text(
             json!({"type": "subscribe_presence", "peers": [&peer_pi]}).to_string(),
@@ -258,7 +267,8 @@ async fn presence_check_dedup_suppresses_identical_responses() {
 
     // A is online; B asks twice in a row — only the first reply comes back.
     let (_ws_a, _) = connect_and_auth_with_key(port, &sk_a).await;
-    let (mut ws_b, _) = connect_and_auth(port).await;
+    let (mut ws_b, peer_b) = connect_and_auth(port).await;
+    make_mesh_siblings(port, &[peer_a.clone(), peer_b]).await;
 
     ws_b.send(Message::text(
         json!({"type": "presence_check", "peers": [&peer_a]}).to_string(),
@@ -302,7 +312,8 @@ async fn presence_check_after_change_emits_new_snapshot() {
     let peer_c = B64.encode(sk_c.verifying_key().to_bytes());
 
     let (_ws_a, _) = connect_and_auth_with_key(port, &sk_a).await;
-    let (mut ws_b, _) = connect_and_auth(port).await;
+    let (mut ws_b, peer_b) = connect_and_auth(port).await;
+    make_mesh_siblings(port, &[peer_a.clone(), peer_c.clone(), peer_b]).await;
 
     // First check with peers=[A]
     ws_b.send(Message::text(

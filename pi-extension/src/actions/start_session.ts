@@ -20,6 +20,7 @@
  */
 import type { ClientMessage } from "../protocol/types.js";
 import type { ActionReplySender } from "./handlers.js";
+import { remoteCwdAllowed } from "./cwd_policy.js";
 import { callSupervisor, SupervisorOfflineError } from "../daemon/client.js";
 
 type StartSessionRequestMsg = Extract<
@@ -42,6 +43,21 @@ export function handleStartSession(
     return;
   }
   const name = msg.name?.trim() || undefined;
+  // Security fix 2026-08 (M3) — the supervisor spawns `pi --mode rpc` at this
+  // cwd; pi auto-loads .pi/ extensions from it. Restrict to project roots /
+  // registered worktrees so a forged request can't spawn in attacker-chosen
+  // directories.
+  if (!remoteCwdAllowed(cwd)) {
+    sender.send({
+      type: "start_session_result",
+      in_reply_to: msg.id,
+      ok: false,
+      message:
+        `Remote session start is restricted to project roots — add '${cwd}' ` +
+        "to projects.roots in ~/.pi/piper/config.json to allow it.",
+    });
+    return;
+  }
   void callSupervisor({
     op: "start_transient",
     cwd,

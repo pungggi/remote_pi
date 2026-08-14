@@ -1,6 +1,7 @@
 mod common;
 use common::{
-    connect_and_auth, connect_and_auth_with_key, connect_and_auth_with_room, start_relay,
+    connect_and_auth, connect_and_auth_with_key, connect_and_auth_with_room, make_mesh_siblings,
+    start_relay,
 };
 
 use ed25519_dalek::SigningKey;
@@ -21,7 +22,9 @@ async fn subscribe_rooms_then_peer_opens_room_pushes_announced() {
     let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
 
     // App (B) subscribes to Pi's room events before Pi connects.
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
     ws_app
         .send(Message::text(
             json!({"type": "subscribe_rooms", "peers": [&peer_pi]}).to_string(),
@@ -59,7 +62,9 @@ async fn peer_disconnects_pushes_room_ended() {
     let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
 
     let (ws_pi, _) = connect_and_auth_with_room(port, &sk_pi, "work").await;
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
 
     ws_app
         .send(Message::text(
@@ -96,7 +101,9 @@ async fn rooms_check_empty_for_offline_peer() {
     use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
     let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
 
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
     ws_app
         .send(Message::text(
             json!({"type": "rooms_check", "peers": [&peer_pi]}).to_string(),
@@ -127,7 +134,9 @@ async fn rooms_check_returns_all_active_rooms() {
     let (_ws_pi_work, _) = connect_and_auth_with_room(port, &sk_pi, "work").await;
     let (_ws_pi_home, _) = connect_and_auth_with_room(port, &sk_pi, "home").await;
 
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
     ws_app
         .send(Message::text(
             json!({"type": "rooms_check", "peers": [&peer_pi]}).to_string(),
@@ -211,7 +220,9 @@ async fn duplicate_room_connection_accepted_and_both_receive_broadcast() {
     let (mut ws_pi_2, _) = connect_and_auth_with_room(port, &sk_pi, "work").await;
 
     // A third party (the "app") sends a message to (peer_pi, "work").
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
     let ct = "YnJvYWRjYXN0"; // "broadcast" b64
     ws_app
         .send(Message::text(
@@ -251,7 +262,9 @@ async fn room_announced_includes_model_from_hello() {
 
     let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
 
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
     ws_app
         .send(Message::text(
             json!({"type": "subscribe_rooms", "peers": [&peer_pi]}).to_string(),
@@ -316,7 +329,9 @@ async fn room_meta_update_broadcasts_to_subscribers() {
     let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
 
     let (mut ws_pi, _) = connect_and_auth_with_key(port, &sk_pi).await; // room = "main"
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
 
     ws_app
         .send(Message::text(
@@ -362,7 +377,9 @@ async fn rooms_check_dedup_suppresses_identical_responses() {
     let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
 
     let (_ws_pi, _) = connect_and_auth_with_room(port, &sk_pi, "work").await;
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
 
     ws_app
         .send(Message::text(
@@ -407,7 +424,9 @@ async fn rooms_check_after_real_change_emits_new_snapshot() {
     let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
 
     let (mut ws_pi, _) = connect_and_auth_with_key(port, &sk_pi).await; // room "main"
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
 
     // First rooms_check — primes the cache.
     ws_app
@@ -475,7 +494,9 @@ async fn room_meta_update_propagates_thinking() {
     let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
 
     let (mut ws_pi, _) = connect_and_auth_with_key(port, &sk_pi).await; // room "main"
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
 
     ws_app
         .send(Message::text(
@@ -524,7 +545,9 @@ async fn room_meta_update_with_only_model_preserves_thinking() {
     let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
 
     let (mut ws_pi, _) = connect_and_auth_with_key(port, &sk_pi).await;
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
 
     ws_app
         .send(Message::text(
@@ -592,7 +615,9 @@ async fn room_announced_and_rooms_check_include_thinking_from_hello() {
     let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
 
     // App subscribes first so it catches room_announced.
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
     ws_app
         .send(Message::text(
             json!({"type": "subscribe_rooms", "peers": [&peer_pi]}).to_string(),
@@ -685,7 +710,9 @@ async fn room_meta_update_propagates_working() {
     let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
 
     let (mut ws_pi, _) = connect_and_auth_with_key(port, &sk_pi).await; // room "main"
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
 
     ws_app
         .send(Message::text(
@@ -756,7 +783,9 @@ async fn room_meta_update_with_only_model_preserves_working() {
     let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
 
     let (mut ws_pi, _) = connect_and_auth_with_key(port, &sk_pi).await;
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
 
     ws_app
         .send(Message::text(
@@ -823,7 +852,9 @@ async fn room_announced_and_rooms_check_include_working_from_hello() {
     let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
 
     // App subscribes first so it catches room_announced.
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
     ws_app
         .send(Message::text(
             json!({"type": "subscribe_rooms", "peers": [&peer_pi]}).to_string(),
@@ -908,7 +939,9 @@ async fn rooms_check_reflects_updated_model() {
     let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
 
     let (mut ws_pi, _) = connect_and_auth_with_key(port, &sk_pi).await;
-    let (mut ws_app, _) = connect_and_auth(port).await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
 
     // Update model first.
     ws_pi

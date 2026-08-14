@@ -73,6 +73,25 @@ String toWsRelayUrl(String url) {
   return url;
 }
 
+/// Security fix 2026-08 (H2) — classifies a relay URL's transport for the
+/// Home insecure-connection banner. Returns `true` when the link is
+/// confidential: `https://`/`wss://` (TLS), or a loopback host (`ws://` to
+/// localhost can't be sniffed off-path). Any other `http://`/`ws://` host —
+/// the default LAN dial — returns `false`: anyone on the same network can
+/// read the traffic and (with the relay's own key) impersonate the peer.
+bool relayTransportIsSecure(String url) {
+  final lower = url.toLowerCase();
+  if (lower.startsWith('https://') || lower.startsWith('wss://')) return true;
+  final Uri uri;
+  try {
+    uri = Uri.parse(url);
+  } catch (_) {
+    return false;
+  }
+  final host = uri.host.toLowerCase();
+  return host == 'localhost' || host == '127.0.0.1' || host == '::1';
+}
+
 /// Validates a candidate relay URL the user typed into Settings or
 /// the onboarding form.
 ///

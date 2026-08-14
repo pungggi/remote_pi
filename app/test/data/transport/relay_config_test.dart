@@ -137,5 +137,33 @@ void main() {
       // The guard that keeps "" from being treated as a usable endpoint.
       expect(isValidRelayUrl(kDefaultRelayUrl), isFalse);
     });
+
+    group('relayTransportIsSecure (security fix 2026-08)', () {
+      test('https/wss are confidential', () {
+        expect(relayTransportIsSecure('https://relay.example.com:3000'), isTrue);
+        expect(relayTransportIsSecure('wss://relay.example.com'), isTrue);
+      });
+
+      test('ws/http to loopback is confidential (nothing to sniff)', () {
+        expect(relayTransportIsSecure('http://127.0.0.1:3000'), isTrue);
+        expect(relayTransportIsSecure('http://localhost:3000'), isTrue);
+        expect(relayTransportIsSecure('ws://[::1]:3000'), isTrue);
+      });
+
+      test('the default LAN dial (RFC1918 ws://) is NOT confidential', () {
+        expect(relayTransportIsSecure('http://192.168.1.10:3000'), isFalse);
+        expect(relayTransportIsSecure('http://10.0.0.5:3000'), isFalse);
+        expect(relayTransportIsSecure('http://172.16.0.2:3000'), isFalse);
+      });
+
+      test('overlay addresses (Tailscale CGNAT) are NOT confidential', () {
+        expect(relayTransportIsSecure('http://100.75.161.17:3000'), isFalse);
+      });
+
+      test('garbage is classified insecure (fail closed)', () {
+        expect(relayTransportIsSecure(''), isFalse);
+        expect(relayTransportIsSecure('not a url'), isFalse);
+      });
+    });
   });
 }

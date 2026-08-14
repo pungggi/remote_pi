@@ -25,6 +25,10 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../pairing/pair_request_flow.dart';
 
+/// Security fix 2026-08 — inner-envelope signature domain. MUST match
+/// `DOMAIN_PREFIX` in pi-extension `src/transport/inner_sig.ts`.
+const String kInnerSigDomain = 'piper/inner/v1\n';
+
 class WsTransportError implements Exception {
   final String message;
   const WsTransportError(this.message);
@@ -33,11 +37,25 @@ class WsTransportError implements Exception {
   String toString() => 'WsTransportError: $message';
 }
 
-class WsTransport implements PeerTransport, IControlLink {
+class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo {
   final WebSocketChannel _ws;
   final _queue = _MsgQueue();
   final _controlController =
       StreamController<ControlInbound>.broadcast();
+
+  /// This device's Ed25519 key — signs the WS challenge AND every outbound
+  /// inner envelope (security fix 2026-08).
+  late final SimpleKeyPair _ed25519Key;
+
+  /// Canonical http(s) relay URL we dialed — drives [isTransportSecure].
+  late final String _relayUrl;
+
+  /// Inbound-signature ratchet: flips true on the first VERIFIED Pi
+  /// signature (or from the persisted [PeerRecord.signing] at connect).
+  /// Once true, unsigned inbound frames are dropped — a malicious relay
+  /// can no longer strip signatures to impersonate the Pi.
+  bool _requireSignature = false;
+  void Function()? _onPeerRatcheted;
 
   WsTransport._(this._ws);
 
@@ -46,6 +64,8 @@ class WsTransport implements PeerTransport, IControlLink {
     required String relayUrl,
     required String peerPubkey, // base64 standard or url — destination peer
     required SimpleKeyPair ed25519Key, // this device's Ed25519 long-term key
+    bool peerSigningRequired = false, // security fix 2026-08 — ratchet seed
+    void Function()? onPeerRatcheted, // ...and persistence hook
   }) async {
     // Plan-18 follow-up — a WS-level pingInterval (RFC 6455 control
     // frames) keeps the TCP connection alive through NAT / corporate
@@ -75,7 +95,7 @@ class WsTransport implements PeerTransport, IControlLink {
     bool authDone = false;
 
     final sub = ws.stream.listen(
-      (raw) {
+      (raw) async {
         // Volume probe: log every frame the relay pushes onto this
         // socket so we can spot firehose patterns (e.g. presence
         // churn, repeated room snapshots) by counting prefix
@@ -97,9 +117,10 @@ class WsTransport implements PeerTransport, IControlLink {
         }
         try {
           final frame = jsonDecode(raw as String) as Map<String, dynamic>;
-          // Envelope: {peer, room?, ct} → enqueue payload bytes.
+          // Envelope: {peer, room?, ct, sig?} → enqueue payload bytes.
           if (frame.containsKey('peer') && frame.containsKey('ct')) {
-            final bytes = _b64Decode(frame['ct'] as String);
+            final ct = frame['ct'] as String;
+            final bytes = _b64Decode(ct);
             final senderRoom = frame['room'] as String?;
             // Plan-18 follow-up — DEMUX inbound by sender room.
             // SessionRepository is singleton; without this guard,
@@ -118,6 +139,32 @@ class WsTransport implements PeerTransport, IControlLink {
               '[ws-in] bytes=${rawStr.length} kind=envelope '
               'ct.bytes=${bytes.length}',
             );
+            // Security fix 2026-08 — end-to-end sender verification against
+            // the paired Pi's pubkey. Present+invalid → ALWAYS drop (the
+            // relay forwarding a tampered/foreign-signed frame). Absent → drop
+            // only once the Pi has demonstrated signing (ratchet).
+            final sigRaw = frame['sig'];
+            if (sigRaw is String && sigRaw.isNotEmpty) {
+              if (!await transport._verifyInboundSig(ct, sigRaw)) {
+                debugPrint(
+                  '[ws-in] bytes=${rawStr.length} kind=envelope '
+                  'sig=INVALID DROPPED',
+                );
+                return;
+              }
+              if (!transport._requireSignature) {
+                transport._requireSignature = true;
+                try {
+                  transport._onPeerRatcheted?.call();
+                } catch (_) {/* persistence hook is best-effort */}
+              }
+            } else if (transport._requireSignature) {
+              debugPrint(
+                '[ws-in] bytes=${rawStr.length} kind=envelope '
+                'sig=ABSENT-after-ratchet DROPPED',
+              );
+              return;
+            }
             transport._queue.add(bytes);
             return;
           }
@@ -196,6 +243,10 @@ class WsTransport implements PeerTransport, IControlLink {
       authDone = true;
 
       transport._peerPubkey = _normalizeToStandard(peerPubkey);
+      transport._ed25519Key = ed25519Key;
+      transport._relayUrl = relayUrl;
+      transport._requireSignature = peerSigningRequired;
+      transport._onPeerRatcheted = onPeerRatcheted;
       transport._sub = sub;
       return transport;
     } catch (e) {
@@ -232,12 +283,42 @@ class WsTransport implements PeerTransport, IControlLink {
 
   @override
   Future<void> send(Uint8List data) async {
+    final ct = base64.encode(data);
+    // Security fix 2026-08 — sign the exact ct string with the device key
+    // (same key as the WS handshake) so the Pi can verify end-to-end sender
+    // authenticity instead of trusting the relay-asserted `peer` field.
+    final sig = await Ed25519().sign(
+      utf8.encode('$kInnerSigDomain$ct'),
+      keyPair: _ed25519Key,
+    );
     _ws.sink.add(jsonEncode({
       'peer': _peerPubkey,
       'room': _activeRoom,
-      'ct': base64.encode(data),
+      'ct': ct,
+      'sig': base64.encode(sig.bytes),
     }));
   }
+
+  /// Verifies an inbound `sig` over `ct` against the PAIRED Pi's pubkey
+  /// (which the relay asserts in `peer` — and which we dialed).
+  Future<bool> _verifyInboundSig(String ct, String sigB64) async {
+    try {
+      final pkBytes = _b64Decode(_peerPubkey);
+      final pk = SimplePublicKey(pkBytes, type: KeyPairType.ed25519);
+      return await Ed25519().verify(
+        utf8.encode('$kInnerSigDomain$ct'),
+        signature: Signature(_b64Decode(sigB64), publicKey: pk),
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Security fix 2026-08 (H2) — true when this transport is confidential:
+  /// `wss://`/`https://` (TLS) or a loopback host (nothing to sniff off-path).
+  /// Drives the persistent insecure-transport banner on Home.
+  @override
+  bool get isTransportSecure => relayTransportIsSecure(_relayUrl);
 
   @override
   Future<Uint8List> receive() => _queue.next();

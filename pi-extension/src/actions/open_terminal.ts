@@ -25,9 +25,10 @@
  */
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { ClientMessage, WireWorktree } from "../protocol/types.js";
 import type { ActionReplySender } from "./handlers.js";
+import { remoteCwdAllowed } from "./cwd_policy.js";
 import { addWorktree, forgetWorktree, listWorktrees } from "./worktree_registry.js";
 import { saveLocalConfig } from "../session/local_config.js";
 
@@ -527,6 +528,22 @@ export async function handleOpenTerminal(
     return;
   }
 
+  // Security fix 2026-08 (M3) — remote-supplied cwds must live inside a
+  // configured project root (or be a registered worktree). Spawning `pi` at
+  // an arbitrary path auto-loads that path's .pi/ extensions = RCE.
+  if (!remoteCwdAllowed(cwd)) {
+    sender.send({
+      type: "open_terminal_result",
+      in_reply_to: msg.id,
+      ok: false,
+      message:
+        `Remote terminal is restricted to project roots — add '${cwd}' ` +
+        "to projects.roots in ~/.pi/piper/config.json to allow it.",
+      method: "none",
+    });
+    return;
+  }
+
   // Plan/112 — reopen: when the request carries a `worktree_path`, skip
   // creation entirely and open a terminal at that existing worktree.
   const reopenPath = msg.worktree_path && msg.worktree_path.trim() ? msg.worktree_path.trim() : null;
@@ -534,12 +551,17 @@ export async function handleOpenTerminal(
   let worktreePath: string;
   let created: WireWorktree | undefined;
   if (reopenPath) {
-    if (!existsSync(reopenPath)) {
+    // Security fix 2026-08 (M3) — reopen must target a REGISTERED worktree,
+    // not any existing path on disk.
+    const registered = listWorktrees().some(
+      (entry) => resolve(entry.path) === resolve(reopenPath),
+    );
+    if (!registered || !existsSync(reopenPath)) {
       sender.send({
         type: "open_terminal_result",
         in_reply_to: msg.id,
         ok: false,
-        message: `Worktree path not found: ${reopenPath}`,
+        message: `Not a registered worktree: ${reopenPath}`,
         method: "none",
       });
       return;

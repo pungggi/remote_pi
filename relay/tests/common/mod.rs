@@ -102,3 +102,48 @@ pub async fn connect_and_auth(port: u16) -> (WsStream, String) {
     let sk = SigningKey::generate(&mut rand::thread_rng());
     connect_and_auth_with_key(port, &sk).await
 }
+
+/// Publishes a signed mesh blob (via `POST /mesh/:hash`) that makes ALL the
+/// given peer pubkeys siblings of one Owner — so the presence/rooms mesh
+/// gate (security fix 2026-08) authorizes cross-peer queries between them.
+///
+/// Call BEFORE the first gated control frame: `MeshAuthCache` caches a
+/// negative result for ~1 s, and a query racing this publish could read a
+/// stale miss.
+pub async fn make_mesh_siblings(port: u16, member_pubkeys: &[String]) {
+    let owner = SigningKey::generate(&mut rand::thread_rng());
+    let owner_pk_bytes = owner.verifying_key().to_bytes();
+    let owner_pk = B64.encode(owner_pk_bytes);
+
+    let blob = json!({
+        "issued_at": 1_700_000_000_000_u64,
+        "version": 1_u64,
+        "owner_pk": owner_pk,
+        "members": member_pubkeys.iter().map(|epk| json!({
+            "remote_epk": epk,
+            "relay_url": "wss://relay.example.test",
+            "paired_at": "2025-01-01T00:00:00.000Z",
+        })).collect::<Vec<_>>(),
+    });
+    let blob_bytes = serde_json::to_vec(&blob).unwrap();
+    let sig = owner.sign(&blob_bytes);
+    let envelope = json!({
+        "blob": B64.encode(&blob_bytes),
+        "sig": B64.encode(sig.to_bytes()),
+    });
+
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(owner_pk_bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+
+    let url = format!("http://127.0.0.1:{port}/mesh/{hash}");
+    let client = reqwest::Client::new();
+    let resp = client.post(&url).json(&envelope).send().await.unwrap();
+    assert!(
+        resp.status().is_success(),
+        "make_mesh_siblings: POST /mesh/{hash} failed with {}",
+        resp.status()
+    );
+}

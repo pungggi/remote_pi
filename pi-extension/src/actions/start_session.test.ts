@@ -21,6 +21,15 @@ vi.mock("../daemon/client.js", () => ({
 }));
 
 import { callSupervisor, SupervisorOfflineError } from "../daemon/client.js";
+
+// Security fix 2026-08 — the handler now gates cwd against the project-roots
+// policy. Unit tests here exercise the supervisor ADAPTER, not the policy
+// (cwd_policy gets its own coverage below via allowedRemoteCwds tests);
+// neutralize it so arbitrary fixture paths pass through.
+vi.mock("./cwd_policy.js", () => ({
+  remoteCwdAllowed: vi.fn(() => true),
+}));
+
 import { handleStartSession } from "./start_session.js";
 import type { ClientMessage, ServerMessage } from "../protocol/types.js";
 

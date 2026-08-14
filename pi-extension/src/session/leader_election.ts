@@ -1,5 +1,5 @@
 import { Server, Socket, createConnection, createServer } from "node:net";
-import { existsSync, lstatSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, unlinkSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { usesNamedPipe } from "./ipc.js";
 
@@ -94,7 +94,17 @@ function _tryBind(sockPath: string): Promise<Server | null> {
       resolve(val);
     };
     server.once("error", () => settle(null));
-    server.listen(sockPath, () => settle(server));
+    server.listen(sockPath, () => {
+      // Security fix 2026-08 — tighten the socket file to owner-only. Node
+      // creates it with default perms (0777 & ~umask — group/other-writable
+      // under umask 0), which lets ANY local user connect to the broker and
+      // inject envelopes into agent sessions. Windows named pipes take the
+      // default libuv DACL (current user + admins + SYSTEM) instead.
+      if (!usesNamedPipe()) {
+        try { chmodSync(sockPath, 0o600); } catch { /* best-effort */ }
+      }
+      settle(server);
+    });
   });
 }
 

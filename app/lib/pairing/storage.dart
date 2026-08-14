@@ -101,6 +101,12 @@ class PeerRecord {
   /// renders an empty subtitle.
   final PiHarness? harness;
 
+  /// Security fix 2026-08 — this Pi has demonstrated inner-envelope signing
+  /// (a verified `sig`). Once true, WsTransport drops the Pi's unsigned
+  /// frames — a malicious relay can no longer strip signatures. Absent in
+  /// legacy records → treated as false (transition-safe).
+  final bool signing;
+
   const PeerRecord({
     required this.remoteEpk,
     required this.sessionName,
@@ -109,6 +115,7 @@ class PeerRecord {
     this.nickname,
     this.roomId,
     this.harness,
+    this.signing = false,
   });
 
   Map<String, dynamic> toJson() => {
@@ -119,6 +126,7 @@ class PeerRecord {
     'nickname': nickname,
     'room_id': roomId,
     if (harness != null) 'harness': harness!.toJson(),
+    if (signing) 'signing': true,
   };
 
   factory PeerRecord.fromJson(Map<String, dynamic> j) {
@@ -139,6 +147,8 @@ class PeerRecord {
       harness: harnessJson is Map<String, dynamic>
           ? PiHarness.fromJson(harnessJson)
           : null,
+      // Security fix 2026-08 — legacy records lack the field → false.
+      signing: j['signing'] == true,
     );
   }
 
@@ -148,6 +158,7 @@ class PeerRecord {
     Object? nickname = _unset,
     Object? roomId = _unset,
     Object? harness = _unset,
+    bool? signing,
   }) => PeerRecord(
     remoteEpk: remoteEpk,
     sessionName: sessionName ?? this.sessionName,
@@ -162,6 +173,7 @@ class PeerRecord {
     harness: identical(harness, _unset)
         ? this.harness
         : harness as PiHarness?,
+    signing: signing ?? this.signing,
   );
 
   @override
@@ -173,7 +185,8 @@ class PeerRecord {
       other.pairedAt == pairedAt &&
       other.nickname == nickname &&
       other.roomId == roomId &&
-      other.harness == harness;
+      other.harness == harness &&
+      other.signing == signing;
 
   @override
   int get hashCode => Object.hash(
@@ -184,6 +197,7 @@ class PeerRecord {
         nickname,
         roomId,
         harness,
+        signing,
       );
 }
 

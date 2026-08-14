@@ -340,6 +340,10 @@ Future<IChannel> _productionConnectionFactory(
         relayUrl: ep.url,
         peerPubkey: peer.remoteEpk,
         ed25519Key: ownerKey,
+        // Security fix 2026-08 — seed the inbound-signature ratchet from
+        // the persisted record and persist the flip when it fires.
+        peerSigningRequired: peer.signing,
+        onPeerRatcheted: () => _markPeerSigning(peer.remoteEpk),
       ).timeout(
         timeout,
         onTimeout: () => throw TimeoutException(
@@ -368,6 +372,21 @@ Future<IChannel> _productionConnectionFactory(
     }
   }
   throw lastError ?? TimeoutException('All relay endpoints failed');
+}
+
+/// Security fix 2026-08 — flips the peer's `signing` ratchet in
+/// PairingStorage (idempotent, best-effort). Called by WsTransport when the
+/// first VERIFIED Pi signature arrives on a connection.
+void _markPeerSigning(String remoteEpk) {
+  try {
+    final storage = _injector.get<PairingStorage>();
+    storage.loadPeer(remoteEpk).then<void>((record) {
+      if (record == null || record.signing) return;
+      storage.savePeer(record.copyWith(signing: true));
+    }).catchError((_) {/* best-effort — retried on next verified frame */});
+  } catch (_) {
+    // Storage unavailable during teardown — harmless.
+  }
 }
 
 /// Plan 115 — returns `true` when LAN candidates should be skipped: a link

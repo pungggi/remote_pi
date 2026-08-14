@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -202,7 +202,13 @@ export class Supervisor {
   private _mkdirParent(): void {
     // A named pipe has no parent directory to create (the addr is `\\.\pipe\…`).
     if (usesNamedPipe()) return;
-    mkdirSync(dirname(this.sockPath), { recursive: true });
+    // Security fix 2026-08 — 0700 + best-effort chmod: the supervisor socket
+    // accepts privileged control ops (start_transient spawns `pi` in a cwd);
+    // any local user able to traverse must not reach it.
+    try {
+      mkdirSync(dirname(this.sockPath), { recursive: true, mode: 0o700 });
+      try { chmodSync(dirname(this.sockPath), 0o700); } catch { /* best-effort */ }
+    } catch { /* let listen surface the real error */ }
   }
 
   private async _bindUds(): Promise<void> {
@@ -226,7 +232,14 @@ export class Supervisor {
     const server = createServer((socket) => this._onConnection(socket));
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(path, () => resolve());
+      server.listen(path, () => {
+        // Security fix 2026-08 — owner-only socket file (default is umask-
+        // dependent). Named pipes: libuv DACL already restricts to the user.
+        if (!pipe) {
+          try { chmodSync(path, 0o600); } catch { /* best-effort */ }
+        }
+        resolve();
+      });
     });
     this.server = server;
   }

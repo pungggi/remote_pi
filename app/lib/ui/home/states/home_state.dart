@@ -84,6 +84,12 @@ class HomeList extends HomeState {
   /// when the connection recovers or the user dismisses it.
   final bool showReliabilityBanner;
 
+  /// Security fix 2026-08 (H2) — shown while the app is Online over a
+  /// NON-confidential transport (`ws://` to a non-loopback host, i.e. the
+  /// default LAN dial). Anyone on the same network can read the traffic.
+  /// Not dismissable — it's a property of the connection, not a nudge.
+  final bool showInsecureTransportBanner;
+
   const HomeList({
     required this.peers,
     this.statusByEpk = const {},
@@ -91,6 +97,7 @@ class HomeList extends HomeState {
     this.filter = HomeFilter.online,
     this.gitByKey = const {},
     this.showReliabilityBanner = false,
+    this.showInsecureTransportBanner = false,
   });
 
   HomeList copyWith({
@@ -100,6 +107,7 @@ class HomeList extends HomeState {
     HomeFilter? filter,
     Map<String, GitStatus?>? gitByKey,
     bool? showReliabilityBanner,
+    bool? showInsecureTransportBanner,
   }) => HomeList(
     peers: peers ?? this.peers,
     statusByEpk: statusByEpk ?? this.statusByEpk,
@@ -107,6 +115,8 @@ class HomeList extends HomeState {
     filter: filter ?? this.filter,
     gitByKey: gitByKey ?? this.gitByKey,
     showReliabilityBanner: showReliabilityBanner ?? this.showReliabilityBanner,
+    showInsecureTransportBanner:
+        showInsecureTransportBanner ?? this.showInsecureTransportBanner,
   );
 
   /// Flatten to a single ordered list of items: one row per (peer, room).
@@ -172,6 +182,7 @@ class HomeList extends HomeState {
       other is HomeList &&
       other.filter == filter &&
       other.showReliabilityBanner == showReliabilityBanner &&
+      other.showInsecureTransportBanner == showInsecureTransportBanner &&
       listEquals(other.peers, peers) &&
       mapEquals(other.statusByEpk, statusByEpk) &&
       mapEquals(other.roomsByPeer, roomsByPeer) &&
@@ -181,6 +192,7 @@ class HomeList extends HomeState {
   int get hashCode => Object.hash(
     filter,
     showReliabilityBanner,
+    showInsecureTransportBanner,
     Object.hashAll(peers),
     Object.hashAllUnordered(
       statusByEpk.entries.map((e) => '${e.key}:${e.value.runtimeType}'),

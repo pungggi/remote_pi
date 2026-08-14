@@ -483,6 +483,9 @@ Detalhes em `plan/04-pairing.md`.
 
 - **Relay vê plaintext do conteúdo atual**. TLS protege o trânsito, mas App↔Pi usa `ct` como Base64 de JSON em claro (pode ser encaminhado sem parse, não é ciphertext), e conteúdo Pi↔Pi, controle/routing/erros e membership assinada são parseados em memória pelo relay conforme necessário. Operador vê quem manda para quem e o conteúdo. Mitigação: **self-hosting** do relay (open source)
 - **Não há E2E** entre app e pi-extension nem entre Pis cross-PC. **Não afirmamos E2E em copy nenhuma do produto**
+- **Sem confidencialidade E2E, mas COM autenticidade de remetente end-to-end (security fix 2026-08)**: o campo opcional `sig` do envelope externo App↔Pi é Ed25519(`"piper/inner/v1
+" + ct`) com a MESMA chave do handshake WS do remetente; o destinatário verifica contra o `peer` que o relay afirmou e o relay repassa `sig` verbatim (não forja, não stripa). Relay comprometido ainda LÊ tudo, mas não forja um remetente pareado: após o primeiro `sig` válido o receptor ratchet (`signing: true` em `peers.json`/`PeerRecord`) passa a descartar frames sem assinatura desse peer. Transição: peers legados sem assinatura seguem aceitos até o app atualizado re-parear/assinar
+- **LAN dial padrão é `ws://` plaintext (plan/115)**: na mesma WLAN um sniffer lê todo o tráfego. O app agora exibe banner persistente "Insecure connection" enquanto Online por transporte não-confidencial (fix 2026-08); `https://`/loopback não o disparam
 - **Headless Linux** (Docker, VPS sem D-Bus session): Pi-key cai pra arquivo `0600` em disco com warning loud. Atacante com acesso ao user pode ler. Recomenda-se GNOME Keyring / KWallet pra hardening real
 - **Backup encriptado completo** (Time Machine, iCloud Drive criptografado etc) pode carregar a Keychain. Atacante precisa do user passphrase do backup
 - **Clone detection ainda não implementado**: 2 PCs com mesma Pi-key (via cópia de arquivo headless ou comprometimento) podem coexistir no relay sem alerta. Em roadmap (plan/27 Wave E3)
@@ -492,9 +495,10 @@ Detalhes em `plan/04-pairing.md`.
 | Adversário | Capacidade | Protegido? |
 |---|---|---|
 | Network passive | Sniff TLS | ✅ Sim (cipher TLS) |
-| Network active (MITM) | Sniff + inject | ✅ Sim (TLS + Ed25519 pairing) |
-| Operador do relay público | Lê tudo que passa, persiste | ⚠️ Parcial (mitigação: self-host) |
-| Outro user no PC do alvo | Lê filesystem do alvo | ✅ Sim (Keychain user-bound) |
+| Network active (MITM) | Sniff + inject | ✅ Assinatura `sig` end-to-end do remetente + ratchet pós-1º-sig (fix 2026-08); peers legados dependem de TLS/relay honesto |
+| Operador do relay público | Lê tudo que passa, persiste | ⚠️ Parcial — LÊ (sem E2E), mas NÃO forja remetente pareado (`sig`); self-host continua a mitigação real |
+| Outro peer autenticado no relay | Presence/rooms/metadata de peers arbitrários | ✅ Gated por mesh-membership igual ao `pi_envelope` (fix 2026-08) |
+| Outro user no PC do alvo | Lê filesystem; conecta em sockets locais | ✅ Keychain user-bound + `~/.pi/piper` 0700 + sockets 0600 (fix 2026-08) |
 | Atacante com root no PC do alvo | Memory dump, processo injection | ❌ Não (modelo de threat aceitável: root = jogo perdido) |
 | Atacante com backup do disco | Restaura disco em outro Mac | ✅ Sim em macOS com FileVault on (recomendado) |
 | Atacante que rouba só `peers.json` | Vê metadata pública (Owner-pubkeys + nicks) | Privacy issue, não impersonation |

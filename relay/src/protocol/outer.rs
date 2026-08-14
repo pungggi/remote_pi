@@ -16,6 +16,14 @@ pub struct OuterEnvelope {
     #[serde(default = "default_room")]
     pub room: String,
     pub ct: String, // base64 — nunca decodificado aqui
+    /// End-to-end sender signature over `ct` (security fix 2026-08 — see
+    /// `transport/inner_sig.ts` on the extension side and PROTOCOL.md).
+    /// Base64(Ed25519(domain-prefix || ct-utf8)) made with the sender's
+    /// WS-auth key. The relay does NOT verify it — it only forwards the
+    /// field verbatim so the recipient (who trusts the key, not the relay)
+    /// can. Absent in legacy frames → forwarded as absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig: Option<String>,
 }
 
 /// Nome da env var que sobrescreve o teto do outer envelope (inteiro em MiB).
@@ -91,6 +99,20 @@ mod tests {
         let line = r#"{"peer":"abc","room":"aB12CD34eF56","ct":"AAA="}"#;
         let env = parse_line(line).unwrap();
         assert_eq!(env.room, "aB12CD34eF56");
+    }
+
+    #[test]
+    fn sig_round_trips_and_defaults_to_none() {
+        // Legacy frames (no sig) parse with sig == None.
+        let legacy = parse_line(r#"{"peer":"abc","ct":"AAA="}"#).unwrap();
+        assert!(legacy.sig.is_none());
+        // Sig-bearing frames keep it; re-serialization emits the field back.
+        let signed = parse_line(r#"{"peer":"abc","ct":"AAA=","sig":"U0lH"}"#).unwrap();
+        assert_eq!(signed.sig.as_deref(), Some("U0lH"));
+        let reserialized = serde_json::to_string(&signed).unwrap();
+        assert!(reserialized.contains("\"sig\":\"U0lH\""));
+        // And serializing a None envelope omits the field (legacy wire shape).
+        assert!(!serde_json::to_string(&legacy).unwrap().contains("sig"));
     }
 
     #[test]

@@ -266,6 +266,21 @@ class ConnectionManager extends Service {
   ConnectionStatus get status => _status;
   Stream<ConnectionStatus> get statusStream => _statusController.stream;
 
+  /// Security fix 2026-08 (H2) — true when the CURRENT channel's transport
+  /// is confidentiality-protected (`wss://`/`https://` or loopback). Drives
+  /// the persistent insecure-transport banner on Home. When offline, falls
+  /// back to `false` (banner hidden by the caller's connected-gate anyway).
+  bool get isTransportSecure {
+    final s = _status;
+    if (s is StatusOnline) {
+      final ch = s.channel;
+      if (ch is ITransportSecurityInfo) {
+        return (ch as ITransportSecurityInfo).isTransportSecure;
+      }
+    }
+    return false;
+  }
+
   IChannel? get channel =>
       _status is StatusOnline ? (_status as StatusOnline).channel : null;
 
