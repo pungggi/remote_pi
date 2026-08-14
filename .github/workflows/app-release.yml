@@ -2,7 +2,8 @@
 #
 # Trigger: tag `app-v<versão>` (a versão DEVE bater com app/pubspec.yaml).
 # Produz: GitHub Release com `RemotePi.apk` assinado (keystore release) +
-# SHA256SUMS. Sem lojas — distribuição direta do APK.
+# `RemotePi-debug.apk` (debug-signed, instalável ao lado do release — sempre
+# publicado junto) + SHA256SUMS. Sem lojas — distribuição direta do APK.
 #
 # Guarda anti-debug: o Gradle do app cai silenciosamente pras debug keys se o
 # key.properties faltar, então o job compara o fingerprint do certificado do
@@ -79,10 +80,15 @@ jobs:
           storeFile=signing/remotepi-release.jks
           EOF
 
-      - name: Build APK release
+      - name: Build APK release + debug
         run: |
           flutter pub get
           flutter build apk --release
+          # Debug APK sempre junto de cada release — instalável para
+          # troubleshooting (logs verbosos, sem obfuscation) ao lado do
+          # release-signed. Debug-signed por design; sem verificação de
+          # keystore aqui, só no release.
+          flutter build apk --debug
 
       - name: Verifica assinatura (anti-fallback de debug)
         env:
@@ -108,7 +114,8 @@ jobs:
           VERSION="${{ steps.v.outputs.version }}"
           mkdir -p out
           cp build/app/outputs/flutter-apk/app-release.apk out/RemotePi.apk
-          (cd out && sha256sum RemotePi.apk > SHA256SUMS)
+          cp build/app/outputs/flutter-apk/app-debug.apk out/RemotePi-debug.apk
+          (cd out && sha256sum RemotePi.apk RemotePi-debug.apk > SHA256SUMS)
           BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
           jq -n --arg version "$VERSION" --arg date "$(date -u +%F)" \
             --arg notes "Piper (app) ${VERSION}" \
@@ -125,7 +132,7 @@ jobs:
         run: |
           VERSION="${{ steps.v.outputs.version }}"
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" out/RemotePi.apk out/SHA256SUMS out/latest.json --clobber
+            gh release upload "$RELEASE_TAG" out/RemotePi.apk out/RemotePi-debug.apk out/SHA256SUMS out/latest.json --clobber
           else
             NOTES_FILE=$(mktemp)
             {
@@ -134,7 +141,7 @@ jobs:
               echo "---"
               echo "**Publicação (gate manual):** baixe o \`latest.json\` desta release e comite em \`app/latest.json\` no branch \`downloads\` deste repositório — só então o aviso in-app passa a ofertar esta versão."
             } > "$NOTES_FILE"
-            gh release create "$RELEASE_TAG" out/RemotePi.apk out/SHA256SUMS out/latest.json \
+            gh release create "$RELEASE_TAG" out/RemotePi.apk out/RemotePi-debug.apk out/SHA256SUMS out/latest.json \
               --title "Piper (app) ${VERSION}" \
               --notes-file "$NOTES_FILE" \
               --latest=false
@@ -147,7 +154,7 @@ jobs:
             echo ""
             echo "Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
             echo ""
-            echo "Asset: \`RemotePi.apk\` (assinado com o keystore release, verificado no job)."
+            echo "Assets: `RemotePi.apk` (assinado com o keystore release, verificado no job) e `RemotePi-debug.apk` (debug-signed)."
             echo ""
             echo "**Próximo passo (manual):** baixar o \`latest.json\` da release e"
             echo "comitar em \`app/latest.json\` no branch \`downloads\` pra ir ao ar no aviso in-app."
