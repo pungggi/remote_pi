@@ -246,11 +246,22 @@ fn direct_members_from_blobs(pi_pk: &str, blobs: &[Vec<u8>]) -> Option<HashSet<S
             Ok(header) => header,
             Err(_) => continue,
         };
-        let owner_members: Result<HashSet<String>, _> = header
+        let mut owner_members: Result<HashSet<String>, _> = header
             .members
             .iter()
             .map(|member| canonical_ed25519_public_key(&member.remote_epk))
             .collect();
+        // Regression fix (2026-08-16): the mesh blob lists only the PIS as
+        // `members`; the phone app is the `owner_pk`, NOT a member. Without
+        // treating the owner as part of the set, the app's presence/rooms
+        // queries about its own Pis were gated OUT (empty Home/Projects on
+        // the phone) — the exact traffic this authorization must allow.
+        if let Ok(mut set) = owner_members {
+            if let Ok(owner_pk) = canonical_ed25519_public_key(&header.owner_pk) {
+                set.insert(owner_pk);
+            }
+            owner_members = Ok(set);
+        }
         let Ok(owner_members) = owner_members else {
             continue;
         };
@@ -509,14 +520,19 @@ mod tests {
     fn multi_owner_union_ignores_sender_only_owner_inserted_first() {
         let pi_a = pi_key(0x0a);
         let pi_b = pi_key(0x0b);
+        let owner1 = pi_key(0x01);
+        let owner2 = pi_key(0x02);
         let blobs = vec![
             owner_blob(&[1; 32], &[&pi_a], 1),
             owner_blob(&[2; 32], &[&pi_a, &pi_b], 1),
         ];
 
+        // Regression fix (2026-08-16): each blob's owner_pk is part of its
+        // mesh set — a phone (owner) shares the mesh with its Pis, so both
+        // owners appear in the union alongside the Pi members.
         assert_eq!(
             direct_members_from_blobs(&pi_a, &blobs),
-            Some(HashSet::from([pi_a, pi_b])),
+            Some(HashSet::from([pi_a, pi_b, owner1, owner2])),
         );
     }
 
