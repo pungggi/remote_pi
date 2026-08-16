@@ -109,6 +109,11 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
         meshSync.startPolling();
         // ignore: unawaited_futures
         meshSync.pullOnDemand();
+        // Fix (2026-08-16): also reconcile a missing blob on resume — a
+        // fresh install whose first publish failed transiently recovers
+        // on the very next app-open instead of waiting for the poll tick.
+        // ignore: unawaited_futures
+        meshSync.reconcileMissingBlobIfMissing();
         // Plan/104 — a warm share (app was backgrounded) is stashed in
         // onNewIntent; pull it (image or text) and route to the chat.
         _consumeShares();

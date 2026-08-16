@@ -271,7 +271,40 @@ class MeshSyncService extends ChangeNotifier {
     _pollTimer = Timer.periodic(interval, (_) {
       // ignore: unawaited_futures
       pullOnDemand();
+      // Fix (2026-08-16): a fresh install's FIRST publish (fired once via
+      // the peer-mutation hook right after pairing) can fail transiently —
+      // e.g. the relay dial raced the pairing flow. Nothing retried it, so
+      // the new Owner-key never appeared in any mesh blob and the relay's
+      // mesh-gated presence/rooms queries for this app timed out forever
+      // ("connecting to source… then timed out"). Reconcile on every poll:
+      // if the relay has NO blob for our owner key but we HAVE paired
+      // peers locally, publish now (the safety net still refuses empty
+      // publishes on top of an existing version).
+      // ignore: unawaited_futures
+      _reconcileMissingBlob();
     });
+  }
+
+  /// Publish-if-missing (fix 2026-08-16): no blob on the relay + paired
+  /// peers locally → publish. Cheap in the common case (one extra fetch).
+  /// Public alias for the resume path; safe to call any time.
+  Future<void> reconcileMissingBlobIfMissing() => _reconcileMissingBlob();
+
+  Future<void> _reconcileMissingBlob() async {
+    if (_publishing) return;
+    try {
+      final pk = _ownerBridge.currentOwnerPk;
+      if (pk == null) return;
+      final peers = await _storage.listPeers();
+      if (peers.isEmpty) return;
+      final hash = await MeshClient.ownerPkHash(pk);
+      final result = await _client.fetch(hash);
+      if (result is MeshFetchNotFound) {
+        await publish(allowEmpty: false);
+      }
+    } catch (_) {
+      // Best-effort reconcile; the next poll retries.
+    }
   }
 
   void stopPolling() {
