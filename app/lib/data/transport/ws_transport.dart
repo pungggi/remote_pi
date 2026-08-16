@@ -110,24 +110,16 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
     final challengeCompleter = Completer<Map<String, dynamic>>();
     bool authDone = false;
 
-    // PR #24 follow-up (#4) — `Stream.listen` does NOT await async callbacks,
-    // so an unsigned frame arriving right after a valid signed one could
-    // evaluate `_requireSignature` before the (async) verification flipped
-    // it. Serialize ALL inbound handling through this future chain: frames
-    // are processed strictly in arrival order, each seeing the ratchet
-    // state left by its predecessor. Errors are swallowed to keep the chain
-    // alive (individual frames already handle their own failures).
-    Future<void> inFlight = Future<void>.value();
-
+    // Perf fix (2026-08-16): frames are processed in PARALLEL again — the
+    // serialized chain made every inbound frame wait for the previous
+    // frame's Ed25519 verify and froze the UI during agent-chunk bursts.
+    // The review-#4 ratchet race stays closed because the flag is flipped
+    // SYNCHRONOUSLY (before the awaited verify) inside processFrame, so any
+    // later frame in the same microtask queue already sees it flipped.
     Future<void> processFrame(dynamic raw) async {
-        // Volume probe: log every frame the relay pushes onto this
-        // socket so we can spot firehose patterns (e.g. presence
-        // churn, repeated room snapshots) by counting prefix
-        // occurrences — body kept compact so the log stays grep-able
-        // even when the relay is chatty.
-        final rawStr = raw is String ? raw : raw.toString();
+        // Volume probe removed (perf 2026-08-16): per-frame debugPrint
+        // flooded the debug console (~200 frames/10s) and caused jank.
         if (!authDone) {
-          debugPrint('[ws-in] bytes=${rawStr.length} stage=preauth');
           try {
             challengeCompleter.complete(
               jsonDecode(raw as String) as Map<String, dynamic>,
@@ -153,16 +145,8 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
             // match the currently-addressed Pi cwd, drop the payload.
             // Legacy Pis without `room` route unconditionally.
             if (senderRoom != null && senderRoom != transport._activeRoom) {
-              debugPrint(
-                '[ws-in] bytes=${rawStr.length} kind=envelope '
-                'sender_room=$senderRoom DROPPED (room-mismatch)',
-              );
-              return;
+              return; // room-mismatch — drop silently (perf)
             }
-            debugPrint(
-              '[ws-in] bytes=${rawStr.length} kind=envelope '
-              'ct.bytes=${bytes.length}',
-            );
             // Security fix 2026-08 + PR #25 follow-up — dual-sig verification.
             //   sig2 present → strict v2 (dest + ts window); invalid → drop,
             //                           NO v1 fallback (legit senders sign both).
@@ -184,10 +168,7 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
                 hasSig2 ? sig2Raw : null,
                 tsRaw,
               )) {
-                debugPrint(
-                  '[ws-in] bytes=${rawStr.length} kind=envelope '
-                  'sig=INVALID DROPPED',
-                );
+                debugPrint('[ws-in] sig=INVALID DROPPED');
                 return;
               }
               if (!transport._ratchetPersisted) {
@@ -197,10 +178,7 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
                 } catch (_) {/* persistence hook is best-effort */}
               }
             } else if (transport._requireSignature) {
-              debugPrint(
-                '[ws-in] bytes=${rawStr.length} kind=envelope '
-                'sig=ABSENT-after-ratchet DROPPED',
-              );
+              debugPrint('[ws-in] sig=ABSENT-after-ratchet DROPPED');
               return;
             }
             transport._queue.add(bytes);
@@ -209,26 +187,22 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
           // Control: top-level `type` only → presence stream.
           final ctrl = ControlInbound.tryFromJson(frame);
           if (ctrl != null && !transport._controlController.isClosed) {
-            debugPrint(
-              '[ws-in] bytes=${rawStr.length} kind=control '
-              'type=${frame['type']}',
-            );
             transport._controlController.add(ctrl);
             return;
           }
           // Anything else: unknown shape — drop silently.
-          debugPrint('[ws-in] bytes=${rawStr.length} kind=unknown DROPPED');
+          // unknown shape — drop silently
         } catch (e) {
-          debugPrint(
-            '[ws-in] bytes=${rawStr.length} kind=malformed DROPPED err=$e',
-          );
+          debugPrint('[ws-in] malformed DROPPED err=$e');
         }
     } // processFrame
 
-    final sub = ws.stream.listen(
-      (raw) {
-        inFlight = inFlight.then((_) => processFrame(raw)).catchError((_) {});
-      },
+    final sub = ws.stream.listen((raw) {
+      // Perf fix (2026-08-16): parallel per-frame processing — no global
+      // serialization; race-safety via the synchronous ratchet flip
+      // inside processFrame (see comment above).
+      unawaited(processFrame(raw));
+    },
       onError: (e) {
         if (!challengeCompleter.isCompleted) challengeCompleter.completeError(e);
         transport._queue.error(e);
