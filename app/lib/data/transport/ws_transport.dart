@@ -24,22 +24,11 @@ import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../pairing/pair_request_flow.dart';
+import 'ed25519_worker.dart';
+import 'inner_sig.dart';
 
-/// Security fix 2026-08 — inner-envelope signature domain. MUST match
-/// `DOMAIN_PREFIX` in pi-extension `src/transport/inner_sig.ts`.
-const String kInnerSigDomain = 'piper/inner/v1\n';
-
-/// v2 domain (PR #24 follow-up) — binds the RECIPIENT pubkey and a timestamp
-/// into the signed bytes: `piper/inner/v2\n<dest>\n<ts>\n<ct>`. Kills the
-/// cross-Pi redirect (a frame signed for Pi A fails on Pi B) and bounds
-/// replay to [kInnerSigMaxAgeMs]. MUST match `DOMAIN_PREFIX_V2` on the
-/// pi-extension side.
-const String kInnerSigDomainV2 = 'piper/inner/v2\n';
-
-/// Replay freshness window for v2 signatures — MUST match `MAX_AGE_MS` in
-/// pi-extension `src/transport/inner_sig.ts` (10 minutes; generous for phone
-/// ↔ PC clock skew, short enough that a captured frame is useless later).
-const int kInnerSigMaxAgeMs = 10 * 60 * 1000;
+export 'inner_sig.dart'
+    show kInnerSigDomain, kInnerSigDomainV2, kInnerSigMaxAgeMs;
 
 class WsTransportError implements Exception {
   final String message;
@@ -109,6 +98,9 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
 
     final challengeCompleter = Completer<Map<String, dynamic>>();
     bool authDone = false;
+    // Arrival-order serialization for processFrame (Augment review
+    // 2026-08-20) — see the listen() callback below.
+    Future<void> frameChain = Future<void>.value();
 
     // Perf fix (2026-08-16): frames are processed in PARALLEL again — the
     // serialized chain made every inbound frame wait for the previous
@@ -198,10 +190,30 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
     } // processFrame
 
     final sub = ws.stream.listen((raw) {
-      // Perf fix (2026-08-16): parallel per-frame processing — no global
-      // serialization; race-safety via the synchronous ratchet flip
-      // inside processFrame (see comment above).
-      unawaited(processFrame(raw));
+      // Augment review 2026-08-20 (2 findings on the 2026-08-16 parallel
+      // dispatch) — frames are processed STRICTLY IN ARRIVAL ORDER again,
+      // via a future chain:
+      //   1. (security) The v2 ratchet (_piV2) flips only after a sig2
+      //      VERIFY completes. With parallel dispatch, a dual-signed frame
+      //      and a following relay-stripped v1 frame could both pass the
+      //      _piV2 check before the former's await returned — reopening
+      //      downgrade stripping after every reconnect. Serialization
+      //      closes the window: frame N's decisions observe every effect
+      //      of frames 1..N-1.
+      //   2. (correctness) Async verification made _queue.add run in
+      //      completion order, not arrival order — AgentChunk deltas could
+      //      overtake their AgentDone and scramble persisted output.
+      // The 2026-08-16 parallelism existed because per-frame Ed25519 ran
+      // ON the UI isolate; that load now lives in the Ed25519Worker
+      // isolate, so the chain only ever awaits cheap worker round-trips
+      // and the UI thread stays responsive.
+      frameChain = frameChain.then((_) => processFrame(raw)).catchError(
+        (Object e) {
+          // processFrame already handles its own errors; this guards the
+          // chain itself so one bad frame can't wedge the queue.
+          debugPrint('[ws-in] chain error $e');
+        },
+      );
     },
       onError: (e) {
         if (!challengeCompleter.isCompleted) challengeCompleter.completeError(e);
@@ -260,7 +272,14 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
       authDone = true;
 
       transport._peerPubkey = _normalizeToStandard(peerPubkey);
+      transport._ownPubkeyB64 = base64.encode(pub.bytes);
       transport._ed25519Key = ed25519Key;
+      try {
+        final kpData = await ed25519Key.extract();
+        transport._seedBytes = Uint8List.fromList(kpData.bytes);
+      } catch (_) {
+        // No seed → send() falls back to inline signing (slower, still correct).
+      }
       transport._relayUrl = relayUrl;
       transport._requireSignature = peerSigningRequired;
       transport._onPeerRatcheted = onPeerRatcheted;
@@ -274,6 +293,19 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
   }
 
   String _peerPubkey = '';
+
+  /// This device's OWN pubkey (standard base64) — the v2 `dest` binding for
+  /// INBOUND verification. The Pi signs Pi→app frames with dest = the APP's
+  /// pubkey (the recipient), so that is what must go into the hashed bytes.
+  /// (Bug 2026-08-20: verification hashed `_peerPubkey` — the PI's key — so
+  /// every inbound v2 frame failed and `pair_ok` was dropped: the phone
+  /// showed "Pairing timed out" while the Pi logged "Paired".)
+  String _ownPubkeyB64 = '';
+
+  /// Ed25519 seed bytes for the device key — lets the background worker
+  /// (Ed25519Worker) sign without re-extracting per frame (perf 2026-08-20:
+  /// pure-Dart sign/verify on the UI isolate caused 550ms+ jank frames).
+  Uint8List? _seedBytes;
   StreamSubscription? _sub;
 
   /// Plan 115 — LAN candidate URLs the relay advertised in its challenge
@@ -301,77 +333,87 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
   @override
   Future<void> send(Uint8List data) async {
     final ct = base64.encode(data);
-    // Security fix 2026-08 (dual-sign, PR #25 review #1) — every outbound
-    // frame carries BOTH signatures with the device key (same key as the WS
-    // handshake):
-    //   sig  — v1, sender-bound: keeps pre-#25 Pis verifying (they only read
-    //          `sig`; a v2-only scheme breaks the mixed rollout).
-    //   sig2 — v2, dest-bound + ts-windowed: kills cross-Pi redirect + replay
-    //          for upgraded recipients.
+    // Security fix 2026-08 (dual-sign, PR #25 review #1) + perf 2026-08-20:
+    // both signatures are produced by the BACKGROUND Ed25519 worker — the
+    // pure-Dart implementation on the UI isolate cost 2× scalar-mults per
+    // outbound frame and froze the UI during bursts. Falls back to inline
+    // signing only if the worker is unavailable (spawn failure).
     final ts = DateTime.now().millisecondsSinceEpoch;
-    final algo = Ed25519();
-    final sigV1 = await algo.sign(
-      utf8.encode('$kInnerSigDomain$ct'),
-      keyPair: _ed25519Key,
-    );
-    final sigV2 = await algo.sign(
-      utf8.encode('$kInnerSigDomainV2$_peerPubkey\n$ts\n$ct'),
-      keyPair: _ed25519Key,
-    );
+    final v1Bytes = utf8.encode('$kInnerSigDomain$ct');
+    final v2Bytes = utf8.encode('$kInnerSigDomainV2$_peerPubkey\n$ts\n$ct');
+    final sigV1 = await _sign(v1Bytes);
+    final sigV2 = await _sign(v2Bytes);
     _ws.sink.add(jsonEncode({
       'peer': _peerPubkey,
       'room': _activeRoom,
       'ct': ct,
-      'sig': base64.encode(sigV1.bytes),
-      'sig2': base64.encode(sigV2.bytes),
+      'sig': base64.encode(sigV1),
+      'sig2': base64.encode(sigV2),
       'ts': ts,
     }));
   }
 
-  /// Verifies an inbound envelope's `sig` over `ct` against the PAIRED Pi's
-  /// pubkey (which the relay asserts in `peer` — and which we dialed).
-  /// v2 (`ts` present): dest-bound + freshness window. v1 (no ts): legacy
-  /// sender-bound transition path. Never throws — any parse/decode failure
-  /// is an invalid signature.
+  /// Signs on the worker when the seed is available; inline otherwise.
+  Future<Uint8List> _sign(List<int> data) async {
+    final seed = _seedBytes;
+    if (seed != null) {
+      try {
+        return await Ed25519Worker.instance.sign(seed, data);
+      } catch (_) {
+        // Worker unavailable — fall through to inline (UI-isolate) signing.
+      }
+    }
+    final sig = await Ed25519().sign(data, keyPair: _ed25519Key);
+    return Uint8List.fromList(sig.bytes);
+  }
+
+  /// Verify via the background worker, inline fallback.
+  Future<bool> _workerVerify(Uint8List publicKey, Uint8List data, Uint8List signature) async {
+    try {
+      return await Ed25519Worker.instance.verify(publicKey, data, signature);
+    } catch (_) {
+      try {
+        return await Ed25519().verify(
+          data,
+          signature: Signature(
+            signature,
+            publicKey: SimplePublicKey(publicKey, type: KeyPairType.ed25519),
+          ),
+        );
+      } catch (_) {
+        return false;
+      }
+    }
+  }
+
   /// True once the paired Pi demonstrated v2 (a verified `sig2`). v1-only
   /// frames from such a peer are a relay downgrade strip → dropped.
   bool _piV2 = false;
 
-  /// Dual-sig inbound verification (PR #25 review #1):
-  ///   sig2 present → STRICT v2 (dest binding + ts window); invalid → drop,
-  ///                 never v1 fallback (legit senders sign both).
-  ///   sig only    → v1 transition path, unless the Pi is v2-ratcheted
-  ///                 (downgrade strip → drop).
-  /// Never throws — any parse/decode failure is an invalid signature.
+  /// Dual-sig inbound verification — delegates to [verifyInboundInnerSig]
+  /// (pure, unit-tested in `inner_sig_test.dart`). The v2 `dest` is OUR OWN
+  /// pubkey: the Pi signs Pi→app frames with dest = the RECIPIENT's key.
+  /// (Bug 2026-08-20: this hashed `_peerPubkey` — the PI's key — so every
+  /// inbound v2 frame failed and `pair_ok` was dropped: the phone showed
+  /// "Pairing timed out" while the Pi logged "Paired".)
   Future<bool> _verifyInboundEnvelope(
     String ct,
     String sigB64,
     String? sig2B64,
     Object? tsRaw,
   ) async {
-    try {
-      final pk = SimplePublicKey(_b64Decode(_peerPubkey), type: KeyPairType.ed25519);
-      final algo = Ed25519();
-      if (sig2B64 != null && sig2B64.isNotEmpty) {
-        if (tsRaw is! num || tsRaw.toInt() != tsRaw) return false;
-        final ts = tsRaw.toInt();
-        final now = DateTime.now().millisecondsSinceEpoch;
-        if ((now - ts).abs() > kInnerSigMaxAgeMs) return false; // stale replay
-        final ok = await algo.verify(
-          utf8.encode('$kInnerSigDomainV2$_peerPubkey\n$ts\n$ct'),
-          signature: Signature(_b64Decode(sig2B64), publicKey: pk),
-        );
-        if (ok) _piV2 = true; // mark BEFORE returning — next v1-only = strip
-        return ok;
-      }
-      if (_piV2) return false; // v1-only from a v2-capable Pi — downgrade strip
-      return await algo.verify(
-        utf8.encode('$kInnerSigDomain$ct'),
-        signature: Signature(_b64Decode(sigB64), publicKey: pk),
-      );
-    } catch (_) {
-      return false;
-    }
+    final verdict = await verifyInboundInnerSig(
+      senderPubkeyB64: _peerPubkey,
+      ownPubkeyB64: _ownPubkeyB64,
+      ct: ct,
+      sigB64: sigB64,
+      sig2B64: sig2B64,
+      tsRaw: tsRaw,
+      senderV2Capable: _piV2,
+      verifyFn: _workerVerify,
+    );
+    if (verdict.v2Verified) _piV2 = true;
+    return verdict.ok;
   }
 
   /// Security fix 2026-08 (H2) — true when this transport is confidential:
