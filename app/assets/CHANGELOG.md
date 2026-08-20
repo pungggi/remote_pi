@@ -11,6 +11,16 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+## [1.3.2] — 2026-08-16
+
+### Fixed
+
+- **Fresh installs no longer time out** — a failed first mesh-blob publish
+  is now retried on every poll tick and app resume instead of never
+  (the relay's mesh gate needs the blob to authorize presence/rooms).
+- **UI freeze during agent replies fixed** — inbound frames are processed
+  in parallel again; per-frame debug logging removed.
+
 ## [1.3.1] — 2026-08-14
 
 ### Security
