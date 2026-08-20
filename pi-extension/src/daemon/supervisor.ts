@@ -805,7 +805,14 @@ export class Supervisor {
     if (evt.code === EXIT_DAEMON_FRESH_SESSION) {
       // App-triggered daemon `/new`: this is an intentional recycle, not a
       // crash. Restart immediately and don't burn the crash backoff budget.
+      // PR #30 review fix (augment finding 2): refresh spawnedAt too — the
+      // uptime-based backoff reset in the crash path below compares against
+      // the PREVIOUS incarnation's spawn time; leaving it stale meant a
+      // recycled daemon that crash-looped immediately kept "inheriting" the
+      // old incarnation's healthy uptime, resetting the backoff on every
+      // exit → a 1-second crash loop instead of escalating retries.
       slot.restartAttempt = 0;
+      slot.spawnedAt = Date.now();
       slot.child.noteRestart();
       slot.child.spawn();
       return;

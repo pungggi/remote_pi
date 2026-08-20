@@ -105,6 +105,19 @@ class Ed25519Worker {
         debugName: 'ed25519-worker',
         errorsAreFatal: true,
       );
+      // Review fix (PR #30, augment finding 1): a PARENT-owned ReceivePort
+      // never closes when the spawned isolate exits — `rcv.onDone` would
+      // never fire and worker death would leave pending futures hanging
+      // forever, with later requests sent to a stale port. addOnExitListener
+      // is the reliable signal: it fires when the isolate terminates for ANY
+      // reason, letting _onWorkerDied fail pending calls + clear state so the
+      // next request respawns the worker.
+      final exitPort = ReceivePort();
+      _isolate!.addOnExitListener(exitPort.sendPort);
+      exitPort.listen((_) {
+        exitPort.close();
+        if (_isolate != null) _onWorkerDied();
+      });
     } catch (e) {
       _isolate = null;
       _ready = null;
@@ -113,6 +126,13 @@ class Ed25519Worker {
       rethrow;
     }
     await ready.future;
+  }
+
+  /// Test-only: kills the worker isolate so death handling can be verified
+  /// (PR #30 review: respawn-after-death regression).
+  @visibleForTesting
+  void debugKillForTest() {
+    _isolate?.kill(priority: Isolate.immediate);
   }
 
   void _onWorkerDied() {
