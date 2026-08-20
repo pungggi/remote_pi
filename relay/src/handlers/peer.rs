@@ -9,7 +9,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::AppState;
 use crate::auth::challenge::{
@@ -445,9 +445,15 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     Message::Text(fwd_line),
                                     conn_id,
                                 ) {
-                                    // Normal during peer/room churn (was ~94% of the log at warn!);
-                                    // debug-only. Re-enable at RUST_LOG=debug when diagnosing routing.
-                                    debug!(
+                                    // Was debug! ("normal during churn, ~94% of
+                                    // the log"), but the relay's subscriber runs
+                                    // at a fixed INFO level — RUST_LOG has no
+                                    // effect — so routing failures were INVISIBLE
+                                    // (Projects "Device unreachable" diagnosis,
+                                    // 2026-08-20). Dropped-frame visibility beats
+                                    // log noise here; churn drops are still cheap
+                                    // to filter downstream.
+                                    info!(
                                         from = %peer_short,
                                         dest = %dest_tail,
                                         room = %dest_room,
