@@ -9,11 +9,12 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:app/data/transport/channel.dart';
 import 'package:app/pairing/pair_request_flow.dart';
 import 'package:app/protocol/codec.dart';
+
+import 'package:flutter/foundation.dart';
 // ControlInbound + IControlLink come from these.
 import 'package:app/protocol/protocol.dart';
 
@@ -118,6 +119,8 @@ class PlainPeerChannel implements IChannel, IControlLink, ITransportSecurityInfo
   static final Set<String> _seenIdsSet = <String>{};
 
   bool _seenBefore(dynamic id) {
+    // Only String ids participate (action replies correlate via in_reply_to
+    // and carry no id — see _handleFrame). null/absent → never a replay.
     if (id is! String || id.isEmpty) return false;
     if (_seenIdsSet.contains(id)) return true;
     if (_seenIds.length >= _seenIdsCap) {
@@ -132,7 +135,21 @@ class PlainPeerChannel implements IChannel, IControlLink, ITransportSecurityInfo
   void _handleFrame(Uint8List bytes) {
     try {
       final msg = decodeServer(utf8.decode(bytes));
-      if (_seenBefore((msg as dynamic).id)) {
+      // Replay dedup (PR #24/#25). BUG 2026-08-20: the old code read
+      // `(msg as dynamic).id` directly — action replies (ListProjectsResult,
+      // GitStatusResult, OpenTerminalResult, Pong, …) have NO `id` field
+      // (they correlate via `in_reply_to`), so the dynamic access threw
+      // NoSuchMethodError into the generic catch and the reply was SILENTLY
+      // DROPPED — every remote action timed out (Projects "Device
+      // unreachable"). Only messages that actually carry a String id
+      // participate in dedup; anything else delivers.
+      Object? id;
+      try {
+        id = (msg as dynamic).id;
+      } on NoSuchMethodError {
+        id = null;
+      }
+      if (_seenBefore(id)) {
         // Replayed server frame — drop before it corrupts UI state
         // (duplicate agent_chunks, duplicate echoes).
         return;
