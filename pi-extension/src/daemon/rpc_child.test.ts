@@ -16,25 +16,42 @@ import { RpcChild, busyTransition, resolvePiBin, resolvePiSpawn, _npmShimTarget,
 describe("rpcSpawnArgs", () => {
   test("includes --continue so a restart resumes the latest session (not a new one)", () => {
     expect(rpcSpawnArgs("/path/to/dist/index.js")).toEqual([
-      "--mode", "rpc", "--approve", "--continue", "-e", "/path/to/dist/index.js",
+      "--mode", "rpc", "--approve", "--continue", "-ne", "-e", "/path/to/dist/index.js",
     ]);
   });
 
   test("pins the session display name via --name when one is given", () => {
     expect(rpcSpawnArgs("/path/to/dist/index.js", "PC")).toEqual([
-      "--mode", "rpc", "--approve", "--continue", "--name", "PC", "-e", "/path/to/dist/index.js",
+      "--mode", "rpc", "--approve", "--continue", "--name", "PC", "-ne", "-e", "/path/to/dist/index.js",
     ]);
   });
 
   test("can omit --continue for one daemon fresh-session restart", () => {
     expect(rpcSpawnArgs("/path/to/dist/index.js", "PC", false)).toEqual([
-      "--mode", "rpc", "--approve", "--name", "PC", "-e", "/path/to/dist/index.js",
+      "--mode", "rpc", "--approve", "--name", "PC", "-ne", "-e", "/path/to/dist/index.js",
     ]);
   });
 
   test("always passes --approve (pi >=0.79 project trust; RPC is non-interactive)", () => {
     expect(rpcSpawnArgs("/path/to/dist/index.js")).toContain("--approve");
     expect(rpcSpawnArgs("/path/to/dist/index.js", "PC", false)).toContain("--approve");
+  });
+
+  // 2026-08 incident: a typo'd user-global extension (unterminated template
+  // literal in vision-proxy.ts) is FATAL at pi boot and killed the whole
+  // daemon fleet — the phone showed "Device unreachable" until the typo was
+  // fixed. `-ne` isolates daemons from user extension discovery while the
+  // explicit `-e` still loads remote-pi itself.
+  test("isolates daemons from user extensions: -ne disables discovery, -e still loads remote-pi", () => {
+    for (const args of [
+      rpcSpawnArgs("/path/to/dist/index.js"),
+      rpcSpawnArgs("/path/to/dist/index.js", "PC"),
+      rpcSpawnArgs("/path/to/dist/index.js", "PC", false),
+    ]) {
+      expect(args).toContain("-ne");
+      // discovery off must NOT mean our own extension is off
+      expect(args[args.indexOf("-e") + 1]).toBe("/path/to/dist/index.js");
+    }
   });
 });
 
