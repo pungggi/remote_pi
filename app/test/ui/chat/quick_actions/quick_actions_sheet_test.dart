@@ -60,6 +60,16 @@ class _FakeRepo implements IActionsRepository {
   Future<List<WireProject>> listProjects() async => const [];
 
   @override
+  Future<ChangeLayoutResult> changeLayout(String layout) async =>
+      ChangeLayoutResult(
+        inReplyTo: '',
+        ok: false,
+        created: const [],
+        skipped: const [],
+        message: 'not implemented in test fake',
+      );
+
+  @override
   Future<StartSessionResult> startSession({
     required String cwd,
     String? name,

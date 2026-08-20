@@ -137,6 +137,15 @@ abstract class IActionsRepository extends Repository {
   /// offline/timeout. An empty list is a valid answer (no repos found).
   Future<List<WireProject>> listProjects();
 
+  /// api.changeLayout — apply a NAMED `.ckp` layout on the PC via the
+  /// Cockpit CLI (`orchestrate`). Call after switching the connection to
+  /// room [kDeviceRoom]; the device daemon resolves [layout] (a plain name,
+  /// basename without `.ckp`) under the projects roots and applies it.
+  /// Returns the orchestrate report ([ChangeLayoutResult.created]/[skipped]).
+  /// Throws [ActionFailure] on offline/timeout; `ok:false` (in the result's
+  /// [ChangeLayoutResult.message]) for unknown layout / Cockpit missing.
+  Future<ChangeLayoutResult> changeLayout(String layout);
+
   /// Plan/124 — bring an OFFLINE session back to life in its own cwd (no new
   /// worktree, no pin). Call after switching the connection to room
   /// [kDeviceRoom]; the device daemon asks the supervisor for a transient
@@ -300,6 +309,30 @@ class ActionsRepository extends Repository implements IActionsRepository {
               ActionFailure(message.isEmpty ? 'discovery failed' : message),
             );
           }
+        }
+      // api.changeLayout — Cockpit orchestrate reply. Completes the future
+      // with the full report (ok:false stays IN the result, not an exception
+      // — the message is user-presentable: unknown name, Cockpit missing…).
+      case ChangeLayoutResult(
+        :final inReplyTo,
+        :final ok,
+        :final created,
+        :final skipped,
+        :final message,
+      ):
+        final p = _pending.remove(inReplyTo);
+        if (p == null) return;
+        p.timeout.cancel();
+        if (!p.completer.isCompleted) {
+          p.completer.complete(
+            ChangeLayoutResult(
+              inReplyTo: inReplyTo,
+              ok: ok,
+              created: created,
+              skipped: skipped,
+              message: message,
+            ),
+          );
         }
       // Plan/124 — start-session (revive) reply. ok:false → ActionFailure
       // with the supervisor's message (e.g. "supervisor not running").
@@ -487,6 +520,12 @@ class ActionsRepository extends Repository implements IActionsRepository {
   @override
   Future<List<WireProject>> listProjects() =>
       _dispatch<List<WireProject>>((id) => ListProjectsRequest(id: id));
+
+  @override
+  Future<ChangeLayoutResult> changeLayout(String layout) =>
+      _dispatch<ChangeLayoutResult>(
+        (id) => ChangeLayoutRequest(id: id, layout: layout),
+      );
 
   @override
   Future<StartSessionResult> startSession({required String cwd, String? name}) =>
