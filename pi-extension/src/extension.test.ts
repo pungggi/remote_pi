@@ -235,6 +235,8 @@ const {
   _setCurrentModelForTest,
   _setPiForTest,
   _getCurrentTurnIdForTest,
+  _setCurrentTurnIdForTest,
+  _setPresenceResubscribeMsForTest,
   _getPendingSteerIdsForTest,
   _connectForTest,
   _startRelayForTest,
@@ -712,6 +714,207 @@ describe("state machine + pair_request flow", () => {
       type: "ping", id: "ping-reconnect",
     }));
     await vi.waitFor(() => expect(_getState()).toBe("paired"), { timeout: 2000 });
+  });
+});
+
+// ── Owner presence tracking (perf 2026-08-21) ──────────────────────────────────
+// The daemon must subscribe to paired owners' presence and stop broadcasting to
+// dead dests: a channel whose phone socket died used to stay in activePeers
+// forever, so every agent_chunk was dual-signed and unicasted to a peer the
+// relay only dropped ("dest not found" INFO-spam + wasted signing CPU).
+describe("owner presence: subscribe + skip offline dests", () => {
+  beforeEach(async () => {
+    _resetInnerSigStateForTest();
+    vi.clearAllMocks();
+    _knownPeers.length = 0;
+    _addedPeers.length = 0;
+    _removedPeers.length = 0;
+    _consumeCalls.length = 0;
+    _tokenStatus = "ok";
+    relayRef.current = null;
+    const qr = await import("./pairing/qr.js");
+    (qr.qrSession.consumeToken as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (token: string) => {
+        _consumeCalls.push(token);
+        return _tokenStatus;
+      },
+    );
+    const stop = captureHandler("remote-pi stop");
+    await stop("", makeMockCtx());
+  });
+
+  test("start subscribes to presence for known owners (canonical ids)", async () => {
+    // Stored url-safe spelling must be canonicalized to the relay's standard
+    // base64 peer-id form before subscribing.
+    _knownPeers.push({
+      name: "Phone",
+      remote_epk: OWNER_URL_SAFE_FIXTURE,
+      paired_at: "2026-08-21T00:00:00.000Z",
+      signing: true,
+    });
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx());
+
+    await vi.waitFor(() => {
+      const subs = relayRef.current!.sendControl.mock.calls
+        .map((c) => c[0] as { type?: string; peers?: string[] })
+        .filter((f) => f.type === "subscribe_presence");
+      expect(subs.length).toBeGreaterThanOrEqual(1);
+      expect(subs[0]!.peers).toContain(OWNER_STANDARD_FIXTURE);
+    }, { timeout: 2000 });
+  });
+
+  test("peer_offline detaches the channel — broadcasts stop signing for it", async () => {
+    const APP_PEER_ID = "presence-flap-peer";
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx());
+
+    relayRef.current!.emit("message", makeInnerLine(APP_PEER_ID, {
+      type: "pair_request", id: "req-1", token: "test-token", device_name: "Phone",
+    }));
+    await vi.waitFor(() => expect(_getState()).toBe("paired"), { timeout: 2000 });
+    expect(_hasActivePeerForTest(APP_PEER_ID)).toBe(true);
+
+    // Phone socket dies → relay pushes peer_offline → channel must go away so
+    // _broadcastToActive no longer dual-signs + unicasts to the dead dest.
+    relayRef.current!.emit("message", JSON.stringify({
+      type: "peer_offline", peer: APP_PEER_ID,
+    }));
+    await vi.waitFor(() => expect(_hasActivePeerForTest(APP_PEER_ID)).toBe(false), { timeout: 2000 });
+    expect(_getState()).toBe("started"); // 0 owners attached
+  });
+
+  test("peer_online pre-attaches a KNOWN owner (no lost-frame reconnect gap)", async () => {
+    _knownPeers.push({
+      name: "Reconnecting Phone",
+      remote_epk: OWNER_URL_SAFE_FIXTURE,
+      paired_at: "2026-08-21T00:00:00.000Z",
+      signing: true,
+    });
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx());
+    expect(_hasActivePeerForTest(OWNER_STANDARD_FIXTURE)).toBe(false);
+
+    // Relay says the phone reconnected (subscribe backfill / live push).
+    relayRef.current!.emit("message", JSON.stringify({
+      type: "peer_online", peer: OWNER_STANDARD_FIXTURE,
+    }));
+    await vi.waitFor(
+      () => expect(_hasActivePeerForTest(OWNER_STANDARD_FIXTURE)).toBe(true),
+      { timeout: 2000 },
+    );
+  });
+
+  test("peer_online for an UNKNOWN peer does not attach", async () => {
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx());
+
+    relayRef.current!.emit("message", JSON.stringify({
+      type: "peer_online", peer: "some-stranger-peer",
+    }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(_getActivePeerCountForTest()).toBe(0);
+    expect(_getState()).toBe("started");
+  });
+
+  test("pairing widens the presence subscription with the new owner", async () => {
+    const APP_PEER_ID = "freshly-paired-peer";
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx());
+
+    relayRef.current!.emit("message", makeInnerLine(APP_PEER_ID, {
+      type: "pair_request", id: "req-1", token: "test-token", device_name: "New Phone",
+    }));
+    await vi.waitFor(() => expect(_getState()).toBe("paired"), { timeout: 2000 });
+
+    // _attachOwner re-syncs the subscription; the fresh peer must be in it.
+    await vi.waitFor(() => {
+      const subs = relayRef.current!.sendControl.mock.calls
+        .map((c) => c[0] as { type?: string; peers?: string[] })
+        .filter((f) => f.type === "subscribe_presence");
+      expect(subs.length).toBeGreaterThanOrEqual(1);
+      const last = subs[subs.length - 1]!;
+      expect(last.peers).toContain(APP_PEER_ID);
+    }, { timeout: 2000 });
+  });
+
+  // Review #1 (PR #37) — the immediate post-attach subscribe can be filtered
+  // by the relay's mesh-membership gate on a FRESH pairing (the app publishes
+  // its Owner blob only after pair_ok), so a delayed retry must re-send the
+  // subscription once propagation has settled.
+  test("fresh pairing re-subscribes presence after the propagation delay (review #1)", async () => {
+    _setPresenceResubscribeMsForTest(30);
+    const APP_PEER_ID = "resub-peer";
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx());
+
+    relayRef.current!.emit("message", makeInnerLine(APP_PEER_ID, {
+      type: "pair_request", id: "req-1", token: "test-token", device_name: "Phone",
+    }));
+    await vi.waitFor(() => expect(_getState()).toBe("paired"), { timeout: 2000 });
+
+    // Attach-time subscribe + the delayed retry both carry the fresh peer.
+    await vi.waitFor(() => {
+      const subs = relayRef.current!.sendControl.mock.calls
+        .map((c) => c[0] as { type?: string; peers?: string[] })
+        .filter((f) => f.type === "subscribe_presence" && f.peers?.includes(APP_PEER_ID));
+      expect(subs.length).toBeGreaterThanOrEqual(2);
+    }, { timeout: 2000 });
+  });
+
+  // Review #2 (PR #37) — a peer_offline landing while the pre-attach known-peer
+  // lookup is still pending must WIN: the continuation must not attach the
+  // now-offline owner (that would recreate the dead destination).
+  test("peer_offline during the pending pre-attach lookup wins (review #2)", async () => {
+    _knownPeers.push({
+      name: "Flappy Phone",
+      remote_epk: OWNER_URL_SAFE_FIXTURE,
+      paired_at: "2026-08-21T00:00:00.000Z",
+      signing: true,
+    });
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx());
+
+    // online → offline back-to-back: the async _findKnownPeer resolves only
+    // after both sync handlers ran.
+    relayRef.current!.emit("message", JSON.stringify({
+      type: "peer_online", peer: OWNER_STANDARD_FIXTURE,
+    }));
+    relayRef.current!.emit("message", JSON.stringify({
+      type: "peer_offline", peer: OWNER_STANDARD_FIXTURE,
+    }));
+
+    await new Promise((r) => setTimeout(r, 100));
+    expect(_hasActivePeerForTest(OWNER_STANDARD_FIXTURE)).toBe(false);
+    expect(_getActivePeerCountForTest()).toBe(0);
+  });
+
+  // Review #3 (PR #37) — detaching the LAST owner via peer_offline must run
+  // the _onPeerDisconnect cleanup (currentTurnId = null), not just the raw
+  // channel detach; otherwise a stale turn id makes later follow-ups look
+  // busy with no turn-end to drain them.
+  test("peer_offline on the last owner clears currentTurnId (review #3)", async () => {
+    const APP_PEER_ID = "last-owner-peer";
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx());
+
+    relayRef.current!.emit("message", makeInnerLine(APP_PEER_ID, {
+      type: "pair_request", id: "req-1", token: "test-token", device_name: "Phone",
+    }));
+    await vi.waitFor(() => expect(_getState()).toBe("paired"), { timeout: 2000 });
+
+    _setCurrentTurnIdForTest("turn-in-flight");
+    expect(_getCurrentTurnIdForTest()).toBe("turn-in-flight");
+
+    relayRef.current!.emit("message", JSON.stringify({
+      type: "peer_offline", peer: APP_PEER_ID,
+    }));
+    await vi.waitFor(
+      () => expect(_hasActivePeerForTest(APP_PEER_ID)).toBe(false),
+      { timeout: 2000 },
+    );
+    expect(_getCurrentTurnIdForTest()).toBeNull();
+    expect(_getState()).toBe("started");
   });
 });
 
@@ -6405,10 +6608,14 @@ describe("model meta", () => {
       expect(_getState()).toBe("started");
 
       // turn_start during the disconnect window: cached, NOT pushed
-      // (the only relay so far is the dead one — assert nothing was sent).
+      // (the only relay so far is the dead one — assert no metadata was sent;
+      // presence-subscribe frames are unrelated to this race and allowed).
       const onTurnStart = captureEventHandler("turn_start");
       onTurnStart({ type: "turn_start", turnIndex: 0, timestamp: 0 });
-      expect(relayInstances[0]!.sendControl).not.toHaveBeenCalled();
+      const metaPushes = relayInstances[0]!.sendControl.mock.calls
+        .map((c) => c[0] as { type: string })
+        .filter((f) => f.type === "room_meta_update");
+      expect(metaPushes).toHaveLength(0);
 
       // Reconnect fires → a fresh RelayClient is constructed.
       await vi.advanceTimersByTimeAsync(1_000);
