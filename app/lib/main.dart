@@ -107,6 +107,11 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
     switch (state) {
       case AppLifecycleState.resumed:
         meshSync.startPolling();
+        // Strategy fix (2026-08-21): re-sync the transcript on resume — a
+        // session_sync reply lost to a PC reconnect would otherwise leave
+        // the chat on a stale cache until the next chat open. Idempotent
+        // (durable merge dedups) and cheap when nothing was missed.
+        injector.get<SyncService>().requestSync();
         // ignore: unawaited_futures
         meshSync.pullOnDemand();
         // Fix (2026-08-16): also reconcile a missing blob on resume — a

@@ -67,6 +67,7 @@ void main() {
   setup({
     Duration pendingSendTimeout = const Duration(seconds: 20),
     int? localHistoryMax,
+    Duration syncRetryDelay = const Duration(seconds: 6),
   }) async {
     final ch = _FakeChannel();
     final conn = ConnectionManager(
@@ -80,6 +81,7 @@ void main() {
       boxes,
       pendingSendTimeout: pendingSendTimeout,
       localHistoryMax: localHistoryMax,
+      syncRetryDelay: syncRetryDelay,
     );
     final epk = 'epk_sync_${++_counter}';
     conn.adopt(
@@ -1643,5 +1645,145 @@ void main() {
         s.sync.dispose();
       },
     );
+  });
+
+  group('sync reliability (2026-08-21): retry lost replies + auto gap-fill', () {
+    test('unanswered session_sync is re-sent with the same id, stops on eos',
+        () async {
+      final s = await setup(syncRetryDelay: const Duration(milliseconds: 25));
+      addTearDown(() {
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      // The auto-sync after adopt (~200ms debounce) sends the request.
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      final first = s.ch.sent.whereType<SessionSync>().toList();
+      expect(first, isNotEmpty);
+      final id = first.first.id;
+
+      // No reply → the retry timer re-sends the SAME id (server re-serves
+      // the same page; idempotent merge).
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      final all = s.ch.sent.whereType<SessionSync>().toList();
+      expect(all.length, greaterThan(1));
+      expect(all.map((m) => m.id).toSet(), {id});
+
+      // Terminal reply cancels further retries.
+      s.ch.push(SessionHistory(
+        inReplyTo: id,
+        sessionStartedAt: 1,
+        events: const [],
+        eos: true,
+      ));
+      final countAtEos = s.ch.sent.whereType<SessionSync>().length;
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      expect(s.ch.sent.whereType<SessionSync>().length, countAtEos);
+    });
+
+    test('newest page with no local overlap auto-pages older until overlap',
+        () async {
+      final s = await setup();
+      addTearDown(() {
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      // Auto sync → newest page is ALL NEW to the empty box + a cursor →
+      // gap-fill must issue a loadMore with that cursor.
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      final req1 = s.ch.sent.whereType<SessionSync>().first;
+      s.ch.push(SessionHistory(
+        inReplyTo: req1.id,
+        sessionStartedAt: 1,
+        events: const [
+          UserInputEvt(ts: 10, id: 'new1', text: 'hello'),
+          AgentMessageEvt(ts: 11, inReplyTo: 'new1', text: 'world'),
+        ],
+        eos: true,
+        nextBefore: 'cursor1',
+      ));
+      await _settle();
+      final loadMores = s.ch
+          .sent
+          .whereType<SessionSync>()
+          .where((m) => m.before != null)
+          .toList();
+      expect(loadMores, isNotEmpty);
+      expect(loadMores.first.before, 'cursor1');
+
+      // Next older page OVERLAPS local (event we already merged) → stop,
+      // even though the server still offers another cursor.
+      s.ch.push(SessionHistory(
+        inReplyTo: loadMores.first.id,
+        sessionStartedAt: 1,
+        events: const [
+          UserInputEvt(ts: 5, id: 'new1', text: 'hello'),
+        ],
+        eos: true,
+        nextBefore: 'cursor2',
+      ));
+      await _settle();
+      final count = s.ch
+          .sent
+          .whereType<SessionSync>()
+          .where((m) => m.before != null)
+          .length;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(
+        s.ch
+            .sent
+            .whereType<SessionSync>()
+            .where((m) => m.before != null)
+            .length,
+        count,
+      );
+      // And the missed events actually landed locally.
+      expect(messages(s.epk).map((m) => m.id), containsAll(['new1']));
+    });
+
+    test('page with local overlap does not auto-loadMore', () async {
+      final s = await setup();
+      addTearDown(() {
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      // Seed local with one event (no cursor → no gap-fill).
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      final req1 = s.ch.sent.whereType<SessionSync>().first;
+      s.ch.push(SessionHistory(
+        inReplyTo: req1.id,
+        sessionStartedAt: 1,
+        events: const [UserInputEvt(ts: 10, id: 'seed', text: 'hi')],
+        eos: true,
+      ));
+      await _settle();
+      expect(
+        s.ch.sent.whereType<SessionSync>().where((m) => m.before != null),
+        isEmpty,
+      );
+
+      // Re-sync whose page OVERLAPS (contains 'seed') + a cursor → no auto
+      // loadMore: nothing was missed.
+      s.sync.requestSync();
+      await _settle();
+      final req2 = s.ch.sent.whereType<SessionSync>().last;
+      s.ch.push(SessionHistory(
+        inReplyTo: req2.id,
+        sessionStartedAt: 1,
+        events: const [
+          UserInputEvt(ts: 10, id: 'seed', text: 'hi'),
+          AgentMessageEvt(ts: 12, inReplyTo: 'seed', text: 'answer'),
+        ],
+        eos: true,
+        nextBefore: 'cursorX',
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(
+        s.ch.sent.whereType<SessionSync>().where((m) => m.before != null),
+        isEmpty,
+      );
+    });
   });
 }
