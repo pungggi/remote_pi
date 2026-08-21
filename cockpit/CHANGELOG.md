@@ -20,6 +20,18 @@ As versões seguem o `version:` do `pubspec.yaml` (SSOT). O campo `notes` do
     linhas não-vazias — o começo da seção deve fazer sentido sozinho.
 -->
 
+## [1.19.1] — 2026-08-21
+
+### Added
+
+- **Endpoint do servidor de status publicado em disco** —
+  `~/.cockpit/status-endpoint[-debug].json` (Windows: porta TCP efêmera +
+  token; POSIX: path do socket), escrito no boot e removido no encerramento.
+  Habilita o `api.changeLayout` do remote-pi: aplicar um layout nomeado
+  `.ckp` no workspace ativo direto do celular (o daemon do dispositivo não
+  herda o env de nenhuma aba — sem o arquivo, a porta efêmera é
+  indescobrível).
+
 ## [1.19.0] — 2026-08-02
 
 Precisão do mouse: menus, foco de pane e seleção de texto voltam a cair onde
