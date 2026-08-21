@@ -505,31 +505,60 @@ class SyncService extends Service {
   }
 
   /// Sends [msg] on [ch] and arms the unanswered-request retry for its id.
+  /// The send itself is guarded (see [_guardedSyncSend]): during teardown
+  /// the ConnectionManager can still expose the old channel while close()
+  /// is pending, and a rejection there would surface as an unhandled async
+  /// error — instead the request simply stays tracked and the retry timer
+  /// re-sends it on a healthy channel.
   void _sendTrackedSync(IChannel ch, SessionSync msg) {
-    ch.send(msg);
     _pendingSyncs[msg.id] = _PendingSyncRequest(
       id: msg.id,
       limit: msg.limit,
       before: msg.before,
     );
-    _syncRetryTimer ??= Timer.periodic(syncRetryDelay, _retryPendingSyncs);
+    unawaited(_guardedSyncSend(ch, msg));
+    _syncRetryTimer ??= Timer.periodic(
+      syncRetryDelay,
+      (t) => unawaited(_retryPendingSyncs(t)),
+    );
+  }
+
+  /// Review #1 (PR #45) — a sync send on a channel that is mid-teardown can
+  /// reject (close() races the exposed handle; WsTransport fails after
+  /// signing). Swallow the rejection: the request is already tracked, so the
+  /// retry timer owns recovery instead of the error surfacing unhandled.
+  Future<void> _guardedSyncSend(IChannel ch, SessionSync msg) async {
+    try {
+      await ch.send(msg);
+    } catch (_) {
+      // Lost to teardown — leave tracked; retry re-sends on a live channel.
+    }
   }
 
   /// Re-sends every session_sync that still has no terminal (eos) reply.
   /// Same id ⇒ the server re-serves the same page; the idempotent merge
-  /// dedups whatever arrives twice.
-  void _retryPendingSyncs(Timer _) {
+  /// dedups whatever arrives twice. A send that rejects (teardown race)
+  /// does NOT burn an attempt — the record stays pending for the next tick.
+  Future<void> _retryPendingSyncs(Timer _) async {
     final ch = _conn.channel;
     if (ch == null) return; // offline: the reconnect flow re-syncs anyway
     final exhausted = <String>[];
-    _pendingSyncs.forEach((id, rec) {
+    for (final entry in _pendingSyncs.entries.toList()) {
+      final rec = entry.value;
       if (rec.attempts >= _syncRetryMax) {
-        exhausted.add(id);
-        return;
+        exhausted.add(entry.key);
+        continue;
       }
-      rec.attempts++;
-      ch.send(SessionSync(id: rec.id, limit: rec.limit, before: rec.before));
-    });
+      try {
+        await ch.send(
+          SessionSync(id: rec.id, limit: rec.limit, before: rec.before),
+        );
+        rec.attempts++;
+      } catch (_) {
+        // Channel died mid-close; next tick retries on whatever channel the
+        // ConnectionManager exposes then.
+      }
+    }
     _pendingSyncs.removeWhere((id, _) => exhausted.contains(id));
     if (_pendingSyncs.isEmpty) _cancelSyncRetryTimer();
   }

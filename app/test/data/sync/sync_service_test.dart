@@ -21,12 +21,23 @@ class _FakeChannel implements IChannel, IControlLink {
   final _ctrl = StreamController<ServerMessage>.broadcast();
   final _control = StreamController<ControlInbound>.broadcast();
   final List<ClientMessage> sent = [];
+
+  /// Review #1 (PR #45) test hook: the next N `send` calls reject, mocking a
+  /// channel that dies mid-teardown (close() racing the exposed handle).
+  int failNextSends = 0;
+
   @override
   Stream<ServerMessage> get serverMessages => _ctrl.stream;
   @override
   Stream<ControlInbound> get controlFrames => _control.stream;
   @override
-  Future<void> send(ClientMessage msg) async => sent.add(msg);
+  Future<void> send(ClientMessage msg) async {
+    if (failNextSends > 0) {
+      failNextSends--;
+      throw StateError('channel closing');
+    }
+    sent.add(msg);
+  }
   @override
   void sendControl(Map<String, dynamic> json) {}
   @override
@@ -1656,29 +1667,77 @@ void main() {
         s.sync.dispose();
       });
 
-      // The auto-sync after adopt (~200ms debounce) sends the request.
-      await Future<void>.delayed(const Duration(milliseconds: 400));
-      final first = s.ch.sent.whereType<SessionSync>().toList();
+      // Poll for the ORIGINAL auto-sync request (debounced ~200ms after
+      // adopt) — don't sleep a fixed 400ms first, or the whole retry budget
+      // (3 × 25ms) is spent before we can intervene.
+      var waited = 0;
+      List<SessionSync> first = [];
+      while ((first = s.ch.sent.whereType<SessionSync>().toList()).isEmpty &&
+          waited < 200) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        waited++;
+      }
       expect(first, isNotEmpty);
       final id = first.first.id;
 
-      // No reply → the retry timer re-sends the SAME id (server re-serves
-      // the same page; idempotent merge).
-      await Future<void>.delayed(const Duration(milliseconds: 120));
-      final all = s.ch.sent.whereType<SessionSync>().toList();
-      expect(all.length, greaterThan(1));
-      expect(all.map((m) => m.id).toSet(), {id});
+      // Review #2 (PR #45): poll until the FIRST retry lands — strictly
+      // before the 3-attempt budget is exhausted — so the later freeze can
+      // only be explained by the eos reply, never by budget exhaustion.
+      // 5ms polls can never skip past a 25ms tick.
+      var polls = 0;
+      while (s.ch.sent.whereType<SessionSync>().length < 2 && polls < 100) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        polls++;
+      }
+      final countAtEos = s.ch.sent.whereType<SessionSync>().length;
+      expect(countAtEos, 2); // original + exactly one retry so far
+      expect(
+        s.ch.sent.whereType<SessionSync>().map((m) => m.id).toSet(),
+        {id},
+      );
 
-      // Terminal reply cancels further retries.
+      // Terminal reply received while budget remains → no further retries.
       s.ch.push(SessionHistory(
         inReplyTo: id,
         sessionStartedAt: 1,
         events: const [],
         eos: true,
       ));
-      final countAtEos = s.ch.sent.whereType<SessionSync>().length;
-      await Future<void>.delayed(const Duration(milliseconds: 120));
+      await Future<void>.delayed(
+        const Duration(milliseconds: 200),
+      ); // ≫ 25ms period
       expect(s.ch.sent.whereType<SessionSync>().length, countAtEos);
+    });
+
+    test('retry hitting a dying channel neither crashes nor burns an attempt',
+        () async {
+      final s = await setup(syncRetryDelay: const Duration(milliseconds: 25));
+      addTearDown(() {
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      final id = s.ch.sent.whereType<SessionSync>().first.id;
+
+      // The next retry tick sends into a channel mid-teardown: it rejects.
+      // Pre-fix this surfaced as an unhandled async error (test-zone crash).
+      s.ch.failNextSends = 1;
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+
+      // A later tick re-sent the SAME request on the healthy channel — the
+      // failed attempt didn't count, so the budget still allows it.
+      final retries =
+          s.ch.sent.whereType<SessionSync>().where((m) => m.id == id).length;
+      expect(retries, greaterThanOrEqualTo(1));
+
+      s.ch.push(SessionHistory(
+        inReplyTo: id,
+        sessionStartedAt: 1,
+        events: const [],
+        eos: true,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
     });
 
     test('newest page with no local overlap auto-pages older until overlap',
