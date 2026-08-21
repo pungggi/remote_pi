@@ -10,6 +10,10 @@ import {
   listNamedLayouts,
   resolveNamedLayout,
   findCockpitCli,
+  readCockpitEndpoint,
+  cockpitChildEnv,
+  orchestrateArgs,
+  parseOrchestrateReply,
 } from "./change_layout.js";
 
 let dir: string;
@@ -83,13 +87,97 @@ describe("listNamedLayouts", () => {
 });
 
 describe("findCockpitCli", () => {
-  test("falls back to PATH lookup when ~/.cockpit/bin has no binary", () => {
+  test("POSIX: falls back to the bare PATH name when no absolute candidate exists", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("linux" as never);
-    // HOME-independent: the candidate under the REAL homedir almost certainly
-    // does not exist in CI; assert we still get a usable command name.
+    // HOME-independent: the candidate dirs under the REAL homedir are
+    // Windows-named (cockpit.exe), so on the mocked linux platform the
+    // fallback must be the bare command — or an absolute POSIX candidate if
+    // this machine happens to have one.
     const cli = findCockpitCli();
-    expect(typeof cli).toBe("string");
-    expect(cli.length).toBeGreaterThan(0);
+    expect(cli === "cockpit" || /\/cockpit$/.test(cli)).toBe(true);
     vi.restoreAllMocks();
+  });
+});
+
+describe("readCockpitEndpoint (review fix: daemon is not a Cockpit terminal)", () => {
+  const writeEndpoint = (name: string, doc: unknown) => {
+    mkdirSync(join(dir, ".cockpit"), { recursive: true });
+    writeFileSync(join(dir, ".cockpit", name), JSON.stringify(doc));
+  };
+
+  test("Windows shape: tcp port + token from status-endpoint.json", () => {
+    writeEndpoint("status-endpoint.json", { port: 52341, token: "cafe" });
+    expect(readCockpitEndpoint(dir)).toEqual({ transport: "tcp", port: 52341, token: "cafe" });
+  });
+
+  test("debug endpoint file is the secondary candidate", () => {
+    writeEndpoint("status-endpoint-debug.json", { sock: "/tmp/s-debug.sock" });
+    expect(readCockpitEndpoint(dir)).toEqual({ transport: "sock", sock: "/tmp/s-debug.sock" });
+  });
+
+  test("POSIX fallback: conventional status.sock when no endpoint file exists", () => {
+    mkdirSync(join(dir, ".cockpit"), { recursive: true });
+    writeFileSync(join(dir, ".cockpit", "status.sock"), "");
+    expect(readCockpitEndpoint(dir)).toEqual({ transport: "sock", sock: join(dir, ".cockpit", "status.sock") });
+  });
+
+  test("malformed endpoint file is skipped; nothing at all → null", () => {
+    writeEndpoint("status-endpoint.json", "not-json{");
+    expect(readCockpitEndpoint(dir)).toBeNull();
+  });
+});
+
+describe("cockpitChildEnv", () => {
+  test("tcp endpoint → COCKPIT_STATUS_PORT (+token), base env preserved", () => {
+    const env = cockpitChildEnv({ transport: "tcp", port: 52341, token: "cafe" }, { PATH: "x" });
+    expect(env).toMatchObject({ PATH: "x", COCKPIT_STATUS_PORT: "52341", COCKPIT_STATUS_TOKEN: "cafe" });
+  });
+
+  test("sock endpoint → COCKPIT_STATUS_SOCK, no port vars", () => {
+    const env = cockpitChildEnv({ transport: "sock", sock: "/tmp/s.sock" }, {} as NodeJS.ProcessEnv);
+    expect(env).toMatchObject({ COCKPIT_STATUS_SOCK: "/tmp/s.sock" });
+    expect(env["COCKPIT_STATUS_PORT"]).toBeUndefined();
+  });
+});
+
+describe("orchestrateArgs (review fix: --json)", () => {
+  test("passes --json and the path verbatim — no quoting, even with spaces", () => {
+    const p = "C:\\Program Files\\proj\\my layout.ckp";
+    expect(orchestrateArgs(p)).toEqual(["orchestrate", "--json", p]);
+  });
+});
+
+describe("parseOrchestrateReply (review fix: --json shape)", () => {
+  test("success: exit 0 + one {created, skipped} stdout line", () => {
+    const r = parseOrchestrateReply(0, '{"created":["a"],"skipped":["b","c"]}\n', "");
+    expect(r).toEqual({ ok: true, created: ["a"], skipped: ["b", "c"], message: "" });
+  });
+
+  test("success tolerates junk lines around the JSON", () => {
+    const r = parseOrchestrateReply(0, 'banner\n{"created":[],"skipped":[]}\n', "");
+    expect(r.ok).toBe(true);
+    expect(r.created).toEqual([]);
+  });
+
+  test("non-string entries are filtered", () => {
+    const r = parseOrchestrateReply(0, '{"created":["a",42,null],"skipped":[]}\n', "");
+    expect(r.created).toEqual(["a"]);
+  });
+
+  test("app-reported failure: nonzero exit, message from stderr", () => {
+    const r = parseOrchestrateReply(1, "", "cockpit: layout file not found\n");
+    expect(r).toEqual({ ok: false, created: [], skipped: [], message: "cockpit: layout file not found" });
+  });
+
+  test("exit 3 (no terminal / connect refused) surfaces the CLI's stderr", () => {
+    const r = parseOrchestrateReply(3, "", "cockpit: could not connect to app: x");
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("could not connect");
+  });
+
+  test("exit 0 but unparseable stdout → loud failure, not silent empty success", () => {
+    const r = parseOrchestrateReply(0, "created: a, b\n", "");
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("created:");
   });
 });

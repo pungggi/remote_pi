@@ -10,16 +10,21 @@
  *
  *   1. resolve `name` → absolute `.ckp` path (search under the configured
  *      projects roots — same `projectsRoots()` the Projects list uses)
- *   2. spawn `cockpit orchestrate <path>`
- *   3. relay the CLI's `{ok, created, skipped}` JSON reply to the phone
+ *   2. discover the Cockpit status endpoint (review fix: the daemon is NOT a
+ *      Cockpit terminal — it has no COCKPIT_STATUS_SOCK/PORT env — so without
+ *      injecting the endpoint the CLI exits "not inside a Cockpit terminal")
+ *   3. spawn `cockpit orchestrate <path> --json`
+ *   4. parse the CLI's `{created, skipped}` JSON line (the `--json` success
+ *      shape — NOT the socket wire's `{ok, data}`) and relay it to the phone
  *
  * Failure modes are explicit and actionable: unknown layout name, Cockpit CLI
- * not installed, or Cockpit not running (CLI fails to connect).
+ * not installed, or Cockpit not running (no endpoint published / connect
+ * refused).
  */
 import { join } from "node:path";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import type { ClientMessage, ServerMessage } from "../protocol/types.js";
 import type { ActionReplySender } from "./handlers.js";
 import { projectsRoots } from "../config.js";
@@ -127,30 +132,155 @@ export function listNamedLayouts(roots: readonly string[]): NamedLayout[] {
   return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Locate the `cockpit` CLI: PATH first, then the canonical `~/.cockpit/bin`. */
+/** Locate the `cockpit` CLI. Absolute candidates first — BOTH flavors
+ *  (release `~/.cockpit/bin` and dev `~/.cockpit/bin-debug`, mirroring the
+ *  app's `cockpitCliDir()`), then PATH. Windows: spawn runs WITHOUT a shell
+ *  (a shell would split paths containing spaces and interpret
+ *  metacharacters — review finding), and a bare name does not resolve without
+ *  one, so the PATH lookup goes through `where` and returns an absolute
+ *  `.exe` (real executable only — `.cmd`/`.bat` shims are not spawnable
+ *  shell-less on modern Node) or `null`. POSIX: bare `cockpit` is fine
+ *  (spawn's own PATH lookup handles it). */
 export function findCockpitCli(): string | null {
   const isWin = process.platform === "win32";
   const exe = isWin ? "cockpit.exe" : "cockpit";
-  const candidates = [
-    join(homedir(), ".cockpit", "bin", exe),
-  ];
-  for (const c of candidates) {
+  const home = homedir();
+  for (const dir of ["bin", "bin-debug"]) {
+    const c = join(home, ".cockpit", dir, exe);
     if (existsSync(c)) return c;
   }
-  // PATH lookup (no extension juggling — spawn resolves via shell on win32)
-  return "cockpit";
+  if (!isWin) return "cockpit";
+  try {
+    const out = execFileSync("where", ["cockpit"], { encoding: "utf8" });
+    const hit = out
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .find((l) => /\.exe$/i.test(l) && existsSync(l));
+    return hit ?? null;
+  } catch {
+    return null;
+  }
 }
 
-/** Runs `cockpit orchestrate <path>`; resolves with the CLI's JSON reply. */
+/** The live Cockpit status-server endpoint, as published by the app. */
+export type CockpitEndpoint =
+  | { transport: "sock"; sock: string }
+  | { transport: "tcp"; port: number; token?: string };
+
+/** Read the Cockpit status endpoint (review fix: the daemon is not a Cockpit
+ *  terminal, so it must NOT rely on inheriting COCKPIT_STATUS_* env). Primary
+ *  source: the `status-endpoint[-debug].json` file the app publishes on
+ *  start (Windows publishes its ephemeral TCP port + anti-spoof token there —
+ *  otherwise unknowable). POSIX fallback for pre-endpoint-file Cockpits: the
+ *  conventional, deterministic UDS paths. `null` when Cockpit appears to be
+ *  not running at all. */
+export function readCockpitEndpoint(homeDir = homedir()): CockpitEndpoint | null {
+  const base = join(homeDir, ".cockpit");
+  for (const name of ["status-endpoint.json", "status-endpoint-debug.json"]) {
+    try {
+      const j = JSON.parse(
+        readFileSync(join(base, name), "utf8"),
+      ) as { sock?: unknown; port?: unknown; token?: unknown };
+      if (typeof j.sock === "string" && j.sock) {
+        return { transport: "sock", sock: j.sock };
+      }
+      if (typeof j.port === "number" && Number.isInteger(j.port) && j.port > 0) {
+        return {
+          transport: "tcp",
+          port: j.port,
+          ...(typeof j.token === "string" && j.token ? { token: j.token } : {}),
+        };
+      }
+    } catch {
+      /* missing or malformed — try the next source */
+    }
+  }
+  for (const sock of [join(base, "status.sock"), join(base, "status-debug.sock")]) {
+    if (existsSync(sock)) return { transport: "sock", sock };
+  }
+  return null;
+}
+
+/** Child env for a `cockpit` CLI invocation from OUTSIDE a Cockpit terminal:
+ *  the transport vars the CLI normally inherits from its tab's PTY. */
+export function cockpitChildEnv(
+  endpoint: CockpitEndpoint,
+  base: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  if (endpoint.transport === "sock") {
+    return { ...base, COCKPIT_STATUS_SOCK: endpoint.sock };
+  }
+  return {
+    ...base,
+    COCKPIT_STATUS_PORT: String(endpoint.port),
+    ...(endpoint.token ? { COCKPIT_STATUS_TOKEN: endpoint.token } : {}),
+  };
+}
+
+/** CLI args for orchestrate. `--json` is REQUIRED (review fix): without it
+ *  the CLI prints human text (`created: a, b`) and the merge report is lost.
+ *  The path goes through verbatim — no quoting; spawn must run shell-less. */
+export function orchestrateArgs(ckpPath: string): string[] {
+  return ["orchestrate", "--json", ckpPath];
+}
+
+export interface OrchestrateRun {
+  ok: boolean;
+  created: string[];
+  skipped: string[];
+  message: string;
+}
+
+/** Parse the CLI's process result (exported for tests). Success = exit 0 +
+ *  one stdout JSON line in the `--json` shape `{created, skipped}` — NOT the
+ *  socket wire's `{ok, data}` (that envelope is CLI→app; the CLI strips it
+ *  before printing). Nonzero exit (e.g. 1 app-reported error, 3 no terminal /
+ *  connect refused): message from stderr. */
+export function parseOrchestrateReply(
+  code: number | null,
+  stdout: string,
+  stderr: string,
+): OrchestrateRun {
+  const line = stdout
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith("{"))
+    .pop();
+  if (code === 0 && line) {
+    try {
+      const j = JSON.parse(line) as { created?: unknown; skipped?: unknown };
+      return {
+        ok: true,
+        created: Array.isArray(j.created) ? j.created.filter((x): x is string => typeof x === "string") : [],
+        skipped: Array.isArray(j.skipped) ? j.skipped.filter((x): x is string => typeof x === "string") : [],
+        message: "",
+      };
+    } catch {
+      /* unexpected shape — fall through to the failure path, loudly */
+    }
+  }
+  return {
+    ok: false,
+    created: [],
+    skipped: [],
+    message: stderr.trim() || stdout.trim() || `cockpit exited with code ${code ?? "signal"}`,
+  };
+}
+
+/** Runs `cockpit orchestrate <path> --json` with the Cockpit endpoint env
+ *  injected; resolves with the parsed report. Spawns WITHOUT a shell (review
+ *  fix): `shell:true` on Windows would re-split the command line and break on
+ *  layout paths containing spaces, and interpret shell metacharacters. */
 export function runCockpitOrchestrate(
   cli: string,
   ckpPath: string,
+  env: NodeJS.ProcessEnv = process.env,
   timeoutMs = 15000,
-): Promise<{ ok: boolean; created: string[]; skipped: string[]; message: string }> {
+): Promise<OrchestrateRun> {
   return new Promise((resolve) => {
-    const child = spawn(cli, ["orchestrate", ckpPath], {
+    const child = spawn(cli, orchestrateArgs(ckpPath), {
       windowsHide: true,
-      shell: process.platform === "win32",
+      env,
     });
     let out = "";
     let err = "";
@@ -166,30 +296,7 @@ export function runCockpitOrchestrate(
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      // The CLI prints one JSON line: {ok, data:{created,skipped}} | {ok:false, error}
-      const line = out.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("{")).pop();
-      if (line) {
-        try {
-          const j = JSON.parse(line) as { ok?: boolean; data?: { created?: string[]; skipped?: string[] }; error?: string };
-          if (j.ok) {
-            resolve({
-              ok: true,
-              created: j.data?.created ?? [],
-              skipped: j.data?.skipped ?? [],
-              message: "",
-            });
-            return;
-          }
-          resolve({ ok: false, created: [], skipped: [], message: j.error ?? "cockpit orchestrate failed" });
-          return;
-        } catch { /* fall through to raw */ }
-      }
-      resolve({
-        ok: code === 0,
-        created: [],
-        skipped: [],
-        message: code === 0 ? out.trim() : (err.trim() || `cockpit exited with ${code}`),
-      });
+      resolve(parseOrchestrateReply(code, out, err));
     });
   });
 }
@@ -230,6 +337,22 @@ export async function handleChangeLayout(
     return;
   }
 
-  const result = await runCockpitOrchestrate(cli, layout.path);
+  // Review fix: the daemon is not a Cockpit terminal — discover the app's
+  // published endpoint and inject it, or the CLI exits "not inside a Cockpit
+  // terminal" before even trying to connect.
+  const endpoint = readCockpitEndpoint();
+  if (!endpoint) {
+    reply(
+      false,
+      [],
+      [],
+      process.platform === "win32"
+        ? "Cockpit is not running (or is an older build without a published status endpoint) — start/update the Cockpit app, then retry"
+        : "Cockpit is not running — start the Cockpit app, then retry (no status socket found)",
+    );
+    return;
+  }
+
+  const result = await runCockpitOrchestrate(cli, layout.path, cockpitChildEnv(endpoint));
   reply(result.ok, result.created, result.skipped, result.message);
 }
