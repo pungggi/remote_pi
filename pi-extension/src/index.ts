@@ -1035,6 +1035,12 @@ let _chunkPendingTurn: string | null = null;
 let _chunkFlushTimer: ReturnType<typeof setTimeout> | null = null;
 const CHUNK_COALESCE_MS = 50;
 
+// Cumulative text of the in-flight turn (flushed frames + coalesced pending).
+// Feeds ONLY _maybeResumeTurnForOwner: when an owner (re)attaches mid-run
+// (turn started while all owners were offline, or the last owner left
+// mid-turn), the head it missed is replayed as one agent_chunk.
+let _turnText = "";
+
 function _flushAgentChunks(): void {
   if (_chunkFlushTimer !== null) {
     clearTimeout(_chunkFlushTimer);
@@ -1055,13 +1061,62 @@ function _bufferAgentChunk(delta: string, turn: string): void {
     // one frame never mixes in_reply_to targets.
     _flushAgentChunks();
     _chunkPendingTurn = turn;
+    _turnText = ""; // cumulative text is per-turn, like the pending buffer
   }
   _chunkPending += delta;
+  _turnText += delta;
   if (_chunkFlushTimer === null) {
     _chunkFlushTimer = setTimeout(() => {
       _chunkFlushTimer = null;
       _flushAgentChunks();
     }, CHUNK_COALESCE_MS);
+  }
+}
+
+/**
+ * Mid-run attach recovery (2026-08-21, follow-up to the PR #37 presence
+ * work). agent_chunk / agent_done broadcasting is gated on
+ * `ext.currentTurnId`, which is seeded ONLY by the input / user_message echo
+ * paths. Two windows leave it null while a run is ACTIVE:
+ *   (a) the turn started while NO peer was attached — the pi.on("input")
+ *       handler returns before seeding when !_anyPeerActive();
+ *   (b) the last owner went offline mid-turn — the no-owner cleanup nulls
+ *       currentTurnId while the agent keeps generating.
+ * In both, a (re)attaching owner received NOTHING live: chunks and even
+ * agent_done stayed suppressed, so the response only appeared after a
+ * session_sync replay (leave the chat and re-enter).
+ *
+ * On attach during an active run we therefore hydrate a synthetic turn id
+ * when none is set (folding any stale coalesced pending under the dead id
+ * into the catch-up), then replay the in-flight text so far to the NEW
+ * channel only — other owners already have it live, and a broadcast would
+ * duplicate the text on their screens.
+ */
+function _maybeResumeTurnForOwner(channel: PlainPeerChannel): void {
+  if (!ext.agentRunActive) return;
+  if (ext.currentTurnId === null) {
+    ext.currentTurnId = `resume_${randomUUID()}`;
+    // The pending tail (if any) belongs to the pre-hydration turn id; fold
+    // it into the catch-up below instead of letting the 50ms timer re-send
+    // it under the dead id.
+    _chunkPending = "";
+    if (_chunkFlushTimer !== null) {
+      clearTimeout(_chunkFlushTimer);
+      _chunkFlushTimer = null;
+    }
+    _chunkPendingTurn = null;
+  }
+  const turn = ext.currentTurnId;
+  // Catch-up = cumulative text minus the coalesced pending: the flush timer
+  // delivers that tail to every active peer (this one included) right
+  // after, preserving exact ordering with no duplication.
+  const pending = _chunkPendingTurn === turn ? _chunkPending : "";
+  const head =
+    pending !== "" && _turnText.endsWith(pending)
+      ? _turnText.slice(0, _turnText.length - pending.length)
+      : _turnText;
+  if (head !== "") {
+    channel.send({ type: "agent_chunk", in_reply_to: turn, delta: head });
   }
 }
 
@@ -1658,6 +1713,9 @@ function _attachOwner(
 
   _attachPeerChannel(appPeerId, channel);
   _refreshFooter();
+  // Mid-run attach: make sure the fresh owner sees the in-flight response
+  // (hydrates a turn id when none is seeded and replays the text so far).
+  _maybeResumeTurnForOwner(channel);
   // New owner attached → widen the presence subscription so we learn when
   // THIS peer goes offline (send path skips dead dests instead of signing
   // frames the relay will drop). Idempotent server-side (list replace).
@@ -2292,6 +2350,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   pi.on("agent_start", () => {
     ext.agentRunActive = true;
     ext.agentRunGeneration += 1;
+    _turnText = ""; // a fresh run's replayable text starts empty
   });
 
   pi.on("message_start", (event) => {
@@ -2301,11 +2360,19 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   });
 
   pi.on("message_update", (event) => {
-    if (!_anyPeerActive() || !ext.currentTurnId) return;
-    const ae = event.assistantMessageEvent;
-    if (ae.type === "text_delta") {
-      _bufferAgentChunk(ae.delta, ext.currentTurnId);
+    const ae = event?.assistantMessageEvent;
+    if (ae?.type !== "text_delta") return;
+    const delta = ae.delta as string;
+    if (ext.currentTurnId !== null && _anyPeerActive()) {
+      _bufferAgentChunk(delta, ext.currentTurnId);
+      return;
     }
+    // Nobody to stream to (no seeded turn id — run started while all owners
+    // were offline — or no attached peer, e.g. the last owner left
+    // mid-turn). Accumulate the in-flight text so a mid-run attach can
+    // replay it (see _maybeResumeTurnForOwner); broadcast nothing while
+    // nobody listens.
+    if (ext.agentRunActive) _turnText += delta;
   });
 
   // Notify every connected owner that a tool is about to run (visibility
@@ -2383,6 +2450,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // Flush coalesced text FIRST — the phone finalizes the streaming
     // segment on agent_done, so the tail must land before the done frame.
     _flushAgentChunks();
+    _turnText = ""; // nothing left to replay for a later attach
     if (_anyPeerActive() && ext.currentTurnId) {
       _broadcastToActive({ type: "agent_done", in_reply_to: ext.currentTurnId });
       ext.currentTurnId = null;
@@ -2401,6 +2469,12 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     setTimeout(() => {
       if (ext.agentRunGeneration !== endedGeneration) return;
       ext.agentRunActive = false;
+      // A peer attaching inside this 0ms window hydrated a synthetic
+      // resume_ turn id for a run that just ended — drop it before it goes
+      // stale (a stale turn id blocks queued-message drains forever).
+      if (ext.currentTurnId !== null && ext.currentTurnId.startsWith("resume_")) {
+        ext.currentTurnId = null;
+      }
       _scheduleMeshMessageDrain();
     }, 0);
   });
