@@ -848,6 +848,9 @@ class SyncService extends Service {
       // Plan/121 — discovered projects reply is owned by ActionsRepository
       // (Projects screen), not the message sync.
       case ListProjectsResult():
+      // api.changeLayout — orchestrate reply is owned by ActionsRepository
+      // (Quick Actions), not the message sync.
+      case ChangeLayoutResult():
       // Plan/124 — start-session (revive) reply is owned by ActionsRepository
       // (Home session menu), not the message sync.
       case StartSessionResult():

@@ -17,7 +17,13 @@ import 'package:flutter/foundation.dart';
 /// Cada conexão do `cockpit-hook` manda **uma linha JSON** (`{paneId, st, sid,
 /// tx, tok?}`) e fecha.
 class TerminalStatusServerImpl implements TerminalStatusServer {
-  TerminalStatusServerImpl();
+  TerminalStatusServerImpl([this._homeDir]);
+
+  /// Base dir for the `.cockpit` artifacts. Injectable so tests can point the
+  /// endpoint file at a temp dir; defaults to the user home.
+  final String? _homeDir;
+
+  String? get _home => _homeDir ?? remotePiHome();
 
   ServerSocket? _server;
   void Function(ClaudeStatusUpdate update)? _onUpdate;
@@ -25,7 +31,7 @@ class TerminalStatusServerImpl implements TerminalStatusServer {
   String? _token; // só no Windows/TCP
 
   String get _socketPath {
-    final home = remotePiHome() ?? Directory.systemTemp.path;
+    final home = _home ?? Directory.systemTemp.path;
     // Namespaceado por debug/release: um Cockpit de dev (`flutter run`) e um de
     // produção rodam lado a lado, mas `~/.cockpit/` é o HOME real (não é isolado
     // por bundle id como o Hive). Sem o sufixo, ambos disputam o MESMO
@@ -36,6 +42,17 @@ class TerminalStatusServerImpl implements TerminalStatusServer {
     // env, então basta variar aqui.
     final suffix = kDebugMode ? '-debug' : '';
     return '$home/.cockpit/status$suffix.sock';
+  }
+
+  /// Arquivo que publica o endpoint vivo (porta+token no Windows, path do
+  /// socket no POSIX) para processos FORA das PTYs do Cockpit — hoje o
+  /// `remote-pi` device daemon precisa dele para aplicar layouts nomeados
+  /// (`api.changeLayout`) a partir do celular: sem herdar o `hookEnv` de nenhuma
+  /// aba, a porta efêmera TCP e o token anti-spoof são indescobríveis.
+  String get _endpointPath {
+    final home = _home ?? Directory.systemTemp.path;
+    final suffix = kDebugMode ? '-debug' : '';
+    return '$home/.cockpit/status-endpoint$suffix.json';
   }
 
   @override
@@ -75,8 +92,27 @@ class TerminalStatusServerImpl implements TerminalStatusServer {
         _server = await ServerSocket.bind(address, 0);
       }
       _server!.listen(_handleConnection, onError: (_) {});
+      await _writeEndpointFile();
     } catch (e) {
       if (kDebugMode) debugPrint('[status-server] bind falhou: $e');
+    }
+  }
+
+  /// Grava o endpoint em disco (best-effort — nunca quebra o boot). Deletado
+  /// no [stop]; um app morto sem [stop] deixa o arquivo órfão, e o leitor
+  /// externo reporta o erro de conexão de forma acionável.
+  Future<void> _writeEndpointFile() async {
+    final server = _server;
+    if (server == null) return;
+    try {
+      final file = File(_endpointPath);
+      await file.parent.create(recursive: true);
+      final payload = Platform.isWindows
+          ? {'port': server.port, 'token': _token}
+          : {'sock': _socketPath};
+      await file.writeAsString(jsonEncode(payload));
+    } catch (_) {
+      // best-effort: o hookEnv (env das abas) continua sendo o caminho primário.
     }
   }
 
@@ -196,6 +232,10 @@ class TerminalStatusServerImpl implements TerminalStatusServer {
     _server = null;
     _onUpdate = null;
     _token = null;
+    try {
+      final file = File(_endpointPath);
+      if (await file.exists()) await file.delete();
+    } catch (_) {}
     if (!Platform.isWindows) {
       try {
         final file = File(_socketPath);

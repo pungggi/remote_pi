@@ -241,6 +241,11 @@ export type ClientMessage =
   // list with no live pi). The chosen project is then spawned as a worktree
   // via open_terminal_request.
   | { type: "list_projects_request"; id: string }
+  // api.changeLayout — apply a NAMED `.ckp` layout on the PC (Cockpit
+  // orchestration). The daemon resolves `layout` (a plain basename, no
+  // extension) to a `.ckp` under the configured projects roots and runs the
+  // Cockpit CLI's `orchestrate` verb; see actions/change_layout.ts.
+  | { type: "change_layout_request"; id: string; layout: string }
   // Plan/124 — bring an offline session back to life in its OWN cwd (no new
   // worktree, no pin). The device daemon asks the supervisor to spawn a
   // transient `pi --mode rpc --continue` at `cwd`; `--continue` resumes the
@@ -477,6 +482,18 @@ export type ServerMessage =
       in_reply_to: string;
       ok: boolean;
       projects: WireProject[];
+      message?: string;
+    }
+  // api.changeLayout — reply to change_layout_request. `created`/`skipped`
+  // mirror the Cockpit orchestrate report (panes created vs. merged away
+  // because a tab of the same name already existed). `ok:false` + `message`
+  // for unknown layout name, Cockpit CLI missing, or Cockpit not running.
+  | {
+      type: "change_layout_result";
+      in_reply_to: string;
+      ok: boolean;
+      created: string[];
+      skipped: string[];
       message?: string;
     }
   // Plan/124 — reply to start_session_request. `room_id` is the room the

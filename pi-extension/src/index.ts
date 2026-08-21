@@ -102,6 +102,7 @@ import type { WireGitStatus } from "./protocol/types.js";
 import { handleOpenTerminal, handleListWorktrees, handleRemoveWorktree } from "./actions/open_terminal.js";
 import { handleStartSession } from "./actions/start_session.js";
 import { handleListProjects } from "./projects/handlers.js";
+import { handleChangeLayout } from "./actions/change_layout.js";
 import { ensureModelRegistry } from "./actions/registry.js";
 import {
   ensureGlobalDirs,
@@ -4212,6 +4213,11 @@ export function _routeClientMessageFrom(
     // no live pi). Spawn-from-project reuses open_terminal_request.
     case "list_projects_request":
       handleListProjects(sender, msg);
+      break;
+    // api.changeLayout — apply a named `.ckp` layout via the Cockpit CLI
+    // (orchestrate). Served by the device daemon like the other actions.
+    case "change_layout_request":
+      void handleChangeLayout(sender, msg);
       break;
     // Plan/124 — bring an offline session back to life in its own cwd: the
     // device daemon asks the supervisor for a transient `pi --mode rpc

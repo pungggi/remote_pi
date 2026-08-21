@@ -985,6 +985,21 @@ class ListProjectsRequest extends ClientMessage {
   Map<String, dynamic> toJson() => {'type': 'list_projects_request', 'id': id};
 }
 
+/// api.changeLayout — apply a NAMED `.ckp` layout on the PC (Cockpit
+/// orchestration). Routed to the device daemon (room [kDeviceRoom]) like
+/// [ListProjectsRequest]; [layout] is a plain name (basename without the
+/// `.ckp` extension) which the daemon resolves under the projects roots and
+/// applies via the Cockpit CLI's `orchestrate` verb.
+class ChangeLayoutRequest extends ClientMessage {
+  final String id;
+  final String layout;
+  ChangeLayoutRequest({required this.id, required this.layout});
+
+  @override
+  Map<String, dynamic> toJson() =>
+      {'type': 'change_layout_request', 'id': id, 'layout': layout};
+}
+
 /// Plan/124 — bring an OFFLINE session back to life in its own cwd (no new
 /// worktree, no pin). Routed to the device daemon (room [kDeviceRoom]) like
 /// [OpenTerminalRequest]; the device daemon asks the supervisor for a
@@ -1059,6 +1074,8 @@ sealed class ServerMessage {
       'remove_worktree_result' => RemoveWorktreeResult.fromJson(json),
       // Plan/121 — discovered projects list (Projects screen).
       'list_projects_result' => ListProjectsResult.fromJson(json),
+      // api.changeLayout — Cockpit orchestration reply.
+      'change_layout_result' => ChangeLayoutResult.fromJson(json),
       // Plan/124 — reply to StartSessionRequest (revive offline session).
       'start_session_result' => StartSessionResult.fromJson(json),
       // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors
@@ -1974,6 +1991,40 @@ class ListProjectsResult extends ServerMessage {
         projects: (j['projects'] as List<dynamic>? ?? [])
             .whereType<Map<String, dynamic>>()
             .map(WireProject.fromJson)
+            .toList(),
+        message: (j['message'] as String?) ?? '',
+      );
+}
+
+/// api.changeLayout — reply to [ChangeLayoutRequest]. [created]/[skipped]
+/// mirror the Cockpit orchestrate report: panes created vs. merged away
+/// (a tab of the same name already existed — idempotent re-apply).
+/// `ok:false` + [message] for an unknown layout name, Cockpit CLI missing,
+/// or Cockpit not running. NOTE: like the other action replies it carries NO
+/// `id` (correlates via `inReplyTo`) — safe since the replay-dedup fix.
+class ChangeLayoutResult extends ServerMessage {
+  final String inReplyTo;
+  final bool ok;
+  final List<String> created;
+  final List<String> skipped;
+  final String message;
+  ChangeLayoutResult({
+    required this.inReplyTo,
+    required this.ok,
+    required this.created,
+    required this.skipped,
+    required this.message,
+  });
+
+  factory ChangeLayoutResult.fromJson(Map<String, dynamic> j) =>
+      ChangeLayoutResult(
+        inReplyTo: j['in_reply_to'] as String,
+        ok: j['ok'] as bool? ?? false,
+        created: (j['created'] as List<dynamic>? ?? [])
+            .whereType<String>()
+            .toList(),
+        skipped: (j['skipped'] as List<dynamic>? ?? [])
+            .whereType<String>()
             .toList(),
         message: (j['message'] as String?) ?? '',
       );
