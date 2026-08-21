@@ -61,10 +61,19 @@ const DEVICE_DAEMON_ID = DEVICE_ROOM; // "device"
 
 const SUPERVISOR_SOCK_NAME = "supervisor.sock";
 
-/** Backoff schedule for auto-restart after a crash. After exhausting, the
- *  child stays in `crashed` state until manual `restart_all` or fresh
- *  registry add. Keeps logs sane when the agent dies on every boot. */
+/** Backoff schedule for auto-restart after a crash. After exhausting the
+ *  schedule the child keeps retrying at the LAST (max) delay — it never
+ *  gives up permanently (bug 2026-08-20: one bad pi/npm update made the
+ *  device daemon crash 4× in a row, the supervisor "gave up", and the
+ *  phone's Projects page showed "Device unreachable" until a manual
+ *  restart hours later; a permanently-given-up daemon silently bricks
+ *  remote features nobody is watching). The backoff resets after a child
+ *  stays healthy for STABLE_UPTIME_MS, so a crashing-at-boot child still
+ *  settles at a 5-min retry cadence instead of hot-looping. */
 const RESTART_BACKOFFS_MS = [1_000, 5_000, 30_000, 5 * 60_000];
+
+/** Uptime after which a child's crash backoff resets to attempt 0. */
+const STABLE_UPTIME_MS = 10 * 60_000;
 
 function supervisorSockPath(): string {
   const root = process.env["REMOTE_PI_HOME"] || homedir();
@@ -134,6 +143,9 @@ interface ChildSlot {
   child: RpcChild;
   restartTimer: ReturnType<typeof setTimeout> | null;
   restartAttempt: number;
+  /** When the current incarnation was spawned (Date.now()) — drives the
+   *  crash-backoff reset after STABLE_UPTIME_MS of healthy running. */
+  spawnedAt: number;
   /** Plan/124 — `true` for `start_transient` spawns: alive now + auto-
    *  restarted on crash, but NOT registry-backed, so NOT resurrected at
    *  boot and deleted from `children` once deliberately stopped. */
@@ -743,7 +755,7 @@ export class Supervisor {
     };
     if (this.opts.piBin !== undefined) childOpts.piBin = this.opts.piBin;
     const child = new RpcChild(childOpts);
-    const slot: ChildSlot = { id, cwd, child, restartTimer: null, restartAttempt: 0, transient: false };
+    const slot: ChildSlot = { id, cwd, child, restartTimer: null, restartAttempt: 0, spawnedAt: Date.now(), transient: false };
     this.children.set(id, slot);
     child.on("exit", (evt: RpcChildExitEvent) => this._onChildExit(id, evt));
     child.spawn();
@@ -773,7 +785,7 @@ export class Supervisor {
     };
     if (this.opts.piBin !== undefined) childOpts.piBin = this.opts.piBin;
     const child = new RpcChild(childOpts);
-    const slot: ChildSlot = { id, cwd, child, restartTimer: null, restartAttempt: 0, transient };
+    const slot: ChildSlot = { id, cwd, child, restartTimer: null, restartAttempt: 0, spawnedAt: Date.now(), transient };
     this.children.set(id, slot);
 
     child.on("exit", (evt: RpcChildExitEvent) => this._onChildExit(id, evt));
@@ -793,27 +805,45 @@ export class Supervisor {
     if (evt.code === EXIT_DAEMON_FRESH_SESSION) {
       // App-triggered daemon `/new`: this is an intentional recycle, not a
       // crash. Restart immediately and don't burn the crash backoff budget.
+      // PR #30 review fix (augment finding 2): refresh spawnedAt too — the
+      // uptime-based backoff reset in the crash path below compares against
+      // the PREVIOUS incarnation's spawn time; leaving it stale meant a
+      // recycled daemon that crash-looped immediately kept "inheriting" the
+      // old incarnation's healthy uptime, resetting the backoff on every
+      // exit → a 1-second crash loop instead of escalating retries.
       slot.restartAttempt = 0;
+      slot.spawnedAt = Date.now();
       slot.child.noteRestart();
       slot.child.spawn();
       return;
     }
 
-    // Crash: schedule restart with backoff. After exhausting the schedule
-    // we give up and stay in `crashed`.
+    // A child that stayed up past STABLE_UPTIME_MS before crashing earns a
+    // backoff reset — a healthy daemon killed by (e.g.) a reboot or a
+    // transient relay outage restarts fast instead of inheriting old crash
+    // debt (bug 2026-08-20 follow-through on the no-give-up fix).
+    if (Date.now() - slot.spawnedAt >= STABLE_UPTIME_MS) {
+      slot.restartAttempt = 0;
+    }
+
+    // Crash: schedule restart with backoff. The backoff resets once the
+    // child has stayed up for STABLE_UPTIME_MS (a long-lived healthy child
+    // that dies gets fast restarts again), and it NEVER gives up — see
+    // RESTART_BACKOFFS_MS above.
+    const index = Math.min(slot.restartAttempt, RESTART_BACKOFFS_MS.length - 1);
+    const delay = RESTART_BACKOFFS_MS[index]!;
     if (slot.restartAttempt >= RESTART_BACKOFFS_MS.length) {
       process.stderr.write(
-        `[remote-pi-supervisord] giving up restart for ${id} after ${slot.restartAttempt} attempts\n`,
+        `[remote-pi-supervisord] ${id}: crash loop — continuing at ${delay}ms cadence (no give-up)\n`,
       );
-      return;
     }
-    const delay = RESTART_BACKOFFS_MS[slot.restartAttempt]!;
     process.stderr.write(
       `[remote-pi-supervisord] scheduling restart of ${id} in ${delay}ms (attempt ${slot.restartAttempt + 1})\n`,
     );
     slot.restartTimer = setTimeout(() => {
       slot.restartTimer = null;
       slot.restartAttempt += 1;
+      slot.spawnedAt = Date.now();
       slot.child.noteRestart();
       slot.child.spawn();
     }, delay);
