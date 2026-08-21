@@ -11,6 +11,25 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+## [1.3.4] — 2026-08-21
+
+### Fixed
+
+- **Responses no longer stay invisible until you re-enter the chat** — if the
+  app connected while a reply was already being generated (chat opened
+  mid-turn, phone reconnected after the screen turned off), the stream and
+  its "done" signal were never delivered. The PC now replays the in-flight
+  text the moment the app attaches and resumes streaming live from there.
+- **"Jump to message" works again for far-away messages** — tapping a user
+  message in the session navigator now scrolls there even when the target is
+  beyond the lazily-built list window, hopping one screen at a time.
+
+### Performance
+
+- **Smoother streaming on long replies** — text deltas are coalesced into
+  short frames on the PC side, cutting per-frame signature work on the phone
+  by 3-6x with no visible change in granularity.
+
 ## [1.3.3] — 2026-08-21
 
 ### Fixed
