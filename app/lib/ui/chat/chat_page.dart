@@ -876,6 +876,13 @@ class _MessageListState extends State<MessageList> {
   /// [_applyScrollPolicy] does in the post-frame callback.
   TranscriptGrow _grow = TranscriptGrow.none;
 
+  /// True while a USER drag owns the list (finger down). The scroll policy
+  /// must never `jumpTo` while this is set — jumpTo ends the activity
+  /// (goIdle) and KILLS the gesture, which made scrolling up during
+  /// streaming impossible: every drag died mid-flick and, near the bottom,
+  /// the pinned snap yanked the view back to the end (2026-08-21).
+  bool _userDragActive = false;
+
   /// Previous frame's [ScrollPosition.maxScrollExtent], used to measure how
   /// much the content grew at the bottom so an unpinned viewport can be held
   /// in place instead of drifting toward the newest message.
@@ -959,15 +966,22 @@ class _MessageListState extends State<MessageList> {
         }
         break;
       case TranscriptGrow.bottom:
-        if (_pinnedToBottom) {
+        if (!_userDragActive && _pinnedToBottom) {
           // Following the live reply — stay glued to the newest.
           if ((p.pixels - p.minScrollExtent).abs() > 0.5) {
             p.jumpTo(p.minScrollExtent);
           }
         } else {
-          // Reading older history while new content grows at the bottom. A
-          // reverse list would otherwise drift the viewport toward the newest;
-          // offset by exactly the bottom growth so the same content stays put.
+          // Reading older history (or holding a drag near the bottom) while
+          // new content grows at the bottom. A reverse list would otherwise
+          // drift the viewport toward the newest; offset by exactly the bottom
+          // growth so the same content stays put.
+          //
+          // correctBy, NOT jumpTo: correctBy shifts pixels SILENTLY — it
+          // doesn't end the active drag/fling activity and doesn't dispatch
+          // scroll notifications — so the user keeps full scroll control
+          // while the viewport is held (jumpTo here killed every drag
+          // mid-gesture during streaming).
           final delta = p.maxScrollExtent - _prevMaxExtent;
           if (delta.abs() > 0.5) {
             // Clamp the target: a net shrink at the bottom (e.g. the streaming
@@ -979,7 +993,12 @@ class _MessageListState extends State<MessageList> {
             } else if (target > p.maxScrollExtent) {
               target = p.maxScrollExtent;
             }
-            p.jumpTo(target);
+            p.correctBy(target - p.pixels);
+            // correctBy is silent (no notifications → _onScroll doesn't run),
+            // so re-derive the pinned flag here: holding content at growing
+            // distance from the end must count as unpinned, or the first
+            // growth after releasing a held drag would snap to the bottom.
+            _pinnedToBottom = target <= p.minScrollExtent + _bottomEpsilon;
           }
         }
         break;
@@ -1110,8 +1129,6 @@ class _MessageListState extends State<MessageList> {
     return Stack(
       children: [
         NotificationListener<ScrollNotification>(
-          // A user-driven flick abandons the guided pointer so the next jump
-          // re-anchors to the new viewport.
           onNotification: (notif) {
             if (notif is UserScrollNotification &&
                 mounted &&
@@ -1123,6 +1140,16 @@ class _MessageListState extends State<MessageList> {
               if (_navIndex != -1) {
                 setState(() => _navIndex = -1);
               }
+            }
+            // Track whether a USER drag owns the list — the scroll policy
+            // must not jumpTo while it runs (that cancels the gesture).
+            // dragDetails != null separates a finger drag from ballistic /
+            // programmatic scrolling.
+            if (notif is ScrollStartNotification &&
+                notif.dragDetails != null) {
+              _userDragActive = true;
+            } else if (notif is ScrollEndNotification) {
+              _userDragActive = false;
             }
             return false;
           },
