@@ -11,6 +11,16 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+## [1.3.6] — 2026-08-21
+
+### Fixed
+
+- **Everything missed while offline now loads automatically** — messages
+  generated while the phone was away (any gap length) are backfilled: sync
+  replies lost to a flaky connection are re-requested, history keeps paging
+  older until it reaches what you already have, and every app resume triggers
+  a catch-up sync.
+
 ## [1.3.5] — 2026-08-21
 
 ### Fixed
