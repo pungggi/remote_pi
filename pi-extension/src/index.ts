@@ -782,6 +782,12 @@ export function _getCurrentTurnIdForTest(): string | null {
   return ext.currentTurnId;
 }
 
+/** Test-only: seeds ext.currentTurnId (normally set by the user_message
+ *  routing path) so cleanup-on-last-owner-offline can be asserted directly. */
+export function _setCurrentTurnIdForTest(v: string | null): void {
+  ext.currentTurnId = v;
+}
+
 export function _getPendingSteerIdsForTest(text: string): string[] {
   const key = _normalizeSteerText(text);
   return ext.pendingSteers.filter((item) => item.text === key).map((item) => item.id);
@@ -949,6 +955,19 @@ function _anyPeerActive(): boolean {
 
 /** Relay's online view of paired owners, maintained from presence pushes. */
 const _peerPresenceOnline = new Set<string>();
+
+/** Delay before the post-attach presence re-subscribe (review #1, PR #37).
+ * At attach time — especially right after a FRESH pairing — the relay's
+ * mesh-membership check (authorize_targets → is_authorized) may not know the
+ * new owner yet (the app publishes its Owner blob only after pair_ok), so the
+ * immediate subscribe_presence can be silently filtered. One retry after the
+ * blob has propagated closes the gap. Test-controllable. */
+let _presenceResubscribeMs = 10_000;
+
+/** Test-only: shrink the re-subscribe delay so tests don't wait 10s. */
+export function _setPresenceResubscribeMsForTest(ms: number): void {
+  _presenceResubscribeMs = ms;
+}
 
 /** (Re)subscribes to presence for every known owner (peers.json ∪ attached).
  * Idempotent — the relay replaces the subscriber's whole list. Best-effort:
@@ -1615,6 +1634,23 @@ function _attachOwner(
   // THIS peer goes offline (send path skips dead dests instead of signing
   // frames the relay will drop). Idempotent server-side (list replace).
   _subscribeOwnerPresence(relay);
+  // Review #1 (PR #37): the immediate subscribe can be filtered by the relay's
+  // mesh-membership gate when the pairing is FRESH (the app publishes its
+  // Owner blob only after pair_ok) — retry once after propagation settles.
+  // Generation-guarded so a stopped/replaced relay never triggers it.
+  {
+    const gen = ext.relayLifecycleGeneration;
+    setTimeout(() => {
+      if (
+        !ext.disposed &&
+        ext.state === "started" &&
+        ext.relay === relay &&
+        ext.relayLifecycleGeneration === gen
+      ) {
+        _subscribeOwnerPresence(relay);
+      }
+    }, _presenceResubscribeMs);
+  }
 
   _safeNotify(
     `[remote-pi] Owner attached: peer=${peerShort}, name=${peerName} ` +
@@ -1855,6 +1891,11 @@ function _installAutoListener(relay: RelayClient): () => void {
           void (async () => {
             const known = await _findKnownPeer(pid);
             if (!known || !hasListenerAuthority()) return;
+            // Review #2 (PR #37): a peer_offline may have landed while this
+            // lookup was pending — re-check the live presence view so we
+            // never attach a peer the relay just declared gone (that would
+            // recreate the dead destination until the next transition).
+            if (!_peerPresenceOnline.has(pid)) return;
             if (!ext.activePeers.has(pid)) _attachOwner(relay, pid, known.name);
           })();
         }
@@ -1864,7 +1905,12 @@ function _installAutoListener(relay: RelayClient): () => void {
         // unicasting to a dest the relay will only drop ("dest not found").
         // Re-attach happens on the next inbound frame (auto-listener) or on
         // the matching peer_online above.
-        _detachPeerChannel(pid);
+        // Review #3 (PR #37): route through _onPeerDisconnect instead of a
+        // raw detach — losing the LAST owner must also clear currentTurnId
+        // and run the no-owner cleanup, or a stale turn id makes later
+        // follow-ups look busy (_isBusyForQueueDrain) with no turn-end to
+        // drain them.
+        _onPeerDisconnect(pid);
       }
       return;
     }
