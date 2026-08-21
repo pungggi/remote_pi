@@ -1571,6 +1571,145 @@ describe("multi-channel broadcast (W2D)", () => {
     await new Promise((r) => setTimeout(r, 80)); // drain window for later tests
   });
 
+  test("mid-run attach resumes streaming for a turn that started with no owner attached", async () => {
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx());
+    const onAgentStart = captureEventHandler("agent_start");
+    const onUpdate = captureEventHandler("message_update");
+    const onEnd = captureEventHandler("agent_end");
+
+    // Turn runs while no peer is attached: the input echo never seeded a
+    // turn id, so nothing is broadcast — but the text accumulates.
+    onAgentStart({ type: "agent_start" } as unknown as Parameters<typeof onAgentStart>[0]);
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+    onUpdate({ assistantMessageEvent: { type: "text_delta", delta: "head " } } as unknown as Parameters<typeof onUpdate>[0]);
+    onUpdate({ assistantMessageEvent: { type: "text_delta", delta: "text" } } as unknown as Parameters<typeof onUpdate>[0]);
+    expect(relayRef.current!.send.mock.calls.length).toBe(sendsBefore);
+    expect(_getCurrentTurnIdForTest()).toBeNull();
+
+    // Owner pairs mid-run → hydrated turn id + full catch-up chunk.
+    relayRef.current!.emit("message", makeInnerLine("lateOwnerA__1234", {
+      type: "pair_request", id: "pr-1", token: "test-token", device_name: "Phone",
+    }));
+    await vi.waitFor(() => expect(_getState()).toBe("paired"), { timeout: 2000 });
+
+    const chunk = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt)
+      .find((d) => d.peer === "lateOwnerA__1234" && d.inner.type === "agent_chunk")!;
+    expect(chunk.inner["delta"]).toBe("head text");
+    expect(String(chunk.inner["in_reply_to"])).toMatch(/^resume_/);
+    expect(_getCurrentTurnIdForTest()).toMatch(/^resume_/);
+
+    // Live tail now streams to the attached owner (coalesced window).
+    onUpdate({ assistantMessageEvent: { type: "text_delta", delta: "!" } } as unknown as Parameters<typeof onUpdate>[0]);
+    await new Promise((r) => setTimeout(r, 80));
+    const tails = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt)
+      .filter((d) => d.peer === "lateOwnerA__1234" && d.inner.type === "agent_chunk");
+    expect(tails.some((d) => d.inner["delta"] === "!")).toBe(true);
+
+    // Run ends while attached → agent_done under the hydrated id, id cleared.
+    onEnd({} as unknown as Parameters<typeof onEnd>[0]);
+    const done = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt)
+      .find((d) => d.peer === "lateOwnerA__1234" && d.inner.type === "agent_done");
+    expect(done).toBeDefined();
+    expect(String(done!.inner["in_reply_to"])).toMatch(/^resume_/);
+    expect(_getCurrentTurnIdForTest()).toBeNull();
+    await new Promise((r) => setTimeout(r, 80)); // drain window for later tests
+  });
+
+  test("peer_offline mid-turn + re-attach resumes the stream (response no longer invisible)", async () => {
+    // Real Ed25519-shaped id: the peer_online pre-attach path canonicalizes
+    // the key and looks it up in pairing storage, so synthetic ids won't do.
+    const APP_PEER_ID = OWNER_STANDARD_FIXTURE;
+    await _pairForTest(APP_PEER_ID);
+    const onAgentStart = captureEventHandler("agent_start");
+    const onInput = captureEventHandler("input");
+    const onUpdate = captureEventHandler("message_update");
+    const onEnd = captureEventHandler("agent_end");
+
+    onAgentStart({ type: "agent_start" } as unknown as Parameters<typeof onAgentStart>[0]);
+    onInput({ source: "terminal", text: "long answer please" } as unknown as Parameters<typeof onInput>[0]);
+    onUpdate({ assistantMessageEvent: { type: "text_delta", delta: "part1" } } as unknown as Parameters<typeof onUpdate>[0]);
+    await new Promise((r) => setTimeout(r, 80)); // flush the live frame
+
+    // Phone drops mid-turn: relay pushes peer_offline → last owner leaves →
+    // no-owner cleanup nulls the turn id while the run keeps generating.
+    relayRef.current!.emit("message", JSON.stringify({ type: "peer_offline", peer: APP_PEER_ID }));
+    await vi.waitFor(() => expect(_getActivePeerCountForTest()).toBe(0), { timeout: 2000 });
+    expect(_getCurrentTurnIdForTest()).toBeNull();
+
+    // Deltas generated while headless accumulate silently (nothing sent).
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+    onUpdate({ assistantMessageEvent: { type: "text_delta", delta: "part2" } } as unknown as Parameters<typeof onUpdate>[0]);
+    expect(relayRef.current!.send.mock.calls.length).toBe(sendsBefore);
+
+    // Phone returns: peer_online pre-attach → hydrated turn + FULL catch-up
+    // (part1 + part2) so the response is visible without re-entering the chat.
+    relayRef.current!.emit("message", JSON.stringify({ type: "peer_online", peer: APP_PEER_ID }));
+    await vi.waitFor(() => expect(_getActivePeerCountForTest()).toBe(1), { timeout: 2000 });
+    await vi.waitFor(() => {
+      const chunks = relayRef.current!.send.mock.calls.slice(sendsBefore)
+        .map((c) => c[0] as string).map(decodeSentCt)
+        .filter((d) => d.peer === APP_PEER_ID && d.inner.type === "agent_chunk");
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0]!.inner["delta"]).toBe("part1part2");
+      expect(String(chunks[0]!.inner["in_reply_to"])).toMatch(/^resume_/);
+    }, { timeout: 2000 });
+
+    // Turn ends while re-attached → agent_done delivered under the hydrated id.
+    onEnd({} as unknown as Parameters<typeof onEnd>[0]);
+    const done = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt)
+      .find((d) => d.peer === APP_PEER_ID && d.inner.type === "agent_done");
+    expect(done).toBeDefined();
+    expect(_getCurrentTurnIdForTest()).toBeNull();
+    await new Promise((r) => setTimeout(r, 80)); // drain window for later tests
+  });
+
+  test("attach while idle seeds no turn and sends no catch-up chunk", async () => {
+    await _pairForTest("idleOwner__123456");
+    const onUpdate = captureEventHandler("message_update");
+
+    // No agent_start → not running: pairing attached without any resume
+    // frame, and headless deltas still broadcast nothing.
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+    onUpdate({ assistantMessageEvent: { type: "text_delta", delta: "x" } } as unknown as Parameters<typeof onUpdate>[0]);
+    await new Promise((r) => setTimeout(r, 80));
+    expect(relayRef.current!.send.mock.calls.length).toBe(sendsBefore);
+    expect(_getCurrentTurnIdForTest()).toBeNull();
+  });
+
+  test("second owner attaching mid-turn gets the catch-up; the first gets no duplicate", async () => {
+    await _pairForTest("liveOwner__123456");
+    const onAgentStart = captureEventHandler("agent_start");
+    const onInput = captureEventHandler("input");
+    const onUpdate = captureEventHandler("message_update");
+    const onEnd = captureEventHandler("agent_end");
+
+    onAgentStart({ type: "agent_start" } as unknown as Parameters<typeof onAgentStart>[0]);
+    onInput({ source: "terminal", text: "q" } as unknown as Parameters<typeof onInput>[0]);
+    onUpdate({ assistantMessageEvent: { type: "text_delta", delta: "shared" } } as unknown as Parameters<typeof onUpdate>[0]);
+    await new Promise((r) => setTimeout(r, 80)); // flushed to the live owner
+
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+    await _pairAdditionalForTest("lateOwnerB__7890", "Android");
+    await new Promise((r) => setTimeout(r, 80)); // post-attach frames settle
+
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt);
+    const lateChunks = sent.filter((d) => d.peer === "lateOwnerB__7890" && d.inner.type === "agent_chunk");
+    expect(lateChunks).toHaveLength(1);
+    expect(lateChunks[0]!.inner["delta"]).toBe("shared");
+    // The already-live owner must NOT receive the full text again.
+    const liveChunks = sent.filter((d) => d.peer === "liveOwner__123456" && d.inner.type === "agent_chunk");
+    expect(liveChunks).toHaveLength(0);
+
+    onEnd({} as unknown as Parameters<typeof onEnd>[0]);
+    await new Promise((r) => setTimeout(r, 80)); // drain window for later tests
+  });
+
   test("show_image broadcasts agent_image with inline base64 to every owner (plan/114)", async () => {
     await _pairForTest("ownerA__1234567890");
     await _pairAdditionalForTest("ownerB__abcdefghij", "Android");
