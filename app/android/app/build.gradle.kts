@@ -70,6 +70,16 @@ android {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
         }
+        // [perf/stream-probe] Profile builds share the DEBUG app id (and its
+        // debug signing) so `flutter build apk --profile` + `adb install -r`
+        // upgrades a paired debug install in place — AOT measurements run with
+        // real pairing data, no re-scan, no parallel install. Profile is a
+        // local-only build type (CI never builds it), so no artifact ever
+        // ships with the debug id.
+        getByName("profile") {
+            applicationIdSuffix = ".debug"
+            matchingFallbacks.add("debug")
+        }
         release {
             signingConfig = if (hasReleaseKeystore) {
                 signingConfigs.getByName("release")

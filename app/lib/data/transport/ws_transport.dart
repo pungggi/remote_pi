@@ -17,6 +17,7 @@ import 'dart:convert';
 
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/relay_config.dart';
+import 'package:app/data/transport/stream_probe.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
@@ -108,7 +109,7 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
     // The review-#4 ratchet race stays closed because the flag is flipped
     // SYNCHRONOUSLY (before the awaited verify) inside processFrame, so any
     // later frame in the same microtask queue already sees it flipped.
-    Future<void> processFrame(dynamic raw) async {
+    Future<void> processFrame(dynamic raw, DateTime arrivedAt) async {
         // Volume probe removed (perf 2026-08-16): per-frame debugPrint
         // flooded the debug console (~200 frames/10s) and caused jank.
         if (!authDone) {
@@ -154,12 +155,19 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
             final hasSig = sigRaw is String && sigRaw.isNotEmpty;
             if (hasSig2 || hasSig) {
               transport._requireSignature = true;
-              if (!await transport._verifyInboundEnvelope(
+              // [probe 2026-08-21] worker round-trip incl. queue-wait behind
+              // prior verifies — the serialized-chain cost we're measuring.
+              final vStart = DateTime.now();
+              final verdictOk = await transport._verifyInboundEnvelope(
                 ct,
                 hasSig ? sigRaw : '',
                 hasSig2 ? sig2Raw : null,
                 tsRaw,
-              )) {
+              );
+              StreamProbe.instance.verified(
+                DateTime.now().difference(vStart).inMicroseconds / 1000.0,
+              );
+              if (!verdictOk) {
                 debugPrint('[ws-in] sig=INVALID DROPPED');
                 return;
               }
@@ -174,6 +182,7 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
               return;
             }
             transport._queue.add(bytes);
+            StreamProbe.instance.enqueued(arrivedAt, bytes.length);
             return;
           }
           // Control: top-level `type` only → presence stream.
@@ -190,6 +199,12 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
     } // processFrame
 
     final sub = ws.stream.listen((raw) {
+      // [probe 2026-08-21] WS delivery time — the H1 baseline. Captured in
+      // the listen callback (NOT inside processFrame, which runs only after
+      // the previous frame finished) so arrival reflects the socket, not the
+      // serialized chain.
+      final arrivedAt = DateTime.now();
+      StreamProbe.instance.arrived(arrivedAt);
       // Augment review 2026-08-20 (2 findings on the 2026-08-16 parallel
       // dispatch) — frames are processed STRICTLY IN ARRIVAL ORDER again,
       // via a future chain:
@@ -207,7 +222,7 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
       // ON the UI isolate; that load now lives in the Ed25519Worker
       // isolate, so the chain only ever awaits cheap worker round-trips
       // and the UI thread stays responsive.
-      frameChain = frameChain.then((_) => processFrame(raw)).catchError(
+      frameChain = frameChain.then((_) => processFrame(raw, arrivedAt)).catchError(
         (Object e) {
           // processFrame already handles its own errors; this guards the
           // chain itself so one bad frame can't wedge the queue.

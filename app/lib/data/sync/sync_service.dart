@@ -17,6 +17,7 @@ import 'package:app/data/local/records/runtime_record.dart';
 import 'package:app/data/local/records/session_index_record.dart';
 import 'package:app/data/sync/sync_events.dart';
 import 'package:app/data/transport/connection_manager.dart';
+import 'package:app/data/transport/stream_probe.dart';
 import 'package:app/domain/contracts/service.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
@@ -562,6 +563,7 @@ class SyncService extends Service {
     }
     switch (msg) {
       case AgentChunk(:final inReplyTo, :final delta):
+        StreamProbe.instance.chunk(inReplyTo, delta.length);
         _chunkBuffer.write(delta);
         _chunkReplyTo = inReplyTo;
         _flushTimer?.cancel();
@@ -573,6 +575,7 @@ class SyncService extends Service {
         final text = _finalizeSegment();
         _clearSteeringLabel(inReplyTo);
         _setWorking(false, preview: text.isEmpty ? null : text);
+        StreamProbe.instance.turnDone(inReplyTo);
 
       case AgentMessage(:final inReplyTo, :final text):
         // ignore: discarded_futures
@@ -1443,6 +1446,7 @@ class SyncService extends Service {
     } else {
       _emitStreaming(StreamingMessage(inReplyTo: _chunkReplyTo, buffer: delta));
     }
+    StreamProbe.instance.emitted();
   }
 
   /// Persist the accumulated streaming text as a standalone assistant row
