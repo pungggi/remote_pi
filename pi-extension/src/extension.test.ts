@@ -1288,6 +1288,9 @@ describe("multi-channel broadcast (W2D)", () => {
     onInput({ source: "terminal", text: "hello" } as unknown as Parameters<typeof onInput>[0]);
     const sendsBefore = relayRef.current!.send.mock.calls.length;
     onUpdate({ assistantMessageEvent: { type: "text_delta", delta: "hi" } } as unknown as Parameters<typeof onUpdate>[0]);
+    // Perf 2026-08-21 — deltas coalesce into ≤50ms frames on the extension
+    // side; drain the window before asserting.
+    await new Promise((r) => setTimeout(r, 80));
 
     const sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
       .map((c) => c[0] as string).map(decodeSentCt);
@@ -1296,6 +1299,73 @@ describe("multi-channel broadcast (W2D)", () => {
     expect(chunks).toHaveLength(2);
     const recipients = new Set(chunks.map((d) => d.peer));
     expect(recipients).toEqual(new Set(["ownerA__1234567890", "ownerB__abcdefghij"]));
+  });
+
+  test("agent_chunk coalesces deltas inside the window into one frame (perf 2026-08-21)", async () => {
+    await _pairForTest("ownerC__1234567890");
+    const onUpdate = captureEventHandler("message_update");
+    const onInput = captureEventHandler("input");
+    onInput({ source: "terminal", text: "count" } as unknown as Parameters<typeof onInput>[0]);
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+
+    onUpdate({ assistantMessageEvent: { type: "text_delta", delta: "a" } } as unknown as Parameters<typeof onUpdate>[0]);
+    onUpdate({ assistantMessageEvent: { type: "text_delta", delta: "b" } } as unknown as Parameters<typeof onUpdate>[0]);
+    onUpdate({ assistantMessageEvent: { type: "text_delta", delta: "c" } } as unknown as Parameters<typeof onUpdate>[0]);
+
+    // Still inside the 50ms window — nothing on the wire yet.
+    let chunks = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt)
+      .filter((d) => d.inner.type === "agent_chunk");
+    expect(chunks).toHaveLength(0);
+
+    await new Promise((r) => setTimeout(r, 80));
+    chunks = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt)
+      .filter((d) => d.inner.type === "agent_chunk");
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]!.inner).toMatchObject({ type: "agent_chunk", delta: "abc" });
+  });
+
+  test("tool_execution_start flushes the pending chunk before tool_request", async () => {
+    await _pairForTest("ownerD__1234567890");
+    const onUpdate = captureEventHandler("message_update");
+    const onInput = captureEventHandler("input");
+    const onTool = captureEventHandler("tool_execution_start");
+    onInput({ source: "terminal", text: "run" } as unknown as Parameters<typeof onInput>[0]);
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+
+    onUpdate({ assistantMessageEvent: { type: "text_delta", delta: "partial text" } } as unknown as Parameters<typeof onUpdate>[0]);
+    onTool({ toolCallId: "t1", toolName: "bash", args: { cmd: "ls" } } as unknown as Parameters<typeof onTool>[0]);
+
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt);
+    const types = sent.map((d) => d.inner.type);
+    expect(types.indexOf("agent_chunk")).toBeGreaterThanOrEqual(0);
+    expect(types.indexOf("tool_request")).toBeGreaterThan(types.indexOf("agent_chunk"));
+    const chunk = sent.find((d) => d.inner.type === "agent_chunk")!;
+    expect(chunk.inner["delta"]).toBe("partial text");
+    await new Promise((r) => setTimeout(r, 80)); // drain window for later tests
+  });
+
+  test("agent_end flushes the pending chunk before agent_done", async () => {
+    await _pairForTest("ownerE__1234567890");
+    const onUpdate = captureEventHandler("message_update");
+    const onInput = captureEventHandler("input");
+    const onEnd = captureEventHandler("agent_end");
+    onInput({ source: "terminal", text: "finish" } as unknown as Parameters<typeof onInput>[0]);
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+
+    onUpdate({ assistantMessageEvent: { type: "text_delta", delta: "tail" } } as unknown as Parameters<typeof onUpdate>[0]);
+    onEnd({} as unknown as Parameters<typeof onEnd>[0]);
+
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt);
+    const types = sent.map((d) => d.inner.type);
+    expect(types).toContain("agent_chunk");
+    expect(types).toContain("agent_done");
+    expect(types.indexOf("agent_done")).toBeGreaterThan(types.indexOf("agent_chunk"));
+    expect(sent.find((d) => d.inner.type === "agent_chunk")!.inner["delta"]).toBe("tail");
+    await new Promise((r) => setTimeout(r, 80)); // drain window for later tests
   });
 
   test("show_image broadcasts agent_image with inline base64 to every owner (plan/114)", async () => {
@@ -2758,6 +2828,8 @@ describe("user_input mirroring", () => {
       message: {},
       assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "hi", partial: {} },
     });
+    // Perf 2026-08-21 — deltas coalesce into ≤50ms frames; drain the window.
+    await new Promise((r) => setTimeout(r, 80));
 
     const allSent = relayRef.current!.send.mock.calls.map((c) => c[0] as string);
     const chunks = allSent.map(decodeSentCt).filter((d) => d.inner.type === "agent_chunk");

@@ -802,7 +802,12 @@ class SyncService extends Service {
           }
           break;
         }
-        _discardStreamingState();
+        // PR #34 review — provider errors must not eat the streamed tail.
+        // The last agent_chunk and this error can land inside the same 16ms
+        // paint window; _discardStreamingState would cancel the flush timer
+        // and silently drop it. Finalize like agent_done/tool boundaries do:
+        // persist whatever text exists as an assistant row, then show the ⚠.
+        _finalizeSegment();
         _clearSteeringLabels();
         _setWorking(false);
         // ignore: discarded_futures

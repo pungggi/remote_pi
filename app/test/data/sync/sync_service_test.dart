@@ -601,7 +601,7 @@ void main() {
   });
 
   test(
-    'server error clears pending chunk flush so chat does not stay working',
+    'server error persists streamed partial text, then shows the error',
     () async {
       final s = await setup();
       s.ch.push(UserInput(id: 'u1', text: 'hi'));
@@ -619,10 +619,14 @@ void main() {
       expect(s.sync.streaming, isNull);
       expect(s.sync.isWorking, isFalse);
       expect(index(s.epk)?.status, SessionActivity.idle);
-      final errorTexts = messages(
+      // PR #34 review — the streamed tail must survive the error (finalized
+      // as an assistant row in seq order before the ⚠ bubble), not vanish
+      // with the discarded flush timer.
+      final texts = messages(
         s.epk,
-      ).where((m) => m.role == MsgRole.assistant).map((m) => m.text);
-      expect(errorTexts, contains(startsWith('⚠ internal_error:')));
+      ).where((m) => m.role == MsgRole.assistant).map((m) => m.text).toList();
+      expect(texts.first, 'partial');
+      expect(texts.last, startsWith('⚠ internal_error:'));
       s.conn.dispose();
       s.sync.dispose();
     },

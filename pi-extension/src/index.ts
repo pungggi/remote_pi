@@ -935,6 +935,52 @@ function _anyPeerActive(): boolean {
   return ext.activePeers.size > 0;
 }
 
+// ── Agent-chunk coalescing (perf 2026-08-21) ─────────────────────────────────
+// The SDK emits text_delta at token rate (often 30-60/s while generating).
+// Every agent_chunk is one signed frame, and the phone verifies each
+// inbound frame with pure-Dart Ed25519 serialized in its arrival-order
+// chain — bursts outrun verification (notably on the debug/JIT build) and
+// streaming text visibly lags, catching up only when a tool call pauses
+// the token stream. Coalescing deltas into ≤50ms frames cuts frame count
+// 3-6x with no wire change (the delta is just longer); the app already
+// paints on its own 16ms cadence, so granularity is imperceptible.
+// Turn/tool/done/idle boundaries flush synchronously so
+// text→tool→text→done ordering on the phone is preserved.
+let _chunkPending = "";
+let _chunkPendingTurn: string | null = null;
+let _chunkFlushTimer: ReturnType<typeof setTimeout> | null = null;
+const CHUNK_COALESCE_MS = 50;
+
+function _flushAgentChunks(): void {
+  if (_chunkFlushTimer !== null) {
+    clearTimeout(_chunkFlushTimer);
+    _chunkFlushTimer = null;
+  }
+  const delta = _chunkPending;
+  const turn = _chunkPendingTurn;
+  _chunkPending = "";
+  _chunkPendingTurn = null;
+  if (delta === "" || turn === null) return;
+  if (!_anyPeerActive()) return;
+  _broadcastToActive({ type: "agent_chunk", in_reply_to: turn, delta });
+}
+
+function _bufferAgentChunk(delta: string, turn: string): void {
+  if (turn !== _chunkPendingTurn) {
+    // Turn boundary (steer/follow-up): flush the old turn's text first so
+    // one frame never mixes in_reply_to targets.
+    _flushAgentChunks();
+    _chunkPendingTurn = turn;
+  }
+  _chunkPending += delta;
+  if (_chunkFlushTimer === null) {
+    _chunkFlushTimer = setTimeout(() => {
+      _chunkFlushTimer = null;
+      _flushAgentChunks();
+    }, CHUNK_COALESCE_MS);
+  }
+}
+
 /**
  * Adds an owner's channel to `ext.activePeers`. Also updates the UX hint
  * `ext.peerShort` (last-attached shortid) so the footer + status can pick
@@ -1109,6 +1155,9 @@ function _goIdle(byeReason?: import("./protocol/types.js").ByeReason): void {
 
   // Broadcast bye to every still-attached owner so each app surfaces
   // "offline" immediately instead of waiting ~50s for a ping miss.
+  // Flush any coalesced agent text first — up to 50ms of a turn's tail
+  // would otherwise vanish on stop/idle.
+  _flushAgentChunks();
   if (byeReason && ext.state !== "idle" && _anyPeerActive()) {
     _broadcastToActive({ type: "bye", reason: byeReason });
   }
@@ -2107,7 +2156,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     if (!_anyPeerActive() || !ext.currentTurnId) return;
     const ae = event.assistantMessageEvent;
     if (ae.type === "text_delta") {
-      _broadcastToActive({ type: "agent_chunk", in_reply_to: ext.currentTurnId, delta: ae.delta });
+      _bufferAgentChunk(ae.delta, ext.currentTurnId);
     }
   });
 
@@ -2117,6 +2166,10 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // they render a "Tool running… done" timeline in each paired app.
   pi.on("tool_execution_start", (event) => {
     if (!_anyPeerActive()) return;
+    // Flush any coalesced text first so the phone's timeline keeps
+    // chronological order (it finalizes the streaming segment on arrival
+    // of the tool_request).
+    _flushAgentChunks();
     _broadcastToActive({
       type: "tool_request",
       tool_call_id: event.toolCallId,
@@ -2161,6 +2214,8 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // `error` is an existing ServerMessage the app already renders — no
     // protocol/app change. `in_reply_to` ties it to the turn the app awaits.
     if (m.role === "assistant" && m.stopReason === "error" && _anyPeerActive()) {
+      // Drain coalesced text before the error so no turn tail is lost.
+      _flushAgentChunks();
       const message = typeof m.errorMessage === "string" && m.errorMessage
         ? m.errorMessage
         : "Provider error";
@@ -2177,6 +2232,9 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   pi.on("agent_end", () => {
     // Buffer is fed by `message_end`; here we only finalize the outbound
     // turn signal to every connected owner. No buffer mutation.
+    // Flush coalesced text FIRST — the phone finalizes the streaming
+    // segment on agent_done, so the tail must land before the done frame.
+    _flushAgentChunks();
     if (_anyPeerActive() && ext.currentTurnId) {
       _broadcastToActive({ type: "agent_done", in_reply_to: ext.currentTurnId });
       ext.currentTurnId = null;
