@@ -11,6 +11,8 @@ import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/local/boxes.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/repositories/session_read_repository.dart';
+import 'package:app/data/share/composer_draft.dart';
+import 'package:app/data/share/shared_text_inbox.dart';
 import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/connection_manager.dart';
@@ -111,6 +113,15 @@ void main() {
               ChangeNotifierProvider<AttachmentViewModel>.value(value: attach),
               ChangeNotifierProvider<Preferences>.value(value: prefs),
               ChangeNotifierProvider<SessionSelection>.value(value: sel),
+              // ChatPage._buildInput reads these during build (plan/104/106);
+              // without them the pump throws ProviderNotFoundException before
+              // the AppBar assertions can run.
+              ChangeNotifierProvider<SharedTextInbox>.value(
+                value: SharedTextInbox(),
+              ),
+              ChangeNotifierProvider<ComposerDraft>.value(
+                value: ComposerDraft(),
+              ),
             ],
             child: const ChatPage(
               initialTitle: 'My Project',
