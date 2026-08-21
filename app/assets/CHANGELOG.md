@@ -11,6 +11,16 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+## [1.3.5] — 2026-08-21
+
+### Fixed
+
+- **Reading older messages while a reply is streaming finally works** — the
+  view used to snap back to the newest message every time the reply grew,
+  making it impossible to scroll up during generation. The viewport now stays
+  exactly where you left it (your scroll gesture is no longer interrupted),
+  and follows the live reply again once you scroll back to the bottom.
+
 ## [1.3.4] — 2026-08-21
 
 ### Fixed
