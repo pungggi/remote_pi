@@ -1,6 +1,11 @@
-# Rolling debug APK do app Piper (app/).
+# CI do app Piper (app/): flutter test em cada PR que toque app/, e APK
+# debug rolling em cada push em main (agora DEPENDENTE dos testes passarem).
 #
-# Trigger: push em main que toque app/ (ou este arquivo) + workflow_dispatch.
+# Trigger: push em main + pull_request (paths app/ ou este arquivo) +
+# workflow_dispatch. O job `tests` roda sempre; o job `debug-apk` só publica
+# em push/dispatch (PR não publica) e `needs: tests` — main nunca recebe um
+# APK novo com suite vermelha.
+#
 # Produz: release fixa `debug` (prerelease) com RemotePi-debug.apk sempre
 # atualizado (--clobber) + SHA256SUMS. URL estável — "sempre um debug APK":
 #   https://github.com/<repo>/releases/download/debug/RemotePi-debug.apk
@@ -16,13 +21,17 @@ on:
     paths:
       - "app/**"
       - ".github/workflows/app-debug.yml"
+  pull_request:
+    paths:
+      - "app/**"
+      - ".github/workflows/app-debug.yml"
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: app-debug
+  group: app-debug-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -30,10 +39,30 @@ env:
   DEBUG_TAG: debug
 
 jobs:
-  debug-apk:
-    name: APK debug (rolling)
+  tests:
+    name: flutter test
     runs-on: ubuntu-24.04
     defaults: { run: { working-directory: app } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Testes (suite completa)
+        run: |
+          flutter pub get
+          flutter test
+
+  debug-apk:
+    name: APK debug (rolling)
+    needs: tests
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    defaults: { run: { working-directory: app } }
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
