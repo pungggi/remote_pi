@@ -512,7 +512,7 @@ class ChatPage extends StatelessWidget {
             message: 'Nothing here',
           );
         }
-        return _MessageList(
+        return MessageList(
           messages: visible,
           streaming: streaming,
           onDecide: (id, decision) => vm.approveTool(id, decision),
@@ -801,14 +801,15 @@ TranscriptGrow classifyTranscriptGrow(
   return TranscriptGrow.replace;
 }
 
-class _MessageList extends StatefulWidget {
+class MessageList extends StatefulWidget {
   final List<ChatMessage> messages;
   final StreamingMessage? streaming;
   final void Function(String, ApproveDecision) onDecide;
   final bool truncated;
   final VoidCallback? onLoadMore;
 
-  const _MessageList({
+  const MessageList({
+    super.key,
     required this.messages,
     required this.streaming,
     required this.onDecide,
@@ -817,17 +818,21 @@ class _MessageList extends StatefulWidget {
   });
 
   @override
-  State<_MessageList> createState() => _MessageListState();
+  State<MessageList> createState() => _MessageListState();
 }
 
 /// Plan/jumpusermsg — prev/next navigation between **user** messages.
+///
+/// Public counterpart [MessageList] (no underscore) so the guided-nav
+/// regression test can mount the transcript without the full
+/// ChatPage/Provider tree.
 ///
 /// The list is a `reverse: true` ListView (offset 0 = newest, at the
 /// bottom). To jump to a given [UserMsg] we keep one [GlobalKey] per user
 /// message id and drive [Scrollable.ensureVisible] on its context. A
 /// generous [scrollCacheExtent] keeps the neighbour user messages mounted so
 /// the step target is always reachable.
-class _MessageListState extends State<_MessageList> {
+class _MessageListState extends State<MessageList> {
   final ScrollController _scroll = ScrollController();
 
   /// One [GlobalKey] per user message id → its BuildContext feeds
@@ -841,6 +846,21 @@ class _MessageListState extends State<_MessageList> {
   /// at the top of the viewport. Reset on a user-driven flick so a manual
   /// scroll re-anchors instead of stepping from a stale position.
   int _navIndex = -1;
+
+  /// Generation guard for in-flight guided jumps — bumped when the user
+  /// presses again, flicks manually, or the history is replaced, so a stale
+  /// hop chain stops before it scrolls a transcript it no longer belongs to.
+  int _navGen = 0;
+
+  /// True while a hop chain (target beyond the build cache) is animating.
+  /// Lets the flick handler abort in-flight hops even though [_navIndex]
+  /// is still `-1` until arrival.
+  bool _navHopping = false;
+
+  /// Cap on hops per jump. A transcript page is never 100 viewports tall;
+  /// hitting the cap means the target id vanished mid-hop (history swap the
+  /// generation guard missed) — give up instead of spinning.
+  static const int _maxNavHops = 100;
 
   /// Plan/fixusrmsgscrolling — whether the viewport is pinned to the bottom
   /// (newest). `reverse: true` makes the bottom = offset
@@ -889,7 +909,7 @@ class _MessageListState extends State<_MessageList> {
   }
 
   @override
-  void didUpdateWidget(_MessageList old) {
+  void didUpdateWidget(MessageList old) {
     super.didUpdateWidget(old);
     final changed =
         !identical(old.messages, widget.messages) ||
@@ -908,6 +928,7 @@ class _MessageListState extends State<_MessageList> {
       // History replaced (session switch / load-more / dedup) → the guided
       // pointer is no longer valid. Re-anchor on the next press.
       _navIndex = -1;
+      _navGen++; // abort any in-flight hop — its target may be gone
     }
   }
 
@@ -999,7 +1020,8 @@ class _MessageListState extends State<_MessageList> {
     return best >= 0 ? best : userMsgs.length - 1;
   }
 
-  void _jump({required bool older}) {
+  Future<void> _jump({required bool older}) async {
+    final gen = ++_navGen;
     final userMsgs = _userMsgs;
     final n = userMsgs.length;
     if (n < 2) return;
@@ -1009,16 +1031,57 @@ class _MessageListState extends State<_MessageList> {
     final from = hasIdx ? _navIndex : _anchorIndex(userMsgs);
     final target = older ? from - 1 : from + 1;
     if (target < 0 || target >= n) return;
-    final ctx = _userKeys[userMsgs[target].id]?.currentContext;
-    if (ctx == null) return; // beyond cache — no-op; scroll closer first
+
+    // Bug 2026-08-21 — the old `ctx == null → return` ("beyond cache —
+    // no-op; scroll closer first") made both buttons dead whenever the
+    // neighbouring user message sat farther than viewport + cacheExtent
+    // (~2.3 screens): with long agent replies between questions that was
+    // virtually every jump. Instead, HOP one viewport at a time toward the
+    // target until the lazy list builder mounts it. Adjacent build windows
+    // overlap by 2 × cacheExtent on both sides, so every intermediate item
+    // mounts along the way and the target can never be skipped over.
+    var ctx = _userKeys[userMsgs[target].id]?.currentContext;
+    if (ctx == null) {
+      _navHopping = true;
+      try {
+        var hops = 0;
+        while (ctx == null && mounted && gen == _navGen && hops < _maxNavHops) {
+          final p = _scroll.position;
+          // reverse:true → offset 0 is the NEWEST; older content lives at
+          // HIGHER offsets, so "older" hops toward maxScrollExtent.
+          final step = older ? p.viewportDimension : -p.viewportDimension;
+          final next = (p.pixels + step)
+              .clamp(p.minScrollExtent, p.maxScrollExtent);
+          if ((next - p.pixels).abs() < 0.5) {
+            // Clamped at the transcript bound with no mounted target —
+            // unreachable (e.g. history swapped mid-hop). Give up quietly.
+            return;
+          }
+          await p.animateTo(
+            next,
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+          );
+          if (!mounted || gen != _navGen) return; // superseded — stop
+          // Items mount as the offset moves during the animation; by
+          // completion the new window is built and contexts are live.
+          ctx = _userKeys[userMsgs[target].id]?.currentContext;
+          hops++;
+        }
+      } finally {
+        _navHopping = false;
+      }
+    }
+    if (ctx == null || !ctx.mounted) return;
     // alignment 0.5 = center: unambiguous in a reverse-anchored list, and
     // keeps the user message + the start of its answer on screen.
-    Scrollable.ensureVisible(
+    await Scrollable.ensureVisible(
       ctx,
       alignment: 0.5,
       duration: const Duration(milliseconds: 220),
       curve: Curves.easeOutCubic,
     );
+    if (!mounted || gen != _navGen) return;
     setState(() => _navIndex = target);
   }
 
@@ -1050,8 +1113,16 @@ class _MessageListState extends State<_MessageList> {
           // A user-driven flick abandons the guided pointer so the next jump
           // re-anchors to the new viewport.
           onNotification: (notif) {
-            if (notif is UserScrollNotification && _navIndex != -1 && mounted) {
-              setState(() => _navIndex = -1);
+            if (notif is UserScrollNotification &&
+                mounted &&
+                (_navIndex != -1 || _navHopping)) {
+              // A user-driven flick abandons the guided pointer AND any
+              // in-flight hop, so the next jump re-anchors to the new
+              // viewport instead of fighting the manual scroll.
+              _navGen++;
+              if (_navIndex != -1) {
+                setState(() => _navIndex = -1);
+              }
             }
             return false;
           },
@@ -1178,6 +1249,7 @@ class _UserMsgNav extends StatelessWidget {
             onOlder,
             canOlder,
             'Previous question',
+            key: const ValueKey('chat-nav-older'),
           ),
           if (position != null)
             Padding(
@@ -1196,6 +1268,7 @@ class _UserMsgNav extends StatelessWidget {
             onNewer,
             canNewer,
             'Next question',
+            key: const ValueKey('chat-nav-newer'),
           ),
         ],
       ),
@@ -1207,10 +1280,12 @@ class _UserMsgNav extends StatelessWidget {
     IconData icon,
     VoidCallback onTap,
     bool enabled,
-    String tooltip,
-  ) {
+    String tooltip, {
+    Key? key,
+  }) {
     final colors = context.colors;
     return IconButton(
+      key: key,
       icon: Icon(icon, size: 18, color: enabled ? colors.text : colors.muted2),
       tooltip: tooltip,
       visualDensity: VisualDensity.compact,
