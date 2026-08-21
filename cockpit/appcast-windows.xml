@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Piper Cockpit</title>
+    <item>
+      <title>1.19.1</title>
+      <pubDate>Fri, 21 Aug 2026 10:19:04 +0000</pubDate>
+      <sparkle:version>1.19.1</sparkle:version>
+      <description><![CDATA[### Added
+- **Endpoint do servidor de status publicado em disco** —
+  `~/.cockpit/status-endpoint[-debug].json` (Windows: porta TCP efêmera +
+  token; POSIX: path do socket), escrito no boot e removido no encerramento.
+  Habilita o `api.changeLayout` do remote-pi: aplicar um layout nomeado
+  `.ckp` no workspace ativo direto do celular (o daemon do dispositivo não
+  herda o env de nenhuma aba — sem o arquivo, a porta efêmera é
+  indescobrível).]]></description>
+      <enclosure url="https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.1/RemotePiCockpit-Setup-1.19.1-windows-x64.exe" sparkle:edSignature="dvnarYHxgSWrmiU7f0JrTQxn9EjXpKqGWh8Mjl1b0Abx8oj3v/7NDm2IT+MDxsK4pqj603LTK3S0mgl2icO1AA==" length="38764050" sparkle:os="windows" sparkle:installerArguments="/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-" type="application/octet-stream" />
+    </item>
+  </channel>
+</rss>

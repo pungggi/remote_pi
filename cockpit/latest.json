@@ -1,0 +1,47 @@
+{
+  "version": "1.19.1",
+  "date": "2026-08-21",
+  "notes": "### Added\n- **Endpoint do servidor de status publicado em disco** —\n  `~/.cockpit/status-endpoint[-debug].json` (Windows: porta TCP efêmera +\n  token; POSIX: path do socket), escrito no boot e removido no encerramento.\n  Habilita o `api.changeLayout` do remote-pi: aplicar um layout nomeado\n  `.ckp` no workspace ativo direto do celular (o daemon do dispositivo não\n  herda o env de nenhuma aba — sem o arquivo, a porta efêmera é\n  indescobrível).",
+  "artifacts": [
+    {
+      "platform": "windows",
+      "arch": "x64",
+      "format": "exe",
+      "url": "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.1/RemotePiCockpit-Setup-1.19.1-windows-x64.exe",
+      "sha256": "00ad3365eccf2aea0e393f509e05afb9f51eb8b1d5f309e3e2e313171afa9171",
+      "size": 38764050
+    },
+    {
+      "platform": "linux",
+      "arch": "arm64",
+      "format": "rpm",
+      "url": "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.1/remote-pi-cockpit-1.19.1.aarch64.rpm",
+      "sha256": "a5211c29b4d8f74ac6ca7d2bd92b6d2ebc2e3ad688d93c46a2228724f61ff730",
+      "size": 31387795
+    },
+    {
+      "platform": "linux",
+      "arch": "x64",
+      "format": "rpm",
+      "url": "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.1/remote-pi-cockpit-1.19.1.x86_64.rpm",
+      "sha256": "56065333bae5d1ceec3f66591d5118255aef3bc409e9cde0b774ba4848ede25a",
+      "size": 32349024
+    },
+    {
+      "platform": "linux",
+      "arch": "x64",
+      "format": "deb",
+      "url": "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.1/remote-pi-cockpit_1.19.1_amd64.deb",
+      "sha256": "f9b521315eebba13994d1c2d62a72550384fda7621c4717eaf98983818d2ba2f",
+      "size": 24408972
+    },
+    {
+      "platform": "linux",
+      "arch": "arm64",
+      "format": "deb",
+      "url": "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.1/remote-pi-cockpit_1.19.1_arm64.deb",
+      "sha256": "4f00cf3dce6258563d4455535a6dcc8c706f2da995b29f14017f2c2f1b62b4e0",
+      "size": 23972236
+    }
+  ]
+}
