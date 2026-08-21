@@ -196,12 +196,14 @@ jobs:
       - name: Smoke test .deb (instala no próprio runner)
         run: |
           sudo apt-get install -y "./out/remote-pi-cockpit_${VERSION}_${{ matrix.deb_arch }}.deb"
-          dpkg -L remote-pi-cockpit | grep -m1 "\.desktop$"
+          # Nome INTERNO do pacote = package_name do make_config.yaml do deb
+          # (piper-cockpit desde o rebrand 2026-07) — NÃO o nome do arquivo.
+          dpkg -L piper-cockpit | grep -m1 "\.desktop$"
 
       - name: Smoke test .rpm (container fedora:40)
         run: |
-          # rpm -qpl consulta o ARQUIVO (o nome interno do pacote não é
-          # remote-pi-cockpit — o maker do Fastforge usa o nome do pubspec).
+          # rpm -qpl consulta o ARQUIVO — imune ao nome interno do pacote
+          # (que é o package_name do make_config.yaml, não o nome do arquivo).
           docker run --rm -v "$PWD/out:/out:ro" fedora:40 bash -c \
             "dnf install -y /out/remote-pi-cockpit-${VERSION}.${{ matrix.rpm_arch }}.rpm \
              && rpm -qpl /out/remote-pi-cockpit-${VERSION}.${{ matrix.rpm_arch }}.rpm | grep -m1 '\.desktop$'"
