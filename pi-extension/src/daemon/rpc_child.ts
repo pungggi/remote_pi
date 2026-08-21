@@ -192,9 +192,22 @@ function parseGetStateResponse(line: string): { id?: string; isStreaming?: boole
  * resources and project extensions — the daemon then comes up with no model
  * and fails on the first turn. The operator already authorized this folder by
  * registering/launching a daemon in it, so `--approve` (trust-for-this-run) is
- * the correct non-interactive stance. (Does NOT affect the separate "extension
- * loaded twice" conflict, which comes from the extension being BOTH installed
- * in ~/.pi/agent/extensions or cwd/.pi/extensions AND passed via `-e`.)
+ * the correct non-interactive stance. (Settings/instructions/resources are
+ * still honored with `-ne` below — only extension discovery is disabled.)
+ *
+ * `-ne` (extension isolation, 2026-08 incident): disables pi's extension
+ * DISCOVERY — settings.json packages, ~/.pi/agent/extensions, and the cwd's
+ * .pi/extensions — while explicit `-e` paths (ours) still load. Rationale: a
+ * user-global extension that fails to parse is FATAL at pi boot (verified: an
+ * unterminated template literal in a global extension kills every `pi`
+ * process), so ONE typo'd global extension took down the whole daemon fleet
+ * → phone "Device unreachable". Daemons are infrastructure: they must
+ * survive the user's interactive-setup breakage. Bonus: this also ends the
+ * "extension loaded twice" conflict (remote-pi installed globally AND via
+ * `-e`) and stops cwd-local .pi/extensions auto-loading into daemons
+ * (defense-in-depth next to `remoteCwdAllowed`, security fix M3).
+ * Trade-off: daemon agents no longer see user extension tools (MCP adapters
+ * etc.) — if ever needed, pass them as additional explicit `-e` paths.
  */
 export function rpcSpawnArgs(
   extensionPath: string,
@@ -206,6 +219,7 @@ export function rpcSpawnArgs(
     "--approve",
     ...(useContinue ? ["--continue"] : []),
     ...(sessionName ? ["--name", sessionName] : []),
+    "-ne",
     "-e", extensionPath,
   ];
 }
