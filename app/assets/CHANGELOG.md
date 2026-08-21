@@ -11,6 +11,20 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+## [1.3.3] — 2026-08-21
+
+### Fixed
+
+- **Fresh pairings complete reliably again** — the phone's first-contact
+  envelope was addressed to a key hash the PC rejected, making pairing
+  time out for good measure.
+- **No more freezes or battery drain while the agent replies** — Ed25519
+  signature verification moved to a background isolate (previously it ran
+  on the UI thread; a long reply could peg the CPU and stall the app).
+- **Projects screen and quick actions no longer time out** — replies that
+  carry no message id (project list, worktrees, layout changes) were being
+  silently swallowed by replay dedup.
+
 ## [1.3.2] — 2026-08-16
 
 ### Fixed
