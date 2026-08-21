@@ -931,8 +931,36 @@ export function _hasActivePeerForTest(appPeerIdStd: string): boolean {
  * use this — they go to the sender channel directly.
  */
 function _broadcastToActive(msg: ServerMessage): void {
+  _probeBroadcast(msg);
   for (const ch of ext.activePeers.values()) {
     try { ch.send(msg); } catch { /* best-effort per channel */ }
+  }
+}
+
+// [probe 2026-08-21] send-side span per turn — pairs with the app's
+// StreamProbe SUMMARY to attribute arrival lag upstream (relay/network)
+// vs on-device (verify chain / UI). stdout → supervisord.log.
+let _probeSendFirst = 0;
+let _probeSendCount = 0;
+let _probeSendChars = 0;
+let _probeSendLast = 0;
+function _probeBroadcast(msg: ServerMessage): void {
+  if (msg.type === "agent_chunk") {
+    const t = Date.now();
+    if (_probeSendCount === 0) _probeSendFirst = t;
+    _probeSendCount++;
+    _probeSendChars += msg.delta?.length ?? 0;
+    _probeSendLast = t;
+  } else if (msg.type === "agent_done") {
+    if (_probeSendCount > 0) {
+      console.log(
+        `[probe] daemon turn: chunks=${_probeSendCount} chars=${_probeSendChars} ` +
+        `sendSpan=${_probeSendLast - _probeSendFirst}ms doneAt=${_probeSendLast}`,
+      );
+      _probeSendCount = 0;
+      _probeSendChars = 0;
+      _probeSendFirst = 0;
+    }
   }
 }
 
