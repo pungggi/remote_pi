@@ -16,6 +16,7 @@ import 'package:app/data/local/records/message_record.dart';
 import 'package:app/data/local/records/runtime_record.dart';
 import 'package:app/data/local/records/session_index_record.dart';
 import 'package:app/data/sync/sync_events.dart';
+import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/stream_probe.dart';
 import 'package:app/domain/contracts/service.dart';
@@ -121,6 +122,23 @@ class SyncService extends Service {
   /// (config/dependencies.dart). See plan/128 step 6.
   final int? localHistoryMax;
 
+  /// Strategy fix (2026-08-21) — a session_sync reply can be silently
+  /// DROPPED by the relay when the PC reconnects mid-request ("dest not
+  /// found"); the app then sat on its stale cache forever. Every request is
+  /// tracked by id and re-sent after [syncRetryDelay] until its terminal
+  /// (eos) reply lands or attempts run out. History merges are idempotent
+  /// (dedup by `<role>:<id>`), so duplicate replies are harmless.
+  final Duration syncRetryDelay;
+
+  static const int _syncRetryMax = 3;
+
+  /// Safety valve for auto gap-fill: 20 pages × 500 = 10k events per
+  /// catch-up chain before the manual "Load more" tile takes over.
+  static const int _gapFillMaxPages = 20;
+  int _gapFillPages = 0;
+  final Map<String, _PendingSyncRequest> _pendingSyncs = {};
+  Timer? _syncRetryTimer;
+
   final Map<String, Timer> _pendingSendTimers = {};
 
   SyncService(
@@ -128,6 +146,7 @@ class SyncService extends Service {
     this._boxes, {
     this.pendingSendTimeout = const Duration(seconds: 20),
     this.localHistoryMax,
+    this.syncRetryDelay = const Duration(seconds: 6),
   }) {
     _connSub = _conn.statusStream.listen(_onStatus);
     _roomsSub = _conn.roomsStream.listen((_) {
@@ -196,6 +215,10 @@ class SyncService extends Service {
       _truncatedController.add(false);
     }
     _nextBefore = null;
+    // Session switch: prior pending syncs belong to the old transcript.
+    _pendingSyncs.clear();
+    _gapFillPages = 0;
+    _cancelSyncRetryTimer();
     _activeEpk = epk;
     _activeRoomId = room;
     await _loadIndex();
@@ -470,15 +493,98 @@ class SyncService extends Service {
 
     if (loadMore) {
       if (_nextBefore == null) return; // nothing paged yet / no more to load
-      ch.send(SessionSync(
-        id: _newId(),
-        limit: _loadMorePageSize,
-        before: _nextBefore,
-      ));
+      _sendTrackedSync(
+        ch,
+        SessionSync(id: _newId(), limit: _loadMorePageSize, before: _nextBefore),
+      );
     } else {
       _nextBefore = null; // newest page: discard any stale cursor
-      ch.send(SessionSync(id: _newId()));
+      _gapFillPages = 0; // newest chain restarts the gap-fill budget
+      _sendTrackedSync(ch, SessionSync(id: _newId()));
     }
+  }
+
+  /// Sends [msg] on [ch] and arms the unanswered-request retry for its id.
+  /// The send itself is guarded (see [_guardedSyncSend]): during teardown
+  /// the ConnectionManager can still expose the old channel while close()
+  /// is pending, and a rejection there would surface as an unhandled async
+  /// error — instead the request simply stays tracked and the retry timer
+  /// re-sends it on a healthy channel.
+  void _sendTrackedSync(IChannel ch, SessionSync msg) {
+    _pendingSyncs[msg.id] = _PendingSyncRequest(
+      id: msg.id,
+      limit: msg.limit,
+      before: msg.before,
+    );
+    unawaited(_guardedSyncSend(ch, msg));
+    _syncRetryTimer ??= Timer.periodic(
+      syncRetryDelay,
+      (t) => unawaited(_retryPendingSyncs(t)),
+    );
+  }
+
+  /// Review #1 (PR #45) — a sync send on a channel that is mid-teardown can
+  /// reject (close() races the exposed handle; WsTransport fails after
+  /// signing). Swallow the rejection: the request is already tracked, so the
+  /// retry timer owns recovery instead of the error surfacing unhandled.
+  Future<void> _guardedSyncSend(IChannel ch, SessionSync msg) async {
+    try {
+      await ch.send(msg);
+    } catch (_) {
+      // Lost to teardown — leave tracked; retry re-sends on a live channel.
+    }
+  }
+
+  /// Re-sends every session_sync that still has no terminal (eos) reply.
+  /// Same id ⇒ the server re-serves the same page; the idempotent merge
+  /// dedups whatever arrives twice. A send that rejects (teardown race)
+  /// does NOT burn an attempt — the record stays pending for the next tick.
+  Future<void> _retryPendingSyncs(Timer _) async {
+    final ch = _conn.channel;
+    if (ch == null) return; // offline: the reconnect flow re-syncs anyway
+    final exhausted = <String>[];
+    for (final entry in _pendingSyncs.entries.toList()) {
+      final rec = entry.value;
+      if (rec.attempts >= _syncRetryMax) {
+        exhausted.add(entry.key);
+        continue;
+      }
+      try {
+        await ch.send(
+          SessionSync(id: rec.id, limit: rec.limit, before: rec.before),
+        );
+        rec.attempts++;
+      } catch (_) {
+        // Channel died mid-close; next tick retries on whatever channel the
+        // ConnectionManager exposes then.
+      }
+    }
+    _pendingSyncs.removeWhere((id, _) => exhausted.contains(id));
+    if (_pendingSyncs.isEmpty) _cancelSyncRetryTimer();
+  }
+
+  void _cancelSyncRetryTimer() {
+    _syncRetryTimer?.cancel();
+    _syncRetryTimer = null;
+  }
+
+  /// Strategy fix (2026-08-21) — "load ALL messages no matter how long the
+  /// app was offline". A page that shares NO ids with the local box means
+  /// the offline gap exceeds that page, so we keep auto-paging OLDER via the
+  /// `before` cursor until a page overlaps history we already have (gap
+  /// closed) or the cursor runs out. On a first-ever sync of a long session
+  /// (empty box) this intentionally pages the whole transcript up to
+  /// [_gapFillMaxPages] × 500 events; manual "Load more" extends beyond.
+  void _maybeGapFill(
+    SessionHistory h, {
+    required bool hadOverlap,
+    required bool wasLoadMore,
+  }) {
+    if (!wasLoadMore) _gapFillPages = 0;
+    if (hadOverlap || h.nextBefore == null || h.events.isEmpty) return;
+    if (_gapFillPages >= _gapFillMaxPages) return;
+    _gapFillPages++;
+    requestSync(loadMore: true);
   }
 
   /// Plan/28 — `session_new` acked: wipe the active session's rows + index.
@@ -795,8 +901,13 @@ class SyncService extends Service {
         }
 
       case SessionHistory():
-        // ignore: discarded_futures
-        _applyHistory(msg);
+        // Retry bookkeeping: the terminal frame (eos) answers the request.
+        final rec = _pendingSyncs[msg.inReplyTo];
+        if (msg.eos) {
+          _pendingSyncs.remove(msg.inReplyTo);
+          if (_pendingSyncs.isEmpty) _cancelSyncRetryTimer();
+        }
+        _applyHistory(msg, wasLoadMore: rec?.limit != null);
 
       case ErrorMessage(:final code, :final message):
         if (code.contains('unknown_peer')) {
@@ -891,7 +1002,7 @@ class SyncService extends Service {
     );
   }
 
-  Future<void> _applyHistory(SessionHistory h) async {
+  Future<void> _applyHistory(SessionHistory h, {bool wasLoadMore = false}) async {
     final epk = _activeEpk;
     if (epk == null) return;
     // Plan/111/128 — track truncation (mirrors the server's `has_more`) and
@@ -915,6 +1026,11 @@ class SyncService extends Service {
         return;
       }
       final box = await _boxes.msgsBox(epk, room);
+      // Strategy fix (2026-08-21): overlap vs PRE-merge local state decides
+      // auto gap-fill after the merge (see _maybeGapFill).
+      final hadOverlap = rows.any(
+        (r) => _idToSeq.containsKey(_key(r.role, r.id)),
+      );
 
       // Plan/128 — durable append-only merge. The box is NO LONGER a
       // substitutive mirror of the server's in-memory buffer. Each history
@@ -1052,6 +1168,7 @@ class SyncService extends Service {
         _idToSeq.removeWhere((_, seq) => victims.contains(seq));
       }
       _indexLoaded = true;
+      _maybeGapFill(h, hadOverlap: hadOverlap, wasLoadMore: wasLoadMore);
     });
     if (_activeEpk == epk && _activeRoomId == room) {
       _updateIndex(
@@ -1526,6 +1643,7 @@ class SyncService extends Service {
   void dispose() {
     _flushTimer?.cancel();
     _syncDebounce?.cancel();
+    _cancelSyncRetryTimer();
     _cancelAllSendTimers();
     _connSub?.cancel();
     _msgSub?.cancel();
@@ -1538,4 +1656,17 @@ class SyncService extends Service {
     _queuedController.close();
     _truncatedController.close();
   }
+}
+
+/// Strategy fix (2026-08-21) — an in-flight session_sync awaiting its
+/// terminal (eos) reply, tracked for re-send when the reply is lost to a
+/// relay drop / PC reconnect. `limit != null` marks a backward (loadMore)
+/// page, which the gap-fill logic treats differently from a newest page.
+class _PendingSyncRequest {
+  final String id;
+  final int? limit;
+  final String? before;
+  int attempts = 0;
+
+  _PendingSyncRequest({required this.id, this.limit, this.before});
 }

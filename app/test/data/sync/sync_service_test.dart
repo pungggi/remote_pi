@@ -21,12 +21,23 @@ class _FakeChannel implements IChannel, IControlLink {
   final _ctrl = StreamController<ServerMessage>.broadcast();
   final _control = StreamController<ControlInbound>.broadcast();
   final List<ClientMessage> sent = [];
+
+  /// Review #1 (PR #45) test hook: the next N `send` calls reject, mocking a
+  /// channel that dies mid-teardown (close() racing the exposed handle).
+  int failNextSends = 0;
+
   @override
   Stream<ServerMessage> get serverMessages => _ctrl.stream;
   @override
   Stream<ControlInbound> get controlFrames => _control.stream;
   @override
-  Future<void> send(ClientMessage msg) async => sent.add(msg);
+  Future<void> send(ClientMessage msg) async {
+    if (failNextSends > 0) {
+      failNextSends--;
+      throw StateError('channel closing');
+    }
+    sent.add(msg);
+  }
   @override
   void sendControl(Map<String, dynamic> json) {}
   @override
@@ -67,6 +78,7 @@ void main() {
   setup({
     Duration pendingSendTimeout = const Duration(seconds: 20),
     int? localHistoryMax,
+    Duration syncRetryDelay = const Duration(seconds: 6),
   }) async {
     final ch = _FakeChannel();
     final conn = ConnectionManager(
@@ -80,6 +92,7 @@ void main() {
       boxes,
       pendingSendTimeout: pendingSendTimeout,
       localHistoryMax: localHistoryMax,
+      syncRetryDelay: syncRetryDelay,
     );
     final epk = 'epk_sync_${++_counter}';
     conn.adopt(
@@ -1643,5 +1656,193 @@ void main() {
         s.sync.dispose();
       },
     );
+  });
+
+  group('sync reliability (2026-08-21): retry lost replies + auto gap-fill', () {
+    test('unanswered session_sync is re-sent with the same id, stops on eos',
+        () async {
+      final s = await setup(syncRetryDelay: const Duration(milliseconds: 25));
+      addTearDown(() {
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      // Poll for the ORIGINAL auto-sync request (debounced ~200ms after
+      // adopt) — don't sleep a fixed 400ms first, or the whole retry budget
+      // (3 × 25ms) is spent before we can intervene.
+      var waited = 0;
+      List<SessionSync> first = [];
+      while ((first = s.ch.sent.whereType<SessionSync>().toList()).isEmpty &&
+          waited < 200) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        waited++;
+      }
+      expect(first, isNotEmpty);
+      final id = first.first.id;
+
+      // Review #2 (PR #45): poll until the FIRST retry lands — strictly
+      // before the 3-attempt budget is exhausted — so the later freeze can
+      // only be explained by the eos reply, never by budget exhaustion.
+      // 5ms polls can never skip past a 25ms tick.
+      var polls = 0;
+      while (s.ch.sent.whereType<SessionSync>().length < 2 && polls < 100) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        polls++;
+      }
+      final countAtEos = s.ch.sent.whereType<SessionSync>().length;
+      expect(countAtEos, 2); // original + exactly one retry so far
+      expect(
+        s.ch.sent.whereType<SessionSync>().map((m) => m.id).toSet(),
+        {id},
+      );
+
+      // Terminal reply received while budget remains → no further retries.
+      s.ch.push(SessionHistory(
+        inReplyTo: id,
+        sessionStartedAt: 1,
+        events: const [],
+        eos: true,
+      ));
+      await Future<void>.delayed(
+        const Duration(milliseconds: 200),
+      ); // ≫ 25ms period
+      expect(s.ch.sent.whereType<SessionSync>().length, countAtEos);
+    });
+
+    test('retry hitting a dying channel neither crashes nor burns an attempt',
+        () async {
+      final s = await setup(syncRetryDelay: const Duration(milliseconds: 25));
+      addTearDown(() {
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      final id = s.ch.sent.whereType<SessionSync>().first.id;
+
+      // The next retry tick sends into a channel mid-teardown: it rejects.
+      // Pre-fix this surfaced as an unhandled async error (test-zone crash).
+      s.ch.failNextSends = 1;
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+
+      // A later tick re-sent the SAME request on the healthy channel — the
+      // failed attempt didn't count, so the budget still allows it.
+      final retries =
+          s.ch.sent.whereType<SessionSync>().where((m) => m.id == id).length;
+      expect(retries, greaterThanOrEqualTo(1));
+
+      s.ch.push(SessionHistory(
+        inReplyTo: id,
+        sessionStartedAt: 1,
+        events: const [],
+        eos: true,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+
+    test('newest page with no local overlap auto-pages older until overlap',
+        () async {
+      final s = await setup();
+      addTearDown(() {
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      // Auto sync → newest page is ALL NEW to the empty box + a cursor →
+      // gap-fill must issue a loadMore with that cursor.
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      final req1 = s.ch.sent.whereType<SessionSync>().first;
+      s.ch.push(SessionHistory(
+        inReplyTo: req1.id,
+        sessionStartedAt: 1,
+        events: const [
+          UserInputEvt(ts: 10, id: 'new1', text: 'hello'),
+          AgentMessageEvt(ts: 11, inReplyTo: 'new1', text: 'world'),
+        ],
+        eos: true,
+        nextBefore: 'cursor1',
+      ));
+      await _settle();
+      final loadMores = s.ch
+          .sent
+          .whereType<SessionSync>()
+          .where((m) => m.before != null)
+          .toList();
+      expect(loadMores, isNotEmpty);
+      expect(loadMores.first.before, 'cursor1');
+
+      // Next older page OVERLAPS local (event we already merged) → stop,
+      // even though the server still offers another cursor.
+      s.ch.push(SessionHistory(
+        inReplyTo: loadMores.first.id,
+        sessionStartedAt: 1,
+        events: const [
+          UserInputEvt(ts: 5, id: 'new1', text: 'hello'),
+        ],
+        eos: true,
+        nextBefore: 'cursor2',
+      ));
+      await _settle();
+      final count = s.ch
+          .sent
+          .whereType<SessionSync>()
+          .where((m) => m.before != null)
+          .length;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(
+        s.ch
+            .sent
+            .whereType<SessionSync>()
+            .where((m) => m.before != null)
+            .length,
+        count,
+      );
+      // And the missed events actually landed locally.
+      expect(messages(s.epk).map((m) => m.id), containsAll(['new1']));
+    });
+
+    test('page with local overlap does not auto-loadMore', () async {
+      final s = await setup();
+      addTearDown(() {
+        s.conn.dispose();
+        s.sync.dispose();
+      });
+
+      // Seed local with one event (no cursor → no gap-fill).
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      final req1 = s.ch.sent.whereType<SessionSync>().first;
+      s.ch.push(SessionHistory(
+        inReplyTo: req1.id,
+        sessionStartedAt: 1,
+        events: const [UserInputEvt(ts: 10, id: 'seed', text: 'hi')],
+        eos: true,
+      ));
+      await _settle();
+      expect(
+        s.ch.sent.whereType<SessionSync>().where((m) => m.before != null),
+        isEmpty,
+      );
+
+      // Re-sync whose page OVERLAPS (contains 'seed') + a cursor → no auto
+      // loadMore: nothing was missed.
+      s.sync.requestSync();
+      await _settle();
+      final req2 = s.ch.sent.whereType<SessionSync>().last;
+      s.ch.push(SessionHistory(
+        inReplyTo: req2.id,
+        sessionStartedAt: 1,
+        events: const [
+          UserInputEvt(ts: 10, id: 'seed', text: 'hi'),
+          AgentMessageEvt(ts: 12, inReplyTo: 'seed', text: 'answer'),
+        ],
+        eos: true,
+        nextBefore: 'cursorX',
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(
+        s.ch.sent.whereType<SessionSync>().where((m) => m.before != null),
+        isEmpty,
+      );
+    });
   });
 }
