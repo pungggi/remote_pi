@@ -1036,10 +1036,15 @@ let _chunkFlushTimer: ReturnType<typeof setTimeout> | null = null;
 const CHUNK_COALESCE_MS = 50;
 
 // Cumulative text of the in-flight turn (flushed frames + coalesced pending).
-// Feeds ONLY _maybeResumeTurnForOwner: when an owner (re)attaches mid-run
-// (turn started while all owners were offline, or the last owner left
-// mid-turn), the head it missed is replayed as one agent_chunk.
+// Feeds _maybeResumeTurnForOwner (mid-run attach replay) and, since
+// 2026-08-22, the `agent_done.text` reconciliation fallback.
+// `_turnTextTurn` is the turn id this accumulator belongs to — kept SEPARATE
+// from `_chunkPendingTurn` because the flush clears the pending turn on
+// every 50ms window: keying the reset on it (the old code) wiped the
+// cumulative text after EVERY flush, so replay/agent_done.text only ever
+// saw the last coalescing window.
 let _turnText = "";
+let _turnTextTurn: string | null = null;
 
 function _flushAgentChunks(): void {
   if (_chunkFlushTimer !== null) {
@@ -1057,11 +1062,17 @@ function _flushAgentChunks(): void {
 
 function _bufferAgentChunk(delta: string, turn: string): void {
   if (turn !== _chunkPendingTurn) {
-    // Turn boundary (steer/follow-up): flush the old turn's text first so
-    // one frame never mixes in_reply_to targets.
+    // Flush-window boundary (also a REAL turn boundary: steer/follow-up —
+    // the old turn's pending text must land first so one frame never mixes
+    // in_reply_to targets).
     _flushAgentChunks();
     _chunkPendingTurn = turn;
-    _turnText = ""; // cumulative text is per-turn, like the pending buffer
+  }
+  if (turn !== _turnTextTurn) {
+    // REAL turn boundary only (flush windows don't clear _turnTextTurn):
+    // cumulative text is per-turn.
+    _turnTextTurn = turn;
+    _turnText = "";
   }
   _chunkPending += delta;
   _turnText += delta;
@@ -1105,6 +1116,11 @@ function _maybeResumeTurnForOwner(channel: PlainPeerChannel): void {
       _chunkFlushTimer = null;
     }
     _chunkPendingTurn = null;
+    // Adopt the hydrated id for the cumulative accumulator: the fallback
+    // accumulate path (no turn id) grew `_turnText` without owning a turn;
+    // post-attach buffering continues that SAME accumulator so
+    // agent_done.text still covers the whole turn.
+    _turnTextTurn = ext.currentTurnId;
   }
   const turn = ext.currentTurnId;
   // Catch-up = cumulative text minus the coalesced pending: the flush timer
@@ -2351,6 +2367,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     ext.agentRunActive = true;
     ext.agentRunGeneration += 1;
     _turnText = ""; // a fresh run's replayable text starts empty
+    _turnTextTurn = null; // (and belongs to no turn until the first delta)
   });
 
   pi.on("message_start", (event) => {
@@ -2450,9 +2467,21 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // Flush coalesced text FIRST — the phone finalizes the streaming
     // segment on agent_done, so the tail must land before the done frame.
     _flushAgentChunks();
+    // Reconciliation fallback (2026-08-22): snapshot the cumulative turn
+    // text BEFORE clearing it, and ride it on agent_done. Receivers that
+    // streamed the turn live compare against what they actually got and
+    // heal a missing tail — closing the "final answer never renders" class
+    // (lost/dropped tail frames) independent of relay ordering.
+    const turnText = _turnText;
     _turnText = ""; // nothing left to replay for a later attach
+    _turnTextTurn = null;
     if (_anyPeerActive() && ext.currentTurnId) {
-      _broadcastToActive({ type: "agent_done", in_reply_to: ext.currentTurnId });
+      const done: Extract<ServerMessage, { type: "agent_done" }> = {
+        type: "agent_done",
+        in_reply_to: ext.currentTurnId,
+      };
+      if (turnText !== "") done.text = turnText;
+      _broadcastToActive(done);
       ext.currentTurnId = null;
     }
     flushPendingReceivedImagePreviews();

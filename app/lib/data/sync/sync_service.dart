@@ -132,6 +132,18 @@ class SyncService extends Service {
   final StreamController<bool> _workingController =
       StreamController<bool>.broadcast();
 
+  // Reconciliation fallback (2026-08-22): cumulative AgentChunk deltas for
+  // the turn identified by [_reconcileTurnId] — mirrors the Pi extension's
+  // per-turn `_turnText` accumulator that now rides on `agent_done.text`.
+  // Counted at chunk ARRIVAL (single place — never double-counted by the
+  // 16ms flush or a tool-boundary finalize). Used only to heal a lost TAIL:
+  // if the server's cumulative text is a strict prefix-extension of what we
+  // streamed, the missing suffix is appended as an assistant row. Any other
+  // divergence (shorter, non-prefix) is left alone — session_sync owns
+  // full healing.
+  String? _reconcileTurnId;
+  String _reconcileStreamedText = '';
+
   // Plan/32 safety net — if the relay never echoes a sent message back, the
   // optimistic `pending:true` bubble would spin forever. After this window we
   // remove the bubble SILENTLY (no "failed" state, no spinner). The real fix
@@ -260,6 +272,8 @@ class SyncService extends Service {
     _flushTimer = null;
     _chunkBuffer.clear();
     _chunkReplyTo = '';
+    _reconcileTurnId = null;
+    _reconcileStreamedText = '';
     _workingReplyTo = null;
     _sawRemoteWorking = false;
     _setQueuedMessages(const []);
@@ -728,18 +742,28 @@ class SyncService extends Service {
     switch (msg) {
       case AgentChunk(:final inReplyTo, :final delta):
         StreamProbe.instance.chunk(inReplyTo, delta.length);
+        // Reconciliation accounting — see [_reconcileTurnId]. A new
+        // in_reply_to starts a fresh accumulator (turn boundary).
+        if (_reconcileTurnId != inReplyTo) {
+          _reconcileTurnId = inReplyTo;
+          _reconcileStreamedText = '';
+        }
+        _reconcileStreamedText += delta;
         _chunkBuffer.write(delta);
         _chunkReplyTo = inReplyTo;
         _flushTimer?.cancel();
         _flushTimer = Timer(const Duration(milliseconds: 16), _flushChunks);
         _setWorking(true, replyTo: inReplyTo);
 
-      case AgentDone(:final inReplyTo):
+      case AgentDone(:final inReplyTo, :final text):
         // Finalize whatever text accumulated since the last tool boundary.
-        final text = _finalizeSegment();
+        final segText = _finalizeSegment();
         _clearSteeringLabel(inReplyTo);
-        _setWorking(false, preview: text.isEmpty ? null : text);
+        _setWorking(false, preview: segText.isEmpty ? null : segText);
         StreamProbe.instance.turnDone(inReplyTo);
+        // Reconciliation fallback: heal a lost tail when the Pi's cumulative
+        // turn text extends what we actually streamed.
+        _reconcileTurnText(inReplyTo, text);
 
       case AgentMessage(:final inReplyTo, :final text):
         // ignore: discarded_futures
@@ -1542,8 +1566,18 @@ class SyncService extends Service {
       return;
     }
     if (_sawRemoteWorking && _working) {
-      _discardStreamingState();
-      _setWorking(false);
+      // Fix (2026-08-22, "final answer never renders"): the relay's
+      // working=false fires on `turn_end`, which the Pi emits BEFORE
+      // `agent_end` — so the room-meta broadcast can reach this listener
+      // BEFORE the authoritative `agent_done` data frame clears the chain
+      // of Ed25519 verifies. Discarding here erased the buffered turn text;
+      // the late agent_done then finalized an EMPTY buffer and the final
+      // answer never rendered. Finalize instead — persist the buffered text
+      // as an assistant row (idempotent: agent_done's own finalize becomes a
+      // no-op) and keep the stale-state self-healing for the empty case (no
+      // text → no row, thinking cursor still clears).
+      final text = _finalizeSegment();
+      _setWorking(false, preview: text.isEmpty ? null : text);
     }
     _sawRemoteWorking = false;
   }
@@ -1670,7 +1704,55 @@ class SyncService extends Service {
     _flushTimer = null;
     _chunkBuffer.clear();
     _chunkReplyTo = '';
+    // Cancel/Bye path: the turn is aborted or the channel is gone — a late
+    // agent_done carrying the turn text must NOT resurrect healed rows for
+    // a turn the user cancelled (session_sync remains the healing path).
+    _reconcileTurnId = null;
+    _reconcileStreamedText = '';
     _emitStreaming(null);
+  }
+
+  /// Reconciliation fallback (2026-08-22, "final answer never renders"):
+  /// `agent_done.text` carries the Pi's cumulative turn text. If this turn
+  /// was live-streamed here ([_reconcileTurnId] matches) and the server text
+  /// is a strict prefix-extension of what we actually received, append the
+  /// missing suffix as an assistant row. Deliberately conservative:
+  ///  - no chunks seen for this turn in this process (app restart mid-turn,
+  ///    replay) → skip — session_sync owns full healing (avoids duplicating
+  ///    replayed rows);
+  ///  - server text shorter than or not starting with the local stream →
+  ///    skip — never fabricate or rewrite already-persisted segments;
+  ///  - a duplicate agent_done → no-op (accumulator already advanced).
+  void _reconcileTurnText(String turn, String? serverText) {
+    if (serverText == null || serverText.isEmpty) return;
+    if (_reconcileTurnId != turn) return;
+    final local = _reconcileStreamedText;
+    if (serverText.length <= local.length) return;
+    if (!serverText.startsWith(local)) {
+      debugPrint(
+        '[reconcile] turn=$turn non-tail divergence '
+        '(local=${local.length}ch) — leaving rows to session_sync',
+      );
+      return;
+    }
+    final missing = serverText.substring(local.length);
+    _reconcileStreamedText = serverText;
+    debugPrint(
+      '[reconcile] turn=$turn healing lost tail (${missing.length}ch)',
+    );
+    final id = 'agent_${uuid7()}';
+    // ignore: discarded_futures
+    _upsert(
+      MsgRole.assistant,
+      id,
+      (seq, _) => MessageRecord(
+        id: id,
+        seq: seq,
+        role: MsgRole.assistant,
+        text: missing,
+        ts: DateTime.now(),
+      ),
+    );
   }
 
   void _emitStreaming(StreamingMessage? s) {

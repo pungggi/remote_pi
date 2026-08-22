@@ -1102,13 +1102,20 @@ class AgentChunk extends ServerMessage {
 class AgentDone extends ServerMessage {
   final String inReplyTo;
   final Usage? usage;
-  AgentDone({required this.inReplyTo, this.usage});
+
+  /// Reconciliation fallback (2026-08-22): the turn's cumulative streamed
+  /// text as counted by the Pi extension. Absent on tool-only turns and on
+  /// older Pi builds. The sync layer uses it ONLY to heal a lost tail of a
+  /// turn it streamed live — never as a substitute for session history.
+  final String? text;
+  AgentDone({required this.inReplyTo, this.usage, this.text});
 
   factory AgentDone.fromJson(Map<String, dynamic> j) => AgentDone(
     inReplyTo: j['in_reply_to'] as String,
     usage: j['usage'] != null
         ? Usage.fromJson(j['usage'] as Map<String, dynamic>)
         : null,
+    text: j['text'] as String?,
   );
 }
 

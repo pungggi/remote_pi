@@ -451,6 +451,46 @@ relay; restart perde o estado.
 
 ---
 
+## Reconciliação de turn (`agent_done.text`) — 2026-08-22
+
+Fallback de reconciliação para a classe de bug "a resposta final não
+renderiza": o texto final do turn vive só no buffer de streaming in-memory do
+app até o `agent_done`, então qualquer perda de frames na cauda perde a
+resposta visível.
+
+### Wire
+
+`agent_done` ganha `text?` opcional (retrocompatível — builds antigos ignora,
+builds antigos da extension nunca envia):
+
+```jsonc
+{ "type": "agent_done", "in_reply_to": "<turn-id>",
+  "text": "<texto ACUMULADO do turn inteiro>" }  // omitido em turn só-tool
+```
+
+`text` é o mesmo acumulador per-turn que o daemon usa para replay de attach
+meio-do-turn (`_turnText`) — a concatenação de TODOS os `agent_chunk`
+despachados no turn (texto antes e depois de tools).
+
+### Semântica (receptor — app)
+
+Regra conservadora de cauda: o app acumula localmente cada delta recebido
+para o turn; no `agent_done`, se `text` for uma **extensão de prefixo
+estrita** do acumulado local, o sufixo faltante vira uma nova linha
+assistant. Qualquer divergência (sem chunks vistos no processo — ex. restart
+meio-do-turn; texto mais curto; não-prefixo) é ignorada — `session_sync`
+continua sendo a fonte de verdade do replay completo. Isso garante que o
+fallback nunca fabrica/duplica linhas, só fecha buracos de cauda.
+
+### Relay
+
+Inalterado (payload opaco no `ct`). Relacionado: o relay agora **suprime**
+re-broadcasts idênticos de `room_meta_updated` (patch que reescreve os
+valores que a sala já tinha é absorvido silenciosamente) — reduz o firehose
+de controle que ampliava o churn de reconexão do phone.
+
+---
+
 ## Pareamento
 
 QR code mostra Pi-pubkey + room hint + token de uso único.
