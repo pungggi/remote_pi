@@ -79,6 +79,18 @@ const _kBackoff = [1, 2, 5, 10, 30];
 Duration _backoffFor(int attempt) =>
     Duration(seconds: _kBackoff[attempt.clamp(0, _kBackoff.length - 1)]);
 
+/// Flap dampening (2026-08-22, plan 114 follow-up): how long a quiet Online
+/// link gets to prove itself after a network transition before it is declared
+/// half-open and redialed — see [ConnectionManager.reconnectIfStale]. A
+/// healthy path answers a protocol ping with a pong in well under a second
+/// (and the relay's presence/rooms pushes count as inbound too), so 4 s is
+/// generous while keeping worst-case recovery for a genuinely dead link far
+/// below the 30 s backoff ceiling.
+const _kStaleProbeWindow = Duration(seconds: 4);
+
+/// Poll cadence of the liveness probe inside [ConnectionManager.reconnectIfStale].
+const _kStalePollMs = 100;
+
 /// Plan 114 (C) — inbound-liveness threshold. The relay pushes a frame at
 /// least every ~60 s (its keep-alive — plan 125 raised the heartbeat from
 /// ~25 s to 60 s), so a healthy link is never this quiet. A socket silent
@@ -563,6 +575,58 @@ class ConnectionManager extends Service {
     await _connect(peer);
   }
 
+  /// Flap dampening (2026-08-22, plan 114 follow-up): probe-gated variant of
+  /// [forceReconnect] for the NetworkMonitor path. Android fires usable-network
+  /// transitions constantly when the Tailscale VPN and Wi-Fi interact — and
+  /// most of them leave a perfectly healthy socket. Blindly force-reconnecting
+  /// on each one tore down working links and re-authenticated at the relay
+  /// (observed: 6 auths in 30 s across LAN + Tailscale addrs, each one
+  /// broadcasting presence/rooms to every subscriber — the control firehose).
+  ///
+  /// Contract:
+  ///  - not Online (or no peer) → behave exactly like plan 114's fast path:
+  ///    reset the backoff and dial NOW (returns true; false when no peer);
+  ///  - Online with inbound traffic inside [probeWindow] → benign transition,
+  ///    keep the socket (returns false — the churn killer);
+  ///  - Online but quiet → send one protocol ping (the Pi answers with pong)
+  ///    and poll for inbound; traffic within the window keeps the socket,
+  ///    silence (or a ping-send failure) means half-open → force-reconnect
+  ///    (returns true).
+  ///
+  /// [probeWindow] is injectable so tests can run the timeout path in
+  /// milliseconds; production uses [_kStaleProbeWindow].
+  Future<bool> reconnectIfStale({Duration? probeWindow}) async {
+    final peer = _activePeer;
+    if (peer == null) return false;
+    final s = _status;
+    if (s is! StatusOnline) {
+      // Nothing to probe — recover now (plan 114's fast-recovery path).
+      await forceReconnect();
+      return true;
+    }
+    final window = probeWindow ?? _kStaleProbeWindow;
+    final before = _lastInboundAt;
+    // Recent inbound (data OR control) → the link survived the transition.
+    if (_now().difference(before) < window) return false;
+    try {
+      await s.channel.send(Ping(id: _newId()));
+    } catch (_) {
+      // Socket already dead — redial now.
+      await forceReconnect();
+      return true;
+    }
+    // Wait out the window for ANY inbound frame (pong, relay keep-alive,
+    // presence push). Iteration-bounded (not clock-bounded) so an injected
+    // frozen test clock can't wedge the loop.
+    final polls = window.inMilliseconds ~/ _kStalePollMs;
+    for (var i = 0; i < polls; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: _kStalePollMs));
+      if (_lastInboundAt.isAfter(before)) return false;
+    }
+    await forceReconnect();
+    return true;
+  }
+
   /// Plan 125 (Layer 2) — switch the keep-alive cadence between foreground
   /// ([PowerMode.active]) and background ([PowerMode.lean]). Reschedules the
   /// ping + watchdog timers at the new interval WITHOUT touching the
@@ -705,6 +769,11 @@ class ConnectionManager extends Service {
   }
 
   void _onControl(ControlInbound c) {
+    // Any inbound WS frame — data OR control — proves the relay link is
+    // alive. Stamping here (2026-08-22) makes the watchdog's 150 s window
+    // see the relay's presence/rooms keep-alive pushes (its own doc assumed
+    // it did), and gives reconnectIfStale's probe the same evidence.
+    _lastInboundAt = _now();
     // Relay-reported epks are base64 STANDARD (they came in from the
     // remote peer's `hello.pubkey`). Normalise once on insert so the map
     // is always keyed in the same canonical form regardless of what we

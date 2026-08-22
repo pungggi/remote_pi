@@ -59,6 +59,20 @@ mobile — the two are complementary.
   `none`), call `ConnectionManager.forceReconnect()`. Debounced (coalesce a
   burst of changes within 1 s into one reconnect).
 
+> **Addendum (2026-08-22, flap dampening):** the A-path no longer calls
+> `forceReconnect()` directly — it calls `ConnectionManager.reconnectIfStale()`,
+> a probe-gated variant. On Android the Tailscale VPN and Wi-Fi interact
+> constantly, and most usable-network transitions leave a healthy socket;
+> blind teardowns re-authenticated at the relay every few seconds
+> (LAN↔Tailscale flapping → presence/rooms broadcast storms). Contract:
+> offline/retrying → force-reconnect immediately (this plan's fast recovery,
+> unchanged); Online with fresh inbound → keep the socket; Online but quiet →
+> one protocol ping, wait ≤4 s for any inbound frame (pong or relay
+> keep-alive), redial only on silence. Paths B (manual button) and C
+> (150 s-silent watchdog) keep the blind `forceReconnect()`. `_onControl`
+> now also stamps `_lastInboundAt` (control frames are inbound liveness
+> evidence, matching the watchdog's documented assumption).
+
 ### B — Manual reconnect affordance
 
 - **Surface the existing path for network drops**, not just `bye`. Today the

@@ -1630,6 +1630,139 @@ void _registerPlan114Tests() {
       cm.dispose();
     });
 
+    test('reconnectIfStale no-ops on a link with recent inbound '
+        '(benign transition keeps the socket)', () async {
+      final channels = <_ControllableChannel>[];
+      final cm = ConnectionManager(
+        factory: (_, _) async {
+          final ch = _ControllableChannel();
+          channels.add(ch);
+          return ch;
+        },
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+      );
+      await cm.connectTo(_fakePeer());
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(cm.status, isA<StatusOnline>());
+
+      // Immediately after connect, _lastInboundAt is fresh → alive, no dial.
+      final reconnected = await cm.reconnectIfStale();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(reconnected, isFalse);
+      expect(channels, hasLength(1), reason: 'no redial for a healthy link');
+      expect(cm.status, isA<StatusOnline>());
+      expect(cm.channel, same(channels.single));
+
+      cm.dispose();
+    });
+
+    test('reconnectIfStale probes a quiet link; inbound within the window '
+        'keeps it', () async {
+      var t = DateTime(2026, 1, 1);
+      final ch = _ControllableChannel();
+      final cm = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+        now: () => t,
+      );
+      await cm.connectTo(_fakePeer());
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(cm.status, isA<StatusOnline>());
+
+      // Quiet link: last inbound is now older than the probe window.
+      t = t.add(const Duration(seconds: 5));
+      final probe = cm.reconnectIfStale(probeWindow: const Duration(milliseconds: 500));
+      // Mid-window, a frame lands (advance the virtual clock so the stamp
+      // is strictly after the probe's `before` snapshot).
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      t = t.add(const Duration(seconds: 1));
+      ch.pushMessage(Pong(inReplyTo: 'probe'));
+      final reconnected = await probe;
+
+      expect(reconnected, isFalse, reason: 'pong within the window = alive');
+      expect(cm.status, isA<StatusOnline>());
+      expect(cm.channel, same(ch), reason: 'socket kept');
+
+      cm.dispose();
+    });
+
+    test('reconnectIfStale times out a silent link and force-reconnects',
+        () async {
+      var t = DateTime(2026, 1, 1);
+      final channels = <_ControllableChannel>[];
+      final cm = ConnectionManager(
+        factory: (_, _) async {
+          final ch = _ControllableChannel();
+          channels.add(ch);
+          return ch;
+        },
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+        now: () => t,
+      );
+      await cm.connectTo(_fakePeer());
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(cm.status, isA<StatusOnline>());
+      final first = channels.single;
+
+      t = t.add(const Duration(seconds: 5));
+      final reconnected =
+          await cm.reconnectIfStale(probeWindow: const Duration(milliseconds: 250));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(reconnected, isTrue, reason: 'silent link = half-open');
+      expect(channels, hasLength(2), reason: 'redialed');
+      expect(cm.status, isA<StatusOnline>());
+      expect(cm.channel, same(channels.last));
+      expect(first._ctrl.isClosed, isTrue, reason: 'old socket closed');
+
+      cm.dispose();
+    });
+
+    test('reconnectIfStale redials immediately when not Online '
+        '(plan 114 fast path preserved)', () async {
+      var calls = 0;
+      final cm = ConnectionManager(
+        factory: (_, _) async {
+          calls++;
+          throw Exception('refused');
+        },
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+      );
+      await cm.connectTo(_fakePeer());
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(cm.status, isA<StatusRetrying>());
+      final callsBefore = calls;
+
+      final reconnected = await cm.reconnectIfStale();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(reconnected, isTrue);
+      expect(calls, greaterThan(callsBefore),
+          reason: 'offline transition dials NOW, not on the backoff timer');
+
+      cm.dispose();
+    });
+
+    test('reconnectIfStale is a no-op with no active peer', () async {
+      var calls = 0;
+      final cm = ConnectionManager(
+        factory: (_, _) async {
+          calls++;
+          return _ControllableChannel();
+        },
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+      );
+      expect(await cm.reconnectIfStale(), isFalse);
+      expect(calls, 0);
+      cm.dispose();
+    });
+
     test('inbound-liveness watchdog force-closes a silent (half-open) '
         'Online socket', () async {
       var t = DateTime(2026, 1, 1);
@@ -2010,8 +2143,9 @@ void _registerFalseOfflineTests() {
 // ---------------------------------------------------------------------------
 
 void _registerNetworkMonitorTests() {
-  group('NetworkMonitor — plan 114 (A)', () {
-    test('transition to a connected network → forceReconnect', () async {
+  group('NetworkMonitor — plan 114 (A), flap-dampened (2026-08-22)', () {
+    test('healthy Online link: connectivity transition does NOT redial',
+        () async {
       final ctrl = StreamController<List<ConnectivityResult>>.broadcast();
       var connects = 0;
       final cm = ConnectionManager(
@@ -2028,13 +2162,56 @@ void _registerNetworkMonitorTests() {
       await Future<void>.delayed(const Duration(milliseconds: 10));
       final connectsBefore = connects;
 
+      // Link just connected — inbound is fresh. A VPN/Wi-Fi transition
+      // must keep the socket (the LAN↔Tailscale churn killer).
       ctrl.add([ConnectivityResult.wifi]);
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+
+      expect(
+        connects,
+        connectsBefore,
+        reason: 'benign transition on a healthy link must not redial',
+      );
+      expect(cm.status, isA<StatusOnline>());
+
+      nm.dispose();
+      cm.dispose();
+      await ctrl.close();
+    });
+
+    test('stale Online link: transition probes, times out, redials',
+        () async {
+      var t = DateTime(2026, 1, 1);
+      final ctrl = StreamController<List<ConnectivityResult>>.broadcast();
+      var connects = 0;
+      final cm = ConnectionManager(
+        factory: (_, _) async {
+          connects++;
+          return _ControllableChannel();
+        },
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+        now: () => t,
+      );
+      final nm = NetworkMonitor(
+        connectivityStream: ctrl.stream,
+        now: () => t,
+        probeWindow: const Duration(milliseconds: 250),
+      );
+      nm.attach(cm);
+      await cm.connectTo(_fakePeer());
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      final connectsBefore = connects;
+
+      // Quiet link (last inbound older than the probe window).
+      t = t.add(const Duration(seconds: 5));
+      ctrl.add([ConnectivityResult.wifi]);
+      await Future<void>.delayed(const Duration(milliseconds: 400));
 
       expect(
         connects,
         greaterThan(connectsBefore),
-        reason: 'a connectivity transition should redial',
+        reason: 'a half-open link must still redial after the probe',
       );
 
       nm.dispose();
@@ -2076,7 +2253,7 @@ void _registerNetworkMonitorTests() {
       },
     );
 
-    test('debounce coalesces a burst into one reconnect', () async {
+    test('debounce coalesces a burst into one probe-driven redial', () async {
       var t = DateTime(2026, 1, 1);
       final ctrl = StreamController<List<ConnectivityResult>>.broadcast();
       var connects = 0;
@@ -2087,18 +2264,25 @@ void _registerNetworkMonitorTests() {
         },
         storage: _FakeStorage([_fakePeer()]),
         emitDebounce: Duration.zero,
+        now: () => t,
       );
-      final nm = NetworkMonitor(connectivityStream: ctrl.stream, now: () => t);
+      final nm = NetworkMonitor(
+        connectivityStream: ctrl.stream,
+        now: () => t,
+        probeWindow: const Duration(milliseconds: 250),
+      );
       nm.attach(cm);
       await cm.connectTo(_fakePeer());
       await Future<void>.delayed(const Duration(milliseconds: 10));
       final connectsBefore = connects;
 
-      // Burst of 3 connected events within the 1s window → one reconnect.
+      // Stale the link, then burst 3 connected events within the 1s window →
+      // one probe → one redial.
+      t = t.add(const Duration(seconds: 5));
       ctrl.add([ConnectivityResult.wifi]);
       ctrl.add([ConnectivityResult.mobile]);
       ctrl.add([ConnectivityResult.wifi]);
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await Future<void>.delayed(const Duration(milliseconds: 400));
 
       expect(
         connects - connectsBefore,
@@ -2106,10 +2290,11 @@ void _registerNetworkMonitorTests() {
         reason: 'burst within the debounce window coalesces to one redial',
       );
 
-      // After the debounce window, a new event redials again.
-      t = t.add(const Duration(seconds: 2));
+      // After the debounce window AND re-staling the link, a new event
+      // redials again.
+      t = t.add(const Duration(seconds: 7));
       ctrl.add([ConnectivityResult.mobile]);
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await Future<void>.delayed(const Duration(milliseconds: 400));
 
       expect(
         connects - connectsBefore,
