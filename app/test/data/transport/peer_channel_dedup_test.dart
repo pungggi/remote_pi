@@ -111,4 +111,58 @@ void main() {
     await sub.cancel();
     await ch.close();
   });
+
+  // Regression (2026-08-22, ask_user stuck sheet): the pi-ask bridge reuses
+  // the REQUEST's id (the flowId) on its dismiss/warning NOTIFY frames. The
+  // request is delivered first, so the notify's id was already in the replay
+  // LRU and the notify was dropped — the ask sheet spun forever and submit
+  // retries never surfaced pi-ask's rejection warnings.
+  test(
+      'extension_ui_request notify reusing the request id is DELIVERED',
+      () async {
+    final t = _ScriptedTransport();
+    final ch = PlainPeerChannel(transport: t);
+    final received = <Object>[];
+    final both = Completer<void>();
+    final sub = ch.serverMessages.listen((m) {
+      received.add(m);
+      if (received.length == 2 && !both.isCompleted) both.complete();
+    });
+    t.push(jsonEncode({
+      'type': 'extension_ui_request',
+      'id': 'tool:tc_1',
+      'method': 'select',
+      'title': 'Pick one',
+      'options': ['Alpha', 'Beta'],
+      'ask': {
+        'flow_id': 'tool:tc_1',
+        'source': 'tool',
+        'questions': [
+          {
+            'id': 'goal',
+            'label': 'Pick one',
+            'prompt': 'Pick one',
+            'type': 'single',
+            'required': false,
+            'options': [
+              {'value': 'a', 'label': 'Alpha'},
+            ],
+          },
+        ],
+      },
+    }));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    t.push(jsonEncode({
+      'type': 'extension_ui_request',
+      'id': 'tool:tc_1', // SAME id as the request — the bridge's contract
+      'method': 'notify',
+      'message': 'Clarification resolved.',
+    }));
+    await both.future.timeout(const Duration(seconds: 2));
+    expect(received.length, 2,
+        reason: 'notify with the request id must not be deduped');
+    expect(received.last.runtimeType.toString(), contains('ExtensionUiRequest'));
+    await sub.cancel();
+    await ch.close();
+  });
 }

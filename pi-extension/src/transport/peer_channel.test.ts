@@ -233,6 +233,31 @@ describe("PlainPeerChannel + InnerSigPolicy (dual-sign)", () => {
     expect(got).toHaveLength(1);
   });
 
+  // Regression (2026-08-22, ask_user stuck sheet): the app RETRIES an
+  // `extension_ui_response` with the SAME id (the pi-ask flowId) after a
+  // rejected answer. The policy-level seen-id LRU ate the retry, so the
+  // bridge never saw it and the phone stayed stuck with no feedback.
+  // Responses are idempotent at the pi-ask level and bypass the dedupe.
+  test("extension_ui_response retry with the same id is DELIVERED twice", () => {
+    const { relay, got } = makeChannel(makePolicy());
+    const resp = (id: string) =>
+      dualFrame(
+        ownerPk,
+        { type: "extension_ui_response", id, ask: { flow_id: id, kind: "answer", mode: "submit", answers: {} } },
+        piAId,
+      );
+    relay.emit("message", resp("tool:tc_9"));
+    relay.emit("message", resp("tool:tc_9")); // user retry — must deliver
+    expect(got).toHaveLength(2);
+    expect(got[0]?.type).toBe("extension_ui_response");
+    expect(got[1]?.type).toBe("extension_ui_response");
+    // Streaming state keeps full dedupe (same id, different type → dropped).
+    const echo = dualFrame(ownerPk, { type: "user_message", id: "tool:tc_9" }, piAId);
+    relay.emit("message", echo);
+    relay.emit("message", echo);
+    expect(got).toHaveLength(3);
+  });
+
   test("#25-3 reconnect replay: dedup survives channel re-creation (policy-level)", () => {
     const policy = makePolicy();
     const first = makeChannel(policy);

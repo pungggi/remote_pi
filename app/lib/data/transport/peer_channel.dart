@@ -143,16 +143,27 @@ class PlainPeerChannel implements IChannel, IControlLink, ITransportSecurityInfo
       // DROPPED — every remote action timed out (Projects "Device
       // unreachable"). Only messages that actually carry a String id
       // participate in dedup; anything else delivers.
-      Object? id;
-      try {
-        id = (msg as dynamic).id;
-      } on NoSuchMethodError {
-        id = null;
-      }
-      if (_seenBefore(id)) {
-        // Replayed server frame — drop before it corrupts UI state
-        // (duplicate agent_chunks, duplicate echoes).
-        return;
+      //
+      // BUG 2026-08-22 (ask_user stuck sheet): the pi-ask bridge's contract
+      // reuses the REQUEST's id (the flowId) on its dismiss/warning NOTIFY
+      // frames — same id, different message. The request is delivered first,
+      // so the notify hit this LRU and was dropped as a "replay", leaving the
+      // ask sheet spinning forever (no error either — warnings share the id).
+      // extension_ui_request frames are idempotent UI signals (a re-delivered
+      // request just replaces the modal; a re-delivered notify closes an
+      // already-closed sheet), so they bypass the dedupe entirely.
+      if (msg is! ExtensionUiRequest) {
+        Object? id;
+        try {
+          id = (msg as dynamic).id;
+        } on NoSuchMethodError {
+          id = null;
+        }
+        if (_seenBefore(id)) {
+          // Replayed server frame — drop before it corrupts UI state
+          // (duplicate agent_chunks, duplicate echoes).
+          return;
+        }
       }
       if (!_controller.isClosed) _controller.add(msg);
     } on UnsupportedTypeException {

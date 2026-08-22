@@ -255,11 +255,22 @@ export class PlainPeerChannel implements PeerChannel {
     // peer are replayed frames — drop. The LRU lives with the POLICY so it
     // survives channel re-creation on reconnect (review #3/#25); channels
     // without a policy (tests) keep a per-channel fallback LRU.
+    //
+    // BUG 2026-08-22 (ask_user stuck sheet): `extension_ui_response` frames
+    // legitimately REUSE the originating request's id (the pi-ask flowId) —
+    // a user RETRY after a rejected answer resends the exact same id. The
+    // LRU ate the retry, so the bridge never saw it and the phone stayed
+    // stuck. Responses are idempotent at the pi-ask level (an active flow
+    // accepts it; a resolved flow answers flow_not_found), so they bypass
+    // the dedupe. Streaming state (chunks/echoes) keeps full dedupe.
+    const type = (msg as Record<string, unknown>).type;
     const id = (msg as Record<string, unknown>).id;
-    if (this.sigPolicy && typeof id === "string") {
-      if (this.sigPolicy.seenId(this.remotePeerId, id)) return;
-    } else if (this._seenBeforeLocal(id)) {
-      return;
+    if (type !== "extension_ui_response") {
+      if (this.sigPolicy && typeof id === "string") {
+        if (this.sigPolicy.seenId(this.remotePeerId, id)) return;
+      } else if (this._seenBeforeLocal(id)) {
+        return;
+      }
     }
 
     this.onMessage(msg as ClientMessage);
