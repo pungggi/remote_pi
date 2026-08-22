@@ -125,6 +125,57 @@ void main() {
     );
   });
 
+  testWidgets('jump to top lands on the oldest question', (tester) async {
+    tester.view.physicalSize = const Size(420, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(_harness(_transcript()));
+    await tester.pumpAndSettle();
+
+    // Start pinned at the newest; the oldest question is ~2 transcripts'
+    // worth of tall replies above → far outside the build window.
+    expect(find.textContaining('question two'), findsOneWidget);
+    expect(find.textContaining('question zero'), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('chat-nav-top')));
+    await _settleJumps(tester);
+
+    // Landed at the top: the oldest question is on screen (and built),
+    // the newest is far below the build window.
+    expect(find.textContaining('question zero'), findsOneWidget);
+    final dy = tester.getCenter(find.textContaining('question zero')).dy;
+    expect(dy, greaterThan(0));
+    expect(dy, lessThan(800));
+    expect(find.textContaining('question two'), findsNothing);
+    // Guided pointer re-anchored at the oldest → counter + bounded step.
+    expect(find.text('1/3'), findsOneWidget);
+  });
+
+  testWidgets('jump to bottom returns to the newest question', (tester) async {
+    tester.view.physicalSize = const Size(420, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(_harness(_transcript()));
+    await tester.pumpAndSettle();
+
+    // Walk to the top first (guided hops), then jump straight back down.
+    await tester.tap(find.byKey(const ValueKey('chat-nav-top')));
+    await _settleJumps(tester);
+    expect(find.textContaining('question zero'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('chat-nav-bottom')));
+    await _settleJumps(tester);
+
+    expect(find.textContaining('question two'), findsOneWidget);
+    final dy = tester.getCenter(find.textContaining('question two')).dy;
+    expect(dy, greaterThan(0));
+    expect(dy, lessThan(800));
+    expect(find.textContaining('question zero'), findsNothing);
+    expect(find.text('3/3'), findsOneWidget);
+  });
+
   testWidgets('nav pill hidden with fewer than two user messages', (
     tester,
   ) async {
@@ -142,5 +193,7 @@ void main() {
 
     expect(find.byKey(const ValueKey('chat-nav-older')), findsNothing);
     expect(find.byKey(const ValueKey('chat-nav-newer')), findsNothing);
+    expect(find.byKey(const ValueKey('chat-nav-top')), findsNothing);
+    expect(find.byKey(const ValueKey('chat-nav-bottom')), findsNothing);
   });
 }
