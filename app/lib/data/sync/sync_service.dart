@@ -9,6 +9,7 @@
 // the finalized message lands in the box on `agent_done`.
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:math' as math;
 
 import 'package:app/data/local/boxes.dart';
@@ -73,6 +74,32 @@ class SyncService extends Service {
   // `_compose`, so a request that arrived while no listener existed still
   // surfaces when the chat next opens.
   ExtensionUiRequest? _currentExtensionUiRequest;
+
+  /// PR #49 review — ids of extension_ui_request flows this process has seen
+  /// RESOLVED (a terminal `notify`, PR #50 review 1: recorded even when it
+  /// matches no open sheet). A non-notify request whose id is in this set is
+  /// a stale replay (out-of-order duplicate of a completed flow) and must
+  /// not resurrect its sheet. Superseding does NOT add here (PR #50 review
+  /// 2: a replaced flow can still be pending on the bridge and must stay
+  /// presentable/answerable once the newer one closes). Bounded LRU; flow
+  /// ids are unique per flow (the pi-ask contract), so an eviction can only
+  /// ever re-admit an id.
+  static const int _resolvedExtensionUiCap = 256;
+  final Queue<String> _resolvedExtensionUiIds = Queue<String>();
+  final Set<String> _resolvedExtensionUiIdSet = <String>{};
+
+  void _markExtensionUiResolved(String id) {
+    if (id.isEmpty) return;
+    if (_resolvedExtensionUiIdSet.contains(id)) return;
+    if (_resolvedExtensionUiIds.length >= _resolvedExtensionUiCap) {
+      _resolvedExtensionUiIdSet.remove(_resolvedExtensionUiIds.removeFirst());
+    }
+    _resolvedExtensionUiIds.addLast(id);
+    _resolvedExtensionUiIdSet.add(id);
+  }
+
+  bool _isExtensionUiResolved(String id) =>
+      id.isNotEmpty && _resolvedExtensionUiIdSet.contains(id);
 
   List<QueuedMsg> _queuedMessages = const [];
   final StreamController<List<QueuedMsg>> _queuedController =
@@ -251,25 +278,56 @@ class SyncService extends Service {
   }
 
   /// Plan/129 — apply an inbound [ExtensionUiRequest] to the durable current
-  /// state (the SSOT the ChatViewModel reads). A `notify` whose id matches the
-  /// open flow clears it on completion (info/absent type); a warning/error
-  /// notify is a no-op here — the flow stays open for retry and the retry
-  /// message is tracked in the ChatViewModel. Any other (interactive) request
-  /// opens/replaces it. Unmatched stand-alone notifies are ignored in v1.
-  void _handleExtensionUiRequest(ExtensionUiRequest req) {
+  /// state (the SSOT the ChatViewModel reads). A terminal (non-warning)
+  /// `notify` retires its flow id — ALWAYS, even when it matches no open
+  /// sheet (PR #50 review 1): reordering can deliver the completion after a
+  /// room switch cleared the current request, or before its request reached
+  /// this client; if the id went unrecorded there, a later replayed `select`
+  /// would reopen the same stuck sheet. A warning/error notify is a no-op
+  /// here — the flow stays open for retry and the retry message is tracked
+  /// in the ChatViewModel. An interactive request opens/replaces the current
+  /// sheet; REPLACING does not retire the replaced flow (PR #50 review 2):
+  /// the bridge supports several active flows and `session_sync` replays
+  /// every open one, so a still-pending replaced flow must stay presentable
+  /// (and answerable) once the newer one closes. Only a TERMINAL notify
+  /// retires an id.
+  ///
+  /// PR #49 review — returns false when the frame is a STALE replay (a
+  /// non-notify request for a flow this process already saw resolved), so
+  /// the caller suppresses the live-stream ping too. The bridge legitimately
+  /// re-sends still-PENDING requests with the SAME id on every `session_sync`
+  /// (chat re-entry catch-up, plan/100), so the channel's replay LRU cannot
+  /// distinguish a pending replay (deliver) from a post-completion duplicate
+  /// (drop) — only this layer, which observes the completing `notify`, can.
+  /// Resurrecting a resolved flow would re-open its sheet with no way to
+  /// clear it: answering the stale sheet only produces pi-ask's
+  /// `flow_not_found` warning, which keeps the sheet open (stuck modal).
+  bool _handleExtensionUiRequest(ExtensionUiRequest req) {
     if (req.method == ExtensionUiMethod.notify) {
+      final isWarning =
+          req.notifyType == 'warning' || req.notifyType == 'error';
+      if (!isWarning) {
+        // Terminal notify — retire the id even when it matches no open
+        // sheet: the flow IS resolved on the bridge (pi-ask:completed), so
+        // any `select` arriving later for this id is a stale replay.
+        _markExtensionUiResolved(req.id);
+      }
       final matchesOpen = _currentExtensionUiRequest != null &&
           req.id == _currentExtensionUiRequest!.id;
-      if (matchesOpen) {
-        final isWarning =
-            req.notifyType == 'warning' || req.notifyType == 'error';
-        if (!isWarning) {
-          _currentExtensionUiRequest = null;
-        }
+      if (matchesOpen && !isWarning) {
+        _currentExtensionUiRequest = null;
       }
-    } else {
-      _currentExtensionUiRequest = req;
+      return true;
     }
+    if (_isExtensionUiResolved(req.id)) {
+      debugPrint(
+        '[extension-ui] drop replayed request for resolved flow '
+        'id=${req.id}',
+      );
+      return false;
+    }
+    _currentExtensionUiRequest = req;
+    return true;
   }
 
   Future<void> sendMessage(
@@ -944,9 +1002,11 @@ class SyncService extends Service {
         // Plan/100/129 — update the durable current request (SSOT), then ping
         // live listeners. The cached value survives no-listener windows
         // (backgrounded / cold-start / mid-reconnect); the broadcast stream
-        // alone does not.
-        _handleExtensionUiRequest(msg);
-        _extensionUiController.add(msg);
+        // alone does not. Stale replays (resolved flows, PR #49 review) are
+        // dropped BEFORE the stream so they can't resurrect a sheet.
+        if (_handleExtensionUiRequest(msg)) {
+          _extensionUiController.add(msg);
+        }
         break;
       case Pong():
       case PairOk():

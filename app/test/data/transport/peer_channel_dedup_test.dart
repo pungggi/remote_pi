@@ -165,4 +165,39 @@ void main() {
     await sub.cancel();
     await ch.close();
   });
+
+  // PR #49 review — the channel's exemption deliberately covers INTERACTIVE
+  // extension_ui_request methods too: the bridge re-sends still-PENDING
+  // requests with the SAME id on every session_sync (chat re-entry catch-up,
+  // plan/100), and this channel cannot distinguish that legit replay from a
+  // post-completion duplicate. The stale case is dropped one layer up
+  // (SyncService resolved-id tracking). This test freezes that layering: a
+  // re-delivered select must PASS the channel either way.
+  test(
+      'replayed extension_ui_request select passes the channel (SyncService owns stale-drop)',
+      () async {
+    final t = _ScriptedTransport();
+    final ch = PlainPeerChannel(transport: t);
+    final received = <Object>[];
+    final both = Completer<void>();
+    final sub = ch.serverMessages.listen((m) {
+      received.add(m);
+      if (received.length == 2 && !both.isCompleted) both.complete();
+    });
+    final selectFrame = jsonEncode({
+      'type': 'extension_ui_request',
+      'id': 'tool:tc_2',
+      'method': 'select',
+      'title': 'Pick one',
+      'options': ['Alpha', 'Beta'],
+    });
+    t.push(selectFrame);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    t.push(selectFrame); // replay — must pass (pending or stale, SyncService decides)
+    await both.future.timeout(const Duration(seconds: 2));
+    expect(received.length, 2,
+        reason: 'replayed select passes the channel; SyncService owns the drop');
+    await sub.cancel();
+    await ch.close();
+  });
 }

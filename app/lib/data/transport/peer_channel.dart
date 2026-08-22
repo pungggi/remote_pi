@@ -149,9 +149,17 @@ class PlainPeerChannel implements IChannel, IControlLink, ITransportSecurityInfo
       // frames — same id, different message. The request is delivered first,
       // so the notify hit this LRU and was dropped as a "replay", leaving the
       // ask sheet spinning forever (no error either — warnings share the id).
-      // extension_ui_request frames are idempotent UI signals (a re-delivered
-      // request just replaces the modal; a re-delivered notify closes an
-      // already-closed sheet), so they bypass the dedupe entirely.
+      // extension_ui_request frames therefore bypass the dedupe here.
+      //
+      // PR #49 review: this exemption deliberately covers the INTERACTIVE
+      // methods too, not just notify — the bridge re-sends still-PENDING
+      // requests with the SAME id on every session_sync (chat re-entry
+      // catch-up, plan/100), and this channel cannot tell that legit replay
+      // apart from a post-completion duplicate (both share the id); dropping
+      // replays here would strand the sheet of a still-open flow. The stale
+      // case (a duplicate of an already-RESOLVED flow) is dropped one layer
+      // up: SyncService tracks resolved ids (it observes the completing
+      // notify) and refuses to resurrect them.
       if (msg is! ExtensionUiRequest) {
         Object? id;
         try {
