@@ -20,6 +20,11 @@ async fn main() -> anyhow::Result<()> {
     let heartbeat_secs =
         relay::resolve_heartbeat_secs(std::env::var("REMOTEPI_HEARTBEAT_SECS").ok().as_deref());
     info!(heartbeat_secs, "WS keepalive heartbeat interval");
+    // PR #48 review #1 — TTL for identical presence/rooms reply suppression
+    // (default 30 s, floor 1 s). See `relay::resolve_dedup_ttl_secs`.
+    let dedup_ttl_secs =
+        relay::resolve_dedup_ttl_secs(std::env::var("REMOTEPI_DEDUP_TTL_SECS").ok().as_deref());
+    info!(dedup_ttl_secs, "control-reply dedup TTL");
 
     // Read (and memoize) the outer-envelope size ceiling once at startup, then
     // log the effective value so ops can confirm RELAY_MAX_CT_MIB took effect.
@@ -72,6 +77,7 @@ async fn main() -> anyhow::Result<()> {
         metrics: metrics.clone(),
         port,
         heartbeat_interval: std::time::Duration::from_secs(heartbeat_secs),
+        control_reply_dedup_ttl: std::time::Duration::from_secs(dedup_ttl_secs),
     };
     tokio::spawn(async move {
         let mut interval =
@@ -95,6 +101,7 @@ async fn main() -> anyhow::Result<()> {
         metrics,
         port,
         heartbeat_interval: std::time::Duration::from_secs(heartbeat_secs),
+        control_reply_dedup_ttl: std::time::Duration::from_secs(dedup_ttl_secs),
     };
     let app = relay::build_router(state);
 

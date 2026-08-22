@@ -1838,6 +1838,30 @@ void _registerFalseOfflineTests() {
       cm.dispose();
     });
 
+    test('adopt() starts the periodic recheck too (PR #48 review #2 — '
+        'post-pairing flow must get the self-heal loop)', () async {
+      final ch = _ControllableChannel();
+      final cm = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+        recheckInterval: const Duration(milliseconds: 80),
+      );
+      // The external pairing flow adopts an already-connected channel.
+      cm.adopt(ch, _fakePeer());
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      ch.sentControl.clear(); // ignore the replay round
+
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      expect(
+        ch.sentControl.where((m) => m['type'] == 'presence_check').length,
+        greaterThanOrEqualTo(2),
+        reason: 'adopt() must start the periodic recheck, not just _connect()',
+      );
+
+      cm.dispose();
+    });
+
     test('room_meta_updated for a known-but-offline room re-marks it live '
         '(relay only broadcasts meta for registered rooms)', () async {
       final ch = _ControllableChannel();

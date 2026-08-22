@@ -54,6 +54,9 @@ pub struct AppState {
     /// how often a phone's radio must wake. 60 s beats every common NAT idle
     /// timeout with margin and halves inbound wakeups vs. the old 25 s.
     pub heartbeat_interval: Duration,
+    /// PR #48 review #1 — TTL for identical-reply suppression on
+    /// `presence_check` / `rooms_check`. See [DEFAULT_DEDUP_TTL_SECS].
+    pub control_reply_dedup_ttl: Duration,
 }
 
 /// Plan 125 — default WS keepalive cadence (seconds). The relay pings each
@@ -62,6 +65,40 @@ pub struct AppState {
 /// idle timeout (consumer routers ≥ 60 s, Cloudflare WSS ~100 s, corporate LBs
 /// 2–5 min) with margin and halves inbound wakeups vs. the old 25 s.
 pub const DEFAULT_HEARTBEAT_SECS: u64 = 60;
+
+/// TTL for the identical-reply suppression on `presence_check` /
+/// `rooms_check` (PR #48 review #1). Suppression exists to dam the
+/// reconnect firehose (dozens of identical replies in tight bursts when
+/// devices re-authenticate); it must NOT starve a client's PERIODIC
+/// recheck — the app re-asks every 60 s to self-heal a false-offline
+/// mark, and a purely-local mark never changes relay state, so the reply
+/// would stay byte-identical forever. Bounding suppression to this TTL
+/// (default 30 s < 60 s poll) guarantees every poll gets its reply while
+/// still collapsing sub-second bursts.
+pub const DEFAULT_DEDUP_TTL_SECS: u64 = 30;
+
+/// Floor for the dedup TTL — 0 would disable the firehose dam entirely.
+pub const MIN_DEDUP_TTL_SECS: u64 = 1;
+
+/// Resolve the dedup TTL from an optional env-string value
+/// (`REMOTEPI_DEDUP_TTL_SECS`). `None`/unparseable →
+/// [DEFAULT_DEDUP_TTL_SECS]; values below [MIN_DEDUP_TTL_SECS] are clamped
+/// up with a `warn` log. Pure so the clamp contract is pinned by a unit
+/// test (mirrors [resolve_heartbeat_secs]).
+pub fn resolve_dedup_ttl_secs(raw: Option<&str>) -> u64 {
+    match raw.and_then(|s| s.trim().parse::<u64>().ok()) {
+        Some(v) if v < MIN_DEDUP_TTL_SECS => {
+            tracing::warn!(
+                requested = v,
+                min = MIN_DEDUP_TTL_SECS,
+                "REMOTEPI_DEDUP_TTL_SECS below floor; clamping"
+            );
+            MIN_DEDUP_TTL_SECS
+        }
+        Some(v) => v,
+        None => DEFAULT_DEDUP_TTL_SECS,
+    }
+}
 
 /// Plan 125 — NAT-safe floor for the heartbeat. Anything tighter forfeits the
 /// battery win and risks NAT drops on aggressive networks.
@@ -203,5 +240,33 @@ mod heartbeat_tests {
     #[test]
     fn at_floor_is_allowed() {
         assert_eq!(resolve_heartbeat_secs(Some("30")), MIN_HEARTBEAT_SECS);
+    }
+}
+
+#[cfg(test)]
+mod dedup_ttl_tests {
+    use super::*;
+
+    #[test]
+    fn none_uses_default() {
+        assert_eq!(resolve_dedup_ttl_secs(None), DEFAULT_DEDUP_TTL_SECS);
+    }
+
+    #[test]
+    fn unparseable_uses_default() {
+        assert_eq!(resolve_dedup_ttl_secs(Some("nope")), DEFAULT_DEDUP_TTL_SECS);
+        assert_eq!(resolve_dedup_ttl_secs(Some("")), DEFAULT_DEDUP_TTL_SECS);
+        assert_eq!(resolve_dedup_ttl_secs(Some("-5")), DEFAULT_DEDUP_TTL_SECS);
+    }
+
+    #[test]
+    fn explicit_value_passes_through() {
+        assert_eq!(resolve_dedup_ttl_secs(Some("45")), 45);
+        assert_eq!(resolve_dedup_ttl_secs(Some(" 10 ")), 10);
+    }
+
+    #[test]
+    fn below_floor_is_clamped() {
+        assert_eq!(resolve_dedup_ttl_secs(Some("0")), MIN_DEDUP_TTL_SECS);
     }
 }

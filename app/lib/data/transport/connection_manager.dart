@@ -526,6 +526,21 @@ class ConnectionManager extends Service {
     _activePeer = peer;
     _emit(StatusOnline(channel));
     _startPing(peer, channel);
+    // Review fix #2 (PR #48): adopt() is the production post-pairing path
+    // and must enter the same Online lifecycle as _connect — without this,
+    // a freshly paired session had no periodic recovery loop until some
+    // later reconnect started it.
+    _startRecheck();
+    // Review fix #2, second half: the recheck (and later replays) poll
+    // `_subscribedEpks` — empty right after a FRESH pairing (boot()'s
+    // subscribe hasn't run for this peer yet), so the timer would tick
+    // but send nothing. Seed the adopted peer into the subscription list;
+    // union, never replace — an adopt over an existing session must not
+    // drop the other paired peers Home is watching.
+    final adoptedStd = toStandardB64(peer.remoteEpk);
+    if (!_subscribedEpks.contains(adoptedStd)) {
+      subscribeToPeers([..._subscribedEpks, peer.remoteEpk]);
+    }
     _watchChannel(peer, channel);
     _watchControl(channel);
     _replaySubscriptions();

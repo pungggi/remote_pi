@@ -174,7 +174,10 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
     // re-emits of `presence` (single cache slot — there's only one
     // subscription set per conn) and `rooms` (one slot per target peer).
     let mut last_presence_resp: Option<String> = None;
-    let mut last_rooms_resp: HashMap<String, String> = HashMap::new();
+    let mut last_presence_sent_at: Option<std::time::Instant> = None;
+    // (last sent reply, sent-at) per target peer — see the TTL note at the
+    // rooms_check handler; same firehose-vs-poll contract as presence.
+    let mut last_rooms_resp: HashMap<String, (String, std::time::Instant)> = HashMap::new();
 
     // ── Authorization helper (security fix 2026-08) ─────────────────────────
     // Presence/rooms queries about OTHER peers are metadata disclosure: they
@@ -270,14 +273,27 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                         "states": states,
                                     })
                                     .to_string();
-                                    // Dedup: skip reply if identical to the
-                                    // previous one we sent on this conn. The
-                                    // first reply always goes through (cache
-                                    // is None until the first emit).
-                                    if last_presence_resp.as_deref() == Some(resp.as_str()) {
+                                    // Dedup with TTL (PR #48 review #1): identical
+                                    // replies are suppressed only within
+                                    // `control_reply_dedup_ttl` of the last SEND.
+                                    // Unbounded suppression starved the app's
+                                    // 60 s self-heal poll — a purely-local
+                                    // offline mark never changes relay state,
+                                    // so the reply stayed identical forever
+                                    // and the poll never got an answer.
+                                    // Bursts (reconnect firehose) land well
+                                    // inside the TTL and still collapse.
+                                    let dedup_ttl = state.control_reply_dedup_ttl;
+                                    let now = std::time::Instant::now();
+                                    let presence_suppressed =
+                                        last_presence_resp.as_deref() == Some(resp.as_str())
+                                            && last_presence_sent_at
+                                                .is_some_and(|t| now.duration_since(t) < dedup_ttl);
+                                    if presence_suppressed {
                                         metrics.inc_presence_suppressed(1);
                                     } else {
                                         last_presence_resp = Some(resp.clone());
+                                        last_presence_sent_at = Some(now);
                                         if sink.send(Message::Text(resp)).await.is_err() {
                                             break;
                                         }
@@ -303,14 +319,33 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                             "rooms": active_rooms,
                                         })
                                         .to_string();
-                                        // Dedup per (conn, target_peer):
-                                        // first reply always sent; subsequent
-                                        // identical snapshots dropped.
-                                        if last_rooms_resp.get(target_peer) == Some(&resp) {
+                                        // Dedup per (conn, target_peer) with
+                                        // TTL: first reply always sent;
+                                        // identical snapshots dropped only
+                                        // within `control_reply_dedup_ttl` of
+                                        // the last send (PR #48 review #1 —
+                                        // unbounded suppression starved the
+                                        // client's periodic self-heal poll;
+                                        // see the presence_check arm above).
+                                        let now = std::time::Instant::now();
+                                        let rooms_suppressed = match
+                                            last_rooms_resp.get(target_peer)
+                                        {
+                                            Some((prev, sent_at)) => {
+                                                *prev == resp
+                                                    && now.duration_since(*sent_at)
+                                                        < state.control_reply_dedup_ttl
+                                            }
+                                            None => false,
+                                        };
+                                        if rooms_suppressed {
                                             metrics.inc_rooms_suppressed(1);
                                             continue;
                                         }
-                                        last_rooms_resp.insert(target_peer.clone(), resp.clone());
+                                        last_rooms_resp.insert(
+                                            target_peer.clone(),
+                                            (resp.clone(), now),
+                                        );
                                         if sink.send(Message::Text(resp)).await.is_err() {
                                             break 'routing;
                                         }

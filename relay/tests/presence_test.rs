@@ -299,6 +299,49 @@ async fn presence_check_dedup_suppresses_identical_responses() {
     );
 }
 
+/// PR #48 review #1 — presence suppression is TTL-bounded too: an identical
+/// `presence_check` sent after the dedup TTL (test harness: 1 s) must be
+/// answered, so a client polling slower than the TTL always gets its
+/// authoritative snapshot.
+#[tokio::test]
+async fn presence_check_identical_reply_after_ttl_is_delivered() {
+    let port = start_relay().await;
+    let sk_a = random_key();
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    let peer_a = B64.encode(sk_a.verifying_key().to_bytes());
+
+    let (_ws_a, _) = connect_and_auth_with_key(port, &sk_a).await;
+    let (mut ws_b, peer_b) = connect_and_auth(port).await;
+    make_mesh_siblings(port, &[peer_a.clone(), peer_b]).await;
+
+    let check = json!({"type": "presence_check", "peers": [&peer_a]}).to_string();
+    ws_b.send(Message::text(check.clone())).await.unwrap();
+    let first = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_b.next())
+        .await
+        .expect("timed out on first presence reply")
+        .unwrap()
+        .unwrap();
+    let v1: serde_json::Value = serde_json::from_str(first.to_text().unwrap()).unwrap();
+    assert_eq!(v1["type"], "presence");
+
+    // Immediate identical follow-up — inside the TTL → suppressed.
+    ws_b.send(Message::text(check.clone())).await.unwrap();
+    let dup = tokio::time::timeout(tokio::time::Duration::from_millis(250), ws_b.next()).await;
+    assert!(dup.is_err(), "within-TTL identical reply must be suppressed");
+
+    // Past the TTL → identical reply is delivered anyway.
+    tokio::time::sleep(tokio::time::Duration::from_millis(1_200)).await;
+    ws_b.send(Message::text(check)).await.unwrap();
+    let again = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_b.next())
+        .await
+        .expect("timed out waiting for after-TTL identical presence reply")
+        .unwrap()
+        .unwrap();
+    let v2: serde_json::Value = serde_json::from_str(again.to_text().unwrap()).unwrap();
+    assert_eq!(v2["type"], "presence");
+    assert_eq!(v2, v1);
+}
+
 /// Changing the subscribed peer set (a real change) makes the next
 /// `presence_check` reply distinct, so it goes through after a dedup-suppressed
 /// run.
