@@ -48,6 +48,10 @@ pub async fn start_relay_with_state() -> (u16, relay::AppState) {
         metrics,
         port,
         heartbeat_interval: std::time::Duration::from_secs(60),
+        // Short TTL (prod default is 30 s) so the after-TTL delivery tests
+        // sleep ~1.2 s instead of 31 s. Immediate-burst suppression tests
+        // still suppress — their follow-ups land well inside the window.
+        control_reply_dedup_ttl: std::time::Duration::from_secs(1),
     };
     let app = build_router(state.clone());
     tokio::spawn(async move {

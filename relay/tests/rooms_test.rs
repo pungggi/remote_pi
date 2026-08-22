@@ -413,6 +413,52 @@ async fn rooms_check_dedup_suppresses_identical_responses() {
     );
 }
 
+/// PR #48 review #1 — suppression is TTL-bounded, not forever. A client
+/// polling `rooms_check` on a cadence slower than the dedup TTL must get
+/// EVERY reply, even byte-identical ones: the app's false-offline
+/// self-heal relies on the snapshot arriving to re-mark a locally-grey
+/// room, and a purely-local mark never changes relay state (so the reply
+/// is always "identical"). Test harness TTL is 1 s — sleep past it.
+#[tokio::test]
+async fn rooms_check_identical_reply_after_ttl_is_delivered() {
+    let port = start_relay().await;
+    let sk_pi = random_key();
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
+
+    let (_ws_pi, _) = connect_and_auth_with_room(port, &sk_pi, "work").await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
+
+    let check = json!({"type": "rooms_check", "peers": [&peer_pi]}).to_string();
+    ws_app.send(Message::text(check.clone())).await.unwrap();
+    let first = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_app.next())
+        .await
+        .expect("timed out on first rooms reply")
+        .unwrap()
+        .unwrap();
+    let v1: serde_json::Value = serde_json::from_str(first.to_text().unwrap()).unwrap();
+    assert_eq!(v1["type"], "rooms");
+
+    // Immediate identical follow-up — still inside the TTL window → suppressed.
+    ws_app.send(Message::text(check.clone())).await.unwrap();
+    let dup = tokio::time::timeout(tokio::time::Duration::from_millis(250), ws_app.next()).await;
+    assert!(dup.is_err(), "within-TTL identical reply must be suppressed");
+
+    // Past the TTL, identical request → reply MUST arrive (the self-heal
+    // poll contract).
+    tokio::time::sleep(tokio::time::Duration::from_millis(1_200)).await;
+    ws_app.send(Message::text(check)).await.unwrap();
+    let again = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_app.next())
+        .await
+        .expect("timed out waiting for after-TTL identical rooms reply — poll was starved")
+        .unwrap()
+        .unwrap();
+    let v2: serde_json::Value = serde_json::from_str(again.to_text().unwrap()).unwrap();
+    assert_eq!(v2["type"], "rooms");
+    assert_eq!(v2, v1, "relay state unchanged — reply is identical but delivered");
+}
+
 /// After a real room change (room_meta_update with a new model), the next
 /// `rooms_check` reply is distinct from the cached one and therefore is
 /// emitted, not suppressed.

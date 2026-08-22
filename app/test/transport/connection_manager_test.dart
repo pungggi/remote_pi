@@ -111,6 +111,8 @@ void main() {
   _registerPlan114Tests();
   // Plan 114 (A) — NetworkMonitor (connectivity-driven reconnect).
   _registerNetworkMonitorTests();
+  // False-offline fix (2026-08-22) — self-healing liveness.
+  _registerFalseOfflineTests();
 
   group('ConnectionManager', () {
     test('boot() → StatusNoPeer when storage is empty', () async {
@@ -1754,6 +1756,250 @@ void _registerPlan114Tests() {
       );
       // Default mode is active → this must be a no-op (no throw, no churn).
       expect(() => cm.setPowerMode(PowerMode.active), returnsNormally);
+      cm.dispose();
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// False-offline fix (2026-08-22): the app marks a session offline from 3
+// missed protocol Pongs (75 s) during a PC network blip, but the recovery
+// events it waited for (`room_announced` / `peer_online`) are SUPPRESSED by
+// the relay when the PC's reconnect races its zombie connection prune —
+// so the grey state stuck forever until the app itself reconnected.
+// Fix: liveness is self-healing — (a) periodic authoritative presence+rooms
+// recheck, (b) inbound traffic / `room_meta_updated` for a room re-mark it
+// live, (c) the re-mark makes `_markActiveRoomOffline` reversible.
+// ---------------------------------------------------------------------------
+
+void _registerFalseOfflineTests() {
+  group('ConnectionManager — false-offline self-heal (2026-08-22)', () {
+    test('periodic recheck: while Online, presence_check + rooms_check are '
+        're-sent every interval', () async {
+      final ch = _ControllableChannel();
+      final cm = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+        recheckInterval: const Duration(milliseconds: 80),
+      );
+      await cm.boot();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      // Boot/replay already sent one round — measure the PERIODIC ones.
+      ch.sentControl.clear();
+
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+
+      final checks =
+          ch.sentControl.where((m) => m['type'] == 'presence_check').length;
+      final rooms =
+          ch.sentControl.where((m) => m['type'] == 'rooms_check').length;
+      expect(
+        checks,
+        greaterThanOrEqualTo(2),
+        reason: 'periodic presence_check must keep firing while Online',
+      );
+      expect(
+        rooms,
+        greaterThanOrEqualTo(2),
+        reason: 'periodic rooms_check must keep firing while Online',
+      );
+
+      cm.dispose();
+    });
+
+    test('periodic recheck stops while not Online (no frames while '
+        'retrying)', () async {
+      var online = true;
+      final ch = _ControllableChannel();
+      final cm = ConnectionManager(
+        factory: (_, _) async {
+          if (!online) throw Exception('refused');
+          return ch;
+        },
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+        recheckInterval: const Duration(milliseconds: 80),
+      );
+      await cm.boot();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      online = false;
+      await ch.closeStream(); // → retry loop, factory refuses
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      ch.sentControl.clear();
+
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      expect(
+        ch.sentControl.where((m) => m['type'] == 'presence_check'),
+        isEmpty,
+        reason: 'recheck must self-guard on StatusOnline',
+      );
+
+      cm.dispose();
+    });
+
+    test('adopt() starts the periodic recheck too (PR #48 review #2 — '
+        'post-pairing flow must get the self-heal loop)', () async {
+      final ch = _ControllableChannel();
+      final cm = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+        recheckInterval: const Duration(milliseconds: 80),
+      );
+      // The external pairing flow adopts an already-connected channel.
+      cm.adopt(ch, _fakePeer());
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      ch.sentControl.clear(); // ignore the replay round
+
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      expect(
+        ch.sentControl.where((m) => m['type'] == 'presence_check').length,
+        greaterThanOrEqualTo(2),
+        reason: 'adopt() must start the periodic recheck, not just _connect()',
+      );
+
+      cm.dispose();
+    });
+
+    test('room_meta_updated for a known-but-offline room re-marks it live '
+        '(relay only broadcasts meta for registered rooms)', () async {
+      final ch = _ControllableChannel();
+      final cm = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+      );
+      await cm.connectTo(_fakePeer());
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      ch.pushControl(
+        const RoomAnnounced(peer: 'epk_test', roomId: 'r1', startedAt: 1),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(cm.isRoomLive('epk_test', 'r1'), isTrue);
+
+      // Pi goes through a blip: room falls out of the live set (ping-miss
+      // mark / room_ended — same local state either way).
+      ch.pushControl(const RoomEnded(peer: 'epk_test', roomId: 'r1', sinceTs: 2));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(cm.isRoomLive('epk_test', 'r1'), isFalse);
+
+      // Turn starts on the PC → relay broadcasts meta for the (still
+      // registered) room. That alone must flip the dot back.
+      ch.pushControl(
+        const RoomMetaUpdated(peer: 'epk_test', roomId: 'r1', working: true),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(
+        cm.isRoomLive('epk_test', 'r1'),
+        isTrue,
+        reason: 'meta broadcast proves the room is registered → live',
+      );
+
+      cm.dispose();
+    });
+
+    test('IDENTICAL meta (dedup path) still re-marks the room live', () async {
+      final ch = _ControllableChannel();
+      final cm = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+      );
+      await cm.connectTo(_fakePeer());
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      ch.pushControl(
+        const RoomAnnounced(
+          peer: 'epk_test',
+          roomId: 'r1',
+          startedAt: 1,
+          model: 'm',
+          working: true,
+        ),
+      );
+      ch.pushControl(const RoomEnded(peer: 'epk_test', roomId: 'r1', sinceTs: 2));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(cm.isRoomLive('epk_test', 'r1'), isFalse);
+
+      // Meta that changes NOTHING (same model, same working) — the field
+      // patch dedups, but liveness restore must still run.
+      ch.pushControl(
+        const RoomMetaUpdated(
+          peer: 'epk_test',
+          roomId: 'r1',
+          model: 'm',
+          working: true,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(cm.isRoomLive('epk_test', 'r1'), isTrue);
+
+      cm.dispose();
+    });
+
+    test('meta for a room NOT in the cache does not invent a live entry',
+        () async {
+      final ch = _ControllableChannel();
+      final cm = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+      );
+      await cm.connectTo(_fakePeer());
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      ch.pushControl(
+        const RoomMetaUpdated(peer: 'epk_test', roomId: 'ghost', model: 'm'),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(cm.isRoomLive('epk_test', 'ghost'), isFalse);
+      expect(cm.roomsFor('epk_test'), isEmpty);
+
+      cm.dispose();
+    });
+
+    test('inbound message restores the active room marked offline '
+        '(reversible _markActiveRoomOffline)', () async {
+      final ch = _ControllableChannel();
+      final cm = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: _FakeStorage([_fakePeer()]),
+        emitDebounce: Duration.zero,
+      );
+      await cm.connectTo(
+        const PeerRecord(
+          remoteEpk: 'epk_test',
+          sessionName: 'Pi',
+          relayUrl: 'ws://x',
+          pairedAt: '2026-01-01T00:00:00Z',
+          roomId: 'r1',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      ch.pushControl(
+        const RoomAnnounced(peer: 'epk_test', roomId: 'r1', startedAt: 1),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(cm.isRoomLive('epk_test', 'r1'), isTrue);
+
+      // Blip: room marked offline locally (ping-miss stand-in).
+      ch.pushControl(const RoomEnded(peer: 'epk_test', roomId: 'r1', sinceTs: 2));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(cm.isRoomLive('epk_test', 'r1'), isFalse);
+
+      // The very next inbound frame (envelope or the Pong for the 25s
+      // liveness ping) proves the Pi leg → active room flips live again.
+      ch.pushMessage(Pong(inReplyTo: 'ping-1'));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(
+        cm.isRoomLive('epk_test', 'r1'),
+        isTrue,
+        reason: 'inbound traffic must undo a ping-miss offline mark',
+      );
+
       cm.dispose();
     });
   });

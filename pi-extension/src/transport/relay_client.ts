@@ -6,15 +6,25 @@ import type { Ed25519Keypair } from "../pairing/crypto.js";
 const AUTH_TIMEOUT_MS = 5_000;
 
 /**
- * Liveness watchdog. The relay sends a WS Ping every ~25s (relay `peer.rs`),
- * so a healthy connection sees inbound frames at least that often. If NOTHING
- * arrives for this long the socket is silently dead — NAT/router idle drop,
- * laptop sleep, or the relay/Cloudflare reaping the connection WITHOUT a clean
- * close frame. That half-open case never fires `close`, so reconnect never
- * triggers and a background daemon sits "online" but dead after a few idle
- * hours. We force-close on timeout so `close` drives the caller's reconnect.
+ * Liveness watchdog. The relay sends a WS Ping every ~60s (plan 125 —
+ * relay `peer.rs`, `REMOTEPI_HEARTBEAT_SECS`, was ~25s), so a healthy
+ * connection sees inbound frames at least that often. If NOTHING arrives
+ * for this long the socket is silently dead — NAT/router idle drop,
+ * laptop sleep, or the relay/Cloudflare reaping the connection WITHOUT a
+ * clean close frame. That half-open case never fires `close`, so
+ * reconnect never triggers and a background daemon sits "online" but
+ * dead after a few idle hours. We force-close on timeout so `close`
+ * drives the caller's reconnect.
+ *
+ * False-offline fix (2026-08-22): this was 70s, tuned against the OLD 25s
+ * relay ping ("~2.8 missed pings"). Against the 60s cadence a single
+ * dropped ping nearly exhausts the budget → spurious force-close right
+ * when the network is merely hiccuping, and the reconnect races the
+ * relay's zombie-prune (which suppresses `peer_online` — the app then
+ * latches "offline" for hours). ≥2.5 intervals: one missed ping (plus
+ * margin for scheduling drift) is never enough, two certainly is.
  */
-const LIVENESS_TIMEOUT_MS = 70_000;  // ~2.8 missed relay pings → confidently dead
+const LIVENESS_TIMEOUT_MS = 150_000; // ~2.5 missed 60s relay pings
 const LIVENESS_CHECK_MS = 20_000;
 
 /** Relay control messages (sent/received during auth). */

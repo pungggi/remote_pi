@@ -170,15 +170,17 @@ describe("RelayClient", () => {
       let closed = false;
       client.on("close", () => { closed = true; });
 
-      // No inbound frame for > 70s → watchdog terminates → close.
-      await vi.advanceTimersByTimeAsync(90_000);
+      // No inbound frame for > 150s (LIVENESS_TIMEOUT_MS — false-offline
+      // fix 2026-08-22: ≥2.5 missed 60s relay pings) → watchdog terminates
+      // → close.
+      await vi.advanceTimersByTimeAsync(160_000);
       expect(closed).toBe(true);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  test("liveness: relay's ~25s pings keep it alive (no spurious close)", async () => {
+  test("liveness: relay's ~60s pings keep it alive (no spurious close)", async () => {
     vi.useFakeTimers();
     try {
       const client = new RelayClient("ws://localhost:9999", keypair);
@@ -186,11 +188,39 @@ describe("RelayClient", () => {
       let closed = false;
       client.on("close", () => { closed = true; });
 
-      // Simulate the relay's keepalive ping every 25s for 2.5 min.
+      // Simulate the relay's keepalive ping every 60s (plan 125 cadence)
+      // for 6 min — comfortably past the 150s timeout budget between any
+      // two pings, so only real silence (≥3 missed pings) can close.
       for (let i = 0; i < 6; i++) {
-        await vi.advanceTimersByTimeAsync(25_000);
+        await vi.advanceTimersByTimeAsync(60_000);
         currentWs().emit("ping");
       }
+      expect(closed).toBe(false);
+      client.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("liveness: a single dropped 60s ping must NOT force-close " +
+    "(false-offline fix 2026-08-22 — 70s budget closed on one miss)", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new RelayClient("ws://localhost:9999", keypair);
+      await connectFake(client);
+      let closed = false;
+      client.on("close", () => { closed = true; });
+
+      // Ping lands, then ONE interval is lost, then the next ping lands.
+      // With the old 70s budget the 60s gap + check granularity could
+      // force-close; 150s absorbs it.
+      await vi.advanceTimersByTimeAsync(60_000);
+      currentWs().emit("ping");
+      await vi.advanceTimersByTimeAsync(60_000); // missed ping — silence
+      await vi.advanceTimersByTimeAsync(30_000); // total 90s since last frame
+      expect(closed).toBe(false);
+      currentWs().emit("ping");
+      await vi.advanceTimersByTimeAsync(30_000);
       expect(closed).toBe(false);
       client.close();
     } finally {

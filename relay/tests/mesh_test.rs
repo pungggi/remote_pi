@@ -48,6 +48,7 @@ async fn spawn_relay() -> (String, tempfile::TempDir) {
         metrics,
         port,
         heartbeat_interval: std::time::Duration::from_secs(60),
+        control_reply_dedup_ttl: std::time::Duration::from_secs(1),
     };
 
     let app = build_router(state);
