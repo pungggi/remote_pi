@@ -268,8 +268,12 @@ impl PeerRegistry {
     }
 
     /// Applies `patch` to every live conn at `(peer_id, room_id)` and
-    /// broadcasts `room_meta_updated` to room subscribers. Returns `false`
-    /// when no entries exist for the pair (so the handler can log and drop).
+    /// broadcasts `room_meta_updated` to room subscribers — but ONLY when the
+    /// patch actually changes the broadcast-relevant state of ANY live conn
+    /// at the pair (suppression fix 2026-08-22: identical re-pushes are
+    /// silently absorbed, counted in the firehose `rooms_suppressed` metric).
+    /// Returns `false` when no entries exist for the pair (so the handler can
+    /// log and drop).
     ///
     /// Patch semantics: only fields explicitly present in `patch` are written
     /// (see [`RoomMetaPatch`]). The broadcast carries the **post-patch**
@@ -287,12 +291,36 @@ impl PeerRegistry {
         room_id: &str,
         patch: RoomMetaPatch,
     ) -> bool {
-        let (current_model, current_thinking, current_working, current_git, current_context_usage) = {
+        let (
+            current_model,
+            current_thinking,
+            current_working,
+            current_git,
+            current_context_usage,
+            changed,
+        ) = {
             let mut lock = self.senders.lock().unwrap();
             let key = (peer_id.to_string(), room_id.to_string());
             match lock.get_mut(&key) {
                 Some(v) if !v.is_empty() => {
+                    // Suppression fix (2026-08-22; PR #51 review, medium):
+                    // detect the change PER ENTRY, not against a single
+                    // "canonical" conn. Conns at one (peer, room) may carry
+                    // divergent metas (each `register` pushes the new conn's
+                    // own meta) and `rooms_of` serves `v.last()` — a patch
+                    // that leaves the first entry untouched while changing a
+                    // later one still changes the registry's advertised
+                    // state and MUST broadcast, or snapshot-based subscribers
+                    // (including `working`) go stale.
+                    let mut changed = false;
                     for (_, meta, _) in v.iter_mut() {
+                        let before = (
+                            meta.model.clone(),
+                            meta.thinking.clone(),
+                            meta.working,
+                            meta.git.clone(),
+                            meta.context_usage.clone(),
+                        );
                         if let Some(ref m) = patch.model {
                             meta.model = m.clone();
                         }
@@ -310,9 +338,21 @@ impl PeerRegistry {
                         if let Some(ref cu) = patch.context_usage {
                             meta.context_usage = cu.clone();
                         }
+                        let after = (
+                            meta.model.clone(),
+                            meta.thinking.clone(),
+                            meta.working,
+                            meta.git.clone(),
+                            meta.context_usage.clone(),
+                        );
+                        if after != before {
+                            changed = true;
+                        }
                     }
-                    // All conns at this key carry the same post-patch state
-                    // now; read the first as the canonical snapshot.
+                    // Canonical snapshot for the broadcast payload (the
+                    // post-patch first conn — same source the broadcast has
+                    // always used; the per-entry detection above is what
+                    // guards `rooms_of`'s last-entry view against staleness).
                     let head = v.first().expect("v is non-empty");
                     (
                         head.1.model.clone(),
@@ -320,18 +360,36 @@ impl PeerRegistry {
                         head.1.working,
                         head.1.git.clone(),
                         head.1.context_usage.clone(),
+                        changed,
                     )
                 }
                 _ => return false,
             }
         };
 
-        // Empty patch → state didn't change, suppress broadcast.
-        if patch.is_empty() {
+        // Empty patch, or a patch that wrote the values every conn already
+        // had → state didn't change, suppress broadcast. Suppressed meta
+        // updates land in the same firehose counter as suppressed
+        // `rooms_check` replies (observability: the 10s log line shows the
+        // dam working).
+        if patch.is_empty() || !changed {
+            if !patch.is_empty() {
+                self.metrics.inc_rooms_suppressed(1);
+            }
             return true;
         }
 
         let room_subs = self.rooms.subscribers_of(peer_id).await;
+        // Metric semantics (PR #51 review, low): `rooms_emitted` counts
+        // subscribers actually fanned out to. A changed update with zero
+        // subscribers sends nothing — no phantom emission — and counting
+        // per subscriber matches the `peer_online` convention (each
+        // subscriber may hold several live conns; `forward_to_all_rooms_of`
+        // does the per-conn fan-out).
+        if room_subs.is_empty() {
+            return true;
+        }
+        self.metrics.inc_rooms_emitted(room_subs.len() as u64);
         if !room_subs.is_empty() {
             let mut meta_obj = serde_json::Map::new();
             if let Some(m) = &current_model {
@@ -612,13 +670,14 @@ mod tests {
     }
 
     /// Helper: a Pi with one `main` room plus an `app` subscribed to that
-    /// peer's room events. Returns the registry, the shared `rooms` handle,
-    /// the peer ids, and the app's receiver (drained of any backfill).
-    async fn meta_fixture() -> (PeerRegistry, String, mpsc::UnboundedReceiver<Message>) {
+    /// peer's room events. Returns the registry, its firehose metrics handle,
+    /// the peer id, and the app's receiver (drained of any backfill).
+    async fn meta_fixture()
+    -> (PeerRegistry, Arc<FirehoseMetrics>, String, mpsc::UnboundedReceiver<Message>) {
         let presence = Arc::new(PresenceManager::new());
         let rooms = Arc::new(RoomManager::new());
         let metrics = Arc::new(FirehoseMetrics::new());
-        let reg = PeerRegistry::new(presence, rooms.clone(), metrics);
+        let reg = PeerRegistry::new(presence, rooms.clone(), metrics.clone());
 
         let pi = "pi".to_string();
         let app = "app".to_string();
@@ -633,7 +692,7 @@ mod tests {
         let _ = reg.register(app.clone(), make_meta("main"), tx_app).await;
         rooms.subscribe(app.clone(), vec![pi.clone()]).await;
 
-        (reg, pi, rx_app)
+        (reg, metrics, pi, rx_app)
     }
 
     fn recv_meta(rx: &mut mpsc::UnboundedReceiver<Message>) -> serde_json::Value {
@@ -648,7 +707,7 @@ mod tests {
     /// `working: true` patch broadcasts the post-patch state to subscribers.
     #[tokio::test]
     async fn working_true_patch_broadcasts_true() {
-        let (reg, pi, mut rx_app) = meta_fixture().await;
+        let (reg, _metrics, pi, mut rx_app) = meta_fixture().await;
 
         let patch = RoomMetaPatch {
             working: Some(true),
@@ -666,7 +725,7 @@ mod tests {
     /// `working: false` — flipping a previously-true room back off.
     #[tokio::test]
     async fn working_false_patch_broadcasts_false() {
-        let (reg, pi, mut rx_app) = meta_fixture().await;
+        let (reg, _metrics, pi, mut rx_app) = meta_fixture().await;
 
         // Turn it on, then off.
         let _ = reg
@@ -702,7 +761,7 @@ mod tests {
     /// and the broadcast re-carries the preserved value.
     #[tokio::test]
     async fn working_absent_patch_does_not_zero() {
-        let (reg, pi, mut rx_app) = meta_fixture().await;
+        let (reg, _metrics, pi, mut rx_app) = meta_fixture().await;
 
         let _ = reg
             .update_room_meta(
@@ -735,5 +794,218 @@ mod tests {
             v["meta"]["working"], true,
             "absent `working` in a patch must not clear it"
         );
+    }
+
+    /// Suppression fix (2026-08-22): a patch that re-writes the values the
+    /// room already carries must NOT broadcast again — identical
+    /// `room_meta_updated` frames were amplifying the phone's reconnect
+    /// churn into every subscriber. The patch still succeeds (returns true)
+    /// and the stored state stays correct.
+    #[tokio::test]
+    async fn identical_patch_is_absorbed_without_broadcast() {
+        let (reg, _metrics, pi, mut rx_app) = meta_fixture().await;
+
+        // Establish state: working=true, model=opus.
+        let _ = reg
+            .update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    working: Some(true),
+                    model: Some(Some("opus".into())),
+                    ..Default::default()
+                },
+            )
+            .await;
+        let v = recv_meta(&mut rx_app); // drain the establishing broadcast
+        assert_eq!(v["meta"]["working"], true);
+        assert_eq!(v["meta"]["model"], "opus");
+
+        // Same values again (explicitly present in the patch) → absorbed.
+        for _ in 0..3 {
+            assert!(
+                reg.update_room_meta(
+                    &pi,
+                    "main",
+                    RoomMetaPatch {
+                        working: Some(true),
+                        model: Some(Some("opus".into())),
+                        ..Default::default()
+                    },
+                )
+                .await,
+                "identical patch must still succeed"
+            );
+        }
+        assert!(
+            rx_app.try_recv().is_err(),
+            "identical room_meta_updated must NOT be re-broadcast"
+        );
+
+        // A REAL change still broadcasts.
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    working: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        let v = recv_meta(&mut rx_app);
+        assert_eq!(v["meta"]["working"], false);
+        assert_eq!(v["meta"]["model"], "opus", "unchanged field re-carried");
+    }
+
+    /// Suppression is exact-match: same token count but different opaque
+    /// context_usage payload is a REAL change and must broadcast.
+    #[tokio::test]
+    async fn changed_opaque_context_usage_still_broadcasts() {
+        let (reg, _metrics, pi, mut rx_app) = meta_fixture().await;
+
+        let cu = |tokens: u64| {
+            Some(Some(serde_json::json!({
+                "tokens": tokens,
+                "contextWindow": 200000,
+            })))
+        };
+
+        let _ = reg
+            .update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    context_usage: cu(1000),
+                    ..Default::default()
+                },
+            )
+            .await;
+        let _ = recv_meta(&mut rx_app); // drain
+
+        // Identical push → absorbed.
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    context_usage: cu(1000),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        assert!(rx_app.try_recv().is_err());
+
+        // Token count moved → broadcast.
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    context_usage: cu(1500),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        let v = recv_meta(&mut rx_app);
+        assert_eq!(v["meta"]["context_usage"]["tokens"], 1500);
+    }
+
+    /// PR #51 review (medium): conns at one (peer, room) may carry
+    /// divergent metas — each `register` pushes the new conn's own meta, and
+    /// `rooms_of` serves the LAST entry. A patch that leaves the first conn
+    /// unchanged while changing a later one still changes the advertised
+    /// state and must broadcast (old code compared only `v.first()` and
+    /// wrongly suppressed, leaving snapshot subscribers stale).
+    #[tokio::test]
+    async fn patch_changing_only_a_later_conn_still_broadcasts() {
+        let (reg, _metrics, pi, mut rx_app) = meta_fixture().await;
+
+        // Second conn at the same (peer, room) with divergent meta:
+        // working=true while the first conn carries the default false.
+        // (No room_announced — not the first conn at the key; no peer_online
+        // — the peer was already online. rx_app stays clean.)
+        let mut diverged = make_meta("main");
+        diverged.working = true;
+        let (tx_pi2, _rx_pi2) = mpsc::unbounded_channel::<Message>();
+        let _ = reg.register(pi.clone(), diverged, tx_pi2).await;
+
+        // Patch working=false: first conn (false→false) unchanged, second
+        // (true→false) changed → the registry's advertised state changed.
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    working: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+
+        // Must NOT be suppressed — and the post-patch state is consistent
+        // with what rooms_of now advertises for the last conn.
+        let v = recv_meta(&mut rx_app);
+        assert_eq!(v["meta"]["working"], false);
+        let rooms = reg.rooms_of(&pi);
+        let main = rooms.iter().find(|r| r.room_id == "main").expect("main room");
+        assert!(!main.working, "rooms_of (last conn) matches broadcast");
+    }
+
+    /// PR #51 review (low): `rooms_emitted` counts subscribers actually
+    /// fanned out to — a changed patch with zero subscribers records
+    /// nothing (no phantom emission), and with subscribers it counts them.
+    #[tokio::test]
+    async fn emission_metrics_follow_actual_subscribers() {
+        let presence = Arc::new(PresenceManager::new());
+        let rooms = Arc::new(RoomManager::new());
+        let metrics = Arc::new(FirehoseMetrics::new());
+        let reg = PeerRegistry::new(presence, rooms.clone(), metrics.clone());
+
+        // Pi conn, NO subscriber yet.
+        let (tx_pi, _rx_pi) = mpsc::unbounded_channel::<Message>();
+        let _ = reg.register("pi".into(), make_meta("main"), tx_pi).await;
+        let [.., rooms_emit, rooms_supp] = metrics.snapshot();
+
+        // Real change, but nobody subscribed → no phantom emission and no
+        // suppression (the state genuinely changed; it just had nowhere to
+        // go).
+        assert!(
+            reg.update_room_meta(
+                "pi",
+                "main",
+                RoomMetaPatch {
+                    working: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        let [.., rooms_emit2, rooms_supp2] = metrics.snapshot();
+        assert_eq!(rooms_emit2, rooms_emit, "no subscriber → no emitted frame");
+        assert_eq!(rooms_supp2, rooms_supp, "changed state is not a suppression");
+
+        // Subscribe an app, then change again → emitted += 1 (per
+        // subscriber, matching the peer_online convention).
+        let (tx_app, _rx_app) = mpsc::unbounded_channel::<Message>();
+        let _ = reg.register("app".into(), make_meta("main"), tx_app).await;
+        rooms.subscribe("app".into(), vec!["pi".to_string()]).await;
+        assert!(
+            reg.update_room_meta(
+                "pi",
+                "main",
+                RoomMetaPatch {
+                    working: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        let [.., rooms_emit3, _] = metrics.snapshot();
+        assert_eq!(rooms_emit3, rooms_emit + 1, "one subscriber → one emission");
     }
 }

@@ -1571,6 +1571,46 @@ describe("multi-channel broadcast (W2D)", () => {
     await new Promise((r) => setTimeout(r, 80)); // drain window for later tests
   });
 
+  test("agent_done carries the turn's cumulative text as reconciliation fallback", async () => {
+    await _pairForTest("ownerF__1234567890");
+    const onUpdate = captureEventHandler("message_update");
+    const onInput = captureEventHandler("input");
+    const onEnd = captureEventHandler("agent_end");
+    onInput({ source: "terminal", text: "reconcile" } as unknown as Parameters<typeof onInput>[0]);
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+
+    // Two deltas separated by a flush window (simulates text before/after
+    // a tool boundary). The cumulative text must contain BOTH.
+    onUpdate({ assistantMessageEvent: { type: "text_delta", delta: "before tool " } } as unknown as Parameters<typeof onUpdate>[0]);
+    await new Promise((r) => setTimeout(r, 80)); // flush window
+    onUpdate({ assistantMessageEvent: { type: "text_delta", delta: "final tail" } } as unknown as Parameters<typeof onUpdate>[0]);
+    onEnd({} as unknown as Parameters<typeof onEnd>[0]);
+
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt);
+    const done = sent.find((d) => d.inner.type === "agent_done");
+    expect(done).toBeDefined();
+    expect(done!.inner["text"]).toBe("before tool final tail");
+    await new Promise((r) => setTimeout(r, 80)); // drain window for later tests
+  });
+
+  test("agent_done omits text for a tool-only turn", async () => {
+    await _pairForTest("ownerG__1234567890");
+    const onInput = captureEventHandler("input");
+    const onEnd = captureEventHandler("agent_end");
+    onInput({ source: "terminal", text: "no text" } as unknown as Parameters<typeof onInput>[0]);
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+
+    onEnd({} as unknown as Parameters<typeof onEnd>[0]);
+
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt);
+    const done = sent.find((d) => d.inner.type === "agent_done");
+    expect(done).toBeDefined();
+    expect(done!.inner["text"]).toBeUndefined();
+    await new Promise((r) => setTimeout(r, 80)); // drain window for later tests
+  });
+
   test("mid-run attach resumes streaming for a turn that started with no owner attached", async () => {
     captureHandler("remote-pi");
     await _connectForTest(makeMockCtx());

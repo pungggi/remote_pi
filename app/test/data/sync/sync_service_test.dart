@@ -1330,6 +1330,194 @@ void main() {
     },
   );
 
+  test(
+    'relay working=false racing agent_done persists streamed text (no loss)',
+    () async {
+      // Regression (2026-08-22, "final answer never renders"): the Pi emits
+      // turn_end BEFORE agent_end, so the relay's working=false broadcast can
+      // reach the app BEFORE the agent_done data frame (which queues behind
+      // the serialized Ed25519 verify chain). The old handler DISCARDED the
+      // streaming state here, so the late agent_done finalized an empty
+      // buffer and the final answer never rendered. It must FINALIZE instead.
+      final s = await setup();
+      s.ch.push(UserInput(id: 'u1', text: 'hi'));
+      await _settle();
+      s.ch.pushControl(
+        RoomAnnounced(peer: s.epk, roomId: 'main', startedAt: 1),
+      );
+      s.ch.pushControl(
+        RoomMetaUpdated(
+          peer: s.epk,
+          roomId: 'main',
+          working: true,
+          hasModel: false,
+          hasThinking: false,
+        ),
+      );
+      await _settle();
+
+      // Answer streams in but is NOT finalized yet (no agent_done).
+      s.ch.push(AgentChunk(inReplyTo: 'u1', delta: 'the final answer'));
+      await _settle();
+      expect(s.sync.streaming, isNotNull, reason: 'bubble holds the text');
+
+      // turn_end's working=false overtakes agent_done on the control path.
+      s.ch.pushControl(
+        RoomMetaUpdated(
+          peer: s.epk,
+          roomId: 'main',
+          working: false,
+          hasModel: false,
+          hasThinking: false,
+        ),
+      );
+      await _settle();
+
+      expect(s.sync.streaming, isNull, reason: 'cursor cleared (healed)');
+      expect(s.sync.isWorking, isFalse);
+      final texts = messages(s.epk)
+          .where((m) => m.role == MsgRole.assistant)
+          .map((m) => m.text)
+          .toList();
+      expect(
+        texts,
+        contains('the final answer'),
+        reason: 'buffered text must be persisted, not discarded',
+      );
+
+      // The late agent_done is an idempotent no-op: no duplicate row.
+      s.ch.push(AgentDone(inReplyTo: 'u1'));
+      await _settle();
+      final textsAfter = messages(s.epk)
+          .where((m) => m.role == MsgRole.assistant)
+          .map((m) => m.text)
+          .toList();
+      expect(textsAfter.where((t) => t == 'the final answer'), hasLength(1));
+      expect(s.sync.isWorking, isFalse);
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'agent_done.text reconciliation heals a lost tail of a live turn',
+    () async {
+      final s = await setup();
+      s.ch.push(UserInput(id: 'u1', text: 'hi'));
+      await _settle();
+      // Only part of the answer streamed through (frames lost).
+      s.ch.push(AgentChunk(inReplyTo: 'u1', delta: 'the final answ'));
+      s.ch.push(AgentDone(inReplyTo: 'u1', text: 'the final answer'));
+      await _settle();
+
+      final texts = messages(s.epk)
+          .where((m) => m.role == MsgRole.assistant)
+          .map((m) => m.text)
+          .toList();
+      expect(texts.join(''), 'the final answer',
+          reason: 'streamed part + healed tail reconstruct the answer');
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'agent_done.text equal to the streamed text heals nothing (no dup)',
+    () async {
+      final s = await setup();
+      s.ch.push(UserInput(id: 'u1', text: 'hi'));
+      await _settle();
+      s.ch.push(AgentChunk(inReplyTo: 'u1', delta: 'complete answer'));
+      s.ch.push(AgentDone(inReplyTo: 'u1', text: 'complete answer'));
+      await _settle();
+
+      final texts = messages(s.epk)
+          .where((m) => m.role == MsgRole.assistant)
+          .map((m) => m.text)
+          .toList();
+      expect(texts, ['complete answer']);
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'agent_done.text without any streamed chunk is ignored (sync owns it)',
+    () async {
+      final s = await setup();
+      s.ch.push(UserInput(id: 'u1', text: 'hi'));
+      await _settle();
+      // No AgentChunk seen in this process (e.g. app restarted mid-turn).
+      s.ch.push(AgentDone(inReplyTo: 'u1', text: 'full answer'));
+      await _settle();
+
+      expect(
+        messages(s.epk).where((m) => m.role == MsgRole.assistant),
+        isEmpty,
+        reason: 'no live-stream evidence → reconciliation must not fabricate',
+      );
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'agent_done.text non-prefix divergence heals nothing; duplicate done is a no-op',
+    () async {
+      final s = await setup();
+      s.ch.push(UserInput(id: 'u1', text: 'hi'));
+      await _settle();
+      s.ch.push(AgentChunk(inReplyTo: 'u1', delta: 'XYZ'));
+      // Server text does NOT start with the local stream → skip.
+      s.ch.push(AgentDone(inReplyTo: 'u1', text: 'ABC'));
+      await _settle();
+      var texts = messages(s.epk)
+          .where((m) => m.role == MsgRole.assistant)
+          .map((m) => m.text)
+          .toList();
+      expect(texts, ['XYZ']);
+
+      // Now a prefix-extension arrives twice — the tail heals exactly once.
+      s.ch.push(AgentChunk(inReplyTo: 'u1', delta: ' tail'));
+      s.ch.push(AgentDone(inReplyTo: 'u1', text: 'XYZ tail more'));
+      s.ch.push(AgentDone(inReplyTo: 'u1', text: 'XYZ tail more'));
+      await _settle();
+      texts = messages(s.epk)
+          .where((m) => m.role == MsgRole.assistant)
+          .map((m) => m.text)
+          .toList();
+      expect(texts.join(''), 'XYZ tail more');
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
+  test(
+    'cancelled turn: a late agent_done.text does not resurrect rows',
+    () async {
+      final s = await setup();
+      s.ch.push(UserInput(id: 'u1', text: 'hi'));
+      await _settle();
+      s.ch.push(AgentChunk(inReplyTo: 'u1', delta: 'partial answer'));
+      s.ch.push(Cancelled(inReplyTo: 'cancel-1', targetId: 'u1'));
+      await _settle();
+      expect(
+        messages(s.epk).where((m) => m.role == MsgRole.assistant),
+        isEmpty,
+      );
+
+      s.ch.push(AgentDone(inReplyTo: 'u1', text: 'partial answer continued'));
+      await _settle();
+      expect(
+        messages(s.epk).where((m) => m.role == MsgRole.assistant),
+        isEmpty,
+        reason: 'abort drops reconcile state — healing is sync-only',
+      );
+      s.conn.dispose();
+      s.sync.dispose();
+    },
+  );
+
   // ── Plan/128 step 6: local retention cap (default off) ──────────────────
   group('plan/128 step 6: local retention cap', () {
     List<SessionHistoryEvent> userEvents(int n) => [

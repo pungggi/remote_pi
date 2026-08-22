@@ -363,7 +363,14 @@ export type ServerMessage =
   | { type: "queued_message_state"; id?: string; text?: string; items?: QueuedMessageItem[] }
   | { type: "steer_consumed"; id: string }
   | { type: "agent_chunk"; in_reply_to: string; delta: string }
-  | { type: "agent_done"; in_reply_to: string; usage?: Usage }
+  // Reconciliation fallback (2026-08-22, "final answer never renders"): `text`
+  // carries the turn's CUMULATIVE streamed text (same accumulator the daemon
+  // replays for mid-run attaches — `_turnText`). Omitted when the turn
+  // produced no text (tool-only turns). Receivers that streamed the turn live
+  // use it only to heal a lost TAIL (their local text must be a prefix); it
+  // is authoritative for nothing else — session_history remains the replay
+  // source of truth.
+  | { type: "agent_done"; in_reply_to: string; usage?: Usage; text?: string }
   | { type: "agent_message"; in_reply_to: string; text: string; usage?: Usage }
   // Plan/114 — image the agent pushes to the user from a file in the repo.
   // Triggered by the `show_image` tool (see src/index.ts `_registerShowImageTool`).
