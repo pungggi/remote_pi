@@ -175,6 +175,17 @@ class ConnectionManager extends Service {
 
   Timer? _retryTimer;
   Timer? _pingTimer;
+  // False-offline fix (2026-08-22): periodic authoritative recheck. While
+  // Online, re-ask the relay for presence + rooms snapshots every
+  // [_recheckInterval]. A RoomsSnapshot is AUTHORITATIVE for the live set
+  // (see `_onControl`), so this self-heals any false-offline within one
+  // interval even when every event-driven recovery path was missed — the
+  // relay suppresses `peer_online`/`room_announced` when a zombie conn
+  // raced the PC's reconnect (registry.rs `was_offline_before`). The relay
+  // dedups identical presence replies per-conn and `_onControl` dedups
+  // identical snapshots, so steady-state cost is two tiny frames/min.
+  Timer? _recheckTimer;
+  final Duration _recheckInterval;
   // Plan-18 follow-up — watchdog timer that periodically checks for
   // "stuck offline" state (active peer set but status not online and
   // no retry / connect in flight). When detected, forces a fresh
@@ -222,10 +233,12 @@ class ConnectionManager extends Service {
     Duration watchdogInterval = const Duration(
       seconds: 30,
     ), // plan 125 — was 15s
+    Duration recheckInterval = const Duration(seconds: 60),
   }) : _factory = factory,
        _storage = storage,
        _emitDebounce = emitDebounce,
        _now = now ?? DateTime.now,
+       _recheckInterval = recheckInterval,
        _watchdogInterval = watchdogInterval {
     _lastInboundAt = _now();
     _startWatchdog();
@@ -551,6 +564,7 @@ class ConnectionManager extends Service {
     if (_status is StatusOnline && peer != null) {
       _cancelPing();
       _startPing(peer, (_status as StatusOnline).channel);
+      _startRecheck();
     }
   }
 
@@ -653,6 +667,7 @@ class ConnectionManager extends Service {
       _propagateActiveRoom(_activeRoomId, ch);
       _emit(StatusOnline(ch));
       _startPing(peer, ch);
+      _startRecheck();
       _watchChannel(peer, ch);
       _watchControl(ch);
       _replaySubscriptions();
@@ -818,6 +833,14 @@ class ConnectionManager extends Service {
         if (list == null) break;
         final idx = list.indexWhere((r) => r.roomId == roomId);
         if (idx < 0) break;
+        // False-offline fix (2026-08-22) — meta arriving for a room means
+        // the relay still has it REGISTERED (update_room_meta drops for
+        // unknown rooms), i.e. a Pi is connected and driving it. A ping
+        // miss (or the relay's suppressed `room_announced` race) may have
+        // marked this room grey; the meta broadcast itself is proof of
+        // life, so re-mark it live — BEFORE the dedup break below, since
+        // an otherwise-identical meta patch still proves liveness.
+        _restoreRoomIfOffline(peer, roomId);
         final current = list[idx];
         // Plan/28 Wave D — meta is open-ended; only update the fields
         // the broadcast actually carried. `hasModel` / `hasThinking`
@@ -1208,6 +1231,16 @@ class ConnectionManager extends Service {
         _missedPings = 0;
         _retryAttempt = 0;
         _lastInboundAt = _now();
+        // False-offline fix (2026-08-22): inbound traffic proves the Pi
+        // leg — if a ping-miss streak had marked the active room offline
+        // (`_markActiveRoomOffline`), re-mark it live NOW instead of
+        // waiting for a `room_announced` the relay suppresses when a
+        // zombie conn raced the PC's reconnect. `serverMessages` is
+        // demuxed to the ACTIVE room upstream, and the relay refuses to
+        // route envelopes for unregistered rooms, so "a frame arrived for
+        // this room" implies the room is registered → live. Cheap: the
+        // restore early-returns when the room is already live.
+        _restoreRoomIfOffline(_activePeer?.remoteEpk, _activeRoomId);
       },
       onError: (_) => _onChannelLost(peer, ch),
       onDone: () => _onChannelLost(peer, ch),
@@ -1305,10 +1338,54 @@ class ConnectionManager extends Service {
     _retryTimer = null;
   }
 
+  /// False-offline fix (2026-08-22) — periodic authoritative recheck while
+  /// Online. One `presence_check` + one `rooms` request per interval; the
+  /// replies are AUTHORITATIVE (relay registry reads), so any locally
+  /// mis-marked room/presence heals within one interval. Self-guards on
+  /// status/subscription, so a stray tick after teardown is harmless.
+  void _startRecheck() {
+    _recheckTimer?.cancel();
+    _recheckTimer = Timer.periodic(_recheckInterval, (_) {
+      if (_status is! StatusOnline) return;
+      final link = _controlLink;
+      if (link == null) return;
+      if (_subscribedEpks.isEmpty) return;
+      link.sendControl(presenceCheckFrame(_subscribedEpks));
+      link.sendControl(roomsCheckFrame(_subscribedEpks));
+    });
+  }
+
+  /// False-offline fix (2026-08-22) — counterpart of
+  /// [_markActiveRoomOffline] and the general "false grey dot" heal:
+  /// if (epk, roomId) is a KNOWN room currently absent from the live set,
+  /// re-add it and re-emit the rooms snapshot. Callers are paths that prove
+  /// the room is alive on the relay RIGHT NOW (inbound envelope for the
+  /// active room; `room_meta_updated` broadcast — the relay drops meta for
+  /// unregistered rooms). No-op when already live or the room is unknown.
+  void _restoreRoomIfOffline(String? epk, String roomId) {
+    if (epk == null || _status is! StatusOnline) return;
+    final key = toStandardB64(epk);
+    final live = _liveRoomIds[key];
+    if (live != null && live.contains(roomId)) return; // already live
+    // Unknown room → wait for a real room_announced/snapshot instead of
+    // inventing a live entry for something we can't even render.
+    final known = _roomsByPeer[key]?.any((r) => r.roomId == roomId) ?? false;
+    if (!known) return;
+    (_liveRoomIds[key] ??= <String>{}).add(roomId);
+    if (!_roomsController.isClosed) {
+      _roomsController.add(_roomsSnapshot());
+    }
+  }
+
   void _cancelPing() {
     _pingTimer?.cancel();
     _pingTimer = null;
     _missedPings = 0;
+    // Recheck timer shares the ping lifecycle (both start on connect,
+    // stop on loss/teardown) — cancel it here so teardown paths
+    // (disconnect/switchTo/dispose) don't need separate plumbing.
+    _recheckTimer?.cancel();
+    _recheckTimer = null;
   }
 
   void _emit(ConnectionStatus s) {
