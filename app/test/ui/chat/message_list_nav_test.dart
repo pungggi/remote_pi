@@ -31,11 +31,23 @@ List<ChatMessage> _transcript() => [
       UserMsg(id: 'u2', text: 'question two'),
     ];
 
-Widget _harness(List<ChatMessage> messages) => MaterialApp(
+/// Two questions with one-line replies — the whole transcript fits the
+/// 800px test viewport (scroll extents are equal), so end jumps have
+/// nothing to animate and must still re-anchor the guided pointer.
+List<ChatMessage> _shortTranscript() => [
+      UserMsg(id: 'u0', text: 'question zero'),
+      AssistantMsg(id: 'a0', text: 'ok'),
+      UserMsg(id: 'u1', text: 'question one'),
+    ];
+
+Widget _harness(
+  List<ChatMessage> messages, {
+  StreamingMessage? streaming,
+}) => MaterialApp(
       home: Scaffold(
         body: MessageList(
           messages: messages,
-          streaming: null,
+          streaming: streaming,
           onDecide: (_, _) {},
           truncated: false,
         ),
@@ -175,6 +187,77 @@ void main() {
     expect(find.textContaining('question zero'), findsNothing);
     expect(find.text('3/3'), findsOneWidget);
   });
+
+  testWidgets(
+    'end jump re-anchors even when the transcript fits the viewport',
+    (tester) async {
+      tester.view.physicalSize = const Size(420, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      await tester.pumpWidget(_harness(_shortTranscript()));
+      await tester.pumpAndSettle();
+
+      // Both questions are on screen → extents equal, nothing to scroll.
+      expect(find.textContaining('question zero'), findsOneWidget);
+      expect(find.textContaining('question one'), findsOneWidget);
+      // No guided position yet → no counter.
+      expect(find.text('1/2'), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('chat-nav-top')));
+      await _settleJumps(tester);
+      // Re-anchor must still happen: counter appears and bounds the steps.
+      expect(find.text('1/2'), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('chat-nav-bottom')));
+      await _settleJumps(tester);
+      expect(find.text('2/2'), findsOneWidget);
+      expect(find.text('1/2'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'end jump survives streaming growth mid-flight (review 2026-08-22)',
+    (tester) async {
+      tester.view.physicalSize = const Size(420, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      await tester.pumpWidget(_harness(
+        _transcript(),
+        streaming: const StreamingMessage(
+          inReplyTo: 'u2',
+          buffer: 'starting the reply…',
+        ),
+      ));
+      // StreamingBubble's blinking cursor never settles → fixed pumps only.
+      for (var i = 0; i < 5; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+
+      await tester.tap(find.byKey(const ValueKey('chat-nav-top')));
+      await tester.pump(); // animateTo scheduled, still mid-flight
+      // A streaming token lands while the 220-600ms end-jump animation runs.
+      // didUpdateWidget bumps `_navGen` on EVERY token — the old shared
+      // guard aborted the end jump here, so it never snapped or re-anchored.
+      await tester.pumpWidget(_harness(
+        _transcript(),
+        streaming: StreamingMessage(inReplyTo: 'u2', buffer: _tallReply()),
+      ));
+      // Pump past the longest animation (600ms) + a post-frame policy tick.
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+
+      // Landed on the CURRENT top bound (grown by ~2.5k mid-flight), not the
+      // one captured at press time.
+      expect(find.textContaining('question zero'), findsOneWidget);
+      final dy = tester.getCenter(find.textContaining('question zero')).dy;
+      expect(dy, greaterThan(0));
+      expect(dy, lessThan(800));
+      expect(find.text('1/3'), findsOneWidget);
+    },
+  );
 
   testWidgets('nav pill hidden with fewer than two user messages', (
     tester,
