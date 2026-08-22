@@ -9,6 +9,7 @@
 // the finalized message lands in the box on `agent_done`.
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:math' as math;
 
 import 'package:app/data/local/boxes.dart';
@@ -73,6 +74,29 @@ class SyncService extends Service {
   // `_compose`, so a request that arrived while no listener existed still
   // surfaces when the chat next opens.
   ExtensionUiRequest? _currentExtensionUiRequest;
+
+  /// PR #49 review — ids of extension_ui_request flows this process has seen
+  /// RESOLVED (completing `notify`) or SUPERSEDED (replaced by a newer
+  /// flow's request). A non-notify request whose id is in this set is a
+  /// stale replay (out-of-order duplicate of a completed flow) and must not
+  /// resurrect its sheet. Bounded LRU; flow ids are unique per flow (the
+  /// pi-ask contract), so an eviction can only ever re-admit an id.
+  static const int _resolvedExtensionUiCap = 256;
+  final Queue<String> _resolvedExtensionUiIds = Queue<String>();
+  final Set<String> _resolvedExtensionUiIdSet = <String>{};
+
+  void _markExtensionUiResolved(String id) {
+    if (id.isEmpty) return;
+    if (_resolvedExtensionUiIdSet.contains(id)) return;
+    if (_resolvedExtensionUiIds.length >= _resolvedExtensionUiCap) {
+      _resolvedExtensionUiIdSet.remove(_resolvedExtensionUiIds.removeFirst());
+    }
+    _resolvedExtensionUiIds.addLast(id);
+    _resolvedExtensionUiIdSet.add(id);
+  }
+
+  bool _isExtensionUiResolved(String id) =>
+      id.isNotEmpty && _resolvedExtensionUiIdSet.contains(id);
 
   List<QueuedMsg> _queuedMessages = const [];
   final StreamController<List<QueuedMsg>> _queuedController =
@@ -256,7 +280,18 @@ class SyncService extends Service {
   /// notify is a no-op here — the flow stays open for retry and the retry
   /// message is tracked in the ChatViewModel. Any other (interactive) request
   /// opens/replaces it. Unmatched stand-alone notifies are ignored in v1.
-  void _handleExtensionUiRequest(ExtensionUiRequest req) {
+  ///
+  /// PR #49 review — returns false when the frame is a STALE replay (a
+  /// non-notify request for a flow this process already saw resolved), so
+  /// the caller suppresses the live-stream ping too. The bridge legitimately
+  /// re-sends still-PENDING requests with the SAME id on every `session_sync`
+  /// (chat re-entry catch-up, plan/100), so the channel's replay LRU cannot
+  /// distinguish a pending replay (deliver) from a post-completion duplicate
+  /// (drop) — only this layer, which observes the completing `notify`, can.
+  /// Resurrecting a resolved flow would re-open its sheet with no way to
+  /// clear it: answering the stale sheet only produces pi-ask's
+  /// `flow_not_found` warning, which keeps the sheet open (stuck modal).
+  bool _handleExtensionUiRequest(ExtensionUiRequest req) {
     if (req.method == ExtensionUiMethod.notify) {
       final matchesOpen = _currentExtensionUiRequest != null &&
           req.id == _currentExtensionUiRequest!.id;
@@ -264,12 +299,27 @@ class SyncService extends Service {
         final isWarning =
             req.notifyType == 'warning' || req.notifyType == 'error';
         if (!isWarning) {
+          _markExtensionUiResolved(req.id);
           _currentExtensionUiRequest = null;
         }
       }
-    } else {
-      _currentExtensionUiRequest = req;
+      return true;
     }
+    if (_isExtensionUiResolved(req.id)) {
+      debugPrint(
+        '[extension-ui] drop replayed request for resolved flow '
+        'id=${req.id}',
+      );
+      return false;
+    }
+    if (_currentExtensionUiRequest != null &&
+        _currentExtensionUiRequest!.id != req.id) {
+      // Replaced by a newer flow — the old sheet is already gone; a later
+      // replay of the old id must not stomp the newer flow's sheet.
+      _markExtensionUiResolved(_currentExtensionUiRequest!.id);
+    }
+    _currentExtensionUiRequest = req;
+    return true;
   }
 
   Future<void> sendMessage(
@@ -944,9 +994,11 @@ class SyncService extends Service {
         // Plan/100/129 — update the durable current request (SSOT), then ping
         // live listeners. The cached value survives no-listener windows
         // (backgrounded / cold-start / mid-reconnect); the broadcast stream
-        // alone does not.
-        _handleExtensionUiRequest(msg);
-        _extensionUiController.add(msg);
+        // alone does not. Stale replays (resolved flows, PR #49 review) are
+        // dropped BEFORE the stream so they can't resurrect a sheet.
+        if (_handleExtensionUiRequest(msg)) {
+          _extensionUiController.add(msg);
+        }
         break;
       case Pong():
       case PairOk():
