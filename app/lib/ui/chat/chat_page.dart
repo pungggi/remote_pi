@@ -852,6 +852,15 @@ class _MessageListState extends State<MessageList> {
   /// hop chain stops before it scrolls a transcript it no longer belongs to.
   int _navGen = 0;
 
+  /// Generation guard for in-flight [_jumpToEnd] animations. SEPARATE from
+  /// [_navGen] on purpose: every streaming token runs [didUpdateWidget] and
+  /// bumps `_navGen`, but an extent jump's target is a scroll BOUND, not a
+  /// message id — growth doesn't invalidate it (the post-animation snap
+  /// lands on the *current* bound). So only a NEW end jump, a guided hop
+  /// (both bump this) or a history *replacement* cancels one; without this
+  /// split, end jumps were dead during any live reply (2026-08-22 review).
+  int _endJumpGen = 0;
+
   /// True while a hop chain (target beyond the build cache) is animating.
   /// Lets the flick handler abort in-flight hops even though [_navIndex]
   /// is still `-1` until arrival.
@@ -936,6 +945,12 @@ class _MessageListState extends State<MessageList> {
       // pointer is no longer valid. Re-anchor on the next press.
       _navIndex = -1;
       _navGen++; // abort any in-flight hop — its target may be gone
+      if (_grow == TranscriptGrow.replace) {
+        // Whole-transcript swap → the bounds an in-flight end jump captured
+        // belong to a different transcript. (Bottom/top growth is fine: the
+        // end jump re-snaps onto the moved bound.)
+        _endJumpGen++;
+      }
     }
   }
 
@@ -1041,6 +1056,7 @@ class _MessageListState extends State<MessageList> {
 
   Future<void> _jump({required bool older}) async {
     final gen = ++_navGen;
+    _endJumpGen++; // a guided hop supersedes any in-flight end jump
     final userMsgs = _userMsgs;
     final n = userMsgs.length;
     if (n < 2) return;
@@ -1104,6 +1120,59 @@ class _MessageListState extends State<MessageList> {
     setState(() => _navIndex = target);
   }
 
+  /// Jump to the transcript end — `reverse: true` puts the OLDEST loaded
+  /// message at [ScrollPosition.maxScrollExtent] (top) and the newest at
+  /// [minScrollExtent] (bottom). Supersedes in-flight guided hops (they see
+  /// the bumped [_navGen] and stop) and re-anchors the guided pointer at the
+  /// end we land on, so the counter and the step buttons stay truthful.
+  /// Guarded by [_endJumpGen] (NOT `_navGen`) so streaming growth — which
+  /// bumps `_navGen` on every token — cannot abort the animation mid-flight.
+  Future<void> _jumpToEnd({required bool toTop}) async {
+    final gen = ++_endJumpGen;
+    _navGen++; // cancel any in-flight guided hop chain
+    if (!_scroll.hasClients) return;
+    final p = _scroll.position;
+
+    // Nothing to scroll when the whole transcript fits (extents equal) — but
+    // the re-anchor below must STILL run, or a top/bottom press leaves the
+    // counter hidden and the step buttons unbounded (2026-08-22 review).
+    if (p.maxScrollExtent > p.minScrollExtent) {
+      var target = toTop ? p.maxScrollExtent : p.minScrollExtent;
+      final dist = (target - p.pixels).abs();
+      if (dist >= 0.5) {
+        // Scale the duration with the distance: a fixed 220ms across dozens
+        // of screens reads as a teleport, but short hops must stay snappy.
+        final ms =
+            (dist / p.viewportDimension * 240).clamp(220.0, 600.0).round();
+        await p.animateTo(
+          target,
+          duration: Duration(milliseconds: ms),
+          curve: Curves.easeOutCubic,
+        );
+        if (!mounted || gen != _endJumpGen || !_scroll.hasClients) return;
+        // Content may have grown mid-flight (streaming) and moved the bound —
+        // land exactly on the CURRENT extent, not the one captured at press
+        // time. Skip the snap if the user grabbed the list meanwhile (jumpTo
+        // would kill their drag; see [_userDragActive]).
+        target = toTop ? p.maxScrollExtent : p.minScrollExtent;
+        if (!_userDragActive && (p.pixels - target).abs() > 0.5) {
+          p.jumpTo(target);
+        }
+      }
+    }
+    if (!mounted || gen != _endJumpGen || _userDragActive) return;
+    // A no-op scroll fires no notifications, so refresh the pin flag (and
+    // the guided pointer) explicitly: pinned at the bottom resumes the
+    // follow-the-newest auto-scroll; at the top it holds the viewport while
+    // streaming grows the bottom.
+    _pinnedToBottom = !toTop;
+    final n = _userMsgs.length;
+    final landed = toTop ? 0 : n - 1;
+    if (n > 0 && _navIndex != landed) {
+      setState(() => _navIndex = landed);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final userMsgs = _userMsgs;
@@ -1134,9 +1203,10 @@ class _MessageListState extends State<MessageList> {
                 mounted &&
                 (_navIndex != -1 || _navHopping)) {
               // A user-driven flick abandons the guided pointer AND any
-              // in-flight hop, so the next jump re-anchors to the new
-              // viewport instead of fighting the manual scroll.
+              // in-flight hop or end jump, so the next jump re-anchors to the
+              // new viewport instead of fighting the manual scroll.
               _navGen++;
+              _endJumpGen++;
               if (_navIndex != -1) {
                 setState(() => _navIndex = -1);
               }
@@ -1230,6 +1300,8 @@ class _MessageListState extends State<MessageList> {
               total: n,
               onOlder: () => _jump(older: true),
               onNewer: () => _jump(older: false),
+              onTop: () => _jumpToEnd(toTop: true),
+              onBottom: () => _jumpToEnd(toTop: false),
             ),
           ),
       ],
@@ -1237,9 +1309,10 @@ class _MessageListState extends State<MessageList> {
   }
 }
 
-/// Floating prev/next (older/newer user message) control — a compact vertical
-/// pill pinned top-right of the transcript. Shows a `k/total` counter while a
-/// guided jump is in progress; hides entirely until there are ≥ 2 user
+/// Floating transcript navigation — a compact vertical pill pinned top-right
+/// of the transcript: jump to the oldest (top), step prev/next between user
+/// messages, jump to the newest (bottom). Shows a `k/total` counter while a
+/// guided position is known; hides entirely until there are ≥ 2 user
 /// messages.
 class _UserMsgNav extends StatelessWidget {
   final bool canOlder;
@@ -1248,6 +1321,8 @@ class _UserMsgNav extends StatelessWidget {
   final int total;
   final VoidCallback onOlder;
   final VoidCallback onNewer;
+  final VoidCallback onTop;
+  final VoidCallback onBottom;
 
   const _UserMsgNav({
     required this.canOlder,
@@ -1256,20 +1331,32 @@ class _UserMsgNav extends StatelessWidget {
     required this.total,
     required this.onOlder,
     required this.onNewer,
+    required this.onTop,
+    required this.onBottom,
   });
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
     return Container(
+      // Plan/topbottom — fully transparent backdrop: the transcript scrolls
+      // under the pill unobscured; the border + dividers keep it legible.
       decoration: BoxDecoration(
-        color: colors.bg.withValues(alpha: 0.85),
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: colors.border),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          _button(
+            context,
+            LucideIcons.arrowUpToLine,
+            onTop,
+            true,
+            'Jump to oldest',
+            key: const ValueKey('chat-nav-top'),
+          ),
+          _divider(colors),
           _button(
             context,
             LucideIcons.chevronUp,
@@ -1297,10 +1384,26 @@ class _UserMsgNav extends StatelessWidget {
             'Next question',
             key: const ValueKey('chat-nav-newer'),
           ),
+          _divider(colors),
+          _button(
+            context,
+            LucideIcons.arrowDownToLine,
+            onBottom,
+            true,
+            'Jump to newest',
+            key: const ValueKey('chat-nav-bottom'),
+          ),
         ],
       ),
     );
   }
+
+  /// Hairline separating the jump-to-end buttons from the step buttons.
+  Widget _divider(AppColors colors) => Container(
+    height: 1,
+    margin: const EdgeInsets.symmetric(horizontal: 5),
+    color: colors.border,
+  );
 
   Widget _button(
     BuildContext context,
