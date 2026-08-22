@@ -1919,7 +1919,12 @@ void main() {
           reason: 'pending replay (chat re-entry catch-up) must deliver');
     });
 
-    test('a request superseded by a newer flow is not resurrected by a replay',
+    // PR #50 review 2 — superseding is NOT resolving: the bridge supports
+    // several active flows and session_sync replays every open one
+    // (pendingRequests returns ALL active flows, oldest-first). A
+    // still-pending replaced flow must stay presentable and answerable once
+    // the newer one closes; only a TERMINAL notify retires an id.
+    test('still-pending superseded flow resurfaces after the newer one closes',
         () async {
       final s = await setup();
       s.ch.push(select('flow-a'));
@@ -1928,11 +1933,74 @@ void main() {
       await _settle();
       expect(s.sync.currentExtensionUiRequest?.id, 'flow-b');
 
-      // Late duplicate of the superseded flow-a select — must not stomp the
-      // newer flow's sheet.
+      // Newer flow resolves — its terminal notify clears the sheet.
+      s.ch.push(resolved('flow-b'));
+      await _settle();
+      expect(s.sync.currentExtensionUiRequest, isNull);
+
+      // session_sync replays the STILL-PENDING older flow — must deliver.
+      // (Marking flow-a resolved at replacement made it unanswerable forever
+      // — the reviewer's exact scenario.)
+      s.ch.push(select('flow-a'));
+      await _settle();
+      expect(s.sync.currentExtensionUiRequest?.id, 'flow-a');
+    });
+
+    // PR #50 review 2 (multi-flow terminal) — an unmatched terminal notify
+    // retires only ITS flow; the current sheet is untouched.
+    test('terminal notify for a non-current flow leaves the current sheet',
+        () async {
+      final s = await setup();
+      s.ch.push(select('flow-a'));
+      await _settle();
+      s.ch.push(select('flow-b'));
+      await _settle();
+
+      s.ch.push(resolved('flow-a')); // terminal for the non-current flow
+      await _settle();
+      expect(s.sync.currentExtensionUiRequest?.id, 'flow-b');
+
+      // And flow-a's replay is now properly retired (it saw a terminal).
       s.ch.push(select('flow-a'));
       await _settle();
       expect(s.sync.currentExtensionUiRequest?.id, 'flow-b');
+    });
+
+    // PR #50 review 1 — a terminal notify must be remembered even when it
+    // matches NO open sheet: reordering can deliver it after a room switch
+    // cleared the current request. If the id went unrecorded there, the
+    // later replayed select would reopen the same stuck sheet.
+    test('terminal notify after a room switch still retires the flow',
+        () async {
+      final s = await setup();
+      s.ch.push(select('flow-1'));
+      await _settle();
+      expect(s.sync.currentExtensionUiRequest?.id, 'flow-1');
+
+      await s.sync.activate(s.epk, 'other'); // room switch clears current
+      expect(s.sync.currentExtensionUiRequest, isNull);
+
+      s.ch.push(resolved('flow-1')); // unmatched terminal — still recorded
+      await _settle();
+
+      s.ch.push(select('flow-1')); // stale replay
+      await _settle();
+      expect(s.sync.currentExtensionUiRequest, isNull,
+          reason: 'resolved flow must stay retired across a room switch');
+    });
+
+    // PR #50 review 1 (reordering variant) — the completion can also arrive
+    // BEFORE its request. A select whose flow already saw a terminal notify
+    // is always stale (the bridge never re-sends completed flows).
+    test('terminal notify arriving before its request drops the later replay',
+        () async {
+      final s = await setup();
+      s.ch.push(resolved('flow-x')); // reordering: completion first
+      await _settle();
+      s.ch.push(select('flow-x')); // the out-of-order duplicate
+      await _settle();
+      expect(s.sync.currentExtensionUiRequest, isNull,
+          reason: 'a select whose flow already resolved is always stale');
     });
 
     test('warning notify keeps the flow open and replayable (retry semantics)',

@@ -76,11 +76,14 @@ class SyncService extends Service {
   ExtensionUiRequest? _currentExtensionUiRequest;
 
   /// PR #49 review — ids of extension_ui_request flows this process has seen
-  /// RESOLVED (completing `notify`) or SUPERSEDED (replaced by a newer
-  /// flow's request). A non-notify request whose id is in this set is a
-  /// stale replay (out-of-order duplicate of a completed flow) and must not
-  /// resurrect its sheet. Bounded LRU; flow ids are unique per flow (the
-  /// pi-ask contract), so an eviction can only ever re-admit an id.
+  /// RESOLVED (a terminal `notify`, PR #50 review 1: recorded even when it
+  /// matches no open sheet). A non-notify request whose id is in this set is
+  /// a stale replay (out-of-order duplicate of a completed flow) and must
+  /// not resurrect its sheet. Superseding does NOT add here (PR #50 review
+  /// 2: a replaced flow can still be pending on the bridge and must stay
+  /// presentable/answerable once the newer one closes). Bounded LRU; flow
+  /// ids are unique per flow (the pi-ask contract), so an eviction can only
+  /// ever re-admit an id.
   static const int _resolvedExtensionUiCap = 256;
   final Queue<String> _resolvedExtensionUiIds = Queue<String>();
   final Set<String> _resolvedExtensionUiIdSet = <String>{};
@@ -275,11 +278,19 @@ class SyncService extends Service {
   }
 
   /// Plan/129 — apply an inbound [ExtensionUiRequest] to the durable current
-  /// state (the SSOT the ChatViewModel reads). A `notify` whose id matches the
-  /// open flow clears it on completion (info/absent type); a warning/error
-  /// notify is a no-op here — the flow stays open for retry and the retry
-  /// message is tracked in the ChatViewModel. Any other (interactive) request
-  /// opens/replaces it. Unmatched stand-alone notifies are ignored in v1.
+  /// state (the SSOT the ChatViewModel reads). A terminal (non-warning)
+  /// `notify` retires its flow id — ALWAYS, even when it matches no open
+  /// sheet (PR #50 review 1): reordering can deliver the completion after a
+  /// room switch cleared the current request, or before its request reached
+  /// this client; if the id went unrecorded there, a later replayed `select`
+  /// would reopen the same stuck sheet. A warning/error notify is a no-op
+  /// here — the flow stays open for retry and the retry message is tracked
+  /// in the ChatViewModel. An interactive request opens/replaces the current
+  /// sheet; REPLACING does not retire the replaced flow (PR #50 review 2):
+  /// the bridge supports several active flows and `session_sync` replays
+  /// every open one, so a still-pending replaced flow must stay presentable
+  /// (and answerable) once the newer one closes. Only a TERMINAL notify
+  /// retires an id.
   ///
   /// PR #49 review — returns false when the frame is a STALE replay (a
   /// non-notify request for a flow this process already saw resolved), so
@@ -293,15 +304,18 @@ class SyncService extends Service {
   /// `flow_not_found` warning, which keeps the sheet open (stuck modal).
   bool _handleExtensionUiRequest(ExtensionUiRequest req) {
     if (req.method == ExtensionUiMethod.notify) {
+      final isWarning =
+          req.notifyType == 'warning' || req.notifyType == 'error';
+      if (!isWarning) {
+        // Terminal notify — retire the id even when it matches no open
+        // sheet: the flow IS resolved on the bridge (pi-ask:completed), so
+        // any `select` arriving later for this id is a stale replay.
+        _markExtensionUiResolved(req.id);
+      }
       final matchesOpen = _currentExtensionUiRequest != null &&
           req.id == _currentExtensionUiRequest!.id;
-      if (matchesOpen) {
-        final isWarning =
-            req.notifyType == 'warning' || req.notifyType == 'error';
-        if (!isWarning) {
-          _markExtensionUiResolved(req.id);
-          _currentExtensionUiRequest = null;
-        }
+      if (matchesOpen && !isWarning) {
+        _currentExtensionUiRequest = null;
       }
       return true;
     }
@@ -311,12 +325,6 @@ class SyncService extends Service {
         'id=${req.id}',
       );
       return false;
-    }
-    if (_currentExtensionUiRequest != null &&
-        _currentExtensionUiRequest!.id != req.id) {
-      // Replaced by a newer flow — the old sheet is already gone; a later
-      // replay of the old id must not stomp the newer flow's sheet.
-      _markExtensionUiResolved(_currentExtensionUiRequest!.id);
     }
     _currentExtensionUiRequest = req;
     return true;
