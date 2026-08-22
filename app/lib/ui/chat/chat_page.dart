@@ -1315,8 +1315,9 @@ class _UserMsgNav extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     return Container(
+      // Plan/topbottom — fully transparent backdrop: the transcript scrolls
+      // under the pill unobscured; the border + dividers keep it legible.
       decoration: BoxDecoration(
-        color: colors.bg.withValues(alpha: 0.85),
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: colors.border),
       ),
