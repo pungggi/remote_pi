@@ -268,8 +268,11 @@ impl PeerRegistry {
     }
 
     /// Applies `patch` to every live conn at `(peer_id, room_id)` and
-    /// broadcasts `room_meta_updated` to room subscribers. Returns `false`
-    /// when no entries exist for the pair (so the handler can log and drop).
+    /// broadcasts `room_meta_updated` to room subscribers — but ONLY when the
+    /// post-patch state differs from the pre-patch state (suppression fix
+    /// 2026-08-22: identical re-pushes are silently absorbed, counted in the
+    /// firehose `rooms_suppressed` metric). Returns `false` when no entries
+    /// exist for the pair (so the handler can log and drop).
     ///
     /// Patch semantics: only fields explicitly present in `patch` are written
     /// (see [`RoomMetaPatch`]). The broadcast carries the **post-patch**
@@ -287,11 +290,35 @@ impl PeerRegistry {
         room_id: &str,
         patch: RoomMetaPatch,
     ) -> bool {
-        let (current_model, current_thinking, current_working, current_git, current_context_usage) = {
+        let (
+            current_model,
+            current_thinking,
+            current_working,
+            current_git,
+            current_context_usage,
+            changed,
+        ) = {
             let mut lock = self.senders.lock().unwrap();
             let key = (peer_id.to_string(), room_id.to_string());
             match lock.get_mut(&key) {
                 Some(v) if !v.is_empty() => {
+                    // Suppression fix (2026-08-22): snapshot the broadcast-
+                    // relevant state BEFORE applying the patch, so an update
+                    // that writes the SAME values the room already carries
+                    // (repeated context_usage pushes, reconnect model
+                    // re-announces, working re-sets) is detected below and
+                    // NOT re-broadcast. The phone's reconnect churn was
+                    // amplifying identical frames into every subscriber.
+                    let head_before = {
+                        let head = v.first().expect("v is non-empty");
+                        (
+                            head.1.model.clone(),
+                            head.1.thinking.clone(),
+                            head.1.working,
+                            head.1.git.clone(),
+                            head.1.context_usage.clone(),
+                        )
+                    };
                     for (_, meta, _) in v.iter_mut() {
                         if let Some(ref m) = patch.model {
                             meta.model = m.clone();
@@ -313,23 +340,42 @@ impl PeerRegistry {
                     }
                     // All conns at this key carry the same post-patch state
                     // now; read the first as the canonical snapshot.
-                    let head = v.first().expect("v is non-empty");
+                    let head_after = {
+                        let head = v.first().expect("v is non-empty");
+                        (
+                            head.1.model.clone(),
+                            head.1.thinking.clone(),
+                            head.1.working,
+                            head.1.git.clone(),
+                            head.1.context_usage.clone(),
+                        )
+                    };
+                    let changed = head_after != head_before;
                     (
-                        head.1.model.clone(),
-                        head.1.thinking.clone(),
-                        head.1.working,
-                        head.1.git.clone(),
-                        head.1.context_usage.clone(),
+                        head_after.0,
+                        head_after.1,
+                        head_after.2,
+                        head_after.3,
+                        head_after.4,
+                        changed,
                     )
                 }
                 _ => return false,
             }
         };
 
-        // Empty patch → state didn't change, suppress broadcast.
-        if patch.is_empty() {
+        // Empty patch, or a patch that wrote the values the room already
+        // had → state didn't change, suppress broadcast. Suppressed meta
+        // updates land in the same firehose counter as suppressed
+        // `rooms_check` replies (observability: the 10s log line shows the
+        // dam working).
+        if patch.is_empty() || !changed {
+            if !patch.is_empty() {
+                self.metrics.inc_rooms_suppressed(1);
+            }
             return true;
         }
+        self.metrics.inc_rooms_emitted(1);
 
         let room_subs = self.rooms.subscribers_of(peer_id).await;
         if !room_subs.is_empty() {
@@ -735,5 +781,123 @@ mod tests {
             v["meta"]["working"], true,
             "absent `working` in a patch must not clear it"
         );
+    }
+
+    /// Suppression fix (2026-08-22): a patch that re-writes the values the
+    /// room already carries must NOT broadcast again — identical
+    /// `room_meta_updated` frames were amplifying the phone's reconnect
+    /// churn into every subscriber. The patch still succeeds (returns true)
+    /// and the stored state stays correct.
+    #[tokio::test]
+    async fn identical_patch_is_absorbed_without_broadcast() {
+        let (reg, pi, mut rx_app) = meta_fixture().await;
+
+        // Establish state: working=true, model=opus.
+        let _ = reg
+            .update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    working: Some(true),
+                    model: Some(Some("opus".into())),
+                    ..Default::default()
+                },
+            )
+            .await;
+        let v = recv_meta(&mut rx_app); // drain the establishing broadcast
+        assert_eq!(v["meta"]["working"], true);
+        assert_eq!(v["meta"]["model"], "opus");
+
+        // Same values again (explicitly present in the patch) → absorbed.
+        for _ in 0..3 {
+            assert!(
+                reg.update_room_meta(
+                    &pi,
+                    "main",
+                    RoomMetaPatch {
+                        working: Some(true),
+                        model: Some(Some("opus".into())),
+                        ..Default::default()
+                    },
+                )
+                .await,
+                "identical patch must still succeed"
+            );
+        }
+        assert!(
+            rx_app.try_recv().is_err(),
+            "identical room_meta_updated must NOT be re-broadcast"
+        );
+
+        // A REAL change still broadcasts.
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    working: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        let v = recv_meta(&mut rx_app);
+        assert_eq!(v["meta"]["working"], false);
+        assert_eq!(v["meta"]["model"], "opus", "unchanged field re-carried");
+    }
+
+    /// Suppression is exact-match: same token count but different opaque
+    /// context_usage payload is a REAL change and must broadcast.
+    #[tokio::test]
+    async fn changed_opaque_context_usage_still_broadcasts() {
+        let (reg, pi, mut rx_app) = meta_fixture().await;
+
+        let cu = |tokens: u64| {
+            Some(Some(serde_json::json!({
+                "tokens": tokens,
+                "contextWindow": 200000,
+            })))
+        };
+
+        let _ = reg
+            .update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    context_usage: cu(1000),
+                    ..Default::default()
+                },
+            )
+            .await;
+        let _ = recv_meta(&mut rx_app); // drain
+
+        // Identical push → absorbed.
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    context_usage: cu(1000),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        assert!(rx_app.try_recv().is_err());
+
+        // Token count moved → broadcast.
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    context_usage: cu(1500),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        let v = recv_meta(&mut rx_app);
+        assert_eq!(v["meta"]["context_usage"]["tokens"], 1500);
     }
 }
