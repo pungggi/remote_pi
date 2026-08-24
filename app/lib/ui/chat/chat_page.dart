@@ -889,6 +889,20 @@ class _MessageListState extends State<MessageList> {
   /// jump-to-newest press, and by a transcript replacement (fresh chat).
   bool _followPaused = false;
 
+  /// Plan/stopscroll — height of the streaming bubble at the moment the
+  /// pause engaged. While paused the bubble renders inside a fixed-height
+  /// clip ([_FrozenStreamBox]) so its continued growth NEVER changes the
+  /// scroll extent: the coordinate space the user is reading in is frozen,
+  /// and no offset compensation is needed — which also makes the pause
+  /// immune to in-flight flings (a ballistic activity overwrites `pixels`
+  /// from its own trajectory every tick, silently cancelling any correctBy
+  /// shift — the "paused but the view still creeps" bug on device).
+  double? _pausedStreamHeight;
+
+  /// Plan/stopscroll — key of the streaming slot (index 0) so the pause
+  /// toggle can measure the bubble's height at engage time.
+  final GlobalKey _streamSlotKey = GlobalKey();
+
   /// How the transcript changed on the last [didUpdateWidget] — decides what
   /// [_applyScrollPolicy] does in the post-frame callback.
   TranscriptGrow _grow = TranscriptGrow.none;
@@ -988,7 +1002,10 @@ class _MessageListState extends State<MessageList> {
         // post-frame (after this frame's build already ran).
         _pinnedToBottom = true;
         if (_followPaused) {
-          setState(() => _followPaused = false);
+          setState(() {
+            _followPaused = false;
+            _pausedStreamHeight = null;
+          });
         }
         if ((p.pixels - p.minScrollExtent).abs() > 0.5) {
           p.jumpTo(p.minScrollExtent);
@@ -1152,7 +1169,17 @@ class _MessageListState extends State<MessageList> {
     if (_followPaused) {
       _jumpToEnd(toTop: false);
     } else {
-      setState(() => _followPaused = true);
+      // Capture the streaming bubble's CURRENT height: while paused it
+      // renders clipped to exactly this size, so the scroll extent (and
+      // with it everything the user is reading) is frozen in place even
+      // though the buffer keeps growing. Null when no reply is streaming
+      // (paused while idle) → the slot collapses to a small hint.
+      final ro = _streamSlotKey.currentContext?.findRenderObject();
+      final h = ro is RenderBox && ro.hasSize ? ro.size.height : null;
+      setState(() {
+        _followPaused = true;
+        _pausedStreamHeight = (h != null && h > 0) ? h : null;
+      });
     }
   }
 
@@ -1210,6 +1237,7 @@ class _MessageListState extends State<MessageList> {
     if (!toTop && _followPaused) {
       setState(() {
         _followPaused = false;
+        _pausedStreamHeight = null;
         if (n > 0) _navIndex = landed;
       });
     } else if (n > 0 && _navIndex != landed) {
@@ -1293,11 +1321,20 @@ class _MessageListState extends State<MessageList> {
                   ),
                 );
               }
-              // Streaming bubble at bottom (index 0)
+              // Streaming bubble at bottom (index 0). While the follow is
+              // paused (Plan/stopscroll) the bubble renders clipped to its
+              // pause-time height — the scroll extent stops growing, so the
+              // viewport is frozen without any offset compensation (and a
+              // fling in flight can't fight a frozen coordinate space).
               if (widget.streaming != null && i == 0) {
                 return KeyedSubtree(
-                  key: const ValueKey('streaming'),
-                  child: StreamingBubble(widget.streaming!),
+                  key: _streamSlotKey,
+                  child: _followPaused
+                      ? _FrozenStreamBox(
+                          height: _pausedStreamHeight,
+                          child: StreamingBubble(widget.streaming!),
+                        )
+                      : StreamingBubble(widget.streaming!),
                 );
               }
               // `reverse: true` → slot 0 is the bottom (newest). The streaming
@@ -1351,6 +1388,52 @@ class _MessageListState extends State<MessageList> {
             ),
           ),
       ],
+    );
+  }
+}
+
+/// Plan/stopscroll — while the follow is paused, the streaming bubble
+/// renders inside this fixed-height clip: the buffer keeps growing, but the
+/// LIST slot's height (and so the scroll extent) stays frozen at the
+/// pause-time [height], so nothing the user is reading can move. The child
+/// lays out at its natural size inside an [OverflowBox] (loose constraints →
+/// no layout overflow) and is clipped to the frozen box.
+///
+/// [height] null (pause engaged while no reply was streaming) collapses the
+/// slot to a small hint instead of hiding a live turn completely — otherwise
+/// a reply starting while paused would look like a dead agent.
+class _FrozenStreamBox extends StatelessWidget {
+  final double? height;
+  final Widget child;
+  const _FrozenStreamBox({required this.height, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final h = height;
+    if (h == null || h <= 0) {
+      return SizedBox(
+        height: 30,
+        width: double.infinity,
+        child: Center(
+          child: Text(
+            'live reply · paused',
+            style: context.typo.monoSmall.copyWith(
+              color: context.colors.muted,
+              fontSize: 10,
+            ),
+          ),
+        ),
+      );
+    }
+    return SizedBox(
+      height: h,
+      child: ClipRect(
+        child: OverflowBox(
+          alignment: Alignment.topLeft,
+          maxHeight: double.infinity,
+          child: child,
+        ),
+      ),
     );
   }
 }

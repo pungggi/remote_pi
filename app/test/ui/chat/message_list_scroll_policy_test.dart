@@ -171,6 +171,14 @@ void main() {
   // Plan/stopscroll — the middle nav-pill button that pauses the
   // follow-the-newest auto-scroll so incoming messages stop moving the
   // viewport while the user reads past ones, and resumes "like before".
+  //
+  // Freeze semantics: while paused the streaming bubble renders clipped to
+  // its pause-time height, so streaming growth doesn't change the scroll
+  // extent AT ALL — the reading position stays byte-identical. (The first
+  // iteration compensated the offset via correctBy instead; on device a
+  // fling's ballistic activity overwrites pixels from its own trajectory
+  // every tick, silently cancelling the compensation — the "paused but the
+  // view still creeps" bug. A frozen extent has nothing to compensate.)
   testWidgets(
     'pause freezes the viewport even while pinned; resume follows again',
     (tester) async {
@@ -191,13 +199,10 @@ void main() {
       final maxBefore = p.maxScrollExtent;
       await _grow(tester, List.filled(120, 'more generated text ').join());
 
-      // Pinned BUT paused → hold, not follow: the offset grew by exactly the
-      // bottom growth, so the SAME content stays on screen while the reply
-      // grows below the fold.
-      expect(
-        p.pixels - p.minScrollExtent,
-        closeTo(p.maxScrollExtent - maxBefore, 1.0),
-      );
+      // Pinned BUT paused → the extent is frozen (bubble clipped), so not a
+      // single pixel moves while the reply keeps growing below the fold.
+      expect(p.pixels, p.minScrollExtent);
+      expect(p.maxScrollExtent, maxBefore);
 
       // Resume → land back on the newest…
       await tester.tap(find.byKey(const ValueKey('chat-nav-resume')));
@@ -208,6 +213,68 @@ void main() {
       // …and continue following like before.
       await _grow(tester, List.filled(60, 'even more generated text ').join());
       expect(p.pixels, p.minScrollExtent);
+    },
+  );
+
+  testWidgets(
+    'paused reading position is frozen exactly while streaming grows',
+    (tester) async {
+      await tester.pumpWidget(_harness(
+        _transcript(),
+        const StreamingMessage(inReplyTo: 'u2', buffer: _seed),
+      ));
+      await _settle(tester);
+
+      final p = _position(tester);
+      await tester.tap(find.byKey(const ValueKey('chat-nav-pause')));
+      await tester.pump();
+
+      // Reader is up in the transcript (unpinned), like a finger-fling that
+      // settled on a past message.
+      p.jumpTo(400);
+      await tester.pump();
+
+      // Many growth chunks — each one used to shift the coordinate space
+      // (correctBy), which an in-flight fling cancelled on device. With the
+      // frozen extent the offset must stay EXACTLY where the reader left it.
+      for (var i = 1; i <= 5; i++) {
+        await _grow(
+          tester,
+          List.filled(40 * i, 'more generated text ').join(),
+        );
+        expect(p.pixels, 400);
+      }
+      expect(p.maxScrollExtent, greaterThan(0)); // sanity: content is tall
+    },
+  );
+
+  testWidgets(
+    'message appended while paused holds the reading position',
+    (tester) async {
+      await tester.pumpWidget(_harness(
+        _transcript(),
+        const StreamingMessage(inReplyTo: 'u2', buffer: _seed),
+      ));
+      await _settle(tester);
+
+      final p = _position(tester);
+      await tester.tap(find.byKey(const ValueKey('chat-nav-pause')));
+      await tester.pump();
+      p.jumpTo(400);
+      await tester.pump();
+
+      // Turn ends while paused: streaming bubble replaced by the finalized
+      // AssistantMsg → a one-shot bottom growth. No fling in flight → the
+      // policy's correctBy hold compensates and the same CONTENT stays put
+      // (pixels grow by exactly the extent delta).
+      final maxBefore = p.maxScrollExtent;
+      final finalized = [..._transcript(), AssistantMsg(id: 'a2', text: _tallReply())];
+      await tester.pumpWidget(_harness(finalized, null));
+      await tester.pump();
+
+      expect(p.pixels - 400, closeTo(p.maxScrollExtent - maxBefore, 1.0));
+      // Still paused (resume is explicit).
+      expect(find.byKey(const ValueKey('chat-nav-resume')), findsOneWidget);
     },
   );
 
@@ -223,8 +290,10 @@ void main() {
       final p = _position(tester);
       await tester.tap(find.byKey(const ValueKey('chat-nav-pause')));
       await tester.pump();
+      p.jumpTo(400); // reader is up in older history
+      await tester.pump();
       await _grow(tester, List.filled(120, 'more generated text ').join());
-      expect(p.pixels, greaterThan(p.minScrollExtent)); // frozen
+      expect(p.pixels, 400); // frozen
 
       // "Jump to newest" is an explicit "take me back to live": it must also
       // clear the pause, or the very next growth would freeze the view
@@ -251,8 +320,10 @@ void main() {
       final p = _position(tester);
       await tester.tap(find.byKey(const ValueKey('chat-nav-pause')));
       await tester.pump();
+      p.jumpTo(400);
+      await tester.pump();
       await _grow(tester, List.filled(120, 'more generated text ').join());
-      expect(p.pixels, greaterThan(p.minScrollExtent)); // frozen
+      expect(p.pixels, 400); // frozen
 
       // Session switch / reload → TranscriptGrow.replace → land at the newest
       // AND resume the follow. Two user messages keep the nav pill mounted.
