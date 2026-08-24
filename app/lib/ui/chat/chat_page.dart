@@ -881,6 +881,14 @@ class _MessageListState extends State<MessageList> {
   /// the user scrolls back to the end.
   bool _pinnedToBottom = true;
 
+  /// Plan/stopscroll — user-toggled pause of the follow-the-newest
+  /// auto-scroll (the middle nav-pill button). While paused, bottom growth
+  /// takes the hold path (correctBy compensation) even when pinned, so new
+  /// messages stop moving the viewport and the user can read past ones.
+  /// Cleared by the toggle's resume (which jumps back to the newest), by a
+  /// jump-to-newest press, and by a transcript replacement (fresh chat).
+  bool _followPaused = false;
+
   /// How the transcript changed on the last [didUpdateWidget] — decides what
   /// [_applyScrollPolicy] does in the post-frame callback.
   TranscriptGrow _grow = TranscriptGrow.none;
@@ -974,21 +982,30 @@ class _MessageListState extends State<MessageList> {
     switch (_grow) {
       case TranscriptGrow.replace:
         // History reloaded (open / session switch / compaction) → land at the
-        // newest, like opening a fresh chat.
+        // newest, like opening a fresh chat. The stopscroll pause doesn't
+        // survive a transcript swap either — setState'd because the nav
+        // pill's middle-button icon depends on it and the clearing happens
+        // post-frame (after this frame's build already ran).
         _pinnedToBottom = true;
+        if (_followPaused) {
+          setState(() => _followPaused = false);
+        }
         if ((p.pixels - p.minScrollExtent).abs() > 0.5) {
           p.jumpTo(p.minScrollExtent);
         }
         break;
       case TranscriptGrow.bottom:
-        if (!_userDragActive && _pinnedToBottom) {
+        // Plan/stopscroll — follow only while pinned AND not paused; a
+        // paused follow must hold the viewport even at the bottom.
+        if (!_userDragActive && _pinnedToBottom && !_followPaused) {
           // Following the live reply — stay glued to the newest.
           if ((p.pixels - p.minScrollExtent).abs() > 0.5) {
             p.jumpTo(p.minScrollExtent);
           }
         } else {
-          // Reading older history (or holding a drag near the bottom) while
-          // new content grows at the bottom. A reverse list would otherwise
+          // Reading older history, holding a drag near the bottom, or the
+          // follow is paused (Plan/stopscroll), while new content grows at
+          // the bottom. A reverse list would otherwise
           // drift the viewport toward the newest; offset by exactly the bottom
           // growth so the same content stays put.
           //
@@ -1120,6 +1137,25 @@ class _MessageListState extends State<MessageList> {
     setState(() => _navIndex = target);
   }
 
+  /// Plan/stopscroll — the middle nav-pill button: pause/resume the
+  /// follow-the-newest auto-scroll.
+  ///
+  /// Pause: freeze the viewport wherever it is. Incoming content (streaming
+  /// growth, appended messages) is compensated by the scroll policy's
+  /// correctBy path, so the same text stays on screen while the agent keeps
+  /// producing — the user reads past messages undisturbed. Manual scrolling
+  /// and the guided jumps keep working.
+  ///
+  /// Resume: land back on the newest and continue following exactly like
+  /// before ([_jumpToEnd] also re-anchors the guided pointer).
+  void _toggleFollow() {
+    if (_followPaused) {
+      _jumpToEnd(toTop: false);
+    } else {
+      setState(() => _followPaused = true);
+    }
+  }
+
   /// Jump to the transcript end — `reverse: true` puts the OLDEST loaded
   /// message at [ScrollPosition.maxScrollExtent] (top) and the newest at
   /// [minScrollExtent] (bottom). Supersedes in-flight guided hops (they see
@@ -1168,7 +1204,15 @@ class _MessageListState extends State<MessageList> {
     _pinnedToBottom = !toTop;
     final n = _userMsgs.length;
     final landed = toTop ? 0 : n - 1;
-    if (n > 0 && _navIndex != landed) {
+    // Plan/stopscroll — landing on the newest edge IS resuming the live
+    // view: clear the pause so the follow continues like before. The pause
+    // toggle's resume path routes through here too.
+    if (!toTop && _followPaused) {
+      setState(() {
+        _followPaused = false;
+        if (n > 0) _navIndex = landed;
+      });
+    } else if (n > 0 && _navIndex != landed) {
       setState(() => _navIndex = landed);
     }
   }
@@ -1298,10 +1342,12 @@ class _MessageListState extends State<MessageList> {
               canNewer: canNewer,
               position: _navIndex >= 0 ? _navIndex + 1 : null,
               total: n,
+              paused: _followPaused,
               onOlder: () => _jump(older: true),
               onNewer: () => _jump(older: false),
               onTop: () => _jumpToEnd(toTop: true),
               onBottom: () => _jumpToEnd(toTop: false),
+              onToggleFollow: _toggleFollow,
             ),
           ),
       ],
@@ -1311,28 +1357,38 @@ class _MessageListState extends State<MessageList> {
 
 /// Floating transcript navigation — a compact vertical pill pinned top-right
 /// of the transcript: jump to the oldest (top), step prev/next between user
-/// messages, jump to the newest (bottom). Shows a `k/total` counter while a
-/// guided position is known; hides entirely until there are ≥ 2 user
-/// messages.
+/// messages, pause/resume the follow-the-newest auto-scroll (Plan/stopscroll),
+/// jump to the newest (bottom). Shows a `k/total` counter while a guided
+/// position is known; hides entirely until there are ≥ 2 user messages.
 class _UserMsgNav extends StatelessWidget {
   final bool canOlder;
   final bool canNewer;
   final int? position;
   final int total;
+
+  /// Plan/stopscroll — true while the follow-the-newest auto-scroll is
+  /// paused; the button shows ▶ (resume, accent-tinted) instead of ❚❚.
+  final bool paused;
+
   final VoidCallback onOlder;
   final VoidCallback onNewer;
   final VoidCallback onTop;
   final VoidCallback onBottom;
+
+  /// Plan/stopscroll — toggles the follow pause/resume.
+  final VoidCallback onToggleFollow;
 
   const _UserMsgNav({
     required this.canOlder,
     required this.canNewer,
     required this.position,
     required this.total,
+    required this.paused,
     required this.onOlder,
     required this.onNewer,
     required this.onTop,
     required this.onBottom,
+    required this.onToggleFollow,
   });
 
   @override
@@ -1385,6 +1441,20 @@ class _UserMsgNav extends StatelessWidget {
             key: const ValueKey('chat-nav-newer'),
           ),
           _divider(colors),
+          // Plan/stopscroll — the middle button: freeze the viewport so new
+          // messages stop moving it while the user reads past ones; resume
+          // jumps back to the newest and follows again. Accent-tinted while
+          // paused so the state is visible at a glance.
+          _button(
+            context,
+            paused ? LucideIcons.play : LucideIcons.pause,
+            onToggleFollow,
+            true,
+            paused ? 'Resume auto-scroll' : 'Pause auto-scroll',
+            key: ValueKey(paused ? 'chat-nav-resume' : 'chat-nav-pause'),
+            active: paused,
+          ),
+          _divider(colors),
           _button(
             context,
             LucideIcons.arrowDownToLine,
@@ -1412,11 +1482,20 @@ class _UserMsgNav extends StatelessWidget {
     bool enabled,
     String tooltip, {
     Key? key,
+    bool active = false,
   }) {
     final colors = context.colors;
     return IconButton(
       key: key,
-      icon: Icon(icon, size: 18, color: enabled ? colors.text : colors.muted2),
+      icon: Icon(
+        icon,
+        size: 18,
+        color: active
+            ? colors.accent
+            : enabled
+            ? colors.text
+            : colors.muted2,
+      ),
       tooltip: tooltip,
       visualDensity: VisualDensity.compact,
       constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
