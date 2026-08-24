@@ -881,6 +881,37 @@ class _MessageListState extends State<MessageList> {
   /// the user scrolls back to the end.
   bool _pinnedToBottom = true;
 
+  /// Plan/stopscroll — user-toggled pause of the follow-the-newest
+  /// auto-scroll (the middle nav-pill button). While paused, bottom growth
+  /// takes the hold path (correctBy compensation) even when pinned, so new
+  /// messages stop moving the viewport and the user can read past ones.
+  /// Cleared by the toggle's resume (which jumps back to the newest), by a
+  /// jump-to-newest press, and by a transcript replacement (fresh chat).
+  bool _followPaused = false;
+
+  /// Plan/stopscroll — height of the streaming bubble captured at the
+  /// moment the pause engaged (`null` when nothing was streaming). While
+  /// paused the slot renders clipped to exactly this height
+  /// ([_FrozenStreamBox]) so the buffer's continued growth never changes the
+  /// scroll extent; when the turn ends (streaming → null) or a reply starts
+  /// while paused (never captured), the slot renders as a zero-height
+  /// placeholder instead — either way the item count and extent stay put.
+  double? _pausedStreamHeight;
+
+  /// Plan/stopscroll — messages.length at engage time. While paused the
+  /// transcript renders only messages OLDER than this cut (tool cards,
+  /// finalized replies, whole new turns are simply not in the built list):
+  /// no slots, no separators, no extent change — the reading position is
+  /// frozen by construction. The old iteration only froze the streaming
+  /// bubble's own growth; tool calls arriving mid-turn were appended as
+  /// full-height cards (plus their separators) and the paused view crept on
+  /// device. Resume restores the full list in place and follows.
+  int _pausedAfterSeq = 0;
+
+  /// Plan/stopscroll — key of the streaming slot (index 0) so the pause
+  /// toggle can measure the bubble's height at engage time.
+  final GlobalKey _streamSlotKey = GlobalKey();
+
   /// How the transcript changed on the last [didUpdateWidget] — decides what
   /// [_applyScrollPolicy] does in the post-frame callback.
   TranscriptGrow _grow = TranscriptGrow.none;
@@ -908,6 +939,18 @@ class _MessageListState extends State<MessageList> {
   ];
 
   GlobalKey _keyFor(UserMsg m) => _userKeys.putIfAbsent(m.id, GlobalKey.new);
+
+  /// Builds the widget for one transcript message (Plan/stopscroll: shared
+  /// by the list items and the paused frozen slot, which keeps showing the
+  /// message right below the pause cut).
+  Widget _buildMessage(ChatMessage msg) => switch (msg) {
+    UserMsg() => UserBubble(msg, key: _keyFor(msg)),
+    AssistantMsg() => AssistantBubble(msg),
+    AgentImageMsg() => AgentImageBubble(msg),
+    AgentFileMsg() => AgentFileBubble(msg),
+    ToolEvent() => ToolRequestCard(tool: msg, onDecide: widget.onDecide),
+    CompactionMsg() => CompactionBubble(msg),
+  };
 
   @override
   void initState() {
@@ -974,21 +1017,33 @@ class _MessageListState extends State<MessageList> {
     switch (_grow) {
       case TranscriptGrow.replace:
         // History reloaded (open / session switch / compaction) → land at the
-        // newest, like opening a fresh chat.
+        // newest, like opening a fresh chat. The stopscroll pause doesn't
+        // survive a transcript swap either — setState'd because the nav
+        // pill's middle-button icon depends on it and the clearing happens
+        // post-frame (after this frame's build already ran).
         _pinnedToBottom = true;
+        if (_followPaused) {
+          setState(() {
+            _followPaused = false;
+            _pausedStreamHeight = null;
+          });
+        }
         if ((p.pixels - p.minScrollExtent).abs() > 0.5) {
           p.jumpTo(p.minScrollExtent);
         }
         break;
       case TranscriptGrow.bottom:
-        if (!_userDragActive && _pinnedToBottom) {
+        // Plan/stopscroll — follow only while pinned AND not paused; a
+        // paused follow must hold the viewport even at the bottom.
+        if (!_userDragActive && _pinnedToBottom && !_followPaused) {
           // Following the live reply — stay glued to the newest.
           if ((p.pixels - p.minScrollExtent).abs() > 0.5) {
             p.jumpTo(p.minScrollExtent);
           }
         } else {
-          // Reading older history (or holding a drag near the bottom) while
-          // new content grows at the bottom. A reverse list would otherwise
+          // Reading older history, holding a drag near the bottom, or the
+          // follow is paused (Plan/stopscroll), while new content grows at
+          // the bottom. A reverse list would otherwise
           // drift the viewport toward the newest; offset by exactly the bottom
           // growth so the same content stays put.
           //
@@ -1120,6 +1175,36 @@ class _MessageListState extends State<MessageList> {
     setState(() => _navIndex = target);
   }
 
+  /// Plan/stopscroll — the middle nav-pill button: pause/resume the
+  /// follow-the-newest auto-scroll.
+  ///
+  /// Pause: freeze the viewport wherever it is. Incoming content (streaming
+  /// growth, appended messages) is compensated by the scroll policy's
+  /// correctBy path, so the same text stays on screen while the agent keeps
+  /// producing — the user reads past messages undisturbed. Manual scrolling
+  /// and the guided jumps keep working.
+  ///
+  /// Resume: land back on the newest and continue following exactly like
+  /// before ([_jumpToEnd] also re-anchors the guided pointer).
+  void _toggleFollow() {
+    if (_followPaused) {
+      _jumpToEnd(toTop: false);
+    } else {
+      // Capture the streaming bubble's CURRENT height: while paused it
+      // renders clipped to exactly this size, so the scroll extent (and
+      // with it everything the user is reading) is frozen in place even
+      // though the buffer keeps growing. Null when no reply is streaming
+      // (paused while idle) → the slot collapses to a small hint.
+      final ro = _streamSlotKey.currentContext?.findRenderObject();
+      final h = ro is RenderBox && ro.hasSize ? ro.size.height : null;
+      setState(() {
+        _followPaused = true;
+        _pausedAfterSeq = widget.messages.length;
+        _pausedStreamHeight = (h != null && h > 0) ? h : null;
+      });
+    }
+  }
+
   /// Jump to the transcript end — `reverse: true` puts the OLDEST loaded
   /// message at [ScrollPosition.maxScrollExtent] (top) and the newest at
   /// [minScrollExtent] (bottom). Supersedes in-flight guided hops (they see
@@ -1168,7 +1253,16 @@ class _MessageListState extends State<MessageList> {
     _pinnedToBottom = !toTop;
     final n = _userMsgs.length;
     final landed = toTop ? 0 : n - 1;
-    if (n > 0 && _navIndex != landed) {
+    // Plan/stopscroll — landing on the newest edge IS resuming the live
+    // view: clear the pause so the follow continues like before. The pause
+    // toggle's resume path routes through here too.
+    if (!toTop && _followPaused) {
+      setState(() {
+        _followPaused = false;
+        _pausedStreamHeight = null;
+        if (n > 0) _navIndex = landed;
+      });
+    } else if (n > 0 && _navIndex != landed) {
       setState(() => _navIndex = landed);
     }
   }
@@ -1183,9 +1277,23 @@ class _MessageListState extends State<MessageList> {
     final canOlder = _navIndex >= 0 ? _navIndex > 0 : true;
     final canNewer = _navIndex >= 0 ? _navIndex < n - 1 : true;
 
+    // Plan/stopscroll — while paused the list builds only messages OLDER
+    // than the pause cut: nothing that arrives during the pause (tool
+    // cards, finalized replies, new turns, their separators) exists in the
+    // coordinate space, so the scroll extent cannot change and the reading
+    // position is frozen by construction. The streaming slot stays mounted
+    // while paused so the streaming → null swap (turn end mid-pause)
+    // removes no item; it collapses to a zero-height placeholder then.
+    var visibleCount = widget.messages.length;
+    if (_followPaused && _pausedAfterSeq < visibleCount) {
+      visibleCount = _pausedAfterSeq;
+    }
+    final hasSlot =
+        widget.streaming != null ||
+        (_followPaused && _pausedStreamHeight != null);
     final itemCount =
-        widget.messages.length +
-        (widget.streaming != null ? 1 : 0) +
+        visibleCount +
+        (hasSlot ? 1 : 0) +
         (widget.truncated && widget.onLoadMore != null ? 1 : 0);
 
     // `reverse: true` anchors the viewport to the bottom (offset 0 = newest).
@@ -1249,42 +1357,57 @@ class _MessageListState extends State<MessageList> {
                   ),
                 );
               }
-              // Streaming bubble at bottom (index 0)
-              if (widget.streaming != null && i == 0) {
-                return KeyedSubtree(
-                  key: const ValueKey('streaming'),
-                  child: StreamingBubble(widget.streaming!),
-                );
+              // Streaming bubble / placeholder at bottom (index 0), while
+              // [hasSlot]. While the follow is paused the slot stays mounted
+              // so the streaming → null swap (turn end mid-pause) can't
+              // change the item count: with a captured height the bubble
+              // renders clipped to it (frozen extent, [_FrozenStreamBox]);
+              // otherwise (reply started or ended during the pause) it
+              // collapses to a zero-height placeholder.
+              if (i == 0 && hasSlot) {
+                final Widget child;
+                if (!_followPaused) {
+                  child = StreamingBubble(widget.streaming!);
+                } else {
+                  final h = _pausedStreamHeight;
+                  if (h == null || h <= 0) {
+                    child = const SizedBox.shrink();
+                  } else if (widget.streaming != null) {
+                    child = _FrozenStreamBox(
+                      height: h,
+                      child: StreamingBubble(widget.streaming!),
+                    );
+                  } else {
+                    // Turn ended mid-pause (agent_done): keep the frozen
+                    // slot at its captured height and keep painting whatever
+                    // sits right below the pause cut (the finalized reply),
+                    // clipped — the swap changes neither geometry nor
+                    // content on screen.
+                    child = _FrozenStreamBox(
+                      height: h,
+                      child: _pausedAfterSeq < widget.messages.length
+                          ? _buildMessage(widget.messages[_pausedAfterSeq])
+                          : const SizedBox.shrink(),
+                    );
+                  }
+                }
+                return KeyedSubtree(key: _streamSlotKey, child: child);
               }
-              // `reverse: true` → slot 0 is the bottom (newest). The streaming
-              // bubble (slot 0, when present) and the "Load more" tile (the top
-              // slot) are handled by their own branches above; real messages fill
-              // the remaining slots contiguously from the bottom, so a message
-              // slot maps directly via [messageIndexForSlot].
+              // `reverse: true` → slot 0 is the bottom (newest). The
+              // streaming bubble / placeholder (slot 0, when [hasSlot]) and
+              // the "Load more" tile (the top slot) are handled by their own
+              // branches above; the VISIBLE messages fill the remaining
+              // slots contiguously from the bottom — while paused that's
+              // [visibleCount] items (everything older than the pause cut).
               final msgIdx = messageIndexForSlot(
                 i,
-                widget.messages.length,
-                streaming: widget.streaming != null,
+                visibleCount,
+                streaming: hasSlot,
               );
               final msg = widget.messages[msgIdx];
               return KeyedSubtree(
                 key: ValueKey(msg.id),
-                child: switch (msg) {
-                  // Plan/jumpusermsg — tag the bubble so we can scroll to it.
-                  UserMsg() => UserBubble(msg, key: _keyFor(msg)),
-                  AssistantMsg() => AssistantBubble(msg),
-                  // Plan/114 — agent-pushed image (show_image tool): tappable
-                  // bubble that opens the full-screen viewer.
-                  AgentImageMsg() => AgentImageBubble(msg),
-                  // Plan/126 - agent-pushed document (show_file tool:
-                  // md/text/pdf/html): tappable card that opens the viewer.
-                  AgentFileMsg() => AgentFileBubble(msg),
-                  ToolEvent() => ToolRequestCard(
-                    tool: msg,
-                    onDecide: widget.onDecide,
-                  ),
-                  CompactionMsg() => CompactionBubble(msg),
-                },
+                child: _buildMessage(msg),
               );
             },
           ),
@@ -1298,10 +1421,12 @@ class _MessageListState extends State<MessageList> {
               canNewer: canNewer,
               position: _navIndex >= 0 ? _navIndex + 1 : null,
               total: n,
+              paused: _followPaused,
               onOlder: () => _jump(older: true),
               onNewer: () => _jump(older: false),
               onTop: () => _jumpToEnd(toTop: true),
               onBottom: () => _jumpToEnd(toTop: false),
+              onToggleFollow: _toggleFollow,
             ),
           ),
       ],
@@ -1309,30 +1434,68 @@ class _MessageListState extends State<MessageList> {
   }
 }
 
+/// Plan/stopscroll — while the follow is paused, the streaming bubble
+/// renders inside this fixed-height clip: the buffer keeps growing, but the
+/// LIST slot's height (and so the scroll extent) stays frozen at the
+/// pause-time [height], so nothing the user is reading can move. The child
+/// lays out at its natural size inside an [OverflowBox] (loose constraints →
+/// no layout overflow) and is clipped to the frozen box. Callers render a
+/// plain zero-height placeholder instead when no height was captured (reply
+/// started while paused) or the turn already ended (streaming → null).
+class _FrozenStreamBox extends StatelessWidget {
+  final double height;
+  final Widget child;
+  const _FrozenStreamBox({required this.height, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: height,
+      child: ClipRect(
+        child: OverflowBox(
+          alignment: Alignment.topLeft,
+          maxHeight: double.infinity,
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
 /// Floating transcript navigation — a compact vertical pill pinned top-right
 /// of the transcript: jump to the oldest (top), step prev/next between user
-/// messages, jump to the newest (bottom). Shows a `k/total` counter while a
-/// guided position is known; hides entirely until there are ≥ 2 user
-/// messages.
+/// messages, pause/resume the follow-the-newest auto-scroll (Plan/stopscroll),
+/// jump to the newest (bottom). Shows a `k/total` counter while a guided
+/// position is known; hides entirely until there are ≥ 2 user messages.
 class _UserMsgNav extends StatelessWidget {
   final bool canOlder;
   final bool canNewer;
   final int? position;
   final int total;
+
+  /// Plan/stopscroll — true while the follow-the-newest auto-scroll is
+  /// paused; the button shows ▶ (resume, accent-tinted) instead of ❚❚.
+  final bool paused;
+
   final VoidCallback onOlder;
   final VoidCallback onNewer;
   final VoidCallback onTop;
   final VoidCallback onBottom;
+
+  /// Plan/stopscroll — toggles the follow pause/resume.
+  final VoidCallback onToggleFollow;
 
   const _UserMsgNav({
     required this.canOlder,
     required this.canNewer,
     required this.position,
     required this.total,
+    required this.paused,
     required this.onOlder,
     required this.onNewer,
     required this.onTop,
     required this.onBottom,
+    required this.onToggleFollow,
   });
 
   @override
@@ -1385,6 +1548,20 @@ class _UserMsgNav extends StatelessWidget {
             key: const ValueKey('chat-nav-newer'),
           ),
           _divider(colors),
+          // Plan/stopscroll — the middle button: freeze the viewport so new
+          // messages stop moving it while the user reads past ones; resume
+          // jumps back to the newest and follows again. Accent-tinted while
+          // paused so the state is visible at a glance.
+          _button(
+            context,
+            paused ? LucideIcons.play : LucideIcons.pause,
+            onToggleFollow,
+            true,
+            paused ? 'Resume auto-scroll' : 'Pause auto-scroll',
+            key: ValueKey(paused ? 'chat-nav-resume' : 'chat-nav-pause'),
+            active: paused,
+          ),
+          _divider(colors),
           _button(
             context,
             LucideIcons.arrowDownToLine,
@@ -1412,11 +1589,20 @@ class _UserMsgNav extends StatelessWidget {
     bool enabled,
     String tooltip, {
     Key? key,
+    bool active = false,
   }) {
     final colors = context.colors;
     return IconButton(
       key: key,
-      icon: Icon(icon, size: 18, color: enabled ? colors.text : colors.muted2),
+      icon: Icon(
+        icon,
+        size: 18,
+        color: active
+            ? colors.accent
+            : enabled
+            ? colors.text
+            : colors.muted2,
+      ),
       tooltip: tooltip,
       visualDensity: VisualDensity.compact,
       constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
