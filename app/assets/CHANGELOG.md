@@ -11,6 +11,15 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-08-24
+
+### Added
+
+- **Pause button in the chat navigation pill** — tap ❚❚ to freeze the view
+  wherever it is while the agent keeps working: streamed replies, new
+  messages and tool calls no longer move what you're reading. Tap ▶ (or
+  jump-to-newest) to catch up and follow the live reply again like before.
+
 ## [1.3.6] — 2026-08-21
 
 ### Fixed
