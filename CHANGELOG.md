@@ -20,6 +20,18 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   every piece of app text (chat, settings, dialogs), no restart needed.
   The 12.5 pt monospace chat text was hard to read on phones, and iOS
   offers no per-app text size for Flutter apps.
+- **Blocker diagnosis for `register_ack` timeouts** — when the local
+  broker has a listener that cannot answer (a suspended or
+  event-loop-blocked leader), the join failure now names the process
+  holding it instead of leaving you to hunt for it. On Linux it walks
+  `/proc` within a 250 ms budget and reads the cmdline (Node reports
+  "MainThread" in `comm`, which identifies nothing in `ps`); on Windows —
+  this fork's named-pipe addition — it asks the kernel for the server pid
+  of the pipe (`GetNamedPipeServerProcessId`, via a short-lived
+  PowerShell probe, ~0.5 s) and classifies suspended / exited / running
+  from the thread states. The advice is evidence-based: `kill -CONT`
+  (Process Explorer Resume / `pssuspend -r` on Windows) only for a
+  provably suspended owner; a busy one is described and left alone.
 - **Adaptive keep-alive (battery & heat, plan 125)** — the phone ran hot
   and drained fast because five overlapping keep-alive mechanisms kept the
   cellular radio permanently awake. The relay heartbeat dropped 25 s → 60 s
@@ -45,6 +57,16 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Fixed
 
+- **Failed mesh joins no longer leak or strand the broker (upstream PR
+  #124 port)** — an unanswered registration leaked the client socket
+  forever; a leader whose self-registration failed kept the broker path
+  bound, so an idle session went on brokering the machine's mesh while
+  reporting "join failed" to the user; and `/remote-pi`'s join closed
+  its candidate only when superseded by a newer join. Every failure path
+  now closes and releases — election only ever proved the endpoint was
+  connectable, never that its owner was servicing anything (a suspended
+  leader's listening instance completes the kernel-level handshake on
+  POSIX and Windows alike).
 - **`ask_user` sheet not appearing when backgrounded / on relaunch (plan 129)**
   — a clarification fired while the app was backgrounded or just relaunched was
   silently dropped (and never recovered): the request was delivered to a

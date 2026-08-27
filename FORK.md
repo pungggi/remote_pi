@@ -93,6 +93,7 @@ tenha mudado a lógica em volta, não só o identificador.
 | Instruções de agente | `CLAUDE.md` da raiz |
 | Âncora de confiança do self-update | `cockpit/windows/runner/Runner.rc`, `cockpit/macos/Runner/Info.plist` |
 | Apple fora de escopo | `app/ios/ExportOptions.plist` (removida — conflito modify/delete) |
+| Diagnóstico do dono do socket (win32) | `pi-extension/src/session/socket_owner*.ts` (ramo win32 + orçamento/conselho por plataforma) |
 
 ## Numeração de planos
 
@@ -119,6 +120,29 @@ git checkout --ours <arquivo>   # depois de conferir se o upstream não mudou a 
 A alternativa (`git rebase --onto upstream/main <base-antiga>`, descartando os
 17 commits duplicados) só vale se os branches ainda não tiverem descendentes
 publicados.
+
+## O caso do PR #124 (upstream)
+
+O PR #124 (limpeza de registro falho + liberação do path do broker) foi
+portado para o fork **enquanto ainda aberto** no upstream, com um acréscimo
+que o upstream não tem: o diagnóstico do dono do socket no Windows. Diferenças
+que um merge futuro do upstream não deve apagar:
+
+- `socket_owner_windows.ts` + o ramo win32 em `socket_owner.ts` — lookup do
+  dono do named pipe via `GetNamedPipeServerProcessId` (P/Invoke num
+  `powershell.exe` efêmero; o .NET Framework do PS 5.1 não expõe o método no
+  `NamedPipeClientStream`). O upstream só tem o caminho Linux via `/proc`.
+- Orçamento e conselho de retomada por plataforma: 2 s no win32 (custo do
+  spawn) contra 250 ms no Linux; `pssuspend -r` / Process Explorer em vez de
+  `kill -CONT`.
+- `peer.leader.test.ts` adaptado: o rebind direto do upstream daria
+  `EADDRINUSE` no POSIX (o `Broker.close` real não faz unlink do arquivo);
+  o nosso prova "nenhum listener vivo" via `tryConnect` e limpa o arquivo
+  inerte como a eleição faz antes de rebindar.
+
+Quando o upstream der merge no #124, o sync normal (`git merge
+upstream/main`) deve resolver quase sem conflito; onde colidir, mantenha o
+ramo win32 do fork.
 
 ## Verificação antes de mergear qualquer coisa
 
