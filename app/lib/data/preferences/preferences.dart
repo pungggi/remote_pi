@@ -20,6 +20,22 @@ enum KeepAliveMode {
   off,
 }
 
+/// Plan 131 (upstream #114) — user font-size preference. Applied on top of
+/// the OS text scale by composing the ambient `TextScaler` (see
+/// `font_scale.dart`), so it multiplies — never replaces — the system
+/// accessibility setting.
+enum UiFontScale {
+  small(0.9),
+  normal(1.0),
+  large(1.15),
+  extraLarge(1.3);
+
+  const UiFontScale(this.factor);
+
+  /// Multiplier applied to the effective text scale. 1.0 = system default.
+  final double factor;
+}
+
 /// App-wide UI preferences (persisted across launches).
 ///
 /// Extends [ChangeNotifier] so widgets can `context.watch<Preferences>()`
@@ -53,6 +69,9 @@ class Preferences extends ChangeNotifier {
   // Plan/122 — project paths pinned to the top of the Projects list for
   // quick access. Matched by absolute repo path.
   List<String> _pinnedProjects = const [];
+  // Plan 131 (upstream #114) — text-size preset. Composed onto the OS text
+  // scale in main.dart's MaterialApp.builder.
+  UiFontScale _uiFontScale = UiFontScale.normal;
 
   Preferences([FlutterSecureStorage? store])
     : _store = store ?? const FlutterSecureStorage();
@@ -67,6 +86,7 @@ class Preferences extends ChangeNotifier {
   static const _kKeepAliveInBackgroundKey = 'prefs.keep_alive_in_background';
   static const _kCollapseToolCallsKey = 'prefs.collapse_tool_calls';
   static const _kPinnedProjectsKey = 'prefs.pinned_projects';
+  static const _kUiFontScaleKey = 'prefs.ui_font_scale';
 
   /// True → chat hides `ToolEvent` rows (only user/assistant text remain).
   bool get hideToolCalls => _hideToolCalls;
@@ -198,6 +218,14 @@ class Preferences extends ChangeNotifier {
     final pinned = _decodeJsonStringList(pinnedRaw);
     if (!_listEquals(pinned, _pinnedProjects)) {
       _pinnedProjects = pinned;
+      changed = true;
+    }
+
+    // Plan 131 (upstream #114) — font-size preset. Absent/garbage → normal.
+    final fontScale = await _store.read(key: _kUiFontScaleKey);
+    final uiFontScale = _uiFontScaleFromString(fontScale);
+    if (uiFontScale != _uiFontScale) {
+      _uiFontScale = uiFontScale;
       changed = true;
     }
 
@@ -389,6 +417,30 @@ class Preferences extends ChangeNotifier {
     }
     notifyListeners();
     return nowPinned;
+  }
+
+  // ── Plan 131 — font-size preset (upstream #114) ────────────────────────
+
+  /// Text-size preset for the whole app UI. Multiplied onto the OS text
+  /// scale (see [UiFontScale]); `normal` (default) leaves the system value
+  /// untouched.
+  UiFontScale get uiFontScale => _uiFontScale;
+
+  /// Persist the preferred font-size preset. Stored as a stable enum name
+  /// (same convention as [setThemeMode]) so the value survives reordering.
+  Future<void> setUiFontScale(UiFontScale value) async {
+    if (_uiFontScale == value) return;
+    _uiFontScale = value;
+    await _store.write(key: _kUiFontScaleKey, value: value.name);
+    notifyListeners();
+  }
+
+  /// Resolve the persisted preset. Unknown/garbage → [UiFontScale.normal].
+  static UiFontScale _uiFontScaleFromString(String? raw) {
+    return UiFontScale.values.firstWhere(
+      (s) => s.name == raw,
+      orElse: () => UiFontScale.normal,
+    );
   }
 
   static ThemeMode _themeModeFromString(String? raw) {
