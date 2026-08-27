@@ -189,8 +189,9 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
           value: injector.get<IActionsRepository>(),
         ),
       ],
-      // Theme is reactive: toggling the mode in Settings notifies
-      // [Preferences] → this Consumer rebuilds → MaterialApp swaps theme.
+      // Theme + font scale are reactive: toggling the mode or picking a
+      // size preset in Settings notifies [Preferences] → this Consumer
+      // rebuilds → MaterialApp swaps theme / re-applies the text scaler.
       child: Consumer<Preferences>(
         builder: (context, prefs, _) => MaterialApp.router(
           title: 'Piper',
@@ -199,6 +200,19 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
           themeMode: prefs.themeMode,
           routerConfig: _router,
           debugShowCheckedModeBanner: false,
+          // Plan 131 (upstream #114) — compose the user's font-size preset
+          // onto the OS text scale. Multiplied (not replaced) so the system
+          // accessibility setting keeps working; identity at the default
+          // preset (see applyFontScale).
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context).copyWith(
+              textScaler: applyFontScale(
+                MediaQuery.textScalerOf(context),
+                prefs.uiFontScale.factor,
+              ),
+            ),
+            child: child ?? const SizedBox.shrink(),
+          ),
         ),
       ),
     );

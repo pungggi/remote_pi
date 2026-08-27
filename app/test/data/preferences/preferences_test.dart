@@ -341,5 +341,65 @@ void main() {
         expect(notifs, 1);
       });
     });
+    // ── Plan 131 (upstream #114) — font-size preset ───────────────
+    group('uiFontScale (plan 131)', () {
+      test('defaults to normal before load()', () {
+        final p = Preferences(_FakeSecureStorage());
+        expect(p.uiFontScale, UiFontScale.normal);
+        expect(p.uiFontScale.factor, 1.0);
+      });
+
+      test('load() hydrates from storage', () async {
+        final store = _FakeSecureStorage();
+        await store.write(key: 'prefs.ui_font_scale', value: 'large');
+        final p = Preferences(store);
+        await p.load();
+        expect(p.uiFontScale, UiFontScale.large);
+        expect(p.uiFontScale.factor, 1.15);
+      });
+
+      test('load() falls back to normal on absent/garbage value', () async {
+        final store = _FakeSecureStorage();
+        await store.write(key: 'prefs.ui_font_scale', value: 'gigantic');
+        final p = Preferences(store);
+        await p.load();
+        expect(p.uiFontScale, UiFontScale.normal);
+      });
+
+      test('setUiFontScale writes to storage and notifies', () async {
+        final store = _FakeSecureStorage();
+        final p = Preferences(store);
+        var notifs = 0;
+        p.addListener(() => notifs++);
+
+        await p.setUiFontScale(UiFontScale.extraLarge);
+        expect(p.uiFontScale, UiFontScale.extraLarge);
+        expect(await store.read(key: 'prefs.ui_font_scale'), 'extraLarge');
+        expect(notifs, 1);
+
+        // No-op if value unchanged.
+        await p.setUiFontScale(UiFontScale.extraLarge);
+        expect(notifs, 1);
+
+        await p.setUiFontScale(UiFontScale.small);
+        expect(p.uiFontScale, UiFontScale.small);
+        expect(notifs, 2);
+      });
+
+      test('preset survives a cold start', () async {
+        final store = _FakeSecureStorage();
+        await Preferences(store).setUiFontScale(UiFontScale.small);
+        final p2 = Preferences(store);
+        await p2.load();
+        expect(p2.uiFontScale, UiFontScale.small);
+      });
+
+      test('every preset factor matches the plan-131 spec', () {
+        expect(UiFontScale.small.factor, 0.9);
+        expect(UiFontScale.normal.factor, 1.0);
+        expect(UiFontScale.large.factor, 1.15);
+        expect(UiFontScale.extraLarge.factor, 1.3);
+      });
+    });
   });
 }

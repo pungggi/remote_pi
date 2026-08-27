@@ -13,6 +13,13 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
+- **Adjustable font size (plan 131, upstream #114)** — Settings → Display
+  now has a **Font size** row with four presets (Small / Default / Large /
+  XL). The preset composes onto the system text scale — it multiplies the
+  OS accessibility setting instead of replacing it — and applies live to
+  every piece of app text (chat, settings, dialogs), no restart needed.
+  The 12.5 pt monospace chat text was hard to read on phones, and iOS
+  offers no per-app text size for Flutter apps.
 - **Adaptive keep-alive (battery & heat, plan 125)** — the phone ran hot
   and drained fast because five overlapping keep-alive mechanisms kept the
   cellular radio permanently awake. The relay heartbeat dropped 25 s → 60 s

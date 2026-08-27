@@ -510,6 +510,9 @@ class _DisplaySection extends StatelessWidget {
             ],
           ),
         ),
+        // Plan 131 (upstream #114) — font-size presets composed onto the OS
+        // text scale (see font_scale.dart + main.dart builder).
+        const FontScalePicker(),
         SwitchListTile(
           contentPadding: const EdgeInsets.symmetric(horizontal: 18),
           activeThumbColor: colors.accent,
