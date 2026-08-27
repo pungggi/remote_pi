@@ -41,10 +41,9 @@ describe("SessionPeer registration", () => {
       // depends on what the diagnosis could establish about the owner.
       expect.soft(message).toContain("then rejoin.");
       // This process owns the unanswered listener, so the diagnosis must name
-      // it rather than leave the operator to search /proc for the blocker.
-      // (Windows named pipes get the same guarantee from the fork's win32
-      // owner lookup — see socket_owner_windows.ts.)
-      if (process.platform === "linux") {
+      // it rather than leave the operator to search /proc (Linux) or Process
+      // Explorer (Windows) for the blocker.
+      if (process.platform === "linux" || process.platform === "win32") {
         expect.soft(message).toContain(`pid ${process.pid}`);
       }
       expect.soft(sawClose).toBe(true);

@@ -14,6 +14,10 @@
 import { readFile, readdir, readlink } from "node:fs/promises";
 import { basename } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import {
+  describeWindowsPipeOwner,
+  WIN_OWNER_LOOKUP_BUDGET_MS,
+} from "./socket_owner_windows.js";
 
 /**
  * States a process can be resumed from. These are the only ones that prove no
@@ -169,6 +173,11 @@ async function lookup(sockPath: string, deadline: number): Promise<SocketOwner |
   return { pid, command: await readCommand(pid), state, liveness };
 }
 
+/** Windows pays a process spawn for the same answer, so its ceiling is higher. */
+function defaultOwnerBudgetMs(): number {
+  return process.platform === "win32" ? WIN_OWNER_LOOKUP_BUDGET_MS : OWNER_LOOKUP_BUDGET_MS;
+}
+
 /**
  * Resolves the process listening on `sockPath`, or null when it cannot be
  * determined within `budgetMs`. Never throws.
@@ -180,8 +189,9 @@ async function lookup(sockPath: string, deadline: number): Promise<SocketOwner |
  */
 export async function describeSocketOwner(
   sockPath: string,
-  budgetMs: number = OWNER_LOOKUP_BUDGET_MS,
+  budgetMs: number = defaultOwnerBudgetMs(),
 ): Promise<SocketOwner | null> {
+  if (process.platform === "win32") return describeWindowsPipeOwner(sockPath, budgetMs);
   if (process.platform !== "linux") return null;
   const deadline = Date.now() + budgetMs;
   // `ref: false` so a pending diagnosis never holds the process open, and the

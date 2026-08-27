@@ -12,6 +12,7 @@ import {
   describeState,
   type SocketOwner,
 } from "./socket_owner.js";
+import { ipcAddress } from "./ipc.js";
 
 describe("describeState", () => {
   test("offers resumption only for states a process can be resumed from", () => {
@@ -42,6 +43,7 @@ describe("describeState", () => {
 });
 
 const onLinux = process.platform === "linux";
+const onWindows = process.platform === "win32";
 
 describe("describeSocketOwner (linux /proc)", () => {
   test.runIf(onLinux)("names the process listening on the path", async () => {
@@ -129,6 +131,50 @@ describe("describeSocketOwner (linux /proc)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+describe("describeSocketOwner (windows named pipe — fork addition)", () => {
+  test.runIf(onWindows)("names the process serving the pipe", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "owner-win-"));
+    // Platform-aware: on Windows this resolves to a unique \\.\pipe\ name.
+    const sockPath = ipcAddress(`owner-${basename(dir)}`, join(dir, "broker.sock"));
+    let server: Server | undefined;
+    try {
+      server = createServer(() => {});
+      server.listen(sockPath);
+      await once(server, "listening");
+
+      const owner = await describeSocketOwner(sockPath);
+
+      // The kernel names the server end even though the listener never
+      // answered anything — that is the whole point of the diagnosis.
+      expect(owner?.pid).toBe(process.pid);
+      expect(owner?.liveness).toBe("active");
+      // Task Manager matches the executable ("node.exe"), not a framework name.
+      expect(owner?.command).toBe(basename(process.execPath));
+    } finally {
+      server?.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  test.runIf(onWindows)("gives up rather than spawning past its budget", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "owner-win-budget-"));
+    const sockPath = ipcAddress(`owner-${basename(dir)}`, join(dir, "broker.sock"));
+    let server: Server | undefined;
+    try {
+      server = createServer(() => {});
+      server.listen(sockPath);
+      await once(server, "listening");
+
+      // The pipe is resolvable; only the exhausted budget stops the probe.
+      expect(await describeSocketOwner(sockPath, 0)).toBeNull();
+      expect((await describeSocketOwner(sockPath))?.pid).toBe(process.pid);
+    } finally {
+      server?.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
 
 describe("describeRegistrationBlocker", () => {
