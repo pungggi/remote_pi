@@ -1,4 +1,5 @@
 import 'package:app/data/actions/actions_repository.dart' show ActionFailure;
+import 'package:app/data/preferences/preferences.dart' show KeepAliveMode;
 import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart' show RoomInfo, OpenTerminalResult;
@@ -395,6 +396,7 @@ class HomePage extends StatelessWidget {
           isReconnecting: isReconnecting,
           isWorking: isWorking,
           isSelected: isSelected,
+          notifyOnDone: vm.notifyOnDone(it.peer.remoteEpk, it.room.roomId),
           room: it.room,
           git: it.room.git ??
               state.gitByKey[
@@ -426,6 +428,64 @@ class HomePage extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Plan/132 — per-session completion notification toggle.
+              // Lives at the top (the session's own setting) and keeps the
+              // sheet open so the user can see the state flip. Stateful so
+              // the switch repaints without closing the menu; the tile's
+              // bell badge updates via the HomeViewModel re-emit.
+              StatefulBuilder(
+                builder: (sheetCtx, setSheetState) {
+                  final enabled = vm.notifyOnDone(
+                    it.peer.remoteEpk,
+                    it.room.roomId,
+                  );
+                  final mode = vm.keepAliveMode;
+                  final hint = switch (mode) {
+                    KeepAliveMode.off =>
+                      'Background connection is off — turn Keep-alive on in '
+                      'Settings to receive these.',
+                    KeepAliveMode.whenCharging =>
+                      'Fires while the app is backgrounded and connected '
+                      '(charging by default — see Settings).',
+                    KeepAliveMode.always =>
+                      'Fires while the app is backgrounded and connected.',
+                  };
+                  return SwitchListTile(
+                    secondary: Icon(
+                      enabled ? LucideIcons.bellRing : LucideIcons.bell,
+                      color: colors.accent,
+                    ),
+                    title: Text(
+                      'Notify when finished',
+                      style: TextStyle(color: colors.text),
+                    ),
+                    subtitle: Text(
+                      hint,
+                      style: TextStyle(color: colors.muted, fontSize: 11),
+                    ),
+                    value: enabled,
+                    onChanged: (value) async {
+                      final granted = await vm.setNotifyOnDone(
+                        it.peer.remoteEpk,
+                        it.room.roomId,
+                        value,
+                      );
+                      setSheetState(() {});
+                      if (!value || granted) return;
+                      if (!sheetCtx.mounted) return;
+                      ScaffoldMessenger.of(sheetCtx).showSnackBar(
+                        const SnackBar(
+                          duration: Duration(seconds: 4),
+                          content: Text(
+                            'Notification permission is off for Piper — '
+                            'enable it in system settings to get alerts.',
+                          ),
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
               // Plan/124 — bring this OFFLINE session back to life in its own
               // cwd: resume the existing conversation (no new worktree, no
               // pin). Only offered when the room is offline — an online

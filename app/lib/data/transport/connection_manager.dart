@@ -178,6 +178,9 @@ class ConnectionManager extends Service {
   final Map<String, Set<String>> _liveRoomIds = <String, Set<String>>{};
   final _roomsController =
       StreamController<Map<String, List<RoomInfo>>>.broadcast();
+  // Plan/132 — run-completion markers (events, not cached state). Broadcast
+  // so both the completion notifier and tests can subscribe.
+  final _runDoneController = StreamController<RunDoneEvent>.broadcast();
   bool _roomsRestored = false;
   ConnectionStatus _status = const StatusNoPeer();
   PeerRecord? _activePeer;
@@ -340,6 +343,13 @@ class ConnectionManager extends Service {
   /// list of rooms per peer (standard-base64 keys).
   Stream<Map<String, List<RoomInfo>>> get roomsStream =>
       _roomsController.stream;
+
+  /// Plan/132 — stream of run-completion markers (`meta.run_done`) for
+  /// EVERY subscribed room of every peer — control frames bypass the
+  /// per-room payload demux in WsTransport, so this fires for sessions the
+  /// user is NOT currently viewing. Events only; the relay never replays a
+  /// marker (broadcast-only field), so there is no snapshot counterpart.
+  Stream<RunDoneEvent> get runDoneStream => _runDoneController.stream;
 
   Map<String, List<RoomInfo>> get roomsSnapshot => _roomsSnapshot();
 
@@ -688,6 +698,8 @@ class ConnectionManager extends Service {
     _controlSub = null;
     _statusController.close();
     _presenceController.close();
+    // Plan/132 — events-only stream; safe to close on teardown.
+    _runDoneController.close();
   }
 
   // ---------------------------------------------------------------------------
@@ -911,8 +923,18 @@ class ConnectionManager extends Service {
         :final hasGit,
         :final contextUsage,
         :final hasContextUsage,
+        :final runDone,
       ):
         final key = toStandardB64(peer);
+        // Plan/132 — forward the run-completion marker FIRST: it is an event,
+        // not state, so it must bypass both the identical-frame dedup below
+        // and the "room not cached yet" early-out (a marker for a room we
+        // haven't seen announced still belongs to a toggled session).
+        if (runDone != null && !_runDoneController.isClosed) {
+          _runDoneController.add(
+            RunDoneEvent(epk: key, roomId: roomId, marker: runDone),
+          );
+        }
         final list = _roomsByPeer[key];
         if (list == null) break;
         final idx = list.indexWhere((r) => r.roomId == roomId);

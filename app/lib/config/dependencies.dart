@@ -6,6 +6,8 @@ import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/mesh/mesh_client.dart';
 import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/local/boxes.dart';
+import 'package:app/data/notifications/local_notifications.dart';
+import 'package:app/data/notifications/session_completion_notifications.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/repositories/home_read_repository.dart';
 import 'package:app/data/repositories/session_read_repository.dart';
@@ -137,6 +139,18 @@ Future<void> setupDependencies() async {
   // the connectivity subscription at app teardown.
   _injector.addService<NetworkMonitor>(() => NetworkMonitor());
 
+  // Plan 132 — session-completion notifications. The plugin wrapper is
+  // stateless (addOther); the facade is a ChangeNotifier (addService so its
+  // dispose runs) attached to ConnectionManager + the app lifecycle in
+  // main(), and injected into HomeViewModel for the per-session toggles.
+  _injector.addOther<LocalNotifications>(() => FlutterLocalNotifications());
+  _injector.addService<SessionCompletionNotifications>(
+    () => SessionCompletionNotifications(
+      boxes: _injector.get<LocalBoxes>(),
+      local: _injector.get<LocalNotifications>(),
+    ),
+  );
+
   // Plan 116 — connection reliability: one-tap battery exemption + Tailscale
   // deep-links. Read by the reliability page + the proactive Home banner.
   // Constructor ref (auto-resolves Preferences) — same form as
@@ -191,6 +205,7 @@ Future<void> setupDependencies() async {
       _injector.get<Preferences>(),
       _injector.get<ConnectionManager>(),
       _injector.get<IActionsRepository>(),
+      _injector.get<SessionCompletionNotifications>(),
     ),
   );
   // Plan/121 — lightweight VM for the Projects screen (no stream

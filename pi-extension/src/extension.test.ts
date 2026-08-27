@@ -6770,6 +6770,59 @@ describe("model meta", () => {
     expect(updates[0]!.meta?.working).toBe(false);
   });
 
+  test("Plan/132: agent_end publishes a run_done marker with the live turn id", async () => {
+    await _pairForTest("ownerR1__1234567890");
+    const onInput = captureEventHandler("input");
+    const onEnd = captureEventHandler("agent_end");
+    onInput({ source: "terminal", text: "marker" } as unknown as Parameters<typeof onInput>[0]);
+    const controlsBefore = relayRef.current!.sendControl.mock.calls.length;
+
+    onEnd({} as unknown as Parameters<typeof onEnd>[0]);
+
+    const markers = relayRef.current!.sendControl.mock.calls.slice(controlsBefore)
+      .map((c) => c[0] as { type: string; room_id?: string; meta?: { run_done?: { turn_id: string | null; ended_at: number } } })
+      .filter((f) => f.type === "room_meta_update" && f.meta?.run_done);
+    expect(markers).toHaveLength(1);
+    expect(markers[0]!.meta!.run_done!.turn_id).toEqual(expect.any(String));
+    expect(markers[0]!.meta!.run_done!.ended_at).toBeGreaterThan(0);
+    expect(markers[0]!.room_id).toMatch(/^[A-Za-z0-9_-]{12}$/);
+    await new Promise((r) => setTimeout(r, 80)); // drain window for later tests
+  });
+
+  test("Plan/132: run_done fires with null turn_id even when no owner is attached", async () => {
+    // The "started a long task from the PC terminal, phone never opened the
+    // chat" case: currentTurnId was never seeded, no owner ever attached —
+    // the marker must still go out so the phone can notify.
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx("/tmp/remote-pi-rundone-noowner"));
+
+    const onEnd = captureEventHandler("agent_end");
+    const controlsBefore = relayRef.current!.sendControl.mock.calls.length;
+    onEnd({} as unknown as Parameters<typeof onEnd>[0]);
+
+    const markers = relayRef.current!.sendControl.mock.calls.slice(controlsBefore)
+      .map((c) => c[0] as { type: string; meta?: { run_done?: { turn_id: string | null } } })
+      .filter((f) => f.type === "room_meta_update" && f.meta?.run_done);
+    expect(markers).toHaveLength(1);
+    expect(markers[0]!.meta!.run_done!.turn_id).toBeNull();
+    await new Promise((r) => setTimeout(r, 80)); // drain window for later tests
+  });
+
+  test("Plan/132: turn_start/turn_end never emit run_done — only agent_end does", async () => {
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx("/tmp/remote-pi-rundone-turns"));
+
+    const onTurnStart = captureEventHandler("turn_start");
+    const onTurnEnd = captureEventHandler("turn_end");
+    onTurnStart({ type: "turn_start", turnIndex: 0, timestamp: 0 });
+    onTurnEnd({ type: "turn_end", turnIndex: 0 });
+
+    const markers = relayRef.current!.sendControl.mock.calls
+      .map((c) => c[0] as { type: string; meta?: Record<string, unknown> })
+      .filter((f) => f.type === "room_meta_update" && f.meta?.["run_done"] !== undefined);
+    expect(markers).toHaveLength(0);
+  });
+
   test("plan/32 hardening: working set during a relay drop is re-published on reconnect", async () => {
     // Reproduces the race behind the Home session-list dot staying green:
     // turn_start fires while the relay link is DOWN → working is cached

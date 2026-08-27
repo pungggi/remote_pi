@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:app/data/actions/actions_repository.dart';
+import 'package:app/data/notifications/session_completion_notifications.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/connection_manager.dart';
@@ -153,6 +154,27 @@ class _FakeActions implements IActionsRepository {
 
 _FakeActions _fakeActions() => _FakeActions();
 
+/// Plan/132 — in-memory stub of the completion-notification controls (no
+/// Hive, no plugin; records toggles so tests can assert them if needed).
+class _StubCompletionNotifications extends ICompletionNotifications {
+  final Map<String, bool> toggles = {};
+  bool permissionGranted = true;
+
+  @override
+  bool isEnabled(String epk, String roomId) =>
+      toggles['$epk:$roomId'] == true;
+
+  @override
+  Future<bool> setEnabled(String epk, String roomId, bool value) async {
+    toggles['$epk:$roomId'] = value;
+    // Enabling surfaces the permission state; disabling always succeeds.
+    return value ? permissionGranted : true;
+  }
+}
+
+_StubCompletionNotifications _stubCompletion() =>
+    _StubCompletionNotifications();
+
 /// Plan/108 — records `openTerminal` calls so the session-list routing
 /// test can assert the tapped (cwd, branch) reached the repo. Everything
 /// else is noSuchMethod'd — these tests never exercise the wire.
@@ -237,7 +259,7 @@ void main() {
           emitDebounce: Duration.zero,
         );
         final prefs = Preferences(_FakeSecureStorage());
-        final vm = HomeViewModel(storage, prefs, conn, _fakeActions());
+        final vm = HomeViewModel(storage, prefs, conn, _fakeActions(), _stubCompletion());
         await conn.connectTo(_peerA);
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
@@ -284,7 +306,7 @@ void main() {
     test('initial state is HomeLoading', () {
       final storage = _FakeStorage([_peerA]);
       final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions());
+      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions(), _stubCompletion());
       expect(vm.state, isA<HomeLoading>());
       vm.dispose();
     });
@@ -292,7 +314,7 @@ void main() {
     test('empty storage → HomeNoPeer', () async {
       final storage = _FakeStorage([]);
       final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions());
+      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions(), _stubCompletion());
       await Future<void>.delayed(Duration.zero);
       expect(vm.state, isA<HomeNoPeer>());
       vm.dispose();
@@ -301,7 +323,7 @@ void main() {
     test('two peers → HomeList containing both', () async {
       final storage = _FakeStorage([_peerA, _peerB]);
       final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions());
+      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions(), _stubCompletion());
       await Future<void>.delayed(Duration.zero);
 
       final s = vm.state as HomeList;
@@ -313,7 +335,7 @@ void main() {
     test('openSession writes selectedPeerEpk to Preferences', () async {
       final storage = _FakeStorage([_peerA, _peerB]);
       final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions());
+      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions(), _stubCompletion());
       await Future<void>.delayed(Duration.zero);
 
       await vm.openSession('epk_B');
@@ -336,7 +358,7 @@ void main() {
           },
           storage: storage,
         );
-        final vm = HomeViewModel(storage, prefs, conn, _fakeActions());
+        final vm = HomeViewModel(storage, prefs, conn, _fakeActions(), _stubCompletion());
         await Future<void>.delayed(Duration.zero);
 
         await vm.openSession('epk_B');
@@ -360,7 +382,7 @@ void main() {
     test('openSession with unknown epk is a no-op', () async {
       final storage = _FakeStorage([_peerA]);
       final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions());
+      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions(), _stubCompletion());
       await Future<void>.delayed(Duration.zero);
 
       await vm.openSession('epk_unknown');
@@ -376,7 +398,7 @@ void main() {
       () async {
         final storage = _FakeStorage([_peerA]);
         final prefs = Preferences(_FakeSecureStorage());
-        final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions());
+        final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions(), _stubCompletion());
         await Future<void>.delayed(Duration.zero);
 
         // Seed prefs with a DIFFERENT room (simulating the previous
@@ -409,7 +431,7 @@ void main() {
         emitDebounce: Duration.zero,
       );
       final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, conn, _fakeActions());
+      final vm = HomeViewModel(storage, prefs, conn, _fakeActions(), _stubCompletion());
       await conn.connectTo(_peerA);
       await Future<void>.delayed(const Duration(milliseconds: 10));
 
@@ -456,7 +478,7 @@ void main() {
       () async {
         final storage = _FakeStorage([_peerA]);
         final prefs = Preferences(_FakeSecureStorage());
-        final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions());
+        final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions(), _stubCompletion());
         await Future<void>.delayed(Duration.zero);
 
         expect((vm.state as HomeList).filter, HomeFilter.online);
@@ -477,7 +499,7 @@ void main() {
     test('counts / visibleItems are empty-safe outside a HomeList', () {
       final storage = _FakeStorage([_peerA]);
       final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions());
+      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions(), _stubCompletion());
 
       // Synchronously still HomeLoading — the getters must not throw.
       expect(vm.state, isA<HomeLoading>());
@@ -499,7 +521,7 @@ void main() {
           emitDebounce: Duration.zero,
         );
         final prefs = Preferences(_FakeSecureStorage());
-        final vm = HomeViewModel(storage, prefs, conn, _fakeActions());
+        final vm = HomeViewModel(storage, prefs, conn, _fakeActions(), _stubCompletion());
         await conn.connectTo(_peerA);
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
@@ -542,7 +564,7 @@ void main() {
         );
         final prefs = Preferences(_FakeSecureStorage());
         final actions = _RecordingActions();
-        final vm = HomeViewModel(storage, prefs, conn, actions);
+        final vm = HomeViewModel(storage, prefs, conn, actions, _stubCompletion());
         // Seed the active peer as A so the call below has to switch.
         await conn.connectTo(_peerA);
         await Future<void>.delayed(Duration.zero);
@@ -583,7 +605,7 @@ void main() {
       );
       final prefs = Preferences(_FakeSecureStorage());
       final actions = _RecordingActions();
-      final vm = HomeViewModel(storage, prefs, conn, actions);
+      final vm = HomeViewModel(storage, prefs, conn, actions, _stubCompletion());
       await conn.connectTo(_peerA);
       // Let StatusOnline propagate to the VM's _relayConnected before we
       // act — the gate below is (samePeer && online).
@@ -622,7 +644,7 @@ void main() {
         );
         final prefs = Preferences(_FakeSecureStorage());
         final actions = _RecordingActions();
-        final vm = HomeViewModel(storage, prefs, conn, actions);
+        final vm = HomeViewModel(storage, prefs, conn, actions, _stubCompletion());
         await conn.connectTo(_peerA);
         await Future<void>.delayed(const Duration(milliseconds: 10));
         expect(conn.activePeer?.remoteEpk, 'epk_A');
@@ -649,7 +671,7 @@ void main() {
       );
       final prefs = Preferences(_FakeSecureStorage());
       final actions = _RecordingActions();
-      final vm = HomeViewModel(storage, prefs, conn, actions);
+      final vm = HomeViewModel(storage, prefs, conn, actions, _stubCompletion());
       await conn.connectTo(_peerA);
       await Future<void>.delayed(Duration.zero);
 
@@ -678,7 +700,7 @@ void main() {
         );
         final prefs = Preferences(_FakeSecureStorage());
         final actions = _RecordingActions();
-        final vm = HomeViewModel(storage, prefs, conn, actions);
+        final vm = HomeViewModel(storage, prefs, conn, actions, _stubCompletion());
         await conn.connectTo(_peerA);
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
@@ -725,7 +747,7 @@ void main() {
         );
         final prefs = Preferences(_FakeSecureStorage());
         final actions = _RecordingActions();
-        final vm = HomeViewModel(storage, prefs, conn, actions);
+        final vm = HomeViewModel(storage, prefs, conn, actions, _stubCompletion());
         await conn.connectTo(_peerA);
         await Future<void>.delayed(const Duration(milliseconds: 10));
         // Device room never announced → not live → fail fast with an
@@ -752,7 +774,7 @@ void main() {
       );
       final prefs = Preferences(_FakeSecureStorage());
       final actions = _RecordingActions();
-      final vm = HomeViewModel(storage, prefs, conn, actions);
+      final vm = HomeViewModel(storage, prefs, conn, actions, _stubCompletion());
       await conn.connectTo(_peerA);
       await Future<void>.delayed(Duration.zero);
 

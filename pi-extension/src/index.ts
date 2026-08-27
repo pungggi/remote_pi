@@ -357,6 +357,33 @@ function _refreshContextUsage(): void {
 }
 
 /**
+ * Plan/132: publish the run-completion marker as `room_meta.run_done`
+ * (opaque blob — the relay forwards it verbatim as a broadcast-only field,
+ * never persisting it; the phone turns it into a local notification for
+ * sessions the user toggled on).
+ *
+ * Deliberate differences from every other room_meta publisher:
+ * - NOT cached into `ext.myRoomMeta` — it is an event, not state. The
+ *   reconnect re-publish (`_republishRoomMeta`) must never replay a stale
+ *   marker, or a reconnecting app would re-fire the completion notification.
+ * - NOT gated on `_anyPeerActive()` / `currentTurnId` — a run started from
+ *   the Pi terminal (no app-seeded turn id) still notifies: that's the
+ *   "kicked off a long task on the PC, walked away" case. `turn_id` is
+ *   null for those runs.
+ * - Fires on `agent_end` (once per agent run), never on `turn_end` (which
+ *   pulses per LLM call — see plan/36 §C).
+ */
+function _publishRunDone(turnId: string | null): void {
+  if (ext.relay && ext.myRoomId) {
+    ext.relay.sendControl({
+      type: "room_meta_update",
+      room_id: ext.myRoomId,
+      meta: { run_done: { turn_id: turnId, ended_at: Date.now() } },
+    });
+  }
+}
+
+/**
  * Plan/32 hardening — re-publish the full cached room_meta (incl `working`)
  * right after a successful relay (re)connect.
  *
@@ -2467,6 +2494,12 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // Flush coalesced text FIRST — the phone finalizes the streaming
     // segment on agent_done, so the tail must land before the done frame.
     _flushAgentChunks();
+    // Plan/132 — run-completion marker rides the room_meta control path so
+    // EVERY subscribed room (not just the app's active one — data frames are
+    // demuxed by room app-side) can fire its local notification. Emitted
+    // before the agent_done branch: it must not depend on a peer being
+    // attached or the run having an app-seeded turn id.
+    _publishRunDone(ext.currentTurnId ?? null);
     // Reconciliation fallback (2026-08-22): snapshot the cumulative turn
     // text BEFORE clearing it, and ride it on agent_done. Receivers that
     // streamed the turn live compare against what they actually got and

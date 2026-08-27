@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:app/data/actions/actions_repository.dart';
+import 'package:app/data/notifications/session_completion_notifications.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/epk_encoding.dart';
@@ -30,6 +31,11 @@ class HomeViewModel extends ViewModel<HomeState> {
   final Preferences _prefs;
   final ConnectionManager _conn;
   final IActionsRepository _actions;
+
+  /// Plan/132 — per-session completion-notification toggles. The vm
+  /// re-emits its HomeList when a toggle flips so the tile bell badges
+  /// rebuild without a separate provider.
+  final ICompletionNotifications _completion;
   StreamSubscription<Map<String, PresenceState>>? _presenceSub;
   StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
   StreamSubscription<ConnectionStatus>? _statusSub;
@@ -56,8 +62,13 @@ class HomeViewModel extends ViewModel<HomeState> {
   // 60s timer fires, applied to every emitted HomeList via _emitHome.
   bool _reliabilityBannerWanted = false;
 
-  HomeViewModel(this._storage, this._prefs, this._conn, this._actions)
-    : super(const HomeLoading()) {
+  HomeViewModel(
+    this._storage,
+    this._prefs,
+    this._conn,
+    this._actions,
+    this._completion,
+  ) : super(const HomeLoading()) {
     _relayConnected = _conn.status is StatusOnline;
     _load();
     _presenceSub = _conn.presenceStream.listen(_onPresence);
@@ -67,6 +78,8 @@ class HomeViewModel extends ViewModel<HomeState> {
     // PairingStorage; listening here keeps Home in sync without manual
     // notifications between screens.
     _storage.addListener(_onStorageChanged);
+    // Plan/132 — a toggled session repaints its tile's bell badge.
+    _completion.addListener(_reemitHomeList);
     // Plan 116 — boot may already be offline; arm the banner timer.
     _reconcileReliability(_relayConnected);
   }
@@ -151,6 +164,23 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// spot.
   bool isRoomWorking(String epk, String roomId) =>
       _conn.isRoomWorking(epk, roomId);
+
+  // ---- Plan/132 — completion notifications ---------------------------------
+
+  /// Whether this session's completion notification is toggled on.
+  bool notifyOnDone(String epk, String roomId) =>
+      _completion.isEnabled(epk, roomId);
+
+  /// Toggle this session's completion notification. Returns whether the
+  /// notification permission ended up granted (an enable with a DENIED
+  /// permission still persists the intent — caller surfaces the miss).
+  Future<bool> setNotifyOnDone(String epk, String roomId, bool value) =>
+      _completion.setEnabled(epk, roomId, value);
+
+  /// Keep-alive mode as it affects completion notifications: `off` means
+  /// the process is frozen in background and banners can never fire — the
+  /// menu shows a hint pointing at Settings.
+  KeepAliveMode get keepAliveMode => _prefs.keepAliveMode;
 
   Future<void> _load() async {
     final peers = await _storage.listPeers();
@@ -520,6 +550,7 @@ class HomeViewModel extends ViewModel<HomeState> {
     _statusSub?.cancel();
     _sustainedOfflineTimer?.cancel();
     _storage.removeListener(_onStorageChanged);
+    _completion.removeListener(_reemitHomeList);
     super.dispose();
   }
 }

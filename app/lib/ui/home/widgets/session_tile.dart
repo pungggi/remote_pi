@@ -3,6 +3,7 @@ import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/git_status_span.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 /// A row in the Home list.
 ///
@@ -42,6 +43,11 @@ class SessionTile extends StatelessWidget {
   /// only responds to tap.
   final VoidCallback? onLongPress;
 
+  /// Plan/132 — `true` when completion notifications are toggled on for
+  /// this session. Paints a small bell glyph next to the presence dot so
+  /// the state is visible at a glance on the Home list.
+  final bool notifyOnDone;
+
   const SessionTile({
     super.key,
     required this.peer,
@@ -53,6 +59,7 @@ class SessionTile extends StatelessWidget {
     this.isWorking = false,
     this.isSelected = false,
     this.onLongPress,
+    this.notifyOnDone = false,
   });
 
   @override
@@ -87,6 +94,12 @@ class SessionTile extends StatelessWidget {
                 Expanded(
                   child: _TitleBlock(peer: peer, room: room, git: git),
                 ),
+                if (notifyOnDone) ...[
+                  // Plan/132 — muted bell so it never competes with the
+                  // presence dot; it's a state marker, not an alert.
+                  Icon(LucideIcons.bell, size: 13, color: colors.muted),
+                  const SizedBox(width: 8),
+                ],
                 _PresenceDot(
                   isLive: isLive,
                   isReconnecting: isReconnecting,

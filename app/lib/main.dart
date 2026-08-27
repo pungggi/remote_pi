@@ -1,14 +1,19 @@
+import 'dart:async';
+
 import 'package:app/config/dependencies.dart';
 import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/local/boxes.dart';
 import 'package:app/data/mesh/mesh_sync_service.dart';
+import 'package:app/data/notifications/local_notifications.dart';
+import 'package:app/data/notifications/session_completion_notifications.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/share/shared_image_inbox.dart';
 import 'package:app/data/share/shared_text_inbox.dart';
 import 'package:app/data/share/composer_draft.dart';
 import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/connection_manager.dart';
+import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/data/transport/keep_alive_controller.dart';
 import 'package:app/data/transport/network_monitor.dart';
 import 'package:app/pairing/owner_identity_bridge.dart';
@@ -36,6 +41,19 @@ void main() async {
   // immediate reconnect so recovery starts within ~1s instead of the 30s
   // backoff ceiling. attach() subscribes to connectivity events.
   injector.get<NetworkMonitor>().attach(injector.get<ConnectionManager>());
+  // Plan 132 — session-completion notifications. The plugin must initialize
+  // BEFORE runApp so a cold start from a tapped notification is delivered
+  // (defensive: never blocks boot). The title resolver is wired BEFORE
+  // attaching the gate so no marker can fire through a titleless window.
+  final completion = injector.get<SessionCompletionNotifications>();
+  await injector.get<LocalNotifications>().initialize();
+  completion.roomTitle =
+      (epk, roomId) => SessionCompletionNotifications.roomTitleFor(
+        injector.get<ConnectionManager>(),
+        epk,
+        roomId,
+      );
+  completion.attach(injector.get<ConnectionManager>().runDoneStream);
   // Plan/104 — if launched via a Share (ACTION_SEND image), pull it now so it
   // waits in the inbox; the router listener routes to the chat once booted.
   final shared = await injector.get<IImagePickerService>().consumeSharedImage();
@@ -59,6 +77,7 @@ class PiperApp extends StatefulWidget {
 }
 
 class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
+  StreamSubscription<String>? _completionTapSub;
   late final _router = buildRouter(
     injector.get<PairingStorage>(),
     injector.get<ConnectionManager>(),
@@ -74,10 +93,18 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
     // Plan/104 — when boot lands past /boot with a pending shared image, route
     // to the chat (cold-start share). Warm shares are handled on resume.
     _router.routerDelegate.addListener(_onRouteChanged);
+    // Plan/132 — a tapped completion notification routes to that session
+    // (cold start delivers through the initialize() callback, warm taps
+    // through this stream).
+    _completionTapSub = injector
+        .get<LocalNotifications>()
+        .taps
+        .listen(_openFromCompletionTap);
   }
 
   @override
   void dispose() {
+    _completionTapSub?.cancel();
     _router.routerDelegate.removeListener(_onRouteChanged);
     WidgetsBinding.instance.removeObserver(this);
     disposeDependencies();
@@ -97,6 +124,11 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
     injector.get<KeepAliveController>().setBackgrounded(
       state != AppLifecycleState.resumed,
     );
+    // Plan 132 — completion notifications only fire while the app is NOT
+    // resumed (foreground, the Home tiles already show working→idle).
+    injector
+        .get<SessionCompletionNotifications>()
+        .setBackgrounded(state != AppLifecycleState.resumed);
     // Plan 125 (Layer 2) — lean keep-alive cadence while backgrounded, active
     // on resume. Slows the protocol Ping (25 → 90 s) and the watchdog (30 → 60 s)
     // while the app is in the background, halving outbound + CPU wakeups.
@@ -162,6 +194,74 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
     _router.push('/chat');
   }
 
+  /// Plan/132 — open the session a completion notification points at.
+  /// Mirrors Home's `openSession` path EXACTLY: set the prefs selection +
+  /// persist the room on the PeerRecord, mark the UI selection, push the
+  /// chat. It deliberately does NOT `switchTo`/`switchRoom` the connection:
+  /// ChatViewModel's own bootstrap (on `/chat` mount) reads the same prefs
+  /// and performs the peer switch — switching from outside that path is the
+  /// "boot races" lesson HomeViewModel.openSession documents.
+  ///
+  /// Guards mirror `_maybeRouteToChat`: skip while booting / onboarding /
+  /// already in a chat (the user is looking at the app — the banner was for
+  /// the backgrounded case).
+  Future<void> _openFromCompletionTap(String payload) async {
+    final target = SessionCompletionNotifications.parsePayload(payload);
+    if (target == null) return;
+
+    final loc =
+        _router.routerDelegate.currentConfiguration.last.matchedLocation;
+    if (loc == '/chat' ||
+        loc == '/boot' ||
+        loc.startsWith('/onboarding') ||
+        loc == '/sync-required') {
+      return;
+    }
+
+    final epk = toAppEpk(target.epk);
+    final roomId = target.roomId;
+
+    final storage = injector.get<PairingStorage>();
+    PeerRecord? peer;
+    for (final p in await storage.listPeers()) {
+      if (p.remoteEpk == epk) {
+        peer = p;
+        break;
+      }
+    }
+    // Unpaired since the notification was shown — nothing to open.
+    if (peer == null) return;
+
+    final prefs = injector.get<Preferences>();
+    await prefs.setSelectedRoom(epk: epk, roomId: roomId);
+    if (peer.roomId != roomId) {
+      // ignore: unawaited_futures
+      storage.savePeer(peer.copyWith(roomId: roomId));
+    }
+
+    // Title for the chat app bar: room name → cwd tail → device fallback,
+    // same precedence Home's `_titleFor` uses (resolved from the cache —
+    // good enough for the push; ChatPage self-corrects on first meta).
+    final conn = injector.get<ConnectionManager>();
+    final title =
+        SessionCompletionNotifications.roomTitleFor(conn, epk, roomId) ??
+        _deviceLabelFor(peer);
+    final device = _deviceLabelFor(peer);
+    final online = conn.isRoomLive(epk, roomId);
+    injector.get<SessionSelection>().select(epk, roomId, title, device, online);
+    _router.push(
+      '/chat',
+      extra: {'title': title, 'device': device, 'online': online},
+    );
+  }
+
+  static String _deviceLabelFor(PeerRecord peer) =>
+      (peer.nickname?.isNotEmpty ?? false)
+      ? peer.nickname!
+      : peer.sessionName.isNotEmpty
+      ? peer.sessionName
+      : peer.remoteEpk.substring(0, 8);
+
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
@@ -200,7 +300,7 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
           themeMode: prefs.themeMode,
           routerConfig: _router,
           debugShowCheckedModeBanner: false,
-          // Plan 131 (upstream #114) — compose the user's font-size preset
+          // Plan 132 (upstream #114) — compose the user's font-size preset
           // onto the OS text scale. Multiplied (not replaced) so the system
           // accessibility setting keeps working; identity at the default
           // preset (see applyFontScale).
