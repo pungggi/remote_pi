@@ -3145,6 +3145,19 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
     return;
   }
   const lifecycleGeneration = ++ext.relayLifecycleGeneration;
+  // A newer start attempt supersedes any initial-connect retry an older
+  // lifecycle left pending (PR #57 review): without this, that stale timer's
+  // `!== null` guard would suppress THIS attempt's retry scheduling if its
+  // connect also fails — and the stale callback would then no-op on the
+  // generation mismatch, leaving the relay offline indefinitely. The retry's
+  // own re-entry never hits this (its callback nulls the timer before calling
+  // `_cmdStart`), so the backoff counter survives across retry attempts and
+  // only a genuinely new lifecycle restarts the ladder.
+  if (ext.initialConnectRetryTimer !== null) {
+    clearTimeout(ext.initialConnectRetryTimer);
+    ext.initialConnectRetryTimer = null;
+    ext.initialConnectRetryAttempt = 0;
+  }
   const isCurrentCandidate = (): boolean => (
     !ext.disposed &&
     lifecycleGeneration === ext.relayLifecycleGeneration &&

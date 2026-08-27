@@ -6011,6 +6011,35 @@ describe("relay reconnect", () => {
     }
   });
 
+  test("manual re-start during the initial-retry window supersedes the old retry; its failure still retries", async () => {
+    vi.useFakeTimers();
+    try {
+      _defaultConnectImpl = () => Promise.reject(new Error("ENOTFOUND"));
+      captureHandler("remote-pi");
+      await _connectForTest(makeMockCtx("/tmp/remote-pi-initial-supersede"));
+      expect(relayInstances).toHaveLength(1); // A failed; old retry timer pending
+
+      // Manual re-start before the old 1s backoff fires: attempt B fails too.
+      // Before the supersede fix, B's retry scheduling was suppressed by A's
+      // still-registered timer and A's callback no-op'd on the generation
+      // mismatch — nothing ever retried again (PR #57 review).
+      await _startRelayForTest(makeMockCtx("/tmp/remote-pi-initial-supersede"));
+      expect(relayInstances).toHaveLength(2);
+      expect(_getState()).toBe("idle");
+
+      // B's failure owns the retry loop now — fresh ladder, attempts keep coming.
+      let prevCount = relayInstances.length;
+      for (const delay of [1_000, 2_000]) {
+        await vi.advanceTimersByTimeAsync(delay);
+        expect(relayInstances.length).toBe(prevCount + 1);
+        expect(_getState()).toBe("idle");
+        prevCount = relayInstances.length;
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("stale reconnect candidate cannot replace a stop/start Relay lifecycle", async () => {
     const staleConnect = deferred<void>();
     let staleConnectReleased = false;
