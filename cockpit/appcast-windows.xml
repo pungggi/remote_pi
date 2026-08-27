@@ -3,18 +3,21 @@
   <channel>
     <title>Piper Cockpit</title>
     <item>
-      <title>1.19.1</title>
-      <pubDate>Fri, 21 Aug 2026 10:19:04 +0000</pubDate>
-      <sparkle:version>1.19.1</sparkle:version>
-      <description><![CDATA[### Added
-- **Endpoint do servidor de status publicado em disco** —
-  `~/.cockpit/status-endpoint[-debug].json` (Windows: porta TCP efêmera +
-  token; POSIX: path do socket), escrito no boot e removido no encerramento.
-  Habilita o `api.changeLayout` do remote-pi: aplicar um layout nomeado
-  `.ckp` no workspace ativo direto do celular (o daemon do dispositivo não
-  herda o env de nenhuma aba — sem o arquivo, a porta efêmera é
-  indescobrível).]]></description>
-      <enclosure url="https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.1/RemotePiCockpit-Setup-1.19.1-windows-x64.exe" sparkle:edSignature="dvnarYHxgSWrmiU7f0JrTQxn9EjXpKqGWh8Mjl1b0Abx8oj3v/7NDm2IT+MDxsK4pqj603LTK3S0mgl2icO1AA==" length="38764050" sparkle:os="windows" sparkle:installerArguments="/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-" type="application/octet-stream" />
+      <title>1.19.2</title>
+      <pubDate>Thu, 27 Aug 2026 19:00:21 +0000</pubDate>
+      <sparkle:version>1.19.2</sparkle:version>
+      <description><![CDATA[### Fixed
+- **Boot crash do 1.19.1** — `UnregisteredInstance: [String] not registered`
+  na abertura (a home inteira caía no overlay "This part of the app failed to
+  render"). Causa: o `TerminalStatusServerImpl` ganhou um parâmetro
+  posicional opcional (`[String? homeDir]`) na 1.19.1 e o parser de
+  construtores do auto_injector (flutter_modular) lê a assinatura como string —
+  `[String?]` é interpretado como o tipo literal `[String]` (não-nulo,
+  required) e a resolução do grafo morre no primeiro `get`. O parâmetro virou
+  nomeado nullable (equivalente funcional; nomeado nullable é filtrado como
+  não-injetável). Afeta apenas o 1.19.1 (introduzido em #32), em debug E
+  release. Documentado como 3º caso-limite da regra `.new` no CLAUDE.md.]]></description>
+      <enclosure url="https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.2/RemotePiCockpit-Setup-1.19.2-windows-x64.exe" sparkle:edSignature="XxeykejBji495vBO94U4+MdAXMe1C2vJxfb641DdZCBtdhbNnjxKD0Txp1O3Q5ELEl/MfJ9tXbZe00d+2PKfBw==" length="38763586" sparkle:os="windows" sparkle:installerArguments="/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-" type="application/octet-stream" />
     </item>
   </channel>
 </rss>

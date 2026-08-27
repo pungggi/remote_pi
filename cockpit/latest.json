@@ -1,47 +1,47 @@
 {
-  "version": "1.19.1",
-  "date": "2026-08-21",
-  "notes": "### Added\n- **Endpoint do servidor de status publicado em disco** —\n  `~/.cockpit/status-endpoint[-debug].json` (Windows: porta TCP efêmera +\n  token; POSIX: path do socket), escrito no boot e removido no encerramento.\n  Habilita o `api.changeLayout` do remote-pi: aplicar um layout nomeado\n  `.ckp` no workspace ativo direto do celular (o daemon do dispositivo não\n  herda o env de nenhuma aba — sem o arquivo, a porta efêmera é\n  indescobrível).",
+  "version": "1.19.2",
+  "date": "2026-08-27",
+  "notes": "### Fixed\n- **Boot crash do 1.19.1** — `UnregisteredInstance: [String] not registered`\n  na abertura (a home inteira caía no overlay \"This part of the app failed to\n  render\"). Causa: o `TerminalStatusServerImpl` ganhou um parâmetro\n  posicional opcional (`[String? homeDir]`) na 1.19.1 e o parser de\n  construtores do auto_injector (flutter_modular) lê a assinatura como string —\n  `[String?]` é interpretado como o tipo literal `[String]` (não-nulo,\n  required) e a resolução do grafo morre no primeiro `get`. O parâmetro virou\n  nomeado nullable (equivalente funcional; nomeado nullable é filtrado como\n  não-injetável). Afeta apenas o 1.19.1 (introduzido em #32), em debug E\n  release. Documentado como 3º caso-limite da regra `.new` no CLAUDE.md.",
   "artifacts": [
     {
       "platform": "windows",
       "arch": "x64",
       "format": "exe",
-      "url": "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.1/RemotePiCockpit-Setup-1.19.1-windows-x64.exe",
-      "sha256": "00ad3365eccf2aea0e393f509e05afb9f51eb8b1d5f309e3e2e313171afa9171",
-      "size": 38764050
+      "url": "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.2/RemotePiCockpit-Setup-1.19.2-windows-x64.exe",
+      "sha256": "03bda2cfc307add058f60d21428fc04a429f629bc08ede92aa6fd88cf379c042",
+      "size": 38763586
     },
     {
       "platform": "linux",
       "arch": "arm64",
       "format": "rpm",
-      "url": "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.1/remote-pi-cockpit-1.19.1.aarch64.rpm",
-      "sha256": "a5211c29b4d8f74ac6ca7d2bd92b6d2ebc2e3ad688d93c46a2228724f61ff730",
-      "size": 31387795
+      "url": "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.2/remote-pi-cockpit-1.19.2.aarch64.rpm",
+      "sha256": "271555220a20bebfef4ebb91303a61a0e7f472e809d648d271475a2da1dbcfb8",
+      "size": 31388604
     },
     {
       "platform": "linux",
       "arch": "x64",
       "format": "rpm",
-      "url": "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.1/remote-pi-cockpit-1.19.1.x86_64.rpm",
-      "sha256": "56065333bae5d1ceec3f66591d5118255aef3bc409e9cde0b774ba4848ede25a",
-      "size": 32349024
+      "url": "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.2/remote-pi-cockpit-1.19.2.x86_64.rpm",
+      "sha256": "5510a8f98f2acea915b6e1c3347ed063a51ff2af77b5507b876c2ac3def0ffe0",
+      "size": 32349013
     },
     {
       "platform": "linux",
       "arch": "x64",
       "format": "deb",
-      "url": "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.1/remote-pi-cockpit_1.19.1_amd64.deb",
-      "sha256": "f9b521315eebba13994d1c2d62a72550384fda7621c4717eaf98983818d2ba2f",
-      "size": 24408972
+      "url": "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.2/remote-pi-cockpit_1.19.2_amd64.deb",
+      "sha256": "5aed5c5e6918654711398cb07ddbef39f8fcffc075b177e0db3852db839a9655",
+      "size": 24409840
     },
     {
       "platform": "linux",
       "arch": "arm64",
       "format": "deb",
-      "url": "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.1/remote-pi-cockpit_1.19.1_arm64.deb",
-      "sha256": "4f00cf3dce6258563d4455535a6dcc8c706f2da995b29f14017f2c2f1b62b4e0",
-      "size": 23972236
+      "url": "https://github.com/pungggi/remote_pi/releases/download/cockpit-v1.19.2/remote-pi-cockpit_1.19.2_arm64.deb",
+      "sha256": "0c8f56b27211b2c155adf391f6701dbf9e0558b64cea022ac35e5033e8ef82be",
+      "size": 23971998
     }
   ]
 }
