@@ -20,6 +20,21 @@ As versões seguem o `version:` do `pubspec.yaml` (SSOT). O campo `notes` do
     linhas não-vazias — o começo da seção deve fazer sentido sozinho.
 -->
 
+## [1.19.2] — 2026-08-27
+
+### Fixed
+
+- **Boot crash do 1.19.1** — `UnregisteredInstance: [String] not registered`
+  na abertura (a home inteira caía no overlay "This part of the app failed to
+  render"). Causa: o `TerminalStatusServerImpl` ganhou um parâmetro
+  posicional opcional (`[String? homeDir]`) na 1.19.1 e o parser de
+  construtores do auto_injector (flutter_modular) lê a assinatura como string —
+  `[String?]` é interpretado como o tipo literal `[String]` (não-nulo,
+  required) e a resolução do grafo morre no primeiro `get`. O parâmetro virou
+  nomeado nullable (equivalente funcional; nomeado nullable é filtrado como
+  não-injetável). Afeta apenas o 1.19.1 (introduzido em #32), em debug E
+  release. Documentado como 3º caso-limite da regra `.new` no CLAUDE.md.
+
 ## [1.19.1] — 2026-08-21
 
 ### Added

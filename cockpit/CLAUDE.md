@@ -155,6 +155,13 @@ ui ──► domain ◄── data
     Ver `PairingGatewayFactory` + `ConnectivityViewModel`.
   - **vários primitivos ambíguos** (vários `String`): troque por um **value object
     injetável** (ex.: `UpdateTarget` no `cockpit_module`).
+  - **parâmetro posicional OPCIONAL** (seam de teste, `Foo([this.x])`): o parser
+    lê `[String?]` como o tipo literal `[String]` — o `?` fica atrás do `]`, então
+    o param parece required não-nulo — e o boot morre no primeiro `get` com
+    `UnregisteredInstance: [String] not registered` (derrubou o cockpit-v1.19.1;
+    reproduce em debug E release). Seam de teste em classe registrada via `.new`
+    é opcional **nomeado** nullable (`Foo({this.x})`) — nomeado nullable é
+    filtrado como não-injetável. Ver `TerminalStatusServerImpl`.
 - **Tema**: nunca hardcode `Color(0x…)` / `TextStyle(fontFamily:…)`; leia via
   `context.colors.<token>` / `context.typo.<estilo>` (barrel `app/core/ui/themes`)
 
