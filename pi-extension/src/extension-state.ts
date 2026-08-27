@@ -103,6 +103,13 @@ export interface ExtensionState {
   activePeers: Map<string, PlainPeerChannel>;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   reconnectAttempt: number;
+  /** Upstream #128 — background retry for a FAILED INITIAL `relay.connect()`.
+   *  Distinct from `reconnectTimer`, which only engages (via `_onRelayClose`)
+   *  once a connection was established; a first-connect failure never reaches
+   *  `state === "started"`, so without this nothing retries and a daemon
+   *  whose boot raced DNS stays offline until a manual restart. */
+  initialConnectRetryTimer: ReturnType<typeof setTimeout> | null;
+  initialConnectRetryAttempt: number;
   relayLifecycleGeneration: number;
   rootLifecycleGeneration: number;
   cmdRootInFlight: Promise<void> | null;
@@ -188,6 +195,8 @@ export const ext: ExtensionState = {
   activePeers: new Map<string, PlainPeerChannel>(),
   reconnectTimer: null,
   reconnectAttempt: 0,
+  initialConnectRetryTimer: null,
+  initialConnectRetryAttempt: 0,
   relayLifecycleGeneration: 0,
   rootLifecycleGeneration: 0,
   cmdRootInFlight: null,
@@ -259,6 +268,14 @@ export const ext: ExtensionState = {
  * see the reset.
  */
 export function resetExtensionState(): void {
+  // A reset must not orphan live timers: nulling the field without
+  // clearTimeout leaves a scheduled callback that could fire against the
+  // zeroed generations (upstream #128 hardening — `_scheduleInitialConnectRetry`
+  // re-checks the captured generation, and clearing here closes the collision
+  // window where a post-reset `++relayLifecycleGeneration` re-issues a value a
+  // stale timer still holds).
+  if (ext.reconnectTimer !== null) clearTimeout(ext.reconnectTimer);
+  if (ext.initialConnectRetryTimer !== null) clearTimeout(ext.initialConnectRetryTimer);
   Object.assign(ext, {
     state: "idle",
     relay: null,
@@ -268,6 +285,8 @@ export function resetExtensionState(): void {
     activePeers: new Map<string, PlainPeerChannel>(),
     reconnectTimer: null,
     reconnectAttempt: 0,
+    initialConnectRetryTimer: null,
+    initialConnectRetryAttempt: 0,
     relayLifecycleGeneration: 0,
     rootLifecycleGeneration: 0,
     cmdRootInFlight: null,

@@ -1324,6 +1324,13 @@ function _goIdle(byeReason?: import("./protocol/types.js").ByeReason): void {
     ext.reconnectTimer = null;
   }
   ext.reconnectAttempt = 0;
+  // Same for a pending initial-connect retry: stop wins over the retry loop
+  // (upstream #128).
+  if (ext.initialConnectRetryTimer !== null) {
+    clearTimeout(ext.initialConnectRetryTimer);
+    ext.initialConnectRetryTimer = null;
+  }
+  ext.initialConnectRetryAttempt = 0;
 
   ext.stopAutoListener?.();
   ext.stopAutoListener = null;
@@ -1453,6 +1460,44 @@ function _scheduleReconnect(
     ext.reconnectTimer = null;
     if (!_isCurrentReconnect(lifecycleGeneration, url)) return;
     void _attemptReconnect(lifecycleGeneration, url);
+  }, delay);
+}
+
+/**
+ * Retry loop for a FAILED INITIAL `relay.connect()` (upstream #128 port).
+ * The close-driven reconnect path (`_scheduleReconnect` / `_onRelayClose`)
+ * only exists once a connection was established; before that, a boot-time
+ * DNS/TUN race or a briefly-down relay stranded daemons offline until a
+ * manual restart — `remote-pi daemon status` reported "running" but no
+ * WebSocket ever existed. Re-entering `_cmdStart` as a whole — instead of
+ * publishing a relay-less "started" state into the close-driven reconnect
+ * path — keeps every post-connect invariant (SelfRevoke producer,
+ * `sessionStartedAt` seeding, listeners, bridge attach) identical to a user
+ * re-running `/remote-pi`. `/remote-pi pair`'s auto-bootstrap uses the same
+ * direct `_cmdStart` call, so this is a supported entry.
+ *
+ * Invalidation mirrors `_scheduleReconnect`: `_goIdle` (stop/relay-off) and
+ * any newer `_cmdStart` bump `ext.relayLifecycleGeneration`, which a stale
+ * timer observes before acting; `session_shutdown` additionally sets
+ * `ext.disposed`. `ctx` is captured the way a user re-running the command
+ * would re-supply it; daemon ctxs (`_headlessUi`) are stable for the process
+ * lifetime.
+ */
+function _scheduleInitialConnectRetry(
+  lifecycleGeneration: number,
+  ctx: Pick<ExtensionContext, "ui" | "cwd">,
+): void {
+  if (ext.initialConnectRetryTimer !== null) return; // already scheduled
+
+  const idx = Math.min(ext.initialConnectRetryAttempt, RECONNECT_BACKOFFS_MS.length - 1);
+  const delay = RECONNECT_BACKOFFS_MS[idx]!;
+  ext.initialConnectRetryAttempt += 1;
+
+  ext.initialConnectRetryTimer = setTimeout(() => {
+    ext.initialConnectRetryTimer = null;
+    if (lifecycleGeneration !== ext.relayLifecycleGeneration) return; // stopped/replaced
+    if (ext.disposed || ext.state !== "idle" || ext.relay !== null) return;
+    void _cmdStart(ctx);
   }, delay);
 }
 
@@ -3257,7 +3302,15 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
       );
       return;
     }
-    ctx.ui.notify(`[remote-pi] relay connect failed: ${String(err)}`, "error");
+    // Not RoomAlreadyOpenError (deterministic conflict, stays fatal above):
+    // keep retrying in the background so a transient DNS/network/relay
+    // outage at process start cannot strand a daemon offline until manual
+    // restart (upstream #128).
+    ctx.ui.notify(
+      `[remote-pi] relay connect failed: ${String(err)} — retrying in the background`,
+      "error",
+    );
+    _scheduleInitialConnectRetry(lifecycleGeneration, ctx);
     return;
   }
 
@@ -3274,6 +3327,12 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   ext.peerShort = myShort;
   ext.myRoomId = roomId;
   ext.state = "started";
+  // A successful start settles the initial-connect retry loop (upstream #128).
+  if (ext.initialConnectRetryTimer !== null) {
+    clearTimeout(ext.initialConnectRetryTimer);
+    ext.initialConnectRetryTimer = null;
+  }
+  ext.initialConnectRetryAttempt = 0;
   // Set ext.sessionStartedAt ONLY on first /remote-pi start since process boot.
   // Subsequent start cycles (after stop) preserve the original epoch so the
   // app keeps treating it as the same session (and merges new events from
