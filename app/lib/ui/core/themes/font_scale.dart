@@ -28,6 +28,11 @@ class ScaledTextScaler extends TextScaler {
   @override
   double scale(double fontSize) => base.scale(fontSize) * factor;
 
+  /// Legacy linear-estimate fallback (deprecated upstream but still
+  /// abstract): compose the same way so old code paths see the product.
+  @override
+  double get textScaleFactor => base.textScaleFactor * factor;
+
   @override
   String toString() => 'ScaledTextScaler($base × $factor)';
 }

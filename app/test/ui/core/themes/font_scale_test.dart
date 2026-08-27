@@ -10,6 +10,9 @@ class _AccessibilityCurveScaler extends TextScaler {
   @override
   double scale(double fontSize) =>
       fontSize <= 14 ? fontSize : fontSize * (1 + (fontSize - 14) / 20);
+
+  @override
+  double get textScaleFactor => 1.0;
 }
 
 void main() {
