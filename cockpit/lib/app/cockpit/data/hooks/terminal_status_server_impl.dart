@@ -17,7 +17,14 @@ import 'package:flutter/foundation.dart';
 /// Cada conexão do `cockpit-hook` manda **uma linha JSON** (`{paneId, st, sid,
 /// tx, tok?}`) e fecha.
 class TerminalStatusServerImpl implements TerminalStatusServer {
-  TerminalStatusServerImpl([this._homeDir]);
+  // Opcional NOMEADO de propósito (não posicional): o auto_injector parseia o
+  // `toString` do construtor por regex e não entende `[String? x]` — o `?` fica
+  // atrás do `]` de fechar bracket, o parser lê o tipo literal `[String]`
+  // (não-nulo, required) e o boot morre com `UnregisteredInstance: [String]`
+  // no primeiro `get` (bug do cockpit-v1.19.1). Nomeado nullable é filtrado
+  // como não-injetável e o `TerminalStatusServerImpl.new` do cockpit_module
+  // resolve limpo. Ver a regra `.new` no CLAUDE.md.
+  TerminalStatusServerImpl({this._homeDir});
 
   /// Base dir for the `.cockpit` artifacts. Injectable so tests can point the
   /// endpoint file at a temp dir; defaults to the user home.

@@ -21,7 +21,7 @@ void main() {
   });
 
   test('start() publishes the endpoint file; stop() removes it', () async {
-    final srv = TerminalStatusServerImpl(home.path);
+    final srv = TerminalStatusServerImpl(homeDir: home.path);
     await srv.start((_) {});
 
     final file = File(
