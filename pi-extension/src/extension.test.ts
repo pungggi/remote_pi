@@ -5958,6 +5958,124 @@ describe("relay reconnect", () => {
     }
   });
 
+  test("initial relay.connect failure schedules a start retry; retry success starts normally", async () => {
+    vi.useFakeTimers();
+    try {
+      // First connect fails (boot-time DNS/TUN race, relay briefly down, …).
+      _defaultConnectImpl = () => Promise.reject(new Error("getaddrinfo ENOTFOUND relay.example"));
+      captureHandler("remote-pi");
+      const ctx = makeMockCtx("/tmp/remote-pi-initial-retry");
+      await _connectForTest(ctx);
+
+      expect(relayInstances).toHaveLength(1);
+      // Not half-started: no relay, but a retry is pending.
+      expect(_getState()).toBe("idle");
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        expect.stringContaining("retrying in the background"),
+        "error",
+      );
+
+      // Network recovers before the first backoff fires.
+      _defaultConnectImpl = async () => undefined;
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      // Retry re-ran the full start: new RelayClient, fully started.
+      expect(relayInstances).toHaveLength(2);
+      expect(_getState()).toBe("started");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("initial connect keeps retrying with backoff while the relay stays down", async () => {
+    vi.useFakeTimers();
+    try {
+      _defaultConnectImpl = () => Promise.reject(new Error("ECONNREFUSED"));
+      captureHandler("remote-pi");
+      await _connectForTest(makeMockCtx("/tmp/remote-pi-initial-backoff"));
+      expect(relayInstances).toHaveLength(1);
+      expect(_getState()).toBe("idle");
+
+      let prevCount = relayInstances.length;
+      for (const delay of [1_000, 2_000, 5_000]) {
+        await vi.advanceTimersByTimeAsync(delay);
+        expect(relayInstances.length).toBe(prevCount + 1);
+        expect(relayInstances.at(-1)!.close).toHaveBeenCalledTimes(1);
+        expect(_getState()).toBe("idle");
+        prevCount = relayInstances.length;
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("RoomAlreadyOpenError on initial connect does NOT schedule a start retry", async () => {
+    vi.useFakeTimers();
+    try {
+      _defaultConnectImpl = async () => {
+        throw new MockRoomAlreadyOpenError("AbCdEfGhIjKl");
+      };
+      captureHandler("remote-pi");
+      await _connectForTest(makeMockCtx("/tmp/remote-pi-dup-initial"));
+      expect(relayInstances).toHaveLength(1);
+
+      // Retrying a deterministic room conflict would fight the incumbent.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(relayInstances).toHaveLength(1);
+      expect(_getState()).toBe("idle");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("/remote-pi stop during the initial-retry window cancels the pending retry", async () => {
+    vi.useFakeTimers();
+    try {
+      _defaultConnectImpl = () => Promise.reject(new Error("ENOTFOUND"));
+      captureHandler("remote-pi");
+      await _connectForTest(makeMockCtx("/tmp/remote-pi-initial-stop"));
+      expect(relayInstances).toHaveLength(1);
+
+      const stop = captureHandler("remote-pi stop");
+      await stop("", makeMockCtx());
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(relayInstances).toHaveLength(1);
+      expect(_getState()).toBe("idle");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("manual re-start during the initial-retry window supersedes the old retry; its failure still retries", async () => {
+    vi.useFakeTimers();
+    try {
+      _defaultConnectImpl = () => Promise.reject(new Error("ENOTFOUND"));
+      captureHandler("remote-pi");
+      await _connectForTest(makeMockCtx("/tmp/remote-pi-initial-supersede"));
+      expect(relayInstances).toHaveLength(1); // A failed; old retry timer pending
+
+      // Manual re-start before the old 1s backoff fires: attempt B fails too.
+      // Before the supersede fix, B's retry scheduling was suppressed by A's
+      // still-registered timer and A's callback no-op'd on the generation
+      // mismatch — nothing ever retried again (PR #57 review).
+      await _startRelayForTest(makeMockCtx("/tmp/remote-pi-initial-supersede"));
+      expect(relayInstances).toHaveLength(2);
+      expect(_getState()).toBe("idle");
+
+      // B's failure owns the retry loop now — fresh ladder, attempts keep coming.
+      let prevCount = relayInstances.length;
+      for (const delay of [1_000, 2_000]) {
+        await vi.advanceTimersByTimeAsync(delay);
+        expect(relayInstances.length).toBe(prevCount + 1);
+        expect(_getState()).toBe("idle");
+        prevCount = relayInstances.length;
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("stale reconnect candidate cannot replace a stop/start Relay lifecycle", async () => {
     const staleConnect = deferred<void>();
     let staleConnectReleased = false;
