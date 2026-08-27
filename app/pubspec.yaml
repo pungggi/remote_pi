@@ -60,6 +60,11 @@ dependencies:
   # within ~1s instead of the 30s backoff ceiling.
   connectivity_plus: ^6.0.5
 
+  # Plan 132 — local notifications for session completion. Android-only
+  # use (same pin as Cockpit); fires a banner when a toggled session's
+  # agent run ends while the app is backgrounded.
+  flutter_local_notifications: ^22.2.0
+
   # Plan 29 — on-device speech-to-text for voice input. Captures the mic
   # and transcribes in-stream (no audio file is ever written); `onDevice`
   # forces local recognition so audio never leaves the device.

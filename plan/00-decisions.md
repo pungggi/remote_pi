@@ -30,6 +30,7 @@ Numeração `00-` é proposital: este arquivo carrega antes dos planos numerados
 | **Firebase-free por escolha** | Nenhum projeto Google, nenhum serviço central de push, nenhuma dependência de wake de terceiros — consistente com o relay self-hosted + open-source. O foreground service resolve "ficar conectado ao trocar de app" sem push; push (FCM/APNs, plano 36) permanece **diferido e não adotado** |
 | **Limites honestos aceitos** | `targetSdk=36` → Android 15/16 impõe o **teto de 6h** no tipo `dataSync` (depois o WS cai e reconecta no próximo foreground) + deep Doze limita rede. Isso é o **teto do Android**, não lacuna a fechar com outro plano: o backoff de retry + reconnect-on-resume recuperam sem perda de dados (relay resincroniza). Sobrevivência "infinita" em background não é perseguida |
 | **Toggle no Settings, default ON** | `Preferences.keepAliveInBackground` (default `true`). Usuário pode desligar pra economizar bateria (comportamento = hoje: cai ao trocar de app). Android-only; no-op nas demais plataformas |
+| **Notificação de conclusão = local, sobre o link vivo (fechado 2026-08-27, plano 132)** | Toggle por sessão (long-press no tile) + marcador `room_meta_update.meta.run_done` emitido no `agent_end` (uma vez por run), broadcast-only no relay (nunca persistido, nunca em `room_announced`). O app dispara notificação local quando backgrounded. Push/FCM (plano 36) permanece **diferido e não adotado** — sem Firebase; limites honestos (processo morto = sem banner; vê ao abrir o app) |
 
 ## Pareamento
 

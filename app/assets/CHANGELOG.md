@@ -11,6 +11,17 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Completion notifications** — long-press a session and flip "Notify when
+  finished": when that session's agent run ends while the app is
+  backgrounded (and the background connection is alive), you get a system
+  notification naming the session; tapping it opens that chat. Tasks started
+  from the computer's terminal count too. No message content ever travels in
+  the notification. Requires the relay + Pi extension shipped with this
+  release (older relays silently drop the marker — everything else keeps
+  working).
+
 ## [1.4.0] — 2026-08-24
 
 ### Added

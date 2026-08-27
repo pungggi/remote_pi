@@ -491,6 +491,51 @@ de controle que ampliava o churn de reconexão do phone.
 
 ---
 
+## Marcador de fim de run (`meta.run_done`) — 2026-08-27 (plano 132)
+
+Notificação local de conclusão de tarefa no app: o usuário liga um toggle
+por sessão (long-press no tile da Home) e recebe um banner do sistema quando
+o **run do agente** (não o LLM call) termina com o app em background.
+
+### Wire
+
+A extension emite no `agent_end` — **uma vez por run**, nunca por LLM call
+(`turn_end` pulsa a cada chamada e buzinaria durante o trabalho):
+
+```jsonc
+// extension → relay (control)
+{ "type": "room_meta_update", "room_id": "<room>",
+  "meta": { "run_done": { "turn_id": "<id|null>", "ended_at": 1735689600000 } } }
+
+// relay → apps inscritos (broadcast)
+{ "type": "room_meta_updated", "peer": "<epk>", "room_id": "<room>",
+  "meta": { "run_done": { "turn_id": "<id|null>", "ended_at": 1735689600000 } } }
+```
+
+### Semântica
+
+- `turn_id` **null** = run iniciada fora do app (terminal do PC / RPC) —
+  continua notificando (o caso "deixei rodando no PC e saí").
+- **Broadcast-only no relay**: `run_done` NÃO é persistido no `RoomMeta`, NÃO
+  viaja em `room_announced`, e sua presença **força o broadcast** mesmo com
+  estado inalterado (o marcador é um evento, não estado; o suppression de
+  frames idênticos não se aplica — cada `ended_at` é único por run).
+  Consequência: um app que reconecta **nunca** vê um marcador velho — replay
+  de marcador dispararia notificação dupla.
+- Relay antigo (pré-131) derruba a chave desconhecida silenciosamente: sem
+  notificação, resto inalterado (degradação graciosa, sem negociação de
+  versão).
+- O app deduplica de qualquer forma por `(peer, room) → ended_at` (defensivo
+  contra qualquer re-broadcast futuro) e só notifica: toggle ligado + app em
+  background + permissão concedida. O banner carrega nome da sessão + texto
+genérico — **nunca conteúdo de mensagem**.
+- Firebase-free mantido (`00-decisions.md`): a notificação é **local**,
+disparada pela conexão viva que o foreground service do plano 103 mantém. Não
+é push; se o processo foi morto pelo Android, o usuário vê o resultado ao
+abrir o app (sync normal).
+
+---
+
 ## Pareamento
 
 QR code mostra Pi-pubkey + room hint + token de uso único.

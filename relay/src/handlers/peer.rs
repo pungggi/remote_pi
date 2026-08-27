@@ -193,7 +193,9 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             let mut allowed = Vec::with_capacity(targets.len());
             for target in targets {
                 if target == sender
-                    || mesh_auth.is_authorized(&sender, &target, mesh.clone()).await
+                    || mesh_auth
+                        .is_authorized(&sender, &target, mesh.clone())
+                        .await
                 {
                     allowed.push(target);
                 }
@@ -394,12 +396,18 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     let context_usage_patch = meta_obj
                                         .and_then(|m| m.get("context_usage"))
                                         .map(|v| Some(v.clone()));
+                                    // Plan/132 — run-completion marker: opaque,
+                                    // broadcast-only passthrough (never stored on
+                                    // RoomMeta — see `RoomMetaPatch::run_done`).
+                                    let run_done_patch =
+                                        meta_obj.and_then(|m| m.get("run_done")).cloned();
                                     let patch = RoomMetaPatch {
                                         model: model_patch,
                                         thinking: thinking_patch,
                                         working: working_patch,
                                         git: git_patch,
                                         context_usage: context_usage_patch,
+                                        run_done: run_done_patch,
                                     };
                                     if !registry
                                         .update_room_meta(&peer_id, &target_room, patch)

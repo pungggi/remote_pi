@@ -283,6 +283,13 @@ impl PeerRegistry {
     /// the `skip_serializing_if` convention used for `RoomMeta` itself); the
     /// non-nullable `working` bool is always present in the broadcast.
     ///
+    /// Plan/132 exception — `patch.run_done` is **broadcast-only**: it is
+    /// never written to the stored metas, it rides the broadcast verbatim
+    /// from the patch, and its presence forces the broadcast even when the
+    /// stored state is otherwise unchanged (each marker is unique by
+    /// `ended_at`, so it can never be absorbed by the identical-frame
+    /// suppression below).
+    ///
     /// An empty patch (no fields present) still returns `true` if the
     /// `(peer, room)` pair exists, but skips the broadcast — nothing changed.
     pub async fn update_room_meta(
@@ -372,7 +379,11 @@ impl PeerRegistry {
         // updates land in the same firehose counter as suppressed
         // `rooms_check` replies (observability: the 10s log line shows the
         // dam working).
-        if patch.is_empty() || !changed {
+        // Plan/132 — a `run_done` marker overrides the suppression: it is
+        // not stored state, it is an event, and its payload is unique per
+        // run, so "identical re-push" cannot apply to it.
+        let marker = patch.run_done.clone();
+        if (patch.is_empty() || !changed) && marker.is_none() {
             if !patch.is_empty() {
                 self.metrics.inc_rooms_suppressed(1);
             }
@@ -411,6 +422,11 @@ impl PeerRegistry {
             // Opaque context-usage snapshot (only when the Pi reported one).
             if let Some(cu) = &current_context_usage {
                 meta_obj.insert("context_usage".to_string(), cu.clone());
+            }
+            // Plan/132 — run-completion marker: forwarded verbatim from the
+            // patch, never from stored state (it is not stored).
+            if let Some(rd) = &marker {
+                meta_obj.insert("run_done".to_string(), rd.clone());
             }
             let msg = serde_json::json!({
                 "type": "room_meta_updated",
@@ -672,8 +688,12 @@ mod tests {
     /// Helper: a Pi with one `main` room plus an `app` subscribed to that
     /// peer's room events. Returns the registry, its firehose metrics handle,
     /// the peer id, and the app's receiver (drained of any backfill).
-    async fn meta_fixture()
-    -> (PeerRegistry, Arc<FirehoseMetrics>, String, mpsc::UnboundedReceiver<Message>) {
+    async fn meta_fixture() -> (
+        PeerRegistry,
+        Arc<FirehoseMetrics>,
+        String,
+        mpsc::UnboundedReceiver<Message>,
+    ) {
         let presence = Arc::new(PresenceManager::new());
         let rooms = Arc::new(RoomManager::new());
         let metrics = Arc::new(FirehoseMetrics::new());
@@ -859,6 +879,77 @@ mod tests {
         assert_eq!(v["meta"]["model"], "opus", "unchanged field re-carried");
     }
 
+    /// Plan/132 — a `run_done` marker rides the broadcast even when stored
+    /// state is unchanged, and is never persisted: a later patch's broadcast
+    /// must not re-carry a stale marker.
+    #[tokio::test]
+    async fn run_done_marker_broadcasts_even_when_state_unchanged() {
+        let (reg, _metrics, pi, mut rx_app) = meta_fixture().await;
+
+        // Marker-only patch: nothing stored changes, but the marker is an
+        // event, not state — it must reach subscribers.
+        let marker = serde_json::json!({ "turn_id": "t-1", "ended_at": 1735689600000i64 });
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    run_done: Some(marker.clone()),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+
+        let v = recv_meta(&mut rx_app);
+        assert_eq!(v["meta"]["run_done"], marker);
+
+        // Not persisted: a follow-up stored-field patch must NOT re-carry
+        // the marker (a replayed marker would re-fire the phone's
+        // completion notification).
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    working: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        let v = recv_meta(&mut rx_app);
+        assert_eq!(v["meta"]["working"], true);
+        assert!(
+            v["meta"].get("run_done").is_none(),
+            "stored RoomMeta never carries run_done"
+        );
+    }
+
+    /// Plan/132 — consecutive markers (unique `ended_at`) each broadcast;
+    /// the identical-frame suppression cannot absorb them.
+    #[tokio::test]
+    async fn run_done_markers_are_not_deduped() {
+        let (reg, _metrics, pi, mut rx_app) = meta_fixture().await;
+
+        for (i, ts) in [1735689600000i64, 1735689660000].into_iter().enumerate() {
+            let marker = serde_json::json!({ "turn_id": format!("t-{i}"), "ended_at": ts });
+            assert!(
+                reg.update_room_meta(
+                    &pi,
+                    "main",
+                    RoomMetaPatch {
+                        run_done: Some(marker),
+                        ..Default::default()
+                    },
+                )
+                .await
+            );
+            let v = recv_meta(&mut rx_app);
+            assert_eq!(v["meta"]["run_done"]["ended_at"], ts);
+        }
+    }
+
     /// Suppression is exact-match: same token count but different opaque
     /// context_usage payload is a REAL change and must broadcast.
     #[tokio::test]
@@ -952,7 +1043,10 @@ mod tests {
         let v = recv_meta(&mut rx_app);
         assert_eq!(v["meta"]["working"], false);
         let rooms = reg.rooms_of(&pi);
-        let main = rooms.iter().find(|r| r.room_id == "main").expect("main room");
+        let main = rooms
+            .iter()
+            .find(|r| r.room_id == "main")
+            .expect("main room");
         assert!(!main.working, "rooms_of (last conn) matches broadcast");
     }
 
@@ -987,7 +1081,10 @@ mod tests {
         );
         let [.., rooms_emit2, rooms_supp2] = metrics.snapshot();
         assert_eq!(rooms_emit2, rooms_emit, "no subscriber → no emitted frame");
-        assert_eq!(rooms_supp2, rooms_supp, "changed state is not a suppression");
+        assert_eq!(
+            rooms_supp2, rooms_supp,
+            "changed state is not a suppression"
+        );
 
         // Subscribe an app, then change again → emitted += 1 (per
         // subscriber, matching the peer_online convention).

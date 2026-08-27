@@ -64,6 +64,16 @@ pub struct RoomMetaPatch {
     /// Opaque context-usage snapshot (JSON value passthrough). Same
     /// `Option<Option<_>>` semantics as `git`.
     pub context_usage: Option<Option<serde_json::Value>>,
+    /// Plan/132 — run-completion marker (opaque JSON passthrough:
+    /// `{turn_id, ended_at}`). **Broadcast-only**: unlike every other field
+    /// it is never written to `RoomMeta`, never persisted, and never carried
+    /// in `room_announced` — a marker is only meaningful live (it drives the
+    /// phone's local completion notification; a replayed marker would
+    /// re-fire one). `Some(_)` also forces the `room_meta_updated`
+    /// broadcast even when stored state is otherwise unchanged (each marker
+    /// carries a unique `ended_at`, so genuine markers can never collide
+    /// with the identical-frame suppression).
+    pub run_done: Option<serde_json::Value>,
 }
 
 impl RoomMetaPatch {
@@ -76,6 +86,7 @@ impl RoomMetaPatch {
             && self.working.is_none()
             && self.git.is_none()
             && self.context_usage.is_none()
+            && self.run_done.is_none()
     }
 }
 

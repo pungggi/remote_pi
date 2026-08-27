@@ -79,6 +79,7 @@ sealed class ControlInbound {
         final rawThinking = meta?['thinking'] as String?;
         final rawGit = meta?['git'];
         final rawContextUsage = meta?['context_usage'];
+        final rawRunDone = meta?['run_done'];
         return RoomMetaUpdated(
           peer: j['peer'] as String,
           roomId: j['room_id'] as String,
@@ -90,6 +91,16 @@ sealed class ControlInbound {
           // cleared state), so a plain nullable bool models the patch:
           // null = absent (preserve current), true/false = set.
           working: meta?['working'] as bool?,
+          // Plan/132 — run-completion marker: nullable-as-absent like
+          // `working` (an object key is either absent or present — there is
+          // no "explicitly null" form on the wire).
+          runDone: rawRunDone is Map<String, dynamic> &&
+                  rawRunDone['ended_at'] is num
+              ? RunDoneMarker(
+                  turnId: rawRunDone['turn_id'] as String?,
+                  endedAtMs: (rawRunDone['ended_at'] as num).toInt(),
+                )
+              : null,
           git: rawGit is Map<String, dynamic>
               ? GitStatus.fromJson(rawGit)
               : null,
@@ -434,6 +445,12 @@ class RoomMetaUpdated extends ControlInbound {
   /// present" (apply, even if null).
   final ContextUsage? contextUsage;
   final bool hasContextUsage;
+
+  /// Plan/132 — run-completion marker from `meta.run_done` (broadcast-only
+  /// on the relay; fires once per agent run). Like `working`, it is
+  /// nullable-as-absent: an object key is either absent or present, so no
+  /// `hasRunDone` flag is needed.
+  final RunDoneMarker? runDone;
   const RoomMetaUpdated({
     required this.peer,
     required this.roomId,
@@ -442,10 +459,55 @@ class RoomMetaUpdated extends ControlInbound {
     this.working,
     this.git,
     this.contextUsage,
+    this.runDone,
     this.hasModel = true,
     this.hasThinking = true,
     this.hasGit = true,
     this.hasContextUsage = true,
+  });
+}
+
+/// Plan/132 — run-completion marker parsed from `meta.run_done`.
+///
+/// Emitted by the Pi-extension on `agent_end` (once per agent RUN — never
+/// per LLM call) and forwarded by the relay as a **broadcast-only** field:
+/// it is never persisted room state and never rides `room_announced`, so a
+/// reconnecting app can never observe a stale marker. Drives the app's local
+/// completion notification for sessions the user toggled on.
+///
+/// `turnId` is null when the run wasn't app-seeded (started from the Pi
+/// terminal / RPC) — those runs still notify.
+class RunDoneMarker {
+  final String? turnId;
+  final int endedAtMs;
+
+  const RunDoneMarker({required this.turnId, required this.endedAtMs});
+
+  @override
+  bool operator ==(Object other) =>
+      other is RunDoneMarker &&
+      other.turnId == turnId &&
+      other.endedAtMs == endedAtMs;
+
+  @override
+  int get hashCode => Object.hash(turnId, endedAtMs);
+}
+
+/// Plan/132 — a run-completion marker observed for a `(peer, room)` pair,
+/// with the epk already normalized to the app's canonical standard-base64
+/// form by [ConnectionManager]. Emitted on [ConnectionManager.runDoneStream]
+/// BEFORE any room-cache bookkeeping: a marker is an event, not state, and
+/// must not be lost to the identical-frame room dedup (nor depend on the
+/// room being cached yet).
+class RunDoneEvent {
+  final String epk;
+  final String roomId;
+  final RunDoneMarker marker;
+
+  const RunDoneEvent({
+    required this.epk,
+    required this.roomId,
+    required this.marker,
   });
 }
 
