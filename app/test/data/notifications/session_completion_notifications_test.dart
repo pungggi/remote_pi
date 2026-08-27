@@ -15,6 +15,9 @@ class _FakeLocalNotifications implements LocalNotifications {
   bool permission = true;
   final List<({int id, String title, String body, String? payload})> shown = [];
 
+  /// Plan 132 review fix — simulates the cold-start launch payload.
+  String? launchPayload;
+
   @override
   Future<void> initialize() async {}
 
@@ -36,6 +39,13 @@ class _FakeLocalNotifications implements LocalNotifications {
 
   @override
   Stream<String> get taps => const Stream.empty();
+
+  @override
+  Future<String?> consumeLaunchTap() async {
+    final p = launchPayload;
+    launchPayload = null;
+    return p;
+  }
 }
 
 void main() {

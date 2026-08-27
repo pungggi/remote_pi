@@ -10,8 +10,9 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 /// other platforms (no-op initialize / permission always granted / show
 /// discarded by the OS as a heads-up-less notification).
 abstract class LocalNotifications {
-  /// Initialize the plugin. MUST run before `runApp` so a cold-start from a
-  /// notification tap is delivered to [taps].
+  /// Initialize the plugin. MUST run before `runApp` — both because the
+  /// Android plugin needs it and so the launch details below are queryable
+  /// at first frame.
   Future<void> initialize();
 
   /// Android 13+: request `POST_NOTIFICATIONS`. Returns whether it is
@@ -31,8 +32,16 @@ abstract class LocalNotifications {
     String? payload,
   });
 
-  /// Payloads of tapped notifications (warm tap and cold start alike).
+  /// Payloads of tapped notifications **while the app was running** (warm
+  /// taps). A notification that LAUNCHED a terminated app never fires the
+  /// response callback — that payload is only available once, via
+  /// [consumeLaunchTap].
   Stream<String> get taps;
+
+  /// The payload of the notification that launched the app (cold start),
+  /// or `null` when the app was not launched from a notification. One-shot:
+  /// the first call consumes it, subsequent calls return `null`.
+  Future<String?> consumeLaunchTap();
 }
 
 /// Production implementation on top of `flutter_local_notifications`.
@@ -51,6 +60,13 @@ class FlutterLocalNotifications implements LocalNotifications {
       FlutterLocalNotificationsPlugin();
   final StreamController<String> _taps = StreamController<String>.broadcast();
   bool _initialized = false;
+
+  /// Payload captured from `getNotificationAppLaunchDetails()` during
+  /// [initialize] — the notification that LAUNCHED the terminated app.
+  /// Delivered once via [consumeLaunchTap] (the response callback only
+  /// fires for taps while the app is running; and at initialize-time there
+  /// is no listener on the broadcast `taps` stream yet to carry it).
+  String? _launchPayload;
 
   @override
   Future<void> initialize() async {
@@ -71,10 +87,28 @@ class FlutterLocalNotifications implements LocalNotifications {
           if (payload != null && payload.isNotEmpty) _taps.add(payload);
         },
       );
+      // Cold start: the launch notification never fires the callback above —
+      // the payload is only reachable here (plugin docs: "To handle when a
+      // notification launched an application, use
+      // getNotificationAppLaunchDetails").
+      final details = await _plugin.getNotificationAppLaunchDetails();
+      if (details != null && details.didNotificationLaunchApp) {
+        final payload = details.notificationResponse?.payload;
+        if (payload != null && payload.isNotEmpty) _launchPayload = payload;
+      }
     } catch (_) {
-      // Unavailable — show()/taps become no-ops, the app keeps booting.
+      // Unavailable — show()/taps/consumeLaunchTap become no-ops, the app
+      // keeps booting.
     }
     _initialized = true;
+  }
+
+  @override
+  Future<String?> consumeLaunchTap() async {
+    await initialize();
+    final payload = _launchPayload;
+    _launchPayload = null;
+    return (payload == null || payload.isEmpty) ? null : payload;
   }
 
   AndroidFlutterLocalNotificationsPlugin? get _android =>

@@ -78,6 +78,13 @@ class PiperApp extends StatefulWidget {
 
 class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
   StreamSubscription<String>? _completionTapSub;
+
+  /// Plan 132 — payload of a completion notification that LAUNCHED the app
+  /// (cold start). Parked while the router is still on /boot-ish routes and
+  /// drained on the next route change — same pattern as the plan/104
+  /// cold-start share (the boot state settles asynchronously, then the
+  /// redirect fires the listener that retries).
+  String? _launchTapPayload;
   late final _router = buildRouter(
     injector.get<PairingStorage>(),
     injector.get<ConnectionManager>(),
@@ -93,13 +100,18 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
     // Plan/104 — when boot lands past /boot with a pending shared image, route
     // to the chat (cold-start share). Warm shares are handled on resume.
     _router.routerDelegate.addListener(_onRouteChanged);
-    // Plan/132 — a tapped completion notification routes to that session
-    // (cold start delivers through the initialize() callback, warm taps
-    // through this stream).
+    // Plan/132 — a tapped completion notification routes to that session.
+    // Warm taps arrive on this stream; a notification that LAUNCHED the
+    // terminated app never fires the callback — its payload is consumed
+    // once below.
     _completionTapSub = injector
         .get<LocalNotifications>()
         .taps
         .listen(_openFromCompletionTap);
+    // ignore: unawaited_futures
+    injector.get<LocalNotifications>().consumeLaunchTap().then((payload) {
+      if (payload != null) _openFromCompletionTap(payload);
+    });
   }
 
   @override
@@ -163,7 +175,13 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
   }
 
   // Plan/104 — Share-to-attach routing.
-  void _onRouteChanged() => _maybeRouteToChat();
+  void _onRouteChanged() {
+    _maybeRouteToChat();
+    // Plan 132 — retry a parked cold-start notification tap now that the
+    // router may have landed past boot.
+    // ignore: unawaited_futures
+    _drainLaunchTap();
+  }
 
   Future<void> _consumeShares() async {
     final img = await injector.get<IImagePickerService>().consumeSharedImage();
@@ -194,6 +212,15 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
     _router.push('/chat');
   }
 
+  /// Plan 132 — hand a parked launch-tap payload back to the open path
+  /// (which parks it again if the router is somehow still booting).
+  Future<void> _drainLaunchTap() async {
+    final payload = _launchTapPayload;
+    if (payload == null) return;
+    _launchTapPayload = null;
+    await _openFromCompletionTap(payload);
+  }
+
   /// Plan/132 — open the session a completion notification points at.
   /// Mirrors Home's `openSession` path EXACTLY: set the prefs selection +
   /// persist the room on the PeerRecord, mark the UI selection, push the
@@ -211,12 +238,18 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
 
     final loc =
         _router.routerDelegate.currentConfiguration.last.matchedLocation;
-    if (loc == '/chat' ||
-        loc == '/boot' ||
+    // Still booting — PARK the intent and retry on the next route change
+    // (the boot redirect fires the router listener). The cold-start share
+    // solves this the same way (plan/104).
+    if (loc == '/boot' ||
         loc.startsWith('/onboarding') ||
         loc == '/sync-required') {
+      _launchTapPayload ??= payload;
       return;
     }
+    // Already chatting — the user is looking at the app; drop the tap (the
+    // banner was for the backgrounded case).
+    if (loc == '/chat') return;
 
     final epk = toAppEpk(target.epk);
     final roomId = target.roomId;
