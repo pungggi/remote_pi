@@ -4,13 +4,26 @@ import 'package:cockpit/app/cockpit/domain/entities/task_run.dart';
 /// Executa tasks num PTY, reusando a mecânica de spawn/stream/kill do cockpit.
 /// Contrato no domínio; a impl (`data/`) usa `kyroon_pty`. A `ui/` só conhece
 /// esta interface (via ViewModel).
+/// URL de preview detectada no output de uma task (plano 58) — o shell abre o
+/// navegador embutido nela (ou o browser do SO, sem webview inline).
+class TaskPreviewUrl {
+  const TaskPreviewUrl(this.taskId, this.url);
+  final String taskId;
+  final String url;
+}
+
 abstract class TaskRunnerGateway {
   /// Stream de estados vivos de TODAS as tasks (uma emissão por transição).
   Stream<TaskRun> runs();
 
-  /// Bytes do stdout/stderr de uma task — alimenta o CockpitTerminal dela.
+  /// Primeira URL local detectada no output de cada run (ou a `previewUrl`
+  /// fixa da task, no start). No máximo uma emissão por execução; tasks com
+  /// `preview: false` nunca emitem.
+  Stream<TaskPreviewUrl> previewUrls();
+
+  /// Texto decodificado do stdout/stderr de uma task — alimenta o terminal.
   /// Stream vazio se a task não está rodando.
-  Stream<List<int>> output(String taskId);
+  Stream<String> output(String taskId);
 
   /// Estado atual conhecido de uma task (idle se nunca rodou).
   TaskRun runOf(String taskId);

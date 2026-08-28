@@ -43,7 +43,8 @@ Future<void> _loadFonts() async {
   ]) {
     final f = File('${_pubCache()}/shadcn_flutter-0.0.52/lib/$icon');
     if (!f.existsSync()) continue;
-    final family = 'packages/shadcn_flutter/${icon.split('/').last.split('.').first}';
+    final family =
+        'packages/shadcn_flutter/${icon.split('/').last.split('.').first}';
     final bytes = f.readAsBytesSync().buffer.asByteData();
     await (FontLoader(family)..addFont(Future.value(bytes))).load();
   }
@@ -147,7 +148,10 @@ class _LegacyBar extends StatelessWidget {
         .map(
           (m) => MenuButton(
             subMenu: const <MenuItem>[],
-            child: Text(m.label, style: context.typo.label.copyWith(fontSize: 13)),
+            child: Text(
+              m.label,
+              style: context.typo.label.copyWith(fontSize: 13),
+            ),
           ),
         )
         .toList(growable: false),
@@ -186,7 +190,10 @@ Widget _host(Widget child) {
       colors: tokens.colors,
       typo: tokens.typo,
       syntax: tokens.syntax,
-      child: Scaffold(child: Align(alignment: Alignment.topLeft, child: child)),
+      terminal: tokens.terminal,
+      child: Scaffold(
+        child: Align(alignment: Alignment.topLeft, child: child),
+      ),
     ),
   );
 }
@@ -194,43 +201,45 @@ Widget _host(Widget child) {
 void main() {
   setUpAll(_loadFonts);
 
+  testWidgets(
+    'preview: barra fechada — antes (menus soltos) x depois (hambúrguer)',
+    (tester) async {
+      tester.view.physicalSize = const Size(1800, 240);
+      tester.view.devicePixelRatio = 2;
+      addTearDown(tester.view.reset);
 
-  testWidgets('preview: barra fechada — antes (menus soltos) x depois (hambúrguer)', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(1800, 240);
-    tester.view.devicePixelRatio = 2;
-    addTearDown(tester.view.reset);
-
-    await tester.pumpWidget(
-      _host(
-        SizedBox(
-          width: 900,
-          child: Column(
-            children: [
-              _titleBar(hamburger: false), // ANTES
-              const SizedBox(height: 8),
-              _titleBar(hamburger: true), // DEPOIS
-            ],
+      await tester.pumpWidget(
+        _host(
+          SizedBox(
+            width: 900,
+            child: Column(
+              children: [
+                _titleBar(hamburger: false), // ANTES
+                const SizedBox(height: 8),
+                _titleBar(hamburger: true), // DEPOIS
+              ],
+            ),
           ),
         ),
-      ),
-    );
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 350));
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 350));
 
-    await expectLater(
-      find.byType(ShadcnApp),
-      matchesGoldenFile('preview_titlebar_compare.png'),
-    );
-  });
+      await expectLater(
+        find.byType(ShadcnApp),
+        matchesGoldenFile('preview_titlebar_compare.png'),
+      );
+    },
+  );
 
   testWidgets('preview: popup aberto no hambúrguer', (tester) async {
     tester.view.physicalSize = const Size(2800, 1600);
     tester.view.devicePixelRatio = 2;
     addTearDown(tester.view.reset);
 
-    await tester.pumpWidget(_host(SizedBox(width: 1400, child: _titleBar(hamburger: true))));
+    await tester.pumpWidget(
+      _host(SizedBox(width: 1400, child: _titleBar(hamburger: true))),
+    );
     await tester.tap(find.byIcon(Icons.menu));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 350));
@@ -246,7 +255,9 @@ void main() {
     tester.view.devicePixelRatio = 2;
     addTearDown(tester.view.reset);
 
-    await tester.pumpWidget(_host(SizedBox(width: 1400, child: _titleBar(hamburger: true))));
+    await tester.pumpWidget(
+      _host(SizedBox(width: 1400, child: _titleBar(hamburger: true))),
+    );
     await tester.tap(find.byIcon(Icons.menu));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 350));

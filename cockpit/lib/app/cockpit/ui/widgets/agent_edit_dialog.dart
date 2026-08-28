@@ -1,5 +1,6 @@
 import 'package:cockpit/app/cockpit/ui/session/agent_session.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:flutter/services.dart'
     show FilteringTextInputFormatter, TextInputFormatter;
 import 'package:shadcn_flutter/shadcn_flutter.dart';
@@ -14,7 +15,7 @@ Future<AgentEditResult?> showAgentEditDialog(
 }) {
   return showDialog<AgentEditResult>(
     context: context,
-    barrierColor: const Color(0x99000000),
+    barrierColor: context.colors.scrim,
     builder: (context) => _AgentEditDialog(session: session),
   );
 }
@@ -56,10 +57,12 @@ class _AgentEditDialogState extends State<_AgentEditDialog> {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final session = widget.session;
+    final ctx = session.contextUsage;
+    final tr = context.t.cockpit.agentEditDialog;
 
     return AlertDialog(
       title: Text(
-        'Edit agent',
+        tr.title,
         style: context.typo.title.copyWith(fontSize: 16, color: colors.text),
       ),
       content: ConstrainedBox(
@@ -69,11 +72,11 @@ class _AgentEditDialogState extends State<_AgentEditDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _Label('Agent name'),
+              _Label(tr.agentName),
               const SizedBox(height: 6),
               _Field(
                 controller: _name,
-                hint: 'Agent name',
+                hint: tr.agentName,
                 inputFormatters: [
                   FilteringTextInputFormatter(
                     RegExp(r' '),
@@ -84,13 +87,13 @@ class _AgentEditDialogState extends State<_AgentEditDialog> {
               ),
               const SizedBox(height: 16),
 
-              _SectionTitle('Relay (remote-pi)'),
+              _SectionTitle(tr.relaySection),
               const SizedBox(height: 8),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    'Auto-connect on start',
+                    tr.autoConnect,
                     style: context.typo.label.copyWith(color: colors.text2),
                   ),
                   Switch(
@@ -101,11 +104,17 @@ class _AgentEditDialogState extends State<_AgentEditDialog> {
               ),
               const SizedBox(height: 18),
 
-              _SectionTitle('Information'),
+              _SectionTitle(tr.informationSection),
               const SizedBox(height: 8),
-              _InfoRow('Folder', session.workingDirectory),
-              _InfoRow('Model', session.model?.name ?? '—'),
-              _InfoRow('State', _statusLabel(session.status)),
+              _InfoRow(tr.folder, session.workingDirectory),
+              _InfoRow(tr.model, session.model?.name ?? '—'),
+              _InfoRow(tr.state, _statusLabel(context, session.status)),
+              _InfoRow(
+                tr.context,
+                ctx?.percent != null
+                    ? '${ctx!.percent!.toStringAsFixed(ctx.percent! < 10 ? 1 : 0)}%  (${ctx.tokens ?? "?"}/${ctx.contextWindow})'
+                    : '—',
+              ),
             ],
           ),
         ),
@@ -113,20 +122,23 @@ class _AgentEditDialogState extends State<_AgentEditDialog> {
       actions: [
         OutlineButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          child: Text(context.t.common.cancel),
         ),
-        PrimaryButton(onPressed: _save, child: const Text('Save')),
+        PrimaryButton(onPressed: _save, child: Text(context.t.common.save)),
       ],
     );
   }
 
-  String _statusLabel(AgentStatus status) => switch (status) {
-    AgentStatus.empty => 'empty',
-    AgentStatus.booting => 'starting',
-    AgentStatus.idle => 'ready',
-    AgentStatus.streaming => 'streaming',
-    AgentStatus.crashed => 'ended',
-  };
+  String _statusLabel(BuildContext context, AgentStatus status) {
+    final tr = context.t.cockpit.agentEditDialog;
+    return switch (status) {
+      AgentStatus.empty => tr.statusEmpty,
+      AgentStatus.booting => tr.statusStarting,
+      AgentStatus.idle => tr.statusReady,
+      AgentStatus.streaming => tr.statusStreaming,
+      AgentStatus.crashed => tr.statusEnded,
+    };
+  }
 }
 
 class _SectionTitle extends StatelessWidget {

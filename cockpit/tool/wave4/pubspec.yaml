@@ -1,0 +1,15 @@
+name: wave4_spike
+description: Spike do gate da Wave 4 (plano 58) — anaki roda num Dart headless (fora do Flutter)? Não é código de produção.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  anaki_orm: ^0.1.1
+  anaki_sqlite: ^0.1.4
+  cockpit_core:
+    path: ../../packages/cockpit_core
+  cockpit_engine:
+    path: ../../packages/cockpit_engine

@@ -21,8 +21,7 @@ void main() {
       path: '/',
       register: (c) => c.route(
         '/',
-        child: (ctx, s) =>
-            Text('lsp:${inject<LspServerPool>().runtimeType}'),
+        child: (ctx, s) => Text('lsp:${inject<LspServerPool>().runtimeType}'),
       ),
     );
     final app = createModule(

@@ -1,0 +1,38 @@
+<!doctype html>
+<!-- Esqueleto do preview de markdown (plano 58). O Dart monta a página final
+     substituindo os placeholders do nonce (CSP dos scripts inline), do CSS e
+     dos três blocos de JS (assets vendorizados, inlined — a CSP não permite
+     request nenhum além de ckp-res:/data: pra imagem).
+
+     NÃO escreva aqui dentro os nomes dos placeholders nem tags do documento:
+     a substituição é textual, a primeira ocorrência vencia, e o CSS ia parar
+     DENTRO deste comentário — a folha de estilo abaixo ficava com o literal.
+     Efeito: página sem estilo nenhum, fundo branco e fonte serifada,
+     ignorando o tema do app. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src ckp-res: data:; style-src 'unsafe-inline'; script-src 'nonce-__NONCE__'"
+    />
+    <style>
+      __CSS__
+    </style>
+  </head>
+  <body>
+    <div id="content"></div>
+    <script nonce="__NONCE__">
+      __JS_MARKDOWN_IT__;
+    </script>
+    <script nonce="__NONCE__">
+      __JS_PURIFY__;
+    </script>
+    <script nonce="__NONCE__">
+      __JS_MORPHDOM__;
+    </script>
+    <script nonce="__NONCE__">
+      __JS_PREVIEW__;
+    </script>
+  </body>
+</html>

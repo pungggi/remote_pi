@@ -29,6 +29,10 @@ const Map<String, String> _extToLanguage = {
   'dbq': 'sql',
   // `.ckp` (layout de orquestração de panes) é YAML puro.
   'ckp': 'yaml',
+  // `.http`/`.rest` (REST Client / JetBrains HTTP Client) tem gramática
+  // própria — a `http` do package é o wire format cru e aborta neste formato.
+  'http': 'httpfile',
+  'rest': 'httpfile',
   'html': 'xml',
   'htm': 'xml',
   'xhtml': 'xml',
@@ -65,6 +69,126 @@ void _ensureCustomLanguages() {
   _customLanguagesRegistered = true;
   hl.highlight.registerLanguage('dotenv', _dotenvMode());
   hl.highlight.registerLanguage('gomod', _goModMode());
+  hl.highlight.registerLanguage('httpfile', _httpFileMode());
+}
+
+/// Gramática do arquivo `.http` (dialeto REST Client / JetBrains HTTP Client).
+///
+/// A gramática `http` do package **não** serve aqui: ela descreve o wire
+/// format (`GET /x HTTP/1.1`), exige o sufixo `HTTP/1.1` na request-line e traz
+/// `illegal: '\S'` no topo — ou seja, `###`, `@var` e `{{var}}` abortariam o
+/// parse e o arquivo inteiro cairia em plaintext. Esta gramática cobre o
+/// formato de arquivo: separador `###`, variáveis `@nome = valor`,
+/// interpolação `{{nome}}`, request-line sem versão, headers, `< body.json` /
+/// `> saida.json` e o body JSON como sub-idioma.
+///
+/// Mesma restrição do dotenv: lookahead `(?=...)` em `begin` não casa no port
+/// Dart — as regras se ancoram em `^` e usam `returnBegin`/`excludeEnd`. E
+/// **sem `illegal` no topo**: arquivo com sintaxe exótica degrada em realce
+/// parcial em vez de sumir.
+hl.Mode _httpFileMode() {
+  final interpolation = hl.Mode(
+    className: 'variable',
+    begin: r'\{\{[^{}\n]*\}\}',
+    relevance: 0,
+  );
+  final comment = hl.Mode(
+    className: 'comment',
+    begin: r'^[ \t]*(#|//)',
+    end: r'$',
+    relevance: 0,
+  );
+  return hl.Mode(
+    case_insensitive: false,
+    contains: [
+      // `### Nome do request` — separador + rótulo. Vem antes do comentário
+      // porque `###` também começa com `#`.
+      hl.Mode(className: 'section', begin: r'^[ \t]*###.*$', relevance: 10),
+      comment,
+      // `@nome = valor` (declaração de variável do arquivo).
+      hl.Mode(
+        begin: r'^[ \t]*@[A-Za-z_][A-Za-z0-9_.-]*',
+        returnBegin: true,
+        relevance: 10,
+        contains: [
+          hl.Mode(
+            className: 'attr',
+            begin: r'@[A-Za-z_][A-Za-z0-9_.-]*',
+            endsParent: true,
+            relevance: 0,
+          ),
+        ],
+        starts: hl.Mode(
+          end: r'$',
+          relevance: 0,
+          contains: [
+            hl.Mode(className: 'operator', begin: r'=', relevance: 0),
+            interpolation,
+          ],
+        ),
+      ),
+      // Request-line: verbo + URL (a versão `HTTP/1.1` é opcional aqui).
+      hl.Mode(
+        begin:
+            r'^[ \t]*(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT|GRAPHQL)[ \t]+',
+        returnBegin: true,
+        relevance: 10,
+        contains: [
+          hl.Mode(
+            className: 'keyword',
+            begin:
+                r'(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT|GRAPHQL)',
+            relevance: 0,
+          ),
+        ],
+        starts: hl.Mode(
+          end: r'$',
+          relevance: 0,
+          contains: [
+            interpolation,
+            hl.Mode(className: 'string', begin: r'[^ \t\n]+', relevance: 0),
+          ],
+        ),
+      ),
+      // `< ./body.json` (importa body) e `> ./out.json` (salva resposta).
+      hl.Mode(
+        className: 'meta',
+        begin: r'^[ \t]*[<>][ \t]+\S.*$',
+        relevance: 0,
+      ),
+      // Body JSON: começa na linha em branco seguida de `{` ou `[` e vai até o
+      // próximo separador (ou o fim do arquivo). `returnBegin` devolve o
+      // cursor para o sub-idioma ver o objeto inteiro.
+      hl.Mode(
+        begin: '\n[ \t]*\n[ \t]*[\\{\\[]',
+        returnBegin: true,
+        end: r'^[ \t]*###',
+        returnEnd: true,
+        subLanguage: ['json'],
+        relevance: 0,
+      ),
+      // Header `Nome: valor` — só o nome é `attribute`; o valor segue neutro
+      // (com interpolação pintada). O begin valida a linha inteira até o `:` e
+      // `returnBegin` devolve o cursor: nada de `illegal` para delimitar o
+      // nome, porque `illegal` num submode aborta o highlight do arquivo
+      // **inteiro** (era o que apagava tudo em arquivo com script `> {% %}`).
+      hl.Mode(
+        begin: r'^[ \t]*[A-Za-z][A-Za-z0-9_-]*[ \t]*:',
+        returnBegin: true,
+        relevance: 0,
+        contains: [
+          hl.Mode(
+            className: 'attribute',
+            begin: r'[A-Za-z][A-Za-z0-9_-]*',
+            endsParent: true,
+            relevance: 0,
+          ),
+        ],
+        starts: hl.Mode(end: r'$', relevance: 0, contains: [interpolation]),
+      ),
+      interpolation,
+    ],
+  );
 }
 
 /// Gramática go.mod/go.sum: diretivas no começo da linha (`module`, `require`,

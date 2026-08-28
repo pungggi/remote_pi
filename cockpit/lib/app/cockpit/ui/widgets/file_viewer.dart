@@ -2,7 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:cockpit/app/cockpit/domain/entities/browser_capability.dart';
 import 'package:cockpit/app/cockpit/domain/entities/file_view.dart';
+import 'package:cockpit/app/cockpit/domain/entities/scm_line_decorations.dart';
 import 'package:cockpit/app/cockpit/ui/session/file_viewer_session.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/cockpit_viewmodel.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/agent_markdown.dart';
@@ -12,15 +14,17 @@ import 'package:cockpit/app/core/data/lsp/lsp_command.dart';
 import 'package:cockpit/app/core/data/lsp/lsp_launchers.dart';
 import 'package:cockpit/app/core/data/lsp/lsp_text_edit.dart';
 import 'package:cockpit/app/core/domain/entities/lsp_diagnostic.dart';
-import 'package:cockpit/app/core/ui/file_icons/file_icons.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/file_path_breadcrumb.dart';
 import 'package:cockpit/app/core/ui/menu/editor_menu_bridge.dart';
 import 'package:cockpit/app/core/ui/settings_controller.dart';
 import 'package:cockpit/app/core/ui/widgets/code_editing_controller.dart';
 import 'package:cockpit/app/core/ui/widgets/code_highlight.dart';
 import 'package:cockpit/app/core/ui/widgets/selectable_scroll.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/media_view.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/web_markdown_preview.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 // SelectionArea (Material) fica SEMPRE dentro do scroll (markdown via
 // SelectableScroll, código em volta do Text) — em volta do scroll a seleção
@@ -75,6 +79,13 @@ class _FileViewerState extends State<FileViewer> {
   /// Último [FileViewerSession.revealTick] visto — detecta novos pedidos de
   /// "revelar linha" (resultado de busca) vindos da VM.
   int _lastRevealTick = 0;
+
+  /// Último `session.loading` visto — a transição true → false é o gatilho de
+  /// [_adoptLoadedContent] (workspace remoto, plano 60).
+  bool _lastLoading = false;
+
+  /// Últimas decorações SCM publicadas — força rebuild do gutter.
+  ScmLineDecorations _lastScmDecorations = ScmLineDecorations.empty;
 
   CodeEditingController? _ctrl;
   final _focus = FocusNode();
@@ -139,32 +150,82 @@ class _FileViewerState extends State<FileViewer> {
         _ => null,
       };
 
-  /// Tem modo renderizado além da fonte (markdown/svg) → mostra o switch
+  /// Webview inline disponível (macOS/Windows)? No Linux o preview de markdown
+  /// segue no gpt_markdown e HTML não tem modo renderizado (plano 58).
+  static final bool _webPreview = BrowserCapability.resolve().isInline;
+
+  /// Arquivo `.html`/`.htm` — ganha preview renderizado quando há webview.
+  bool get _isHtml {
+    final p = widget.session.path.toLowerCase();
+    return p.endsWith('.html') || p.endsWith('.htm');
+  }
+
+  /// Tem modo renderizado além da fonte (markdown/svg/html) → mostra o switch
   /// Preview/Source. Demais textos/códigos entram direto em edição (sem toggle).
   bool get _hasPreview =>
       widget.session.view is FileViewMarkdown ||
-      widget.session.view is FileViewSvg;
+      widget.session.view is FileViewSvg ||
+      (_isHtml && _webPreview && widget.session.view is FileViewText);
 
   @override
   void initState() {
     super.initState();
     _lastObservedPath = widget.session.path;
     _lastRevealTick = widget.session.revealTick;
+    _lastScmDecorations = widget.session.scmDecorations;
+    _lastLoading = widget.session.loading;
     widget.session.addListener(_onSession);
     // Reveal pendente num arquivo markdown/svg → abre direto na fonte (o editor
     // é quem sabe rolar + selecionar a linha; o preview renderizado não).
     if (widget.session.revealLine != null && _hasPreview) _editing = true;
-    final text = _editableText;
-    if (text != null) {
-      _baseline = text;
-      _ctrl = CodeEditingController(text: text, language: _language)
-        ..addListener(_onCtrlChanged);
-      // Expõe o save do buffer à sessão pro "Salvar e fechar" (limpo no dispose).
-      widget.session.saveDraft = _save;
-      _startLsp(text);
-    }
+    // Workspace remoto: a aba nasce em loading e a `view` ainda é um texto
+    // VAZIO. Montar o controller/LSP agora os prenderia a esse vazio — o
+    // conteúdo real é adotado em [_adoptLoadedContent] quando o read termina.
+    if (!widget.session.loading) _initContent();
     // Aba já nasce focada (ex.: arquivo recém-aberto) → foca o editor.
     _focusEditorIfActive();
+  }
+
+  /// Monta controller + SCM + LSP a partir do conteúdo atual da sessão.
+  /// Extraído do [initState] porque no caminho remoto isso só pode acontecer
+  /// depois que o arquivo chega pela rede.
+  void _initContent() {
+    final text = _editableText;
+    if (text == null) return;
+    _baseline = text;
+    _ctrl = CodeEditingController(text: text, language: _language)
+      ..addListener(_onCtrlChanged);
+    // Expõe o save do buffer à sessão pro "Salvar e fechar" (limpo no dispose).
+    widget.session.saveDraft = _save;
+    _ensureAndBindScm(_ctrl!);
+    _startLsp(text);
+  }
+
+  /// Fim do carregamento remoto: adota o conteúdo que chegou e repinta.
+  ///
+  /// Sem isto a aba ficava no spinner **para sempre** depois que o arquivo
+  /// chegava: `_onSession` só reagia a reveal/SCM, então o `loading = false`
+  /// do ViewModel não repintava nada. Trocar de aba e voltar "resolvia"
+  /// porque remontava o widget do zero.
+  void _adoptLoadedContent() {
+    _initContent();
+    if (mounted) setState(() {});
+    // O editor pode ter acabado de nascer; se a aba está ativa, foca.
+    _focusEditorIfActive();
+  }
+
+  /// Garante coordenador na sessão (restore/open) e liga o controller.
+  /// Cobre abas restauradas no boot, onde o FileViewer monta sem ter passado
+  /// por `openFile`.
+  void _ensureAndBindScm(CodeEditingController controller) {
+    final vm = _vm ?? context.read<CockpitViewModel>();
+    _vm = vm;
+    vm.ensureScmCoordinator(widget.session);
+    widget.session.scmCoordinator?.attachController(controller);
+  }
+
+  void _bindScmCoordinator(CodeEditingController controller) {
+    _ensureAndBindScm(controller);
   }
 
   /// Abre o documento no LSP e passa a escutar os diagnostics deste arquivo.
@@ -250,6 +311,8 @@ class _FileViewerState extends State<FileViewer> {
       _semanticTokens = const <SemanticRange>[];
       _semanticTokensRequested = false;
 
+      widget.session.scmCoordinator?.onSessionPathChanged();
+
       // Recria o controller com o novo conteúdo.
       final text = _editableText;
       if (text != null) {
@@ -257,9 +320,11 @@ class _FileViewerState extends State<FileViewer> {
         _ctrl = CodeEditingController(text: text, language: _language)
           ..addListener(_onCtrlChanged);
         widget.session.saveDraft = _save;
+        _bindScmCoordinator(_ctrl!);
         _startLsp(text);
       } else {
         widget.session.saveDraft = null;
+        widget.session.clearScmDecorations();
       }
       // Força rebuild.
       setState(() {});
@@ -280,6 +345,7 @@ class _FileViewerState extends State<FileViewer> {
         if (mounted && !_dirty && _ctrl != null && _ctrl!.text != text) {
           _ctrl!.text = text;
           _baseline = text;
+          widget.session.scmCoordinator?.onExternalContentAdopted();
           // O disco mudou (agente editou) → mantém o LSP em sync.
           if (_lspOn) {
             unawaited(_vm?.lspChangeDocument(widget.session.path, text));
@@ -319,14 +385,28 @@ class _FileViewerState extends State<FileViewer> {
     });
   }
 
-  /// Reage a mudanças da sessão: novo pedido de reveal (linha de busca) →
-  /// rebuild pra repassar o tick ao [CodeEditor] (e abrir a fonte se markdown).
+  /// Reage a mudanças da sessão: reveal e/ou decorações SCM → rebuild do editor.
   void _onSession() {
-    if (widget.session.revealTick == _lastRevealTick) return;
+    // Chegada do conteúdo remoto (loading → false) tem prioridade: monta o
+    // editor com o texto real e repinta.
+    if (_lastLoading && !widget.session.loading) {
+      _lastLoading = false;
+      _lastRevealTick = widget.session.revealTick;
+      _lastScmDecorations = widget.session.scmDecorations;
+      _adoptLoadedContent();
+      return;
+    }
+    _lastLoading = widget.session.loading;
+    final revealChanged = widget.session.revealTick != _lastRevealTick;
+    final scmChanged = widget.session.scmDecorations != _lastScmDecorations;
+    final ctrl = _ctrl;
+    if (ctrl != null) _bindScmCoordinator(ctrl);
+    if (!revealChanged && !scmChanged) return;
     _lastRevealTick = widget.session.revealTick;
+    _lastScmDecorations = widget.session.scmDecorations;
     if (!mounted) return;
     setState(() {
-      if (_hasPreview) _editing = true;
+      if (revealChanged && _hasPreview) _editing = true;
     });
   }
 
@@ -708,6 +788,13 @@ class _FileViewerState extends State<FileViewer> {
     _recomputeFind(reveal: true);
   }
 
+  /// Raiz do workspace — limite de leitura do preview via webview.
+  String get _workspaceRoot =>
+      context.read<CockpitViewModel>().projectRootOf(
+        widget.session.projectId,
+      ) ??
+      '';
+
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
@@ -722,47 +809,66 @@ class _FileViewerState extends State<FileViewer> {
       if (mounted) _syncMenuBridge();
     });
 
-    final Widget body = switch (widget.session.view) {
-      FileViewMarkdown(:final text) =>
-        editingNow
-            ? _editor()
-            // SelectionArea vive DENTRO do scroll (SelectableScroll) — em volta
-            // dela a seleção escorrega ao rolar com Interface size != 14.
-            : SelectableScroll(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-                child: AgentMarkdown(text),
+    // Workspace remoto: a aba abre já visível enquanto `fs.read` viaja pela
+    // rede (plano 60, Wave A). Mostra um spinner no lugar do conteúdo até o
+    // primeiro byte chegar, em vez de deixar a tela vazia por segundos.
+    final Widget body = widget.session.loading
+        ? const Center(child: CircularProgressIndicator())
+        : switch (widget.session.view) {
+            FileViewMarkdown(:final text) =>
+              editingNow
+                  ? _editor()
+                  // Com webview (macOS/Win): pipeline VS Code — HTML embutido,
+                  // tabelas complexas etc. renderizam de verdade (plano 58). Sem
+                  // webview (Linux): gpt_markdown, como antes. SelectionArea vive
+                  // DENTRO do scroll (SelectableScroll) — em volta dela a seleção
+                  // escorrega ao rolar com Interface size != 14.
+                  : _webPreview
+                  ? WebMarkdownPreview(
+                      text: text,
+                      docDir: File(widget.session.path).parent.path,
+                      workspaceRoot: _workspaceRoot,
+                    )
+                  : SelectableScroll(
+                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                      child: AgentMarkdown(text),
+                    ),
+            FileViewSvg(:final text) =>
+              editingNow ? _editor() : _SvgPreview(source: text),
+            FileViewText(:final text, :final language) =>
+              editingNow
+                  ? _editor()
+                  : _isHtml && _webPreview
+                  ? WebHtmlPreview(
+                      path: widget.session.path,
+                      workspaceRoot: _workspaceRoot,
+                    )
+                  : _TextView(
+                      text: text,
+                      language: language,
+                      diagnostics: _diagnostics,
+                      semanticTokens: _semanticTokens,
+                    ),
+            FileViewImage(:final path) => _ImageView(path: path),
+            FileViewAudio(:final path) => MediaView(
+              key: ValueKey('media:$path'),
+              path: path,
+              kind: MediaKind.audio,
+              active: widget.active,
+            ),
+            FileViewVideo(:final path) => MediaView(
+              key: ValueKey('media:$path'),
+              path: path,
+              kind: MediaKind.video,
+              active: widget.active,
+            ),
+            FileViewUnsupported() => Center(
+              child: Text(
+                context.t.cockpit.fileViewer.cantOpen,
+                style: context.typo.body.copyWith(color: colors.text3),
               ),
-      FileViewSvg(:final text) =>
-        editingNow ? _editor() : _SvgPreview(source: text),
-      FileViewText(:final text, :final language) =>
-        editingNow
-            ? _editor()
-            : _TextView(
-                text: text,
-                language: language,
-                diagnostics: _diagnostics,
-                semanticTokens: _semanticTokens,
-              ),
-      FileViewImage(:final path) => _ImageView(path: path),
-      FileViewAudio(:final path) => MediaView(
-        key: ValueKey('media:$path'),
-        path: path,
-        kind: MediaKind.audio,
-        active: widget.active,
-      ),
-      FileViewVideo(:final path) => MediaView(
-        key: ValueKey('media:$path'),
-        path: path,
-        kind: MediaKind.video,
-        active: widget.active,
-      ),
-      FileViewUnsupported() => Center(
-        child: Text(
-          'Can\'t open this file.',
-          style: context.typo.body.copyWith(color: colors.text3),
-        ),
-      ),
-    };
+            ),
+          };
 
     final Widget content = ColoredBox(
       color: colors.panel,
@@ -773,7 +879,7 @@ class _FileViewerState extends State<FileViewer> {
           // Preview/Source à direita (só com render). As ações Save/Discard/
           // Format vivem no menu File — não são repetidas aqui.
           _Toolbar(
-            leading: _Breadcrumb(
+            leading: FilePathBreadcrumb(
               path: context.read<CockpitViewModel>().displayPath(
                 widget.session.projectId,
                 widget.session.path,
@@ -845,7 +951,9 @@ class _FileViewerState extends State<FileViewer> {
             controller: ctrl,
             focusNode: _focus,
             revealLine: widget.session.revealLine,
+            revealSelect: widget.session.revealSelect,
             revealTick: widget.session.revealTick,
+            scmDecorations: widget.session.scmDecorations,
             revealMatchStart:
                 _findIndex >= 0 && _findIndex < _findMatches.length
                 ? _findMatches[_findIndex].start
@@ -942,8 +1050,8 @@ class _Toolbar extends StatelessWidget {
           if (hasPreview) ...[
             const SizedBox(width: 4),
             _Segmented(
-              leftLabel: 'Preview',
-              rightLabel: 'Source',
+              leftLabel: context.t.cockpit.fileViewer.preview,
+              rightLabel: context.t.cockpit.fileViewer.source,
               leftActive: previewing,
               onTap: onToggle,
             ),
@@ -1087,7 +1195,9 @@ class _TextViewState extends State<_TextView> {
           controller: _vertical,
           child: SingleChildScrollView(
             controller: _vertical,
-            padding: const EdgeInsets.symmetric(vertical: 14),
+            // Fundo maior que o topo: a scrollbar horizontal é overlay no
+            // rodapé do viewport e cortava a última linha do gutter/código.
+            padding: const EdgeInsets.fromLTRB(0, 14, 0, 28),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1148,65 +1258,55 @@ class _SvgPreview extends StatelessWidget {
   }
 }
 
-/// Breadcrumb do caminho do arquivo, na barra inferior do viewer (estilo
-/// VSCode). Mostra o caminho **relativo** ao workspace (ou **absoluto** se
-/// externo); o último segmento ganha o ícone do tipo de arquivo. Rola na
-/// horizontal se estourar.
-class _Breadcrumb extends StatelessWidget {
-  const _Breadcrumb({required this.path, required this.fileName});
-
-  /// Caminho já resolvido (relativo ou absoluto), sem barra inicial.
-  final String path;
-  final String fileName;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.colors;
-    final typo = context.typo;
-    final segs = path.split('/').where((s) => s.isNotEmpty).toList();
-    if (segs.isEmpty) segs.add(fileName);
-
-    final crumbs = <Widget>[];
-    for (var i = 0; i < segs.length; i++) {
-      final isLast = i == segs.length - 1;
-      if (i > 0) {
-        crumbs.add(
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 3),
-            child: Icon(Icons.chevron_right, size: 14, color: colors.text4),
-          ),
-        );
-      }
-      if (isLast) {
-        crumbs
-          ..add(FileTypeIcon.file(fileName, size: 13))
-          ..add(const SizedBox(width: 5));
-      }
-      crumbs.add(
-        Text(
-          segs[i],
-          style: typo.label.copyWith(
-            fontSize: 12,
-            color: isLast ? colors.text2 : colors.text4,
-          ),
-        ),
-      );
-    }
-
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(children: crumbs),
-    );
-  }
-}
-
-class _ImageView extends StatelessWidget {
+class _ImageView extends StatefulWidget {
   const _ImageView({required this.path});
   final String path;
 
   @override
+  State<_ImageView> createState() => _ImageViewState();
+}
+
+class _ImageViewState extends State<_ImageView> {
+  @override
+  void initState() {
+    super.initState();
+    _evictCaches();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ImageView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.path != widget.path) _evictCaches();
+  }
+
+  /// Despeja a imagem dos caches **globais** antes de montar a view.
+  ///
+  /// O `ImageCache` do Flutter chaveia `FileImage` por `(path, scale)`: o
+  /// conteúdo do arquivo não entra na chave. Regravar a imagem no disco não
+  /// invalida nada, e como o cache é global (vive no `PaintingBinding`, não na
+  /// aba) fechar e reabrir a aba continuava mostrando a versão antiga — só
+  /// reiniciar o app resolvia. O `flutter_svg` tem cache próprio, com o mesmo
+  /// problema.
+  ///
+  /// Despejar ao montar custa uma releitura do disco por abertura de aba, que
+  /// é irrelevante para um visualizador e garante que o que está na tela é o
+  /// que está no arquivo.
+  void _evictCaches() {
+    final path = widget.path;
+    if (path.toLowerCase().endsWith('.svg')) {
+      // O `Cache` do flutter_svg é chaveado pelo loader, não expõe a chave que
+      // o `SvgPicture.file` monta — então limpamos tudo. São poucos SVGs e o
+      // custo é um reparse.
+      svg.cache.clear();
+      return;
+    }
+    unawaited(FileImage(File(path)).evict());
+  }
+
+  @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final path = widget.path;
     final file = File(path);
     final isSvg = path.toLowerCase().endsWith('.svg');
     return InteractiveViewer(
@@ -1220,7 +1320,7 @@ class _ImageView extends StatelessWidget {
                   file,
                   fit: BoxFit.contain,
                   errorBuilder: (context, error, stack) => Text(
-                    'Could not load the image.',
+                    context.t.cockpit.fileViewer.couldNotLoadImage,
                     style: context.typo.body.copyWith(color: colors.text3),
                   ),
                 ),

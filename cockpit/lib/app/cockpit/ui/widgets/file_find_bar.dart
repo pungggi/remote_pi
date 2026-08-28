@@ -1,4 +1,5 @@
 import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:cockpit/app/core/ui/widgets/code_highlight.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
 import 'package:flutter/services.dart';
@@ -31,7 +32,11 @@ FileFindResult computeFileMatches(
   final RegExp re;
   try {
     var pattern = regex ? query : RegExp.escape(query);
-    if (wholeWord) pattern = r'\b(?:' '$pattern' r')\b';
+    if (wholeWord)
+      pattern =
+          r'\b(?:'
+          '$pattern'
+          r')\b';
     re = RegExp(pattern, caseSensitive: caseSensitive, multiLine: true);
   } catch (_) {
     return const FileFindResult(<MatchSpan>[], invalidRegex: true);
@@ -94,11 +99,11 @@ class FileFindBar extends StatelessWidget {
     final hasQuery = controller.text.isNotEmpty;
     final String counter;
     if (invalidRegex) {
-      counter = 'Bad pattern';
+      counter = context.t.cockpit.findBar.badPattern;
     } else if (!hasQuery) {
       counter = '';
     } else if (matchCount == 0) {
-      counter = 'No results';
+      counter = context.t.cockpit.findBar.noResults;
     } else {
       counter = '${currentIndex + 1} of $matchCount';
     }
@@ -111,7 +116,7 @@ class FileFindBar extends StatelessWidget {
         border: Border.all(color: colors.border2),
         boxShadow: [
           BoxShadow(
-            color: const Color(0x40000000),
+            color: colors.shadow,
             blurRadius: 12,
             offset: const Offset(0, 4),
           ),
@@ -133,7 +138,7 @@ class FileFindBar extends StatelessWidget {
                 controller: controller,
                 focusNode: focusNode,
                 placeholder: Text(
-                  'Find',
+                  context.t.cockpit.findBar.find,
                   style: typo.body.copyWith(fontSize: 13, color: colors.text4),
                 ),
                 style: typo.body.copyWith(fontSize: 13, color: colors.text),
@@ -149,20 +154,20 @@ class FileFindBar extends StatelessWidget {
           const SizedBox(width: 6),
           _FindToggle(
             label: 'Aa',
-            tooltip: 'Match case',
+            tooltip: context.t.cockpit.findBar.matchCase,
             active: caseSensitive,
             onTap: onToggleCase,
           ),
           _FindToggle(
             label: 'ab',
-            tooltip: 'Whole word',
+            tooltip: context.t.cockpit.findBar.wholeWord,
             active: wholeWord,
             underline: true,
             onTap: onToggleWord,
           ),
           _FindToggle(
             label: '.*',
-            tooltip: 'Use regular expression',
+            tooltip: context.t.cockpit.findBar.useRegex,
             active: regex,
             onTap: onToggleRegex,
           ),
@@ -182,19 +187,19 @@ class FileFindBar extends StatelessWidget {
           const SizedBox(width: 4),
           _NavButton(
             icon: Icons.keyboard_arrow_up,
-            tooltip: 'Previous (⇧⏎)',
+            tooltip: context.t.cockpit.findBar.previous,
             enabled: matchCount > 0,
             onTap: onPrev,
           ),
           _NavButton(
             icon: Icons.keyboard_arrow_down,
-            tooltip: 'Next (⏎)',
+            tooltip: context.t.cockpit.findBar.next,
             enabled: matchCount > 0,
             onTap: onNext,
           ),
           _NavButton(
             icon: Icons.close,
-            tooltip: 'Close (Esc)',
+            tooltip: context.t.cockpit.findBar.close,
             enabled: true,
             onTap: onClose,
           ),

@@ -1,10 +1,15 @@
 import 'dart:io' show Platform;
 
+import 'package:cockpit/app/core/utils/platform_kind.dart';
+
 import 'package:cockpit/app/core/app_intents.dart';
 import 'package:cockpit/app/core/ui/menu/editor_menu_bridge.dart';
 import 'package:cockpit/app/core/ui/menu/menu_model.dart';
 import 'package:cockpit/app/core/ui/menu/workspace_menu_bridge.dart';
 import 'package:cockpit/app/core/ui/settings_controller.dart';
+import 'package:cockpit/app/core/ui/widgets/app_menu.dart';
+import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:shadcn_flutter/shadcn_flutter.dart';
@@ -27,15 +32,20 @@ const List<LogicalKeyboardKey> _tabDigitKeys = <LogicalKeyboardKey>[
   LogicalKeyboardKey.digit8,
 ];
 
-/// Monta a árvore de menus do app. Referencia só o `core`: o [controller]
+/// Monta a árvore de menus do app. Recebe [t] (as traduções) em vez de ler
+/// `context.t`: a função é pura e roda fora de um `build`. Quem chama é o
+/// `AppRoot`, dentro do `build`, então trocar de idioma remonta a barra.
+/// Referencia só o `core`: o [controller]
 /// (zoom/tamanho da interface) e as pontes globais de `app_intents.dart` (abrir
 /// configurações/projeto, checar updates) — resolvidas pelo `CockpitPage`, então
 /// `null`-safe enquanto o shell não montou.
 List<MenuBarMenu> buildAppMenus(
+  Translations t,
   SettingsController controller,
   EditorMenuBridge editor,
   WorkspaceMenuBridge workspace,
 ) {
+  final tr = t.core.menu;
   void zoom(double delta) => controller.setInterfaceSize(
     (controller.settings.interfaceSize + delta).clamp(11.0, 22.0),
   );
@@ -46,12 +56,12 @@ List<MenuBarMenu> buildAppMenus(
       const MenuRole(MenuBarRole.about),
       const MenuSeparator(),
       MenuAction(
-        'Settings…',
+        tr.settings,
         accelerator: const MenuAccelerator(LogicalKeyboardKey.comma),
         onSelected: () => requestOpenSettings?.call(),
       ),
       MenuAction(
-        'Check for Updates…',
+        tr.checkForUpdates,
         onSelected: () => requestCheckForUpdates?.call(),
       ),
       const MenuSeparator(),
@@ -63,26 +73,30 @@ List<MenuBarMenu> buildAppMenus(
       const MenuSeparator(),
       const MenuRole(MenuBarRole.quit),
     ]),
-    MenuBarMenu('File', <MenuNode>[
+    MenuBarMenu(tr.file, <MenuNode>[
       // New Agent/Terminal abrem uma aba no workspace ativo (via CockpitPage →
       // newTabIn). Só habilitam quando há workspace selecionado. "New Agent" só
       // aparece quando o suporte a agentes está ligado (Settings → General) e o
       // workspace ativo permite agentes (o Cockpit terminal-only não permite).
       if (controller.settings.enableAgent && workspace.agentsAllowed)
         MenuAction(
-          'New Agent',
+          tr.newAgent,
           onSelected: workspace.hasWorkspace ? workspace.newAgent : null,
         ),
-      MenuAction(
-        'New Terminal',
-        onSelected: workspace.hasWorkspace ? workspace.newTerminal : null,
-      ),
-      const MenuSeparator(),
-      MenuAction(
-        'Open Workspace',
-        accelerator: const MenuAccelerator(LogicalKeyboardKey.keyO),
-        onSelected: () => requestOpenProject?.call(),
-      ),
+      // No mobile o "+" da aba cria terminal e o "+" do rail abre workspace —
+      // esses itens de menu são redundantes (plano 60, Wave F).
+      if (!isMobilePlatform)
+        MenuAction(
+          tr.newTerminal,
+          onSelected: workspace.hasWorkspace ? workspace.newTerminal : null,
+        ),
+      if (!isMobilePlatform) const MenuSeparator(),
+      if (!isMobilePlatform)
+        MenuAction(
+          tr.openWorkspace,
+          accelerator: const MenuAccelerator(LogicalKeyboardKey.keyO),
+          onSelected: () => requestOpenProject?.call(),
+        ),
       const MenuSeparator(),
       // Save/Discard/Format só ficam ativos quando há uma aba de edição focada
       // que **de fato** pode a ação (dirty p/ Save/Discard; editável p/ Format) —
@@ -90,17 +104,17 @@ List<MenuBarMenu> buildAppMenus(
       // acelerador aqui: o próprio editor já trata ⌘S/⇧⌘F em todas as plataformas
       // (evita disparo duplo). `onSelected` null = item cinza/desabilitado.
       MenuAction(
-        'Save',
+        tr.save,
         accelerator: const MenuAccelerator(LogicalKeyboardKey.keyS),
         shortcutHandledExternally: true,
         onSelected: editor.canSave ? editor.save : null,
       ),
       MenuAction(
-        'Discard',
+        tr.discard,
         onSelected: editor.canDiscard ? editor.discard : null,
       ),
       MenuAction(
-        'Format',
+        tr.format,
         accelerator: const MenuAccelerator(
           LogicalKeyboardKey.keyF,
           shift: true,
@@ -112,37 +126,43 @@ List<MenuBarMenu> buildAppMenus(
     // Zoom: aceleradores só EXIBIDOS (hint) — a tecla já é tratada pelo
     // `_zoomBindings` do `AppRoot` em todas as plataformas. `shortcutHandledExternally`
     // impede o `menuShortcuts` de registrar de novo fora do macOS (disparo duplo).
-    MenuBarMenu('View', <MenuNode>[
+    MenuBarMenu(tr.view, <MenuNode>[
       // Layout do workspace (ativos só com workspace aberto). Aceleradores reais:
       // no macOS o menu nativo dispara; fora dele o `menuShortcuts` registra.
-      MenuAction(
-        'Toggle Workspace Panel',
-        accelerator: const MenuAccelerator(LogicalKeyboardKey.keyB),
-        onSelected: workspace.hasWorkspace ? workspace.toggleRail : null,
-      ),
-      MenuAction(
-        'Toggle Files',
-        accelerator: const MenuAccelerator(
-          LogicalKeyboardKey.keyB,
-          shift: true,
+      // No mobile os toggles viram os drawers (por largura) e o split fica no
+      // kebab da pane — itens de menu redundantes.
+      if (!isMobilePlatform)
+        MenuAction(
+          tr.toggleWorkspacePanel,
+          accelerator: const MenuAccelerator(LogicalKeyboardKey.keyB),
+          onSelected: workspace.hasWorkspace ? workspace.toggleRail : null,
         ),
-        onSelected: workspace.hasWorkspace ? workspace.toggleFiles : null,
-      ),
-      const MenuSeparator(),
-      MenuAction(
-        'Split Right',
-        accelerator: const MenuAccelerator(LogicalKeyboardKey.keyD),
-        onSelected: workspace.hasWorkspace ? workspace.splitRight : null,
-      ),
-      MenuAction(
-        'Split Down',
-        accelerator: const MenuAccelerator(
-          LogicalKeyboardKey.keyD,
-          shift: true,
+      if (!isMobilePlatform)
+        MenuAction(
+          tr.toggleFiles,
+          accelerator: const MenuAccelerator(
+            LogicalKeyboardKey.keyB,
+            shift: true,
+          ),
+          onSelected: workspace.hasWorkspace ? workspace.toggleFiles : null,
         ),
-        onSelected: workspace.hasWorkspace ? workspace.splitDown : null,
-      ),
-      const MenuSeparator(),
+      if (!isMobilePlatform) const MenuSeparator(),
+      if (!isMobilePlatform)
+        MenuAction(
+          tr.splitRight,
+          accelerator: const MenuAccelerator(LogicalKeyboardKey.keyD),
+          onSelected: workspace.hasWorkspace ? workspace.splitRight : null,
+        ),
+      if (!isMobilePlatform)
+        MenuAction(
+          tr.splitDown,
+          accelerator: const MenuAccelerator(
+            LogicalKeyboardKey.keyD,
+            shift: true,
+          ),
+          onSelected: workspace.hasWorkspace ? workspace.splitDown : null,
+        ),
+      if (!isMobilePlatform) const MenuSeparator(),
       // Seleção de aba (⌘1…⌘9) vive no menu de propósito: no macOS só o menu
       // **nativo** captura atalho de forma confiável quando o terminal/campo tem
       // foco (um `CallbackShortcuts` de página é engolido pelo widget focado).
@@ -151,60 +171,66 @@ List<MenuBarMenu> buildAppMenus(
       // antes do menu), então quem trata a tecla é um handler global do
       // HardwareKeyboard no `CockpitPage`. Aqui ficam só os itens clicáveis (com
       // o hint da tecla no rótulo, já que o menu não desenha acelerador nenhum).
-      MenuBarMenu('Focus Pane', <MenuNode>[
-        MenuAction(
-          'Left  (⌘⌥←)',
-          onSelected: workspace.hasWorkspace ? workspace.focusPaneLeft : null,
-        ),
-        MenuAction(
-          'Right  (⌘⌥→)',
-          onSelected: workspace.hasWorkspace ? workspace.focusPaneRight : null,
-        ),
-        MenuAction(
-          'Up  (⌘⌥↑)',
-          onSelected: workspace.hasWorkspace ? workspace.focusPaneUp : null,
-        ),
-        MenuAction(
-          'Down  (⌘⌥↓)',
-          onSelected: workspace.hasWorkspace ? workspace.focusPaneDown : null,
-        ),
-      ]),
-      MenuBarMenu('Select Tab', <MenuNode>[
-        for (var i = 0; i < _tabDigitKeys.length; i++)
+      // Focar painel e Selecionar aba: só fazem sentido com teclado/atalho —
+      // no mobile o toque já seleciona painel/aba direto.
+      if (!isMobilePlatform)
+        MenuBarMenu(tr.focusPane, <MenuNode>[
           MenuAction(
-            'Tab ${i + 1}',
-            accelerator: MenuAccelerator(_tabDigitKeys[i]),
+            tr.focusLeft,
+            onSelected: workspace.hasWorkspace ? workspace.focusPaneLeft : null,
+          ),
+          MenuAction(
+            tr.focusRight,
             onSelected: workspace.hasWorkspace
-                ? () => workspace.selectTab(i)
+                ? workspace.focusPaneRight
                 : null,
           ),
-        MenuAction(
-          'Last Tab',
-          accelerator: const MenuAccelerator(LogicalKeyboardKey.digit9),
-          onSelected: workspace.hasWorkspace ? workspace.selectLastTab : null,
-        ),
-      ]),
-      const MenuSeparator(),
+          MenuAction(
+            tr.focusUp,
+            onSelected: workspace.hasWorkspace ? workspace.focusPaneUp : null,
+          ),
+          MenuAction(
+            tr.focusDown,
+            onSelected: workspace.hasWorkspace ? workspace.focusPaneDown : null,
+          ),
+        ]),
+      if (!isMobilePlatform)
+        MenuBarMenu(tr.selectTab, <MenuNode>[
+          for (var i = 0; i < _tabDigitKeys.length; i++)
+            MenuAction(
+              tr.tabN(n: i + 1),
+              accelerator: MenuAccelerator(_tabDigitKeys[i]),
+              onSelected: workspace.hasWorkspace
+                  ? () => workspace.selectTab(i)
+                  : null,
+            ),
+          MenuAction(
+            tr.lastTab,
+            accelerator: const MenuAccelerator(LogicalKeyboardKey.digit9),
+            onSelected: workspace.hasWorkspace ? workspace.selectLastTab : null,
+          ),
+        ]),
+      if (!isMobilePlatform) const MenuSeparator(),
       MenuAction(
-        'Zoom In',
+        tr.zoomIn,
         accelerator: const MenuAccelerator(LogicalKeyboardKey.equal),
         shortcutHandledExternally: true,
         onSelected: () => zoom(1),
       ),
       MenuAction(
-        'Zoom Out',
+        tr.zoomOut,
         accelerator: const MenuAccelerator(LogicalKeyboardKey.minus),
         shortcutHandledExternally: true,
         onSelected: () => zoom(-1),
       ),
       MenuAction(
-        'Actual Size',
+        tr.actualSize,
         accelerator: const MenuAccelerator(LogicalKeyboardKey.digit0),
         shortcutHandledExternally: true,
         onSelected: () => controller.setInterfaceSize(14),
       ),
     ]),
-    const MenuBarMenu('Window', <MenuNode>[
+    MenuBarMenu(tr.window, const <MenuNode>[
       MenuRole(MenuBarRole.minimizeWindow),
       MenuRole(MenuBarRole.zoomWindow),
     ]),
@@ -305,7 +331,7 @@ PlatformProvidedMenuItemType? _providedType(MenuBarRole role) => switch (role) {
 ///
 /// O modelo ([MenuBarMenu]) não muda: só este renderer aninha um nível a mais.
 /// A barra nativa do macOS segue plana, como o SO espera.
-class WindowMenuBar extends StatelessWidget {
+class WindowMenuBar extends StatefulWidget {
   const WindowMenuBar({
     super.key,
     required this.menus,
@@ -320,103 +346,149 @@ class WindowMenuBar extends StatelessWidget {
   final bool renderOnMacOS;
 
   @override
+  State<WindowMenuBar> createState() => _WindowMenuBarState();
+}
+
+class _WindowMenuBarState extends State<WindowMenuBar> {
+  bool _open = false;
+
+  /// Momento em que o menu fechou por último. Se o MESMO toque que dismissou o
+  /// barrier também atinge o botão, ele reabriria — este guard descarta o toque
+  /// que chega logo após o fechamento (bug de "reabre em vez de fechar").
+  DateTime? _closedAt;
+
+  Future<void> _toggle(BuildContext anchor) async {
+    // Já aberto: o barrier fecha o menu; não reabrimos.
+    if (_open) return;
+    final closed = _closedAt;
+    if (closed != null &&
+        DateTime.now().difference(closed) < const Duration(milliseconds: 300)) {
+      return;
+    }
+    setState(() => _open = true);
+    // ACHATADO (não submenus): no touch, submenu aninhado é ruim de acertar E
+    // a escolha de uma folha de submenu se perde na corrida com o `closeAll` do
+    // shadcn (a ação não dispararia). Os grupos (Cockpit/File/View/Window) viram
+    // seções separadas por divisória, e cada item é folha de topo — que fecha o
+    // menu raiz com o valor certo e executa a ação.
+    final items = <AppMenuItem<VoidCallback>>[];
+    for (final m in widget.menus) {
+      final section = _toAppItems(context, m.items);
+      if (section.isEmpty) continue;
+      if (items.isNotEmpty && !items.last.isDivider) {
+        items.add(const AppMenuItem<VoidCallback>.divider());
+      }
+      items.addAll(section);
+    }
+    final action = await showAppMenu<VoidCallback>(anchor, items: items);
+    if (mounted) {
+      setState(() {
+        _open = false;
+        _closedAt = DateTime.now();
+      });
+    }
+    action?.call();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (Platform.isMacOS && !renderOnMacOS) return const SizedBox.shrink();
-    // O botão de menubar do shadcn embute um padding horizontal generoso
-    // (`baseContentPadding * 0.75` da densidade do tema), pensado pra itens de
-    // texto lado a lado — "File View Window". Aqui há um ícone só, e esse
-    // padding o empurrava pra dentro e o deixava fora da grade dos ícones
-    // vizinhos da topbar. Zerado, o botão fica do tamanho da caixa abaixo e o
-    // espaçamento passa a ser só o da topbar.
-    return ComponentTheme<MenubarButtonTheme>(
-      data: MenubarButtonTheme(
-        padding: (context, states, value) => EdgeInsets.zero,
-      ),
-      child: Menubar(
-        border: false,
-        children: <MenuItem>[
-          MenuButton(
-            subMenu: menus
-                .map((m) => _windowMenu(context, m))
-                .toList(growable: false),
-            // Mesma caixa de 28x28 dos `_IconBtn` da topbar, pro hambúrguer
-            // cair na mesma grade dos ícones vizinhos.
-            child: const SizedBox(
-              width: 28,
-              height: 28,
-              child: Icon(Icons.menu, size: 16),
-            ),
+    if (Platform.isMacOS && !widget.renderOnMacOS) {
+      return const SizedBox.shrink();
+    }
+    final colors = context.colors;
+    // Builder pra o showAppMenu ancorar no PRÓPRIO botão (abre logo abaixo).
+    return Builder(
+      builder: (btnContext) => HoverTap(
+        onTap: () => _toggle(btnContext),
+        color: _open ? colors.accentSoft : null,
+        hoverColor: colors.panel,
+        borderRadius: BorderRadius.circular(5),
+        child: SizedBox(
+          width: 28,
+          height: 28,
+          child: Icon(
+            Icons.menu,
+            size: 16,
+            color: _open ? colors.accentText : colors.text3,
           ),
-        ],
+        ),
       ),
     );
   }
 }
 
-MenuButton _windowMenu(BuildContext context, MenuBarMenu menu) => MenuButton(
-  subMenu: _windowItems(context, menu.items),
-  child: Text(menu.label, style: context.typo.label.copyWith(fontSize: 13)),
-);
+void _noop() {}
 
-List<MenuItem> _windowItems(BuildContext context, List<MenuNode> items) {
-  final out = <MenuItem>[];
+/// Converte a árvore declarativa ([MenuNode]) pros itens do [showAppMenu] (nosso
+/// menu, com toggle correto). Cada folha carrega sua ação como `value`
+/// (VoidCallback), invocada quando o item é escolhido.
+List<AppMenuItem<VoidCallback>> _toAppItems(
+  BuildContext context,
+  List<MenuNode> items,
+) {
+  final out = <AppMenuItem<VoidCallback>>[];
   for (final node in items) {
     switch (node) {
       case MenuSeparator():
-        // Evita divisória inicial/duplicada (roles omitidos podem deixar buracos).
-        if (out.isNotEmpty && out.last is! MenuDivider) {
-          out.add(const MenuDivider());
+        if (out.isNotEmpty && !out.last.isDivider) {
+          out.add(const AppMenuItem<VoidCallback>.divider());
         }
       case MenuBarMenu():
-        out.add(_windowMenu(context, node));
+        out.add(
+          AppMenuItem<VoidCallback>(
+            value: _noop,
+            label: node.label,
+            children: _toAppItems(context, node.items),
+          ),
+        );
       case MenuAction():
         out.add(
-          MenuButton(
+          AppMenuItem<VoidCallback>(
+            value: node.onSelected ?? _noop,
+            label: node.label,
             enabled: node.onSelected != null,
-            trailing: node.accelerator == null
-                ? null
-                : MenuShortcut(activator: node.accelerator!.resolve()),
-            onPressed: node.onSelected == null
-                ? null
-                : (_) => node.onSelected!.call(),
-            child: Text(node.label),
           ),
         );
       case MenuRole():
         final action = _windowRole(node.role);
         if (action != null) {
           out.add(
-            MenuButton(
-              onPressed: (_) => action(),
-              child: Text(_roleLabel(node.role)),
+            AppMenuItem<VoidCallback>(
+              value: action,
+              label: _roleLabel(context, node.role),
             ),
           );
         }
     }
   }
-  // Remove divisória final pendente.
-  if (out.isNotEmpty && out.last is MenuDivider) out.removeLast();
+  if (out.isNotEmpty && out.last.isDivider) out.removeLast();
   return out;
 }
 
 /// Equivalente de janela dos papéis do SO. `null` = sem equivalente fora do
-/// macOS (about/services/hide/…) → item omitido.
-void Function()? _windowRole(MenuBarRole role) => switch (role) {
-  MenuBarRole.quit => () => windowManager.close(),
-  MenuBarRole.minimizeWindow => () => windowManager.minimize(),
-  MenuBarRole.zoomWindow => () async {
-    if (await windowManager.isMaximized()) {
-      await windowManager.unmaximize();
-    } else {
-      await windowManager.maximize();
-    }
-  },
-  _ => null,
-};
+/// macOS (about/services/hide/…) → item omitido. No mobile (iPad/Android) não
+/// há janela nem `window_manager`: todos os papéis de janela são omitidos.
+void Function()? _windowRole(MenuBarRole role) {
+  if (isMobilePlatform) return null;
+  return switch (role) {
+    MenuBarRole.quit => () => windowManager.close(),
+    MenuBarRole.minimizeWindow => () => windowManager.minimize(),
+    MenuBarRole.zoomWindow => () async {
+      if (await windowManager.isMaximized()) {
+        await windowManager.unmaximize();
+      } else {
+        await windowManager.maximize();
+      }
+    },
+    _ => null,
+  };
+}
 
-String _roleLabel(MenuBarRole role) => switch (role) {
-  MenuBarRole.quit => 'Quit',
-  MenuBarRole.minimizeWindow => 'Minimize',
-  MenuBarRole.zoomWindow => 'Zoom',
+/// Rótulo dos roles que a barra **desenhada** (Windows/Linux) renderiza. Os
+/// demais roles são omitidos ali: só existem como item nativo no macOS.
+String _roleLabel(BuildContext context, MenuBarRole role) => switch (role) {
+  MenuBarRole.quit => context.t.core.menu.quit,
+  MenuBarRole.minimizeWindow => context.t.core.menu.minimize,
+  MenuBarRole.zoomWindow => context.t.core.menu.zoom,
   _ => '',
 };

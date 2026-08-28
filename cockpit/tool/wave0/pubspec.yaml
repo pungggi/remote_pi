@@ -1,0 +1,17 @@
+name: wave0_tools
+description: Scripts de aceite da Wave 0 do plano 58 (e2e + benchmark). Não é código de produção.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  cockpit_core:
+    path: ../../packages/cockpit_core
+  cockpit_engine:
+    path: ../../packages/cockpit_engine
+  cockpit_protocol:
+    path: ../../packages/cockpit_protocol
+  cockpit_remote:
+    path: ../../packages/cockpit_remote

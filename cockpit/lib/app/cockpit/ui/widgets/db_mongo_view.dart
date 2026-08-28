@@ -12,6 +12,7 @@ import 'package:cockpit/app/core/ui/widgets/app_tooltip.dart';
 import 'package:cockpit/app/core/ui/widgets/code_editing_controller.dart';
 import 'package:cockpit/app/core/ui/widgets/code_highlight.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:flutter/services.dart' show KeyDownEvent, LogicalKeyboardKey;
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
@@ -196,13 +197,15 @@ class _MongoCollectionViewState extends State<MongoCollectionView> {
   Future<void> _delete(int ix) async {
     final doc = _view.docs[ix];
     final id = doc['_id'];
+    final tr = context.t.cockpit.dbMongoView;
     final ok = await showConfirmDialog(
       context,
-      title: 'Delete document',
-      message:
-          'Delete the document with _id ${_idLabel(doc)} '
-          'from "${widget.session.collection}"?',
-      confirmLabel: 'Delete',
+      title: tr.deleteDocumentTitle,
+      message: tr.deleteDocumentMessage(
+        id: _idLabel(doc),
+        collection: widget.session.collection,
+      ),
+      confirmLabel: context.t.common.delete,
       danger: true,
     );
     if (!ok || !mounted) return;
@@ -270,6 +273,7 @@ class _MongoCollectionViewState extends State<MongoCollectionView> {
   Widget _toolbar(BuildContext context) {
     final colors = context.colors;
     final typo = context.typo;
+    final tr = context.t.cockpit.dbMongoView;
     return Container(
       height: 34,
       padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -293,7 +297,7 @@ class _MongoCollectionViewState extends State<MongoCollectionView> {
                 controller: _filter,
                 style: typo.mono.copyWith(fontSize: 11.5, color: colors.text),
                 placeholder: Text(
-                  'Filter — JSON, e.g. {"status": "active"}',
+                  tr.filterHint,
                   style: typo.mono.copyWith(
                     fontSize: 11.5,
                     color: colors.text4,
@@ -315,13 +319,12 @@ class _MongoCollectionViewState extends State<MongoCollectionView> {
           ),
           const SizedBox(width: 8),
           Text(
-            '${_view.docs.length} doc${_view.docs.length == 1 ? '' : 's'}'
-            '${_view.hasMore ? '+' : ''}',
+            '${tr.docCount(n: _view.docs.length)}${_view.hasMore ? '+' : ''}',
             style: typo.label.copyWith(fontSize: 11, color: colors.text3),
           ),
           const SizedBox(width: 8),
           AppTooltip(
-            message: 'Refresh',
+            message: tr.refresh,
             child: HoverTap(
               onTap: _loading ? null : _refresh,
               padding: const EdgeInsets.all(4),
@@ -329,7 +332,7 @@ class _MongoCollectionViewState extends State<MongoCollectionView> {
             ),
           ),
           AppTooltip(
-            message: 'Insert document',
+            message: tr.insertDocument,
             child: HoverTap(
               onTap: _openDraft,
               padding: const EdgeInsets.all(4),
@@ -399,12 +402,11 @@ class _MongoCollectionViewState extends State<MongoCollectionView> {
           );
         }
         if (showEmpty) {
+          final tr = context.t.cockpit.dbMongoView;
           return Padding(
             padding: const EdgeInsets.all(8),
             child: Text(
-              _view.filter.isEmpty
-                  ? 'No documents in this collection.'
-                  : 'No documents match this filter.',
+              _view.filter.isEmpty ? tr.noDocuments : tr.noDocumentsMatch,
               style: typo.label.copyWith(fontSize: 11.5, color: colors.text3),
             ),
           );
@@ -416,7 +418,7 @@ class _MongoCollectionViewState extends State<MongoCollectionView> {
             child: OutlineButton(
               onPressed: _loadMore,
               child: Text(
-                'Load more',
+                context.t.cockpit.dbMongoView.loadMore,
                 style: typo.label.copyWith(fontSize: 11.5),
               ),
             ),
@@ -460,10 +462,13 @@ class _MongoCollectionViewState extends State<MongoCollectionView> {
             children: [
               OutlineButton(
                 onPressed: () => setState(_closeEditors),
-                child: const Text('Cancel'),
+                child: Text(context.t.common.cancel),
               ),
               const SizedBox(width: 6),
-              PrimaryButton(onPressed: _commitEdit, child: const Text('Save')),
+              PrimaryButton(
+                onPressed: _commitEdit,
+                child: Text(context.t.common.save),
+              ),
             ],
           ),
         ],
@@ -515,7 +520,7 @@ class _MongoCollectionViewState extends State<MongoCollectionView> {
                 ),
                 if (!editing) ...[
                   AppTooltip(
-                    message: 'Edit',
+                    message: context.t.cockpit.dbMongoView.edit,
                     child: HoverTap(
                       onTap: () => _startEdit(ix),
                       padding: const EdgeInsets.all(3),
@@ -527,7 +532,7 @@ class _MongoCollectionViewState extends State<MongoCollectionView> {
                     ),
                   ),
                   AppTooltip(
-                    message: 'Delete',
+                    message: context.t.common.delete,
                     child: HoverTap(
                       onTap: () => _delete(ix),
                       padding: const EdgeInsets.all(3),
@@ -585,12 +590,12 @@ class _MongoCollectionViewState extends State<MongoCollectionView> {
               children: [
                 OutlineButton(
                   onPressed: () => setState(_closeEditors),
-                  child: const Text('Cancel'),
+                  child: Text(context.t.common.cancel),
                 ),
                 const SizedBox(width: 6),
                 PrimaryButton(
                   onPressed: _commitDraft,
-                  child: const Text('Insert'),
+                  child: Text(context.t.cockpit.dbMongoView.insert),
                 ),
               ],
             ),

@@ -28,6 +28,7 @@ class DbTabMockupApp extends StatelessWidget {
         colors: tokens.colors,
         typo: tokens.typo,
         syntax: tokens.syntax,
+        terminal: tokens.terminal,
         child: child ?? const SizedBox(),
       ),
       home: const _MockupShell(),
@@ -137,8 +138,14 @@ class _FakeTab extends StatelessWidget {
 // ──────────────────────────────────────────────────────── painel Database ──
 
 class _MockConn {
-  const _MockConn(this.name, this.engine, this.target, this.online,
-      {this.inUse = false, this.implicit = false});
+  const _MockConn(
+    this.name,
+    this.engine,
+    this.target,
+    this.online, {
+    this.inUse = false,
+    this.implicit = false,
+  });
   final String name;
   final String engine;
   final String target;
@@ -153,8 +160,13 @@ final _conns = <_MockConn>[
   const _MockConn('staging', 'Postgres 16', 'db.staging.acme.dev:5432', true),
   const _MockConn('analytics', 'MySQL 8', 'mysql.acme.dev:3306', true),
   const _MockConn('prod-readonly', 'Postgres 16', 'db.acme.com:5432', false),
-  const _MockConn('cache.db', 'SQLite 3', '.dart_tool/cache.db', true,
-      implicit: true),
+  const _MockConn(
+    'cache.db',
+    'SQLite 3',
+    '.dart_tool/cache.db',
+    true,
+    implicit: true,
+  ),
 ];
 
 /// Painel lateral direito, no lugar de Files/Search/Source Control: a aba
@@ -225,8 +237,11 @@ class _DbPanelState extends State<_DbPanel> {
                 const SizedBox(width: 14),
                 Icon(Icons.search, size: 14, color: colors.text4),
                 const SizedBox(width: 14),
-                Icon(Icons.account_tree_outlined,
-                    size: 14, color: colors.text4),
+                Icon(
+                  Icons.account_tree_outlined,
+                  size: 14,
+                  color: colors.text4,
+                ),
                 const SizedBox(width: 14),
                 Icon(Icons.storage, size: 14, color: colors.accent),
                 const Spacer(),
@@ -257,12 +272,16 @@ class _DbPanelState extends State<_DbPanel> {
                 for (final c in _conns)
                   Padding(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 1),
+                      horizontal: 6,
+                      vertical: 1,
+                    ),
                     child: HoverTap(
                       onTap: () => _edit(c),
                       color: c.inUse ? colors.panel3 : null,
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 6),
+                        horizontal: 8,
+                        vertical: 6,
+                      ),
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -343,10 +362,10 @@ class _DbPanelState extends State<_DbPanel> {
 enum _Engine { sqlite, postgres, mysql }
 
 String _engineLabel(_Engine e) => switch (e) {
-      _Engine.sqlite => 'SQLite',
-      _Engine.postgres => 'Postgres',
-      _Engine.mysql => 'MySQL',
-    };
+  _Engine.sqlite => 'SQLite',
+  _Engine.postgres => 'Postgres',
+  _Engine.mysql => 'MySQL',
+};
 
 /// Engine de uma conexão existente (pelo label de display do mockup).
 _Engine _engineOf(_MockConn c) {
@@ -354,7 +373,6 @@ _Engine _engineOf(_MockConn c) {
   if (c.engine.startsWith('Postgres')) return _Engine.postgres;
   return _Engine.mysql;
 }
-
 
 /// Cadastro de conexão: engine → campos (SQLite = só o arquivo; Postgres/MySQL
 /// = host/porta/database/usuário + env da senha). Read-only default ON.
@@ -416,8 +434,7 @@ class _ConnDialogState extends State<_ConnDialog> {
     super.dispose();
   }
 
-  String get _defaultPort =>
-      _engine == _Engine.postgres ? '5432' : '3306';
+  String get _defaultPort => _engine == _Engine.postgres ? '5432' : '3306';
 
   _MockConn _build() {
     final name = _name.text.trim().isEmpty ? 'nova-conexao' : _name.text.trim();
@@ -426,12 +443,11 @@ class _ConnDialogState extends State<_ConnDialog> {
         return _MockConn(name, 'SQLite 3', _file.text.trim(), true);
       case _Engine.postgres:
       case _Engine.mysql:
-        final port =
-            _port.text.trim().isEmpty ? _defaultPort : _port.text.trim();
-        final engine =
-            _engine == _Engine.postgres ? 'Postgres 16' : 'MySQL 8';
-        return _MockConn(
-            name, engine, '${_host.text.trim()}:$port', true);
+        final port = _port.text.trim().isEmpty
+            ? _defaultPort
+            : _port.text.trim();
+        final engine = _engine == _Engine.postgres ? 'Postgres 16' : 'MySQL 8';
+        return _MockConn(name, engine, '${_host.text.trim()}:$port', true);
     }
   }
 
@@ -443,8 +459,10 @@ class _ConnDialogState extends State<_ConnDialog> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Password',
-              style: typo.label.copyWith(fontSize: 11, color: colors.text3)),
+          Text(
+            'Password',
+            style: typo.label.copyWith(fontSize: 11, color: colors.text3),
+          ),
           const SizedBox(height: 4),
           TextField(
             controller: _pass,
@@ -456,8 +474,7 @@ class _ConnDialogState extends State<_ConnDialog> {
             ),
             border: Border.all(color: colors.border),
             borderRadius: BorderRadius.circular(6),
-            padding:
-                const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
           ),
         ],
       ),
@@ -472,21 +489,26 @@ class _ConnDialogState extends State<_ConnDialog> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label,
-              style: typo.label.copyWith(fontSize: 11, color: colors.text3)),
+          Text(
+            label,
+            style: typo.label.copyWith(fontSize: 11, color: colors.text3),
+          ),
           const SizedBox(height: 4),
           TextField(
             controller: ctrl,
             style: typo.mono.copyWith(fontSize: 12.5, color: colors.text),
             placeholder: hint == null
                 ? null
-                : Text(hint,
-                    style: typo.mono
-                        .copyWith(fontSize: 12.5, color: colors.text4)),
+                : Text(
+                    hint,
+                    style: typo.mono.copyWith(
+                      fontSize: 12.5,
+                      color: colors.text4,
+                    ),
+                  ),
             border: Border.all(color: colors.border),
             borderRadius: BorderRadius.circular(6),
-            padding:
-                const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
           ),
         ],
       ),
@@ -516,10 +538,11 @@ class _ConnDialogState extends State<_ConnDialog> {
     final typo = context.typo;
     return AlertDialog(
       title: Text(
-          widget.initial == null
-              ? 'New connection — ${_engineLabel(_engine)}'
-              : 'Edit connection — ${_engineLabel(_engine)}',
-          style: typo.title.copyWith(fontSize: 15, color: colors.text)),
+        widget.initial == null
+            ? 'New connection — ${_engineLabel(_engine)}'
+            : 'Edit connection — ${_engineLabel(_engine)}',
+        style: typo.title.copyWith(fontSize: 15, color: colors.text),
+      ),
       content: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 380),
         child: Column(
@@ -572,29 +595,29 @@ class _ConnDialogState extends State<_ConnDialog> {
                     _testing
                         ? Icons.more_horiz
                         : _testOk!
-                            ? Icons.check_circle
-                            : Icons.error_outline,
+                        ? Icons.check_circle
+                        : Icons.error_outline,
                     size: 13,
                     color: _testing
                         ? colors.text3
                         : _testOk!
-                            ? colors.online
-                            : colors.error,
+                        ? colors.online
+                        : colors.error,
                   ),
                   const SizedBox(width: 6),
                   Text(
                     _testing
                         ? 'Testing connection…'
                         : _testOk!
-                            ? 'Connection OK · 23 ms'
-                            : 'Connection failed — check your settings',
+                        ? 'Connection OK · 23 ms'
+                        : 'Connection failed — check your settings',
                     style: typo.label.copyWith(
                       fontSize: 11.5,
                       color: _testing
                           ? colors.text3
                           : _testOk!
-                              ? colors.online
-                              : colors.error,
+                          ? colors.online
+                          : colors.error,
                     ),
                   ),
                 ],
@@ -606,8 +629,7 @@ class _ConnDialogState extends State<_ConnDialog> {
       actions: [
         if (widget.initial != null) ...[
           DestructiveButton(
-            onPressed: () =>
-                Navigator.of(context).pop(_ConnDialog.deleted),
+            onPressed: () => Navigator.of(context).pop(_ConnDialog.deleted),
             child: const Text('Delete'),
           ),
           const Spacer(),
@@ -704,24 +726,51 @@ const _tables = <_MockTable>[
 ];
 
 const _customers = [
-  'Ana Souza', 'Bruno Lima', 'Carla Mendes', 'Diego Rocha', 'Elisa Prado',
-  'Fábio Nunes', 'Gabi Torres', 'Hugo Reis', 'Iara Campos', 'João Pedro',
-  'Karen Dias', 'Léo Martins', 'Marina Alves', 'Nina Barros', 'Otávio Cruz',
+  'Ana Souza',
+  'Bruno Lima',
+  'Carla Mendes',
+  'Diego Rocha',
+  'Elisa Prado',
+  'Fábio Nunes',
+  'Gabi Torres',
+  'Hugo Reis',
+  'Iara Campos',
+  'João Pedro',
+  'Karen Dias',
+  'Léo Martins',
+  'Marina Alves',
+  'Nina Barros',
+  'Otávio Cruz',
 ];
 
 const _statuses = ['paid', 'pending', 'shipped', 'canceled'];
 
 const _productNames = [
-  'Teclado mecânico TKL', 'Mouse vertical', 'Hub USB-C 7 portas',
-  'Monitor 27" 4K', 'Webcam 1080p', 'Headset sem fio', 'Dock station',
-  'SSD NVMe 2TB', 'Cabo Thunderbolt 2m', 'Suporte de notebook',
+  'Teclado mecânico TKL',
+  'Mouse vertical',
+  'Hub USB-C 7 portas',
+  'Monitor 27" 4K',
+  'Webcam 1080p',
+  'Headset sem fio',
+  'Dock station',
+  'SSD NVMe 2TB',
+  'Cabo Thunderbolt 2m',
+  'Suporte de notebook',
 ];
 
 const _migrationNames = [
-  '0001_create_users', '0002_create_products', '0003_create_orders',
-  '0004_order_items', '0005_add_coupon_to_orders', '0006_index_orders_status',
-  '0007_users_avatar_blob', '0008_soft_delete_products', '0009_orders_totals',
-  '0010_backfill_skus', '0011_index_items_order_id', '0012_vacuum_marker',
+  '0001_create_users',
+  '0002_create_products',
+  '0003_create_orders',
+  '0004_order_items',
+  '0005_add_coupon_to_orders',
+  '0006_index_orders_status',
+  '0007_users_avatar_blob',
+  '0008_soft_delete_products',
+  '0009_orders_totals',
+  '0010_backfill_skus',
+  '0011_index_items_order_id',
+  '0012_vacuum_marker',
 ];
 
 /// Pseudo-hash determinístico — dá variedade estável sem Random.
@@ -731,8 +780,9 @@ int _h(int x) => (x * 2654435761) & 0x7fffffff;
 /// dados — o que torna a paginação do mockup crível.
 List<List<Object?>> _rowsFor(_MockTable t, int page) {
   final start = page * _pageSize;
-  final count =
-      (t.totalRows - start) < _pageSize ? (t.totalRows - start) : _pageSize;
+  final count = (t.totalRows - start) < _pageSize
+      ? (t.totalRows - start)
+      : _pageSize;
   if (count <= 0) return const [];
   return List.generate(count, (i) {
     final id = start + i + 1;
@@ -749,8 +799,7 @@ List<List<Object?>> _rowsFor(_MockTable t, int page) {
         ];
       case 'users':
         final name = _customers[r % _customers.length];
-        final mail =
-            '${name.split(' ').first.toLowerCase()}$id@exemplo.com';
+        final mail = '${name.split(' ').first.toLowerCase()}$id@exemplo.com';
         return <Object?>[
           id,
           name,
@@ -829,7 +878,8 @@ class _DbTabState extends State<_DbTab> {
   /// Fração da altura ocupada pelo editor SQL (divisor arrastável).
   double _split = 0.5;
   late final TextEditingController _sql = TextEditingController(
-    text: 'SELECT *\nFROM orders\nWHERE status = \'paid\'\n'
+    text:
+        'SELECT *\nFROM orders\nWHERE status = \'paid\'\n'
         'ORDER BY created_at DESC;',
   );
 
@@ -884,8 +934,10 @@ class _DbTabState extends State<_DbTab> {
         Expanded(
           child: LayoutBuilder(
             builder: (context, box) {
-              final editorH =
-                  (box.maxHeight * _split).clamp(90.0, box.maxHeight - 120);
+              final editorH = (box.maxHeight * _split).clamp(
+                90.0,
+                box.maxHeight - 120,
+              );
               return Column(
                 children: [
                   SizedBox(
@@ -898,14 +950,15 @@ class _DbTabState extends State<_DbTab> {
                     child: GestureDetector(
                       behavior: HitTestBehavior.opaque,
                       onVerticalDragUpdate: (d) => setState(() {
-                        _split = ((editorH + d.delta.dy) / box.maxHeight)
-                            .clamp(0.12, 0.85);
+                        _split = ((editorH + d.delta.dy) / box.maxHeight).clamp(
+                          0.12,
+                          0.85,
+                        );
                       }),
                       child: SizedBox(
                         height: 7,
                         child: Center(
-                          child:
-                              Container(height: 1, color: colors.border2),
+                          child: Container(height: 1, color: colors.border2),
                         ),
                       ),
                     ),
@@ -916,8 +969,7 @@ class _DbTabState extends State<_DbTab> {
                       rows: rows,
                       firstRowNumber: _page * _pageSize + 1,
                       selectedRow: _selectedRow,
-                      onSelectRow: (i) =>
-                          setState(() => _selectedRow = i),
+                      onSelectRow: (i) => setState(() => _selectedRow = i),
                     ),
                   ),
                 ],
@@ -937,7 +989,6 @@ class _DbTabState extends State<_DbTab> {
     );
   }
 }
-
 
 // ──────────────────────────────────────────────────────────────────── barra ──
 
@@ -983,10 +1034,7 @@ class _TopBar extends StatelessWidget {
               onTap: () => _openPicker(anchor),
               color: colors.panel3,
               borderRadius: const BorderRadius.all(Radius.circular(4)),
-              padding: const EdgeInsets.symmetric(
-                horizontal: 7,
-                vertical: 3,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -1093,13 +1141,16 @@ class _DataGridState extends State<_DataGrid> {
         final widths = sum < avail
             ? [for (final w in base) w * avail / sum]
             : base;
-        final total =
-            _indexColWidth + widths.fold<double>(0, (a, b) => a + b);
+        final total = _indexColWidth + widths.fold<double>(0, (a, b) => a + b);
         final content = SizedBox(
           width: total,
           child: Column(
             children: [
-              _HeaderRow(table: widget.table, widths: widths, onResize: _resize),
+              _HeaderRow(
+                table: widget.table,
+                widths: widths,
+                onResize: _resize,
+              ),
               Expanded(
                 child: ListView.builder(
                   itemCount: widget.rows.length,
@@ -1119,8 +1170,7 @@ class _DataGridState extends State<_DataGrid> {
         );
         if (sum < avail) return content;
         return ScrollConfiguration(
-          behavior:
-              ScrollConfiguration.of(context).copyWith(scrollbars: true),
+          behavior: ScrollConfiguration.of(context).copyWith(scrollbars: true),
           child: SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: content,
@@ -1197,10 +1247,7 @@ class _HeaderRow extends StatelessWidget {
                         width: 9,
                         height: double.infinity,
                         child: Center(
-                          child: Container(
-                            width: 1,
-                            color: colors.border2,
-                          ),
+                          child: Container(width: 1, color: colors.border2),
                         ),
                       ),
                     ),
@@ -1255,10 +1302,7 @@ class _DataRow extends StatelessWidget {
               ),
               child: Text(
                 '$number',
-                style: typo.mono.copyWith(
-                  fontSize: 10.5,
-                  color: colors.text4,
-                ),
+                style: typo.mono.copyWith(fontSize: 10.5, color: colors.text4),
               ),
             ),
             for (var c = 0; c < table.columns.length; c++)
@@ -1294,10 +1338,7 @@ class _CellText extends StatelessWidget {
     if (v == null) {
       return Text(
         'NULL',
-        style: base.copyWith(
-          color: colors.text4,
-          fontStyle: FontStyle.italic,
-        ),
+        style: base.copyWith(color: colors.text4, fontStyle: FontStyle.italic),
       );
     }
     if (v is _Blob) {
@@ -1389,10 +1430,7 @@ class _GridFooter extends StatelessWidget {
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 6),
-            child: Text(
-              'Page ${page + 1} of ${table.pageCount}',
-              style: info,
-            ),
+            child: Text('Page ${page + 1} of ${table.pageCount}', style: info),
           ),
           HoverTap(
             onTap: page < table.pageCount - 1 ? onNext : null,
@@ -1400,8 +1438,7 @@ class _GridFooter extends StatelessWidget {
             child: Icon(
               Icons.chevron_right,
               size: 15,
-              color:
-                  page < table.pageCount - 1 ? colors.text2 : colors.text4,
+              color: page < table.pageCount - 1 ? colors.text2 : colors.text4,
             ),
           ),
         ],
@@ -1467,10 +1504,7 @@ class _SqlEditor extends StatelessWidget {
             children: [
               Text(
                 'saved · orders-analysis.dbq',
-                style: typo.label.copyWith(
-                  fontSize: 10.5,
-                  color: colors.text4,
-                ),
+                style: typo.label.copyWith(fontSize: 10.5, color: colors.text4),
               ),
               const Spacer(),
               HoverTap(
@@ -1484,11 +1518,7 @@ class _SqlEditor extends StatelessWidget {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(
-                      Icons.play_arrow,
-                      size: 13,
-                      color: Colors.white,
-                    ),
+                    const Icon(Icons.play_arrow, size: 13, color: Colors.white),
                     const SizedBox(width: 5),
                     ListenableBuilder(
                       listenable: controller,

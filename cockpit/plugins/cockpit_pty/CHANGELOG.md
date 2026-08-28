@@ -1,3 +1,36 @@
+## 1.0.7
+
+* **Fix UI freeze on Windows when writing to a stalled terminal** — `pty_write`
+  is a synchronous FFI call on the Flutter platform (UI) thread, and the Windows
+  backend called `FlushFileBuffers` on the ConPTY input pipe after every write.
+  On a pipe, `FlushFileBuffers` blocks until the *other end consumes everything
+  written* — so a child that stopped draining stdin (suspended process, busy
+  shell) froze the entire window indefinitely ("Not responding"; confirmed by
+  minidump in production, inherited from kyroon_pty). The flush is removed: it
+  was semantically wrong for pipes and unnecessary (`WriteFile` already hands
+  the data to the pipe). This was the only `FlushFileBuffers` call site in the
+  plugin.
+* **Non-blocking terminal input on Windows** — `WriteFile` itself can also block
+  the UI thread when the pipe buffer fills (e.g. a large paste into a suspended
+  shell) — same bug class, rarer trigger. Writes now go through a per-PTY writer
+  thread with a FIFO queue: `pty_write` only copies the buffer, enqueues and
+  signals. Anonymous pipes don't support overlapped I/O, so a writer thread is
+  the canonical fix. If the pipe breaks (child/ConPTY gone) the thread drains
+  the queue and exits; later writes are discarded. POSIX backends (`forkpty`)
+  are untouched — they never had the flush. The Windows-only repro harness
+  that proved the hang (old `FlushFileBuffers` blocks; new `pty_write` does
+  not) lives in `test/windows/`.
+
+## 1.0.6
+
+* Absorbed into the Cockpit monorepo as an internal plugin
+  (`plugins/cockpit_pty`), renamed from `kyroon_pty`; not published.
+* **Fix blank/PSReadLine-less PowerShell in GUI builds** — the
+  `STARTF_USESTDHANDLES` + NULL std handles hack is now applied only when the
+  host process owns a real console (e.g. `flutter run`). In GUI builds it made
+  console programs see their stdio as redirected, so PowerShell disabled
+  PSReadLine; the plain ConPTY attribute path is used instead.
+
 ## 1.0.5
 
 * **Fix PTY spawn failure on Windows ARM64** — `build_working_directory` copied

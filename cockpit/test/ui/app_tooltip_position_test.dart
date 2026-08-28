@@ -92,11 +92,8 @@ void main() {
                 context: context,
                 alignment: Alignment.topLeft,
                 anchorAlignment: Alignment.bottomLeft,
-                builder: (_) => const SizedBox(
-                  width: 120,
-                  height: 40,
-                  child: Text('menu'),
-                ),
+                builder: (_) =>
+                    const SizedBox(width: 120, height: 40, child: Text('menu')),
               ),
               child: const SizedBox(width: 60, height: 20),
             ),

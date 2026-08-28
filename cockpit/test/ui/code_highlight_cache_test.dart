@@ -33,7 +33,9 @@ Future<TextSpan?> _buildTimes(
           if (i + 1 < times) {
             i++;
             // Reagenda um rebuild — repaint sem o texto ter mudado.
-            WidgetsBinding.instance.addPostFrameCallback((_) => setState(() {}));
+            WidgetsBinding.instance.addPostFrameCallback(
+              (_) => setState(() {}),
+            );
           }
           return const SizedBox();
         },
@@ -94,27 +96,30 @@ void main() {
     expect(codeHighlightParseCount, 1);
   });
 
-  testWidgets('texto diferente re-parseia (cache não devolve resultado velho)', (
+  testWidgets(
+    'texto diferente re-parseia (cache não devolve resultado velho)',
+    (tester) async {
+      await _buildTimes(
+        tester,
+        source: 'class Foo {}\n',
+        language: 'dart',
+        times: 1,
+      );
+      expect(codeHighlightParseCount, 1);
+
+      await _buildTimes(
+        tester,
+        source: 'class Bar {}\n',
+        language: 'dart',
+        times: 1,
+      );
+      expect(codeHighlightParseCount, 2);
+    },
+  );
+
+  testWidgets('cache preserva o conteúdo pintado (hit == miss)', (
     tester,
   ) async {
-    await _buildTimes(
-      tester,
-      source: 'class Foo {}\n',
-      language: 'dart',
-      times: 1,
-    );
-    expect(codeHighlightParseCount, 1);
-
-    await _buildTimes(
-      tester,
-      source: 'class Bar {}\n',
-      language: 'dart',
-      times: 1,
-    );
-    expect(codeHighlightParseCount, 2);
-  });
-
-  testWidgets('cache preserva o conteúdo pintado (hit == miss)', (tester) async {
     const source = 'class Foo {\n  final int bar = 1;\n}\n';
 
     String render(TextSpan? span) {
@@ -166,7 +171,12 @@ void main() {
     expect(codeHighlightParseCount, 7);
 
     // A mais antiga foi expulsa → miss, re-parseia.
-    await _buildTimes(tester, source: sources.first, language: 'dart', times: 1);
+    await _buildTimes(
+      tester,
+      source: sources.first,
+      language: 'dart',
+      times: 1,
+    );
     expect(codeHighlightParseCount, 8);
   });
 

@@ -9,6 +9,13 @@
 // socket); o hook herda os dois e reporta o status por ali. Sessões `claude`
 // fora do Cockpit não têm essas envs → o hook é no-op (gate natural).
 //
+// LEGADO — o helper foi absorvido pela CLI em Rust como `cockpit hook`
+// (cockpit/cli/src/hook.rs), que é o que o instalador registra hoje. Este
+// binário continua sendo empacotado só como rede de segurança: se a CLI do
+// bundle não responder `--version` com o sufixo `r` (ex.: build antigo), o
+// ClaudeHookInstaller cai aqui em vez de deixar o status de turno morto. Some
+// quando as três plataformas estiverem validadas com a CLI nova.
+//
 // Compilar: dart compile exe tool/cockpit_hook.dart -o <dest>/cockpit-hook
 // NÃO escreve no stdout (participa do protocolo de hook). Nunca falha barulhento.
 

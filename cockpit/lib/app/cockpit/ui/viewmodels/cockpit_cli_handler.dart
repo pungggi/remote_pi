@@ -1,19 +1,24 @@
 import 'dart:convert';
 import 'dart:io' show Directory, File, FileSystemException;
 
+import 'package:cockpit/app/cockpit/domain/contracts/http_request_runner.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/task_discovery.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/task_runner_gateway.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_status_server.dart';
 import 'package:cockpit/app/cockpit/domain/entities/db_connection.dart';
 import 'package:cockpit/app/cockpit/domain/entities/db_result.dart';
 import 'package:cockpit/app/cockpit/domain/entities/dbq_document.dart';
+import 'package:cockpit/app/cockpit/domain/entities/http_document.dart';
+import 'package:cockpit/app/cockpit/domain/exceptions/http_request_error.dart';
 import 'package:cockpit/app/cockpit/domain/entities/project.dart';
 import 'package:cockpit/app/cockpit/domain/entities/sql_statements.dart';
 import 'package:cockpit/app/cockpit/domain/services/db_access_gate.dart';
 import 'package:cockpit/app/cockpit/domain/services/db_query_service.dart';
 import 'package:cockpit/app/cockpit/domain/services/mongo_browse_service.dart';
+import 'package:cockpit/app/cockpit/domain/entities/browser_capability.dart';
 import 'package:cockpit/app/core/domain/result.dart';
 import 'package:cockpit/app/cockpit/ui/session/agent_session.dart';
+import 'package:cockpit/app/cockpit/ui/session/browser_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/file_viewer_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/mongo_browser_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/pane_item.dart';
@@ -34,6 +39,7 @@ class CockpitCliHandler {
   CockpitCliHandler(
     this._vm,
     this._db,
+    this._http,
     this._tasks,
     this._taskRuns,
     this._taskTerms,
@@ -41,6 +47,7 @@ class CockpitCliHandler {
 
   final CockpitViewModel _vm;
   final DbQueryService _db;
+  final HttpRequestRunner _http;
   final TaskDiscovery _tasks;
   final TaskRunnerGateway _taskRuns;
   final TaskTerminalStore _taskTerms;
@@ -49,7 +56,17 @@ class CockpitCliHandler {
   /// [TerminalStatusServer]). Roda **fora** da árvore de widgets — não toca
   /// `BuildContext`, só lê/muta o estado da VM. Retorna rápido (o `insertText`
   /// só enfileira o write no PTY).
-  Future<CockpitCommandResult> handle(CockpitCommand c) async {
+  Future<CockpitCommandResult> handle(CockpitCommand rawCommand) async {
+    // `--focused` chega como o sentinela `@focused` no `tabId`: quem sabe qual
+    // aba está em foco é a VM, não a CLI. Resolver aqui (e não em cada case)
+    // vale pra todo comando que mira aba. Ferramenta externa (ditado por voz,
+    // por exemplo) não tem como saber o id, e copiá-lo a cada uso é inviável.
+    final c = _resolveFocusSentinel(rawCommand);
+    if (c == null) {
+      return const CockpitCommandResult.fail(
+        'no focused tab (is a workspace open?)',
+      );
+    }
     switch (c.cmd) {
       // `send` e `send-key` chegam unificados como `write` (a CLI já resolveu o
       // texto/tecla em bytes UTF-8, transmitidos em base64 pra não quebrar o
@@ -81,6 +98,7 @@ class CockpitCliHandler {
         return const CockpitCommandResult.ok();
 
       case 'list-panes':
+        final focusedId = _vm.focusedTabId;
         final panes = _vm.allSessions
             .map(
               (s) => <String, dynamic>{
@@ -101,6 +119,8 @@ class CockpitCliHandler {
                 // mesmo aceito por `read-task`. Ausente nas demais tabs.
                 if (s is TaskOutputSession) 'taskId': s.taskId,
                 'working': s.isWorking,
+                // Aba em foco (a que `--focused` mira). Sempre no máximo uma.
+                'focused': s.id == focusedId,
               },
             )
             .toList();
@@ -115,7 +135,10 @@ class CockpitCliHandler {
         if (path.isEmpty) {
           return const CockpitCommandResult.fail('missing path');
         }
-        if (!await File(path).exists()) {
+        // Aba remota: o path é do HOST. Checar no disco do cliente daria
+        // "file not found" (ou, pior, abriria um homônimo local) — quem valida
+        // é o `fs.read` do outro lado, dentro de `openFile`.
+        if (!_isRemoteTab(c.tabId) && !await File(path).exists()) {
           return CockpitCommandResult.fail('file not found: "$path"');
         }
         final from = c.tabId;
@@ -148,7 +171,8 @@ class CockpitCliHandler {
         if (cwd.isEmpty) {
           return const CockpitCommandResult.fail('missing cwd');
         }
-        if (!await Directory(cwd).exists()) {
+        // Idem `open`: num terminal remoto o cwd é uma pasta do host.
+        if (!_isRemoteTab(c.tabId) && !await Directory(cwd).exists()) {
           return CockpitCommandResult.fail('directory not found: "$cwd"');
         }
         final split = (c.args['split'] ?? '').toString();
@@ -432,6 +456,73 @@ class CockpitCliHandler {
           return CockpitCommandResult.ok(result.toJson());
         });
 
+      // ── `cockpit http …` — dispara requests de um arquivo `.http` pros
+      // agentes. Mesmo motor da tab (`HttpRequestRunner`), mesma saída JSON de
+      // uma linha do `cockpit db`. Texto em inglês por decisão: a CLI fala com
+      // agentes e scripts, não com a UI.
+      case 'http-list':
+        return _projectCommand(c, (project) async {
+          final (doc, err) = await _httpDoc(c);
+          if (err != null) return CockpitCommandResult.fail(err);
+          return CockpitCommandResult.ok([
+            for (var i = 0; i < doc!.requests.length; i++)
+              {
+                'index': i,
+                'name': doc.requests[i].name,
+                'method': doc.requests[i].method,
+                'url': doc.requests[i].url,
+              },
+          ]);
+        });
+
+      // `cockpit http run <file.http> [--request <nome|índice>]` — sem
+      // `--request`, roda o primeiro request do arquivo.
+      case 'http-run':
+        return _projectCommand(c, (project) async {
+          final (doc, err) = await _httpDoc(c);
+          if (err != null) return CockpitCommandResult.fail(err);
+          if (doc!.requests.isEmpty) {
+            return const CockpitCommandResult.fail(
+              'no_request: the file has no request',
+            );
+          }
+          final wanted = (c.args['request'] ?? '').toString();
+          var index = 0;
+          if (wanted.isNotEmpty) {
+            final asIndex = int.tryParse(wanted);
+            if (asIndex != null) {
+              if (asIndex < 0 || asIndex >= doc.requests.length) {
+                return CockpitCommandResult.fail(
+                  'no_request: no request at index $asIndex '
+                  '(the file has ${doc.requests.length})',
+                );
+              }
+              index = asIndex;
+            } else {
+              index = doc.requests.indexWhere(
+                (r) => r.name.toLowerCase() == wanted.toLowerCase(),
+              );
+              if (index < 0) {
+                return CockpitCommandResult.fail(
+                  'no_request: no request named "$wanted" '
+                  '(see `cockpit http list`)',
+                );
+              }
+            }
+          }
+          final path = (c.args['path'] ?? '').toString();
+          final timeout = int.tryParse('${c.args['timeout'] ?? ''}');
+          final result = await _http.send(
+            doc.resolveRequest(doc.requests[index]),
+            baseDir: Directory(path).parent.path,
+            timeout: Duration(seconds: timeout ?? 30),
+          );
+          return result.fold(
+            (value) => CockpitCommandResult.ok(value.toJson()),
+            (error) => CockpitCommandResult.fail(_httpErrorText(error)),
+          );
+        });
+
       // `cockpit redis` — comando de cache CLI-only (plano 51). `args.parts`
       // é a lista do comando (`['GET','foo']`). Reply cru em JSON.
       case 'redis-cmd':
@@ -500,6 +591,34 @@ class CockpitCliHandler {
       // `cockpit redis browse` / `cockpit mongo browse` (plano 53, decisão D):
       // o agente abre a view filtrada pro humano. Abrir view ≠ executar — não
       // devolve dados; valida filtro/conexão ANTES de abrir.
+      case 'browse':
+        return _dbCommand(c, (project) async {
+          final raw = (c.args['url'] ?? '').toString();
+          if (raw.isEmpty) {
+            return const CockpitCommandResult.fail('missing url');
+          }
+          final url = normalizeBrowserUrl(raw);
+          // Sem webview inline (Linux): browser do SO, e o JSON diz isso.
+          if (!BrowserCapability.resolve().isInline) {
+            final ok = await _vm.openUrlExternally(url);
+            if (!ok) {
+              return CockpitCommandResult.fail('could not open "$url"');
+            }
+            return CockpitCommandResult.ok({'mode': 'system', 'url': url});
+          }
+          final session = _vm.openWebBrowser(
+            url,
+            projectId: project.id,
+            reuse: true,
+          );
+          if (session == null) {
+            return const CockpitCommandResult.fail(
+              'workspace has no open pane to attach the browser to',
+            );
+          }
+          return CockpitCommandResult.ok({'mode': 'inline', 'url': url});
+        });
+
       case 'redis-browse':
         return _dbCommand(c, (project) async {
           final connName = (c.args['db'] ?? '').toString();
@@ -647,7 +766,56 @@ class CockpitCliHandler {
   /// Molde dos comandos `db-*`: resolve o workspace (decisão K do plano 51 —
   /// `--workspace <id|path>` > pane emissor > erro, **nunca** cwd nem chute) e
   /// converte [DbQueryException] em `fail("<kind>: <mensagem>")`.
-  Future<CockpitCommandResult> _dbCommand(
+  /// `true` se a aba emissora pertence a um workspace de host remoto — aí os
+  /// caminhos que chegam pela CLI são do host, não deste computador.
+  bool _isRemoteTab(String? tabId) {
+    if (tabId == null || tabId.isEmpty) return false;
+    final session = _vm.session(tabId);
+    if (session == null) return false;
+    return _vm.projectById(session.projectId)?.isRemoteTerminal ?? false;
+  }
+
+  /// Lê e parseia o `.http` de `args['path']` (absoluto — a CLI resolve
+  /// contra o cwd). Devolve `(doc, null)` ou `(null, erro em inglês)`.
+  Future<(HttpDocument?, String?)> _httpDoc(CockpitCommand c) async {
+    final path = (c.args['path'] ?? '').toString();
+    if (path.isEmpty) return (null, 'missing .http path');
+    try {
+      return (HttpDocument.parse(await File(path).readAsString()), null);
+    } on FileSystemException catch (e) {
+      return (null, 'cannot read "$path": ${e.message}');
+    }
+  }
+
+  /// Erro de request no formato `<kind>: <mensagem>` que a CLI reconstrói em
+  /// `{"error":{kind,message}}`. Em inglês por decisão (saída de CLI não é
+  /// traduzida); a UI usa `httpRequestErrorMessage`, que traduz.
+  static String _httpErrorText(HttpRequestError e) {
+    final detail = e.detail?.trim() ?? '';
+    return switch (e.kind) {
+      HttpRequestErrorKind.noRequest => 'no_request: no request found',
+      HttpRequestErrorKind.invalidUrl =>
+        'invalid_url: "$detail" is not a '
+            'valid absolute URL',
+      HttpRequestErrorKind.unresolvedVariable =>
+        'unresolved_variable: {{${e.variable}}} has no value — declare it '
+            'with @${e.variable} = … in the file',
+      HttpRequestErrorKind.bodyFileUnreadable =>
+        'body_file_unreadable: cannot read "${e.path}"'
+            '${detail.isEmpty ? '' : ': $detail'}',
+      HttpRequestErrorKind.connectionFailed =>
+        'connection_failed: ${detail.isEmpty ? 'could not reach the server' : detail}',
+      HttpRequestErrorKind.timeout =>
+        'timeout: no response after ${e.timeoutSeconds}s',
+      HttpRequestErrorKind.responseTooLarge =>
+        'response_too_large: over the ${e.limitBytes} byte limit',
+    };
+  }
+
+  /// Resolve o workspace do comando (`--workspace <id|path>`, ou o do pane
+  /// emissor) e roda [action] nele. Compartilhado por `db`/`redis`/`mongo` e
+  /// `http` — todos precisam de uma pasta de workspace real.
+  Future<CockpitCommandResult> _projectCommand(
     CockpitCommand c,
     Future<CockpitCommandResult> Function(Project project) action,
   ) async {
@@ -678,12 +846,21 @@ class CockpitCliHandler {
         'this pane has no workspace folder',
       );
     }
+    return action(project);
+  }
+
+  /// [_projectCommand] + tradução do erro de banco para o formato
+  /// `<kind>: <message>` que a CLI reconstrói em `{"error":{…}}`.
+  Future<CockpitCommandResult> _dbCommand(
+    CockpitCommand c,
+    Future<CockpitCommandResult> Function(Project project) action,
+  ) => _projectCommand(c, (project) async {
     try {
       return await action(project);
     } on DbQueryException catch (e) {
       return CockpitCommandResult.fail('${e.kind}: ${e.message}');
     }
-  }
+  });
 
   /// Resolve o alvo de um `read-pane`: primeiro por id exato (`t3`), depois
   /// por `manualLabel` (case-insensitive). Label ambíguo = erro — nunca chuta
@@ -715,5 +892,17 @@ class CockpitCliHandler {
     if (s is RedisBrowserSession) return 'redis';
     if (s is MongoBrowserSession) return 'mongo';
     return 'other';
+  }
+
+  /// Sentinela do `--focused` da CLI. Devolve o comando com o `tabId` real, ou
+  /// `null` quando não há aba em foco pra resolver (aí o chamador falha com
+  /// mensagem clara em vez de escrever numa aba arbitrária).
+  static const String _focusSentinel = '@focused';
+
+  CockpitCommand? _resolveFocusSentinel(CockpitCommand c) {
+    if (c.tabId != _focusSentinel) return c;
+    final id = _vm.focusedTabId;
+    if (id == null || id.isEmpty) return null;
+    return CockpitCommand(cmd: c.cmd, tabId: id, args: c.args);
   }
 }

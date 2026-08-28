@@ -1,5 +1,6 @@
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/settings/ui/revoke_controller.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 /// Dialog de progresso do revoke: carregando enquanto sobe o `pi --mode rpc` e
@@ -19,6 +20,7 @@ class RevokeDialog extends StatelessWidget {
   Widget _dialog(BuildContext context) {
     final ctrl = controller;
     final colors = context.colors;
+    final tr = context.t.settings.revokeDialog;
 
     return AlertDialog(
       content: ConstrainedBox(
@@ -29,13 +31,13 @@ class RevokeDialog extends StatelessWidget {
             context,
             icon: Icons.check_circle_outline,
             color: colors.online,
-            message: 'Device removed.',
+            message: tr.deviceRemoved,
           ),
           RevokeStage.failed => _result(
             context,
             icon: Icons.error_outline,
             color: colors.error,
-            message: ctrl.error ?? 'Failed to revoke the device.',
+            message: ctrl.error ?? tr.failedToRevoke,
           ),
         },
       ),
@@ -44,7 +46,7 @@ class RevokeDialog extends StatelessWidget {
           : [
               PrimaryButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Ok'),
+                child: Text(tr.ok),
               ),
             ],
     );
@@ -52,6 +54,7 @@ class RevokeDialog extends StatelessWidget {
 
   Widget _running(BuildContext context, RevokeController ctrl) {
     final colors = context.colors;
+    final tr = context.t.settings.revokeDialog;
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -59,8 +62,8 @@ class RevokeDialog extends StatelessWidget {
         const SizedBox(height: 18),
         Text(
           ctrl.deviceName == null
-              ? 'Revoking…'
-              : 'Revoking ${ctrl.deviceName}…',
+              ? tr.revoking
+              : tr.revokingDevice(name: ctrl.deviceName!),
           textAlign: TextAlign.center,
           style: context.typo.body.copyWith(
             fontSize: 13.5,
@@ -69,7 +72,7 @@ class RevokeDialog extends StatelessWidget {
         ),
         const SizedBox(height: 6),
         Text(
-          'Connecting to the relay and removing access.',
+          tr.connectingMessage,
           textAlign: TextAlign.center,
           style: context.typo.label.copyWith(color: colors.text3),
         ),

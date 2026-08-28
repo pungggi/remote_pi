@@ -137,10 +137,11 @@ class NoSqlRunnerImpl implements NoSqlRunner {
     );
   }
 
-  /// Expostos pra teste: montar a URI é a parte fácil de errar (senha com
-  /// `@`/`:` quebrando a authority) e a única que dá pra exercitar sem um
-  /// Mongo de verdade.
-  @visibleForTesting
+  /// URI de conexão do Mongo com a senha resolvida embutida. Público porque o
+  /// caminho remoto (plano 58) monta a mesma URI antes de mandar ao host — a
+  /// senha do cofre entra no userinfo do jeito idêntico ao runner local. Também
+  /// é o ponto mais fácil de errar (senha com `@`/`:` quebrando a authority),
+  /// então tem cobertura de teste dedicada.
   static String mongoUriFor(DbConnection conn, String? password) =>
       _mongoUri(conn, password);
 

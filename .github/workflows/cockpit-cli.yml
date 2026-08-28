@@ -1,0 +1,80 @@
+# CI da CLI interna do Cockpit (crate Rust em `cockpit/cli/`).
+#
+# Ela é o binário que o app materializa em ~/.cockpit/bin/cockpit e que também
+# atende os hooks do Claude Code (`cockpit hook`). Roda nas TRÊS plataformas de
+# propósito: o transporte tem caminho `#[cfg(unix)]` (socket Unix) e caminho
+# Windows (TCP no loopback + token), e só o compilador de cada uma prova que os
+# dois compilam. Os testes de wire (tests/wire.rs) sobem um servidor falso e
+# conferem a requisição que chega — é o contrato que o app enxerga.
+
+name: cockpit-cli
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cockpit/cli/**"
+      - ".github/workflows/cockpit-cli.yml"
+  pull_request:
+    paths:
+      - "cockpit/cli/**"
+      - ".github/workflows/cockpit-cli.yml"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: cockpit/cli
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Os runners hospedados já trazem rustup/cargo; garantimos a stable e os
+      # componentes que o job usa.
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy --no-self-update
+          rustup default stable
+          cargo --version && rustc --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            cockpit/cli/target
+          key: cargo-${{ matrix.os }}-${{ hashFiles('cockpit/cli/Cargo.lock') }}
+          restore-keys: cargo-${{ matrix.os }}-
+
+      - name: Formatação
+        run: cargo fmt --check
+
+      - name: Clippy (warnings são erro)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Testes
+        run: cargo test
+
+      # A fatia Intel do macOS é o motivo de o port existir: a release é feita
+      # em Apple Silicon e precisa rodar em Mac Intel. Aqui provamos que ela
+      # compila e que o `lipo` produz um binário que EXECUTA — `lipo
+      # -verify_arch` sozinho passa até em binário quebrado.
+      - name: Universal macOS (arm64 + x86_64)
+        if: runner.os == 'macOS'
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          lipo -create target/aarch64-apple-darwin/release/cockpit \
+                       target/x86_64-apple-darwin/release/cockpit \
+               -output /tmp/cockpit-universal
+          lipo -archs /tmp/cockpit-universal
+          /tmp/cockpit-universal --version
+          arch -x86_64 /tmp/cockpit-universal --version

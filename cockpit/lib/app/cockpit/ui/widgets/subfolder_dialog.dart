@@ -1,5 +1,6 @@
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 /// Pergunta em qual pasta dentro do projeto o agente vai atuar. Permite
@@ -16,7 +17,7 @@ Future<String?> showSubfolderDialog(
 }) {
   return showDialog<String>(
     context: context,
-    barrierColor: const Color(0x99000000),
+    barrierColor: context.colors.scrim,
     builder: (context) => _SubfolderDialog(
       projectName: projectName,
       loadSubfolders: loadSubfolders,
@@ -75,6 +76,7 @@ class _SubfolderDialogState extends State<_SubfolderDialog> {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final atRoot = _rel.isEmpty;
+    final tr = context.t.cockpit.subfolderDialog;
 
     return AlertDialog(
       title: Column(
@@ -82,7 +84,7 @@ class _SubfolderDialogState extends State<_SubfolderDialog> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Where to work?',
+            tr.title,
             style: context.typo.title.copyWith(
               fontSize: 15,
               color: colors.text,
@@ -134,7 +136,7 @@ class _SubfolderDialogState extends State<_SubfolderDialog> {
                               vertical: 14,
                             ),
                             child: Text(
-                              'No subfolders here.',
+                              tr.empty,
                               style: context.typo.label.copyWith(
                                 color: colors.text4,
                               ),
@@ -147,8 +149,8 @@ class _SubfolderDialogState extends State<_SubfolderDialog> {
             const SizedBox(height: 10),
             Text(
               atRoot
-                  ? 'Use the root of ${widget.projectName}'
-                  : 'Use ${widget.projectName}/$_rel',
+                  ? tr.useRoot(project: widget.projectName)
+                  : tr.usePath(project: widget.projectName, rel: _rel),
               overflow: TextOverflow.ellipsis,
               style: context.typo.label.copyWith(color: colors.text3),
             ),
@@ -158,11 +160,11 @@ class _SubfolderDialogState extends State<_SubfolderDialog> {
       actions: [
         OutlineButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          child: Text(context.t.common.cancel),
         ),
         PrimaryButton(
           onPressed: () => Navigator.of(context).pop(_rel),
-          child: const Text('Use this folder'),
+          child: Text(tr.useThisFolder),
         ),
       ],
     );

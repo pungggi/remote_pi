@@ -45,6 +45,7 @@ import {
   addPeer,
   getOrCreateEd25519Keypair,
   KeyringUnavailableError,
+  PairedIdentityMissingError,
   listPeers,
   markPeerSigning,
   removePeer,
@@ -404,6 +405,40 @@ function _republishRoomMeta(): void {
   if (ext.myRoomMeta.git !== undefined) meta.git = ext.myRoomMeta.git;
   if (ext.myRoomMeta.context_usage !== undefined) meta.context_usage = ext.myRoomMeta.context_usage;
   ext.relay.sendControl({ type: "room_meta_update", room_id: ext.myRoomId, meta });
+}
+
+/**
+ * Issue #105 — pure-data events must not reach the model.
+ *
+ * `display: false` only suppresses TUI rendering. Pi still persists the message
+ * as a `CustomMessageEntry`, and those DO participate in LLM context, so every
+ * relay flap / name collision / pairing was being replayed to the model on
+ * every subsequent call ("Relay connected", "Mesh name reassigned: …"). The
+ * agent burned tokens on internal telemetry and sometimes reasoned about it as
+ * if it were user input.
+ *
+ * The filter is non-destructive: the entries stay in the session (Cockpit and
+ * any other RPC client still read them off the stream), the LLM just never sees
+ * them. Keyed on `display === false` rather than a customType allowlist, so any
+ * pure-data event we add later is covered by construction. Events meant for the
+ * human (`remote-pi:mesh-message`, `remote-pi:mesh-revoked`, …) set
+ * `display: true` and pass through untouched.
+ */
+function _isPureDataContextMessage(message: unknown): boolean {
+  if (typeof message !== "object" || message === null) return false;
+  const m = message as { role?: unknown; customType?: unknown; display?: unknown };
+  return m.role === "custom"
+    && typeof m.customType === "string"
+    && m.customType.startsWith("remote-pi:")
+    && m.display === false;
+}
+
+function _filterInternalMessagesFromContext<T>(messages: T[] | undefined): T[] {
+  // Compose the modular pipeline's received-image filter (images/pipeline.ts)
+  // with the #105 pure-data filter — one pass, both concerns.
+  return filterReceivedImageMessagesFromContext(messages).filter(
+    (message) => !_isPureDataContextMessage(message),
+  );
 }
 
 function _echoUserMessage(msg: ClientUserMessage, forceSteer = false): void {
@@ -1601,17 +1636,27 @@ function _emitRelayState(force = false): void {
   const status = _relayStatus();
   if (!force && status === ext.lastRelayStatus) return;
   ext.lastRelayStatus = status;
-  ext.pi?.sendMessage({
-    customType: "remote-pi:relay-state",
-    content: `Relay ${status}`,
-    details: {
-      status,
-      connected: status === "connected",
-      ...(ext.relayUrl ? { relayUrl: ext.relayUrl } : {}),
-      ...(ext.myRoomId ? { room: ext.myRoomId } : {}),
-    },
-    display: false,
-  });
+  // This can run inside a WebSocket 'close' callback (via _onRelayClose). After a
+  // session replacement (newSession/fork/switchSession/reload) a captured
+  // `ext.pi` can be stale, and `assertActive` throws synchronously inside
+  // `sendMessage`. An uncaught throw from a WS event callback becomes a
+  // process-level uncaughtException and exits pi. Swallow it here: the next
+  // relay-state change re-emits, so connectivity is eventually consistent (upstream #55).
+  try {
+    ext.pi?.sendMessage({
+      customType: "remote-pi:relay-state",
+      content: `Relay ${status}`,
+      details: {
+        status,
+        connected: status === "connected",
+        ...(ext.relayUrl ? { relayUrl: ext.relayUrl } : {}),
+        ...(ext.myRoomId ? { room: ext.myRoomId } : {}),
+      },
+      display: false,
+    });
+  } catch {
+    // ext.pi stale (session replaced) or extension runtime not yet bound.
+  }
 }
 
 /** Minimal ctx for relay start/stop driven by a control message (no command
@@ -2373,7 +2418,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // every provider request; the actual Android image still reaches the model via
   // the paired sendUserMessage call.
   pi.on("context", (event) => ({
-    messages: filterReceivedImageMessagesFromContext(event.messages),
+    messages: _filterInternalMessagesFromContext(event.messages),
   }));
 
   // Tool calls execute without prompting the remote user. The Pi SDK has no
@@ -2627,10 +2672,10 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // compaction proceeds.
   pi.on("session_before_compact", (event) => {
     if (event.preparation) {
-      event.preparation.messagesToSummarize = filterReceivedImageMessagesFromContext(
+      event.preparation.messagesToSummarize = _filterInternalMessagesFromContext(
         event.preparation.messagesToSummarize,
       );
-      event.preparation.turnPrefixMessages = filterReceivedImageMessagesFromContext(
+      event.preparation.turnPrefixMessages = _filterInternalMessagesFromContext(
         event.preparation.turnPrefixMessages,
       );
     }
@@ -2830,6 +2875,8 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
         "pair", "devices", "revoke",
         "rename",
         "set-relay", "set-advertise",
+        "relay", "relay start", "relay stop", "relay status", "relay url",
+        "config",
         "peers",  // plan/25 Wave D — local + cross-PC inventory
         "create", "remove", "daemons",  // daemon registry (plan/26 W1)
         // Fleet ops use the `daemon` prefix so `/remote-pi stop` keeps
@@ -2858,6 +2905,8 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
       // adjacent so that stays visible.
       else if (sub.startsWith("set-advertise"))  { _cmdSetAdvertise(sub.slice("set-advertise".length).trim(), ctx); }
       else if (sub.startsWith("set-relay"))      { _cmdSetRelay(sub.slice("set-relay".length).trim(), ctx); }
+      else if (sub === "relay" || sub.startsWith("relay ")) { await _cmdRelay(sub.slice("relay".length).trim(), ctx); }
+      else if (sub === "config")                 { _cmdConfig(ctx); }
       else if (sub === "rename" || sub.startsWith("rename ")) { await _renameAgent(sub.slice("rename".length).trim()); }
       else if (sub === "peers")                  { await _cmdPeers(ctx); }
       else if (sub.startsWith("create"))         { await cmdCreate(sub.slice("create".length).trim(), ctx); }
@@ -2891,6 +2940,8 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   });
   pi.registerCommand("remote-pi set-relay", { description: "Persist a new relay URL to user config", handler: async (args, ctx) => { ext.lastCtx = ctx; _cmdSetRelay(args.trim(), ctx); } });
   pi.registerCommand("remote-pi set-advertise", { description: "Set the address the pairing QR advertises (e.g. a Tailscale IP); empty clears it", handler: async (args, ctx) => { ext.lastCtx = ctx; _cmdSetAdvertise(args.trim(), ctx); } });
+  pi.registerCommand("remote-pi config", { description: "Show the effective relay URL and where it came from", handler: async (_, ctx) => { ext.lastCtx = ctx; _cmdConfig(ctx); } });
+  pi.registerCommand("remote-pi relay", { description: "Relay control: start | stop | status | url <http(s) url> (no arg toggles)", handler: async (args, ctx) => { ext.lastCtx = ctx; await _cmdRelay(args.trim(), ctx); } });
 
   // Plan/25 Wave D
   pi.registerCommand("remote-pi peers", {
@@ -3221,6 +3272,23 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
       );
       return;
     }
+    if (err instanceof PairedIdentityMissingError) {
+      // Issues #95/#69: this process can't reach the keyring that holds the
+      // paired identity (classically a `systemd --user` daemon vs. the desktop
+      // session that paired). Minting a fresh key here would make SelfRevoke
+      // wipe peers.json seconds later and take the phone offline, so storage
+      // refuses. Surface the actionable fix instead of failing silently.
+      ctx.ui.notify(
+        "[remote-pi] Could not read this machine's identity, but devices are " +
+        "already paired — refusing to generate a new one (that would revoke " +
+        "them). This process likely cannot reach the same keyring as the " +
+        "session that paired (e.g. a systemd --user daemon). Give the service " +
+        "keyring access, or copy the paired keypair to ~/.pi/remote/identity.json " +
+        "(0600) so both contexts read the same identity.",
+        "error",
+      );
+      return;
+    }
     throw err;
   }
   // Re-check immediately after the first await, before cache/config/model/UI
@@ -3279,22 +3347,15 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
         const modelId = sm.getDefaultModel();
         if (modelId) {
           ext.currentModel = modelId;
-          const seeded = modelId;
-          // pi 0.83 made the registry build async (`ModelRuntime.create()`).
-          // Upgrade the seed to the model's friendly name best-effort, WITHOUT
-          // blocking session start — the raw id is already set above as a safe
-          // immediate default. Only an idle daemon (never prompted → no
-          // model_select / turn_start) benefits; those hydrate this later too.
-          if (provider) {
-            void ensureModelRegistry()
-              .then((reg) => reg.find(provider, modelId))
-              .then((found) => {
-                // Only upgrade while the seed is still current — a user model
-                // switch (or model_select/turn_start) since startup must win.
-                if (found?.name && ext.currentModel === seeded) ext.currentModel = found.name;
-              })
-              .catch(() => { /* best-effort — never block start */ });
-          }
+          // pi 0.83: resolve the friendly name via the live ctx registry when one
+          // is available (upstream #112 — never touches the package's factory
+          // surface; falls back to last-good, then an inert stub). Sync and
+          // best-effort: the raw id above is already a safe immediate default.
+          const found = provider
+            ? ensureModelRegistry((c ?? ext.lastEventCtx ?? ext.lastCtx) as unknown as ActionCtx | null)
+                .find(provider, modelId)
+            : undefined;
+          if (found?.name) ext.currentModel = found.name;
         }
       }
     } catch { /* defensive — never block start on a model lookup */ }
@@ -3753,7 +3814,7 @@ function _cmdSetRelay(arg: string, ctx: Pick<ExtensionContext, "ui">): void {
   }
   saveConfig({ relay: raw });
   ctx.ui.notify(
-    `[remote-pi] Relay set to ${raw}. Run /remote-pi start (or restart) to apply.`,
+    `[remote-pi] Relay set to ${raw}. Run /remote-pi relay stop then /remote-pi relay start to apply.`,
     "info",
   );
 }
@@ -3800,6 +3861,84 @@ function _cmdSetAdvertise(arg: string, ctx: Pick<ExtensionContext, "ui">): void 
     `/remote-pi pair — already-paired devices keep their current address.`,
     "info",
   );
+}
+
+/**
+ * `/remote-pi config` — print the effective relay URL and where it came from
+ * (upstream #119 family).
+ *
+ * Like the `relay` family it had no handler and fell through to the status
+ * panel, which shows the URL but not the source — so `env` vs `config` vs
+ * `default` was unverifiable without a restart.
+ */
+function _cmdConfig(ctx: Pick<ExtensionContext, "ui">): void {
+  const { url, source } = resolveRelayUrl();
+  const origin = source === "env"
+    ? "REMOTE_PI_RELAY environment variable"
+    : source === "config"
+      ? "~/.pi/piper/config.json (set via /remote-pi set-relay)"
+      : "built-in default";
+  const live = ext.relayUrl && ext.relayUrl !== url
+    ? `\n  ⚠ Live connection still on ${ext.relayUrl} — run /remote-pi relay stop then /remote-pi relay start to apply.`
+    : "";
+  ctx.ui.notify(`[remote-pi]\n  Relay URL: ${url}\n  Source: ${source} — ${origin}${live}`, "info");
+}
+
+/**
+ * `/remote-pi relay [start|stop|status|url <url>]` — upstream issue #119.
+ *
+ * The README documents this family (`relay url` to point at a self-hosted
+ * relay, `relay stop` + `relay start` to apply the change). Verbs map onto the
+ * same primitives the RPC control channel already uses (`_handleControl`), so
+ * the slash command and the Cockpit button can't drift: relay-only up
+ * (`_cmdStart`) / relay-only down (`_goIdle`), never touching local-mesh
+ * membership — that stays `/remote-pi stop`'s job.
+ */
+async function _cmdRelay(arg: string, ctx: ExtensionContext): Promise<void> {
+  const raw = arg.trim();
+  const [verb, ...rest] = raw.split(/\s+/);
+  const value = rest.join(" ").trim();
+
+  switch (verb) {
+    case "":
+    case "toggle":
+      await _handleControl("relay:toggle");
+      ctx.ui.notify(`[remote-pi] Relay ${_relayStatus()}.`, "info");
+      _refreshFooter(ctx);
+      return;
+    case "start":
+    case "on":
+      if (_getState() === "idle") await _cmdStart(ctx);
+      else ctx.ui.notify(`[remote-pi] Relay already ${_relayStatus()}.`, "info");
+      _emitRelayState(true);
+      return;
+    case "stop":
+    case "off":
+      if (_getState() === "idle") {
+        ctx.ui.notify("[remote-pi] Relay already disconnected.", "info");
+      } else {
+        _goIdle("peer_stop");
+        ctx.ui.notify("[remote-pi] Relay disconnected (local mesh untouched).", "info");
+      }
+      _emitRelayState(true);
+      _refreshFooter(ctx);
+      return;
+    case "status":
+      _cmdStatus(ctx);
+      _emitRelayState(true);
+      return;
+    case "url":
+      // Same writer as `set-relay` — one code path, so validation and the
+      // "restart to apply" hint can never diverge between the two spellings.
+      _cmdSetRelay(value, ctx);
+      return;
+    default:
+      ctx.ui.notify(
+        "[remote-pi] Usage: /remote-pi relay [start|stop|status|url <http(s) url>]",
+        "warning",
+      );
+      return;
+  }
 }
 
 // ── Daemon registry commands (plan/26 Wave 1) ─────────────────────────────────

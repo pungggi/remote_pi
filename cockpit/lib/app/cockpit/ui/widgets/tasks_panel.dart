@@ -8,6 +8,7 @@ import 'package:cockpit/app/core/ui/widgets/app_menu.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:cockpit/app/core/ui/widgets/app_tooltip.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 /// Subpane de Tasks na coluna direita (abaixo da árvore de arquivos). Lista as
@@ -120,10 +121,12 @@ class _TasksPanelState extends State<TasksPanel> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'No tasks detected in this project.',
+            context.t.cockpit.tasksPanel.noTasks,
             style: context.typo.label.copyWith(color: colors.text3),
           ),
-          if (vm.hasProject && !vm.hasConfig) ...[
+          // Criar o tasks.json de exemplo é local-only (o remoto edita no
+          // host); no remoto o botão some e o vazio fica só informativo.
+          if (vm.hasProject && !vm.hasConfig && !vm.isRemote) ...[
             const SizedBox(height: 10),
             HoverTap(
               borderRadius: BorderRadius.circular(6),
@@ -144,7 +147,7 @@ class _TasksPanelState extends State<TasksPanel> {
                     Icon(Icons.add, size: 14, color: colors.text2),
                     const SizedBox(width: 6),
                     Text(
-                      'Create tasks.json',
+                      context.t.cockpit.tasksPanel.createTasksJson,
                       style: context.typo.label.copyWith(color: colors.text),
                     ),
                   ],
@@ -167,7 +170,7 @@ class _TasksPanelState extends State<TasksPanel> {
           Icon(Icons.play_circle_outline, size: 14, color: colors.text3),
           const SizedBox(width: 8),
           Text(
-            'TASKS',
+            context.t.cockpit.tasksPanel.sectionTasks,
             style: context.typo.label.copyWith(
               fontSize: 11,
               letterSpacing: 0.6,
@@ -183,7 +186,7 @@ class _TasksPanelState extends State<TasksPanel> {
             )
           else
             _IconAction(
-              tooltip: 'Reload tasks',
+              tooltip: context.t.cockpit.tasksPanel.reloadTasksTooltip,
               icon: Icons.refresh,
               onTap: vm.reload,
             ),
@@ -253,7 +256,10 @@ class _TaskRow extends StatelessWidget {
           if (active) ...[
             for (final k in def.interactiveKeys.where((k) => k.primary))
               _IconAction(
-                tooltip: "${k.label} (sends '${k.key}')",
+                tooltip: context.t.cockpit.tasksPanel.sendsKeyTooltip(
+                  label: k.label,
+                  key: k.key,
+                ),
                 icon: _iconFor(k.icon),
                 fallback: k.key,
                 onTap: () => onKey(k.key),
@@ -269,12 +275,12 @@ class _TaskRow extends StatelessWidget {
               (k) => k.primary && k.icon == 'restart',
             ))
               _IconAction(
-                tooltip: 'Restart',
+                tooltip: context.t.cockpit.tasksPanel.restartTooltip,
                 icon: Icons.restart_alt,
                 onTap: onRestart,
               ),
             _IconAction(
-              tooltip: 'Stop',
+              tooltip: context.t.cockpit.tasksPanel.stopTooltip,
               icon: Icons.stop,
               color: colors.error,
               onTap: onStop,
@@ -284,8 +290,8 @@ class _TaskRow extends StatelessWidget {
             // enquanto o spawn prepara ou o processo morre.
             AppTooltip(
               message: run.status == TaskRunStatus.starting
-                  ? 'Starting…'
-                  : 'Stopping…',
+                  ? context.t.cockpit.tasksPanel.startingTooltip
+                  : context.t.cockpit.tasksPanel.stoppingTooltip,
               child: const Padding(
                 padding: EdgeInsets.all(4),
                 child: CircularProgressIndicator(size: 12),
@@ -299,7 +305,7 @@ class _TaskRow extends StatelessWidget {
                 onTap: onCycleProfile,
               ),
             _IconAction(
-              tooltip: 'Run',
+              tooltip: context.t.cockpit.tasksPanel.runTooltip,
               icon: Icons.play_arrow,
               color: colors.online,
               onTap: onStart,
@@ -428,7 +434,7 @@ class _ProfileChip extends StatelessWidget {
     if (!canCycle)
       return Padding(padding: const EdgeInsets.only(right: 2), child: chip);
     return AppTooltip(
-      message: 'Switch profile',
+      message: context.t.cockpit.tasksPanel.switchProfileTooltip,
       child: HoverTap(
         borderRadius: BorderRadius.circular(5),
         onTap: onTap,
@@ -449,7 +455,7 @@ class _OverflowKeys extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _IconAction(
-      tooltip: 'More keys',
+      tooltip: context.t.cockpit.tasksPanel.moreKeysTooltip,
       icon: Icons.keyboard,
       onTap: () async {
         final chosen = await showAppMenu<String>(

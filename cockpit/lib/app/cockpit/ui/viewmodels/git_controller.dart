@@ -12,6 +12,8 @@ import 'package:cockpit/app/cockpit/domain/contracts/git_command_runner.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/git_status_reader.dart';
 import 'package:cockpit/app/cockpit/domain/entities/git_file_status.dart';
 import 'package:cockpit/app/cockpit/domain/entities/git_info.dart';
+import 'package:cockpit/app/cockpit/domain/utils/coalescing_single_flight.dart';
+import 'package:cockpit/app/core/ui/window_activity_controller.dart';
 import 'package:flutter/foundation.dart';
 
 typedef DirectoryWatch = Stream<FileSystemEvent> Function(String path);
@@ -26,14 +28,17 @@ typedef DirectoryWatch = Stream<FileSystemEvent> Function(String path);
 class GitController extends ChangeNotifier {
   GitController(
     this._reader,
-    this._runner, {
+    this._runner,
+    this._activity, {
     DirectoryWatch? directoryWatch,
-    Duration watchRetryDelay = const Duration(milliseconds: 500),
-  }) : _directoryWatch = directoryWatch ?? _defaultDirectoryWatch,
-       _watchRetryDelay = watchRetryDelay;
+    this._watchRetryDelay = const Duration(milliseconds: 500),
+  }) : _directoryWatch = directoryWatch ?? _defaultDirectoryWatch {
+    _activity.addListener(_onActivityChanged);
+  }
 
   final GitStatusReader _reader;
   final GitCommandRunner _runner;
+  final WindowActivityController _activity;
   final DirectoryWatch _directoryWatch;
   final Duration _watchRetryDelay;
 
@@ -84,6 +89,18 @@ class GitController extends ChangeNotifier {
   /// nenhuma → `[path]` (pasta comum). Reavaliado a cada [refresh].
   final Map<String, List<String>> _rootsByProject = <String, List<String>>{};
 
+  /// Sobe quando uma leitura detecta mudanca git; consumidores read-only usam
+  /// este token para recarregar dados derivados, como o historico de commits.
+  int _revision = 0;
+  int get revision => _revision;
+
+  /// Invalida consumidores derivados quando uma operacao git concluiu mas o
+  /// status por arquivos continuou igual (por exemplo, um fast-forward limpo).
+  void markHistoryStale() {
+    _revision++;
+    notifyListeners();
+  }
+
   /// Watcher do working tree do projeto **selecionado** (filesystem ao vivo).
   /// Recriado ao trocar de projeto; debounce junta rajadas de eventos.
   StreamSubscription<FileSystemEvent>? _gitWatch;
@@ -107,7 +124,11 @@ class GitController extends ChangeNotifier {
   /// [refresh] só notifica quando algo mudou, então o custo em UI é nulo em
   /// repos parados.
   Timer? _gitPoll;
+  bool _pollRequested = false;
+  String? _watchedProjectId;
   static const Duration _gitPollInterval = Duration(seconds: 3);
+  final CoalescingSingleFlight<String> _refreshFlights =
+      CoalescingSingleFlight<String>();
 
   // ---- leitura --------------------------------------------------------------
 
@@ -208,7 +229,10 @@ class GitController extends ChangeNotifier {
 
   /// Roda um comando e coleta a saída para consumidores que precisam ler o
   /// resultado (por exemplo, o seletor de commits de amend).
-  Future<(int code, String output)> output(String root, List<String> args) async {
+  Future<(int code, String output)> output(
+    String root,
+    List<String> args,
+  ) async {
     final run = _runner.run(root, args);
     final lines = <String>[];
     final sub = run.output.listen(lines.add);
@@ -233,7 +257,10 @@ class GitController extends ChangeNotifier {
   /// (todos), ao selecionar e no fim de turno do agente (que pode ter mexido
   /// em arquivos). Reavalia as **roots** (implícitas, do filesystem) e lê o
   /// git de cada uma — single-root é o caso N=1 e se comporta como sempre.
-  Future<void> refresh(String projectId) async {
+  Future<void> refresh(String projectId) =>
+      _refreshFlights.run(projectId, () => _refreshOnce(projectId));
+
+  Future<void> _refreshOnce(String projectId) async {
     final path = resolvePath?.call(projectId);
     // Sink único de git — barra o Cockpit (sem pasta) de uma vez: cobre o
     // watcher, o poll e o refresh manual/fim-de-turno.
@@ -266,7 +293,10 @@ class GitController extends ChangeNotifier {
       _gitTree[root] = _buildGitTree(info?.files);
       changed = true;
     }
-    if (changed) notifyListeners();
+    if (changed) {
+      _revision++;
+      notifyListeners();
+    }
   }
 
   /// Descarta o estado git de um projeto removido (chaveado por root path).
@@ -282,6 +312,11 @@ class GitController extends ChangeNotifier {
   /// árvore/branch atualizadas ao vivo conforme o disco muda (o agente edita
   /// arquivos, troca de branch, comita). No-op se já observa esse mesmo path.
   void watchProject(String? projectId) {
+    _watchedProjectId = projectId;
+    if (!_activity.isActive) {
+      _cancelWatch();
+      return;
+    }
     // Cockpit não tem pasta → nunca observa (evita `Directory('').watch`).
     if (projectId != null && (isSystemTerminal?.call(projectId) ?? false)) {
       _gitWatch?.cancel();
@@ -337,13 +372,44 @@ class GitController extends ChangeNotifier {
 
   /// (Re)inicia o poll periódico de git dos [pollTargets]. Ver [_gitPoll].
   void startPoll() {
+    _pollRequested = true;
+    _armPoll();
+  }
+
+  void _armPoll() {
     _gitPoll?.cancel();
-    _gitPoll = Timer.periodic(_gitPollInterval, (_) {
-      for (final id in pollTargets?.call() ?? const <String>[]) {
-        unawaited(refresh(id));
-      }
-      onPoll?.call();
-    });
+    _gitPoll = null;
+    if (!_pollRequested || !_activity.isActive) return;
+    _gitPoll = Timer.periodic(_gitPollInterval, (_) => _pollTick());
+  }
+
+  void _pollTick() {
+    if (!_activity.isActive) return;
+    for (final id in pollTargets?.call() ?? const <String>[]) {
+      unawaited(refresh(id));
+    }
+    onPoll?.call();
+  }
+
+  void _onActivityChanged() {
+    if (!_activity.isActive) {
+      _gitPoll?.cancel();
+      _gitPoll = null;
+      _cancelWatch();
+      return;
+    }
+    watchProject(_watchedProjectId ?? selectedProjectId?.call());
+    _armPoll();
+    if (_pollRequested) _pollTick();
+  }
+
+  void _cancelWatch() {
+    _gitWatch?.cancel();
+    _gitWatchDebounce?.cancel();
+    _gitWatchRetry?.cancel();
+    _fileTreeWatchDebounce?.cancel();
+    _gitWatch = null;
+    _gitWatchPath = null;
   }
 
   /// Evento de filesystem do watcher. Filtra o ruído interno do `.git/` (o
@@ -482,10 +548,8 @@ class GitController extends ChangeNotifier {
 
   @override
   void dispose() {
-    _gitWatch?.cancel();
-    _gitWatchDebounce?.cancel();
-    _gitWatchRetry?.cancel();
-    _fileTreeWatchDebounce?.cancel();
+    _activity.removeListener(_onActivityChanged);
+    _cancelWatch();
     _gitPoll?.cancel();
     super.dispose();
   }

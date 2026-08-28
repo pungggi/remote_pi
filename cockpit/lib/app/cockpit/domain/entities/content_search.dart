@@ -63,6 +63,5 @@ class FileMatches {
   final List<LineMatch> matches;
 
   /// Total de matches no arquivo (soma dos ranges de todas as linhas).
-  int get matchCount =>
-      matches.fold(0, (sum, m) => sum + m.ranges.length);
+  int get matchCount => matches.fold(0, (sum, m) => sum + m.ranges.length);
 }

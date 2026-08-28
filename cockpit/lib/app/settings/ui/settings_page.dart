@@ -1,9 +1,21 @@
 import 'dart:async';
 import 'dart:io';
 
+// Hosts remotos (plano 58): RemoteHostsController é infra compartilhada (como
+// AutomationController), provida app-scoped no bootstrapper. A aba os gerencia.
+import 'package:cockpit/app/cockpit/data/remote/remote_host_connector.dart'
+    show RemoteHostPhase;
+import 'package:cockpit/app/cockpit/domain/entities/remote_host.dart';
+import 'package:cockpit/app/cockpit/ui/remote/add_remote_host_dialog.dart';
+import 'package:cockpit/app/cockpit/ui/remote/remote_hosts_controller.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/confirm_dialog.dart';
 import 'package:cockpit/app/core/domain/contracts/terminal_profile_resolver.dart';
 import 'package:cockpit/app/core/domain/entities/setup_check.dart';
 import 'package:cockpit/app/core/domain/entities/terminal_profile.dart';
+import 'package:cockpit/app/core/domain/entities/automation.dart';
+import 'package:cockpit/app/core/domain/services/automation_model_catalog.dart';
+import 'package:cockpit/app/core/ui/automation_controller.dart';
+import 'package:cockpit/app/core/ui/automation_error_message.dart';
 import 'package:cockpit/app/core/ui/widgets/macos_notification_instructions_dialog.dart';
 import 'package:cockpit/app/settings/domain/cron_schedule.dart';
 import 'package:cockpit/app/core/data/diagnostics/diagnostics_log.dart';
@@ -11,7 +23,9 @@ import 'package:cockpit/app/core/ui/widgets/error_report_dialog.dart';
 import 'package:cockpit/app/core/data/lsp/lsp_command.dart';
 import 'package:cockpit/app/core/data/lsp/lsp_launchers.dart';
 import 'package:cockpit/app/core/data/setup/storage_location.dart';
+import 'package:flutter/services.dart';
 import 'package:cockpit/app/core/utils/native_folder_picker.dart';
+import 'package:cockpit/app/core/utils/platform_kind.dart';
 import 'package:cockpit/app/core/domain/entities/app_settings.dart';
 import 'package:cockpit/app/core/terminal/terminal_controller.dart'
     show terminalEngineIsSelectable;
@@ -31,10 +45,20 @@ import 'package:cockpit/app/settings/ui/settings_env_gate.dart';
 import 'package:cockpit/app/settings/ui/shortcut_catalog.dart';
 import 'package:cockpit/app/core/ui/menu/workspace_menu_bridge.dart';
 import 'package:cockpit/app/core/ui/settings_controller.dart';
+import 'package:cockpit/app/core/ui/theme_store_error_message.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:cockpit/app/core/domain/entities/sound_event.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:media_kit/media_kit.dart' show Media, Player;
+import 'package:path/path.dart' as p;
+import 'package:cockpit/app/core/ui/font_catalog.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
+import 'package:cockpit/app/settings/ui/font_picker_dialog.dart';
+import 'package:cockpit/i18n/strings.g.dart';
+import 'package:cockpit/app/core/routes.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:cockpit/app/core/ui/widgets/app_tooltip.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
@@ -42,7 +66,10 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 /// Conectividade) e o conteúdo à direita. Por ora só **Aparência** está
 /// implementada; Conectividade chega na próxima fase.
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key});
+  const SettingsPage({super.key, this.initialTab});
+
+  /// Aba a abrir de cara (deep-link via `pushNamed(arguments:)`). `null` = padrão.
+  final SettingsTab? initialTab;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -53,8 +80,10 @@ enum _Category {
   appearance,
   terminal,
   languages,
+  automations,
   shortcuts,
   notifications,
+  remoteHosts,
   connectivity,
   daemons,
   scheduling,
@@ -66,14 +95,32 @@ extension on _Category {
       this == _Category.connectivity ||
       this == _Category.daemons ||
       this == _Category.scheduling;
+
+  /// Abas escondidas no mobile (plano 59): motor-local ou desktop-only. Sobram
+  /// General, Appearance, Shortcuts, Notifications e Remote hosts.
+  bool get hiddenOnMobile =>
+      this == _Category.terminal ||
+      this == _Category.languages ||
+      this == _Category.automations ||
+      isRemote;
 }
 
 class _SettingsPageState extends State<SettingsPage> {
   _Category _category = _Category.general;
 
+  /// Abaixo desta largura (mobile portrait) o nav de categorias vira DRAWER —
+  /// senão a lista à esquerda espreme o painel e fica ilegível (plano 60).
+  static const double _drawerBreakpoint = 600;
+  bool _navOpen = false;
+
   @override
   void initState() {
     super.initState();
+    // Deep-link: abrir já numa aba (ex.: WelcomeView do mobile → Remote hosts,
+    // onde mora a chave do device). O argumento vem do pushNamed.
+    if (widget.initialTab == SettingsTab.remoteHosts) {
+      _category = _Category.remoteHosts;
+    }
     // Sonda o ambiente para decidir se as abas remotas aparecem.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) context.read<SettingsEnvGate>().check();
@@ -85,38 +132,73 @@ class _SettingsPageState extends State<SettingsPage> {
     final colors = context.colors;
     final remoteReady = context.watch<SettingsEnvGate>().remoteReady;
     // Categoria selecionada caiu (ambiente sumiu) → volta pra Aparência.
-    final category = (!remoteReady && _category.isRemote)
+    // No mobile, abas motor-local/desktop-only não existem → cai pra General.
+    final category = (isMobilePlatform && _category.hiddenOnMobile)
+        ? _Category.general
+        : (!remoteReady && _category.isRemote)
         ? _Category.appearance
         : _category;
+    final narrow =
+        isMobilePlatform &&
+        MediaQuery.sizeOf(context).width < _drawerBreakpoint;
+
+    final Widget panel = switch (category) {
+      _Category.general => const _GeneralPanel(),
+      _Category.appearance => const _AppearancePanel(),
+      _Category.terminal => const _TerminalPanel(),
+      _Category.languages => const _LanguagesPanel(),
+      _Category.automations => const _AutomationsPanel(),
+      _Category.shortcuts => const _ShortcutsPanel(),
+      _Category.notifications => const _NotificationsPanel(),
+      _Category.remoteHosts => const _RemoteHostsPanel(),
+      _Category.connectivity => const _ConnectivityPanel(),
+      _Category.daemons => const _DaemonsPanel(),
+      _Category.scheduling => const _AgendamentosPanel(),
+    };
+
+    final nav = _CategoryNav(
+      selected: category,
+      remoteReady: remoteReady,
+      // No estreito, escolher categoria fecha o drawer (revela o painel).
+      onSelect: (c) => setState(() {
+        _category = c;
+        _navOpen = false;
+      }),
+    );
+
     return Scaffold(
       backgroundColor: colors.bg,
       child: Column(
         children: [
-          const _SettingsHeader(),
+          _SettingsHeader(
+            onToggleNav: narrow
+                ? () => setState(() => _navOpen = !_navOpen)
+                : null,
+          ),
           Expanded(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _CategoryNav(
-                  selected: category,
-                  remoteReady: remoteReady,
-                  onSelect: (c) => setState(() => _category = c),
-                ),
-                Expanded(
-                  child: switch (category) {
-                    _Category.general => const _GeneralPanel(),
-                    _Category.appearance => const _AppearancePanel(),
-                    _Category.terminal => const _TerminalPanel(),
-                    _Category.languages => const _LanguagesPanel(),
-                    _Category.shortcuts => const _ShortcutsPanel(),
-                    _Category.notifications => const _NotificationsPanel(),
-                    _Category.connectivity => const _ConnectivityPanel(),
-                    _Category.daemons => const _DaemonsPanel(),
-                    _Category.scheduling => const _AgendamentosPanel(),
-                  },
-                ),
-              ],
-            ),
+            child: narrow
+                ? Stack(
+                    children: [
+                      Positioned.fill(child: panel),
+                      if (_navOpen) ...[
+                        Positioned.fill(
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () => setState(() => _navOpen = false),
+                            child: ColoredBox(color: colors.scrim),
+                          ),
+                        ),
+                        Positioned(left: 0, top: 0, bottom: 0, child: nav),
+                      ],
+                    ],
+                  )
+                : Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      nav,
+                      Expanded(child: panel),
+                    ],
+                  ),
           ),
         ],
       ),
@@ -126,7 +208,11 @@ class _SettingsPageState extends State<SettingsPage> {
 
 /// Header da tela: window controls + voltar + título (a barra arrasta a janela).
 class _SettingsHeader extends StatelessWidget {
-  const _SettingsHeader();
+  const _SettingsHeader({this.onToggleNav});
+
+  /// Mobile portrait: abre/fecha o drawer de categorias. `null` = layout largo
+  /// (nav inline), sem botão.
+  final VoidCallback? onToggleNav;
 
   @override
   Widget build(BuildContext context) {
@@ -136,7 +222,7 @@ class _SettingsHeader extends StatelessWidget {
         const WindowControls(),
         const SizedBox(width: 14),
         AppTooltip(
-          message: 'Back',
+          message: context.t.settings.page.header.back,
           child: HoverTap(
             borderRadius: BorderRadius.circular(6),
             onTap: () => context.pop(),
@@ -149,9 +235,21 @@ class _SettingsHeader extends StatelessWidget {
         ),
         const SizedBox(width: 8),
         Text(
-          'Settings',
+          context.t.settings.page.header.title,
           style: context.typo.title.copyWith(fontSize: 14, color: colors.text),
         ),
+        if (onToggleNav != null) ...[
+          const SizedBox(width: 10),
+          HoverTap(
+            borderRadius: BorderRadius.circular(6),
+            onTap: onToggleNav,
+            child: SizedBox(
+              width: 30,
+              height: 30,
+              child: Icon(Icons.menu, size: 18, color: colors.text2),
+            ),
+          ),
+        ],
         const Spacer(),
         const WindowControlsTrailing(),
       ],
@@ -176,7 +274,11 @@ class _CategoryNav extends StatelessWidget {
     final colors = context.colors;
     return Container(
       width: 210,
+      // Fundo opaco: no drawer (mobile portrait) o nav fica SOBRE o painel —
+      // sem cor, o painel apareceria através dele. No layout largo é a mesma cor
+      // do Scaffold, então nada muda.
       decoration: BoxDecoration(
+        color: colors.bg,
         border: Border(right: BorderSide(color: colors.border)),
       ),
       padding: const EdgeInsets.all(10),
@@ -184,39 +286,56 @@ class _CategoryNav extends StatelessWidget {
         children: [
           _NavItem(
             icon: Icons.tune,
-            label: 'General',
+            label: context.t.settings.page.nav.general,
             selected: selected == _Category.general,
             onTap: () => onSelect(_Category.general),
           ),
           _NavItem(
             icon: Icons.palette_outlined,
-            label: 'Appearance',
+            label: context.t.settings.page.nav.appearance,
             selected: selected == _Category.appearance,
             onTap: () => onSelect(_Category.appearance),
           ),
-          _NavItem(
-            icon: Icons.terminal_outlined,
-            label: 'Terminal',
-            selected: selected == _Category.terminal,
-            onTap: () => onSelect(_Category.terminal),
-          ),
-          _NavItem(
-            icon: Icons.code,
-            label: 'Language',
-            selected: selected == _Category.languages,
-            onTap: () => onSelect(_Category.languages),
-          ),
+          // Terminal / Languages / Automations: motor-local, ocultos no mobile.
+          if (!isMobilePlatform) ...[
+            _NavItem(
+              icon: Icons.terminal_outlined,
+              label: context.t.settings.page.nav.terminal,
+              selected: selected == _Category.terminal,
+              onTap: () => onSelect(_Category.terminal),
+            ),
+            _NavItem(
+              icon: Icons.code,
+              label: context.t.settings.page.nav.language,
+              selected: selected == _Category.languages,
+              onTap: () => onSelect(_Category.languages),
+            ),
+            _NavItem(
+              icon: Icons.auto_awesome_outlined,
+              label: context.t.settings.page.nav.automations,
+              selected: selected == _Category.automations,
+              onTap: () => onSelect(_Category.automations),
+            ),
+          ],
           _NavItem(
             icon: Icons.keyboard_outlined,
-            label: 'Shortcuts',
+            label: context.t.settings.page.nav.shortcuts,
             selected: selected == _Category.shortcuts,
             onTap: () => onSelect(_Category.shortcuts),
           ),
           _NavItem(
             icon: Icons.notifications_outlined,
-            label: 'Notifications',
+            label: context.t.settings.page.nav.notifications,
             selected: selected == _Category.notifications,
             onTap: () => onSelect(_Category.notifications),
+          ),
+          // Hosts remotos (plano 58, SSH) — sempre disponível, não depende do
+          // ambiente remote-pi (extensão/supervisor).
+          _NavItem(
+            icon: Icons.cloud_outlined,
+            label: context.t.settings.page.nav.remoteHosts,
+            selected: selected == _Category.remoteHosts,
+            onTap: () => onSelect(_Category.remoteHosts),
           ),
           // Abas que dependem do ambiente remote-pi — ocultas até instalá-lo
           // (via checklist da aba de agente).
@@ -227,19 +346,19 @@ class _CategoryNav extends StatelessWidget {
             ),
             _NavItem(
               icon: Icons.wifi_tethering,
-              label: 'Connectivity',
+              label: context.t.settings.page.nav.connectivity,
               selected: selected == _Category.connectivity,
               onTap: () => onSelect(_Category.connectivity),
             ),
             _NavItem(
               icon: Icons.dns_outlined,
-              label: 'Daemon Agents',
+              label: context.t.settings.page.nav.daemonAgents,
               selected: selected == _Category.daemons,
               onTap: () => onSelect(_Category.daemons),
             ),
             _NavItem(
               icon: Icons.schedule_outlined,
-              label: 'Schedules',
+              label: context.t.settings.page.nav.schedules,
               selected: selected == _Category.scheduling,
               onTap: () => onSelect(_Category.scheduling),
             ),
@@ -347,6 +466,7 @@ class _GeneralPanel extends StatelessWidget {
     final s = controller.settings;
     // `agentTabsInUse` é publicado pelo shell (cross-route) via bridge app-scoped.
     final agentsInUse = context.watch<WorkspaceMenuBridge>().agentTabsInUse;
+    final tr = context.t.settings.page.general;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(28, 24, 28, 40),
@@ -356,66 +476,89 @@ class _GeneralPanel extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // Agent / Cockpit / Updates: motor-local + self-update = desktop.
+              // No mobile some tudo; sobram Idioma/Storage/Diagnostics.
+              if (!isMobilePlatform) ...[
+                _Section(
+                  label: tr.sectionAgent,
+                  child: _Card(
+                    children: [
+                      _Row(
+                        title: tr.enableAgentsTitle,
+                        description: tr.enableAgentsDesc,
+                        // Mantém o switch clicável: tentar DESLIGAR com um agente
+                        // em uso mostra um erro explicando o porquê (em vez de um
+                        // switch inerte, sem feedback). Ligar é sempre permitido.
+                        trailing: Switch(
+                          value: s.enableAgent,
+                          onChanged: (value) {
+                            if (!value && agentsInUse) {
+                              _notifyAgentsInUse(context);
+                              return;
+                            }
+                            controller.setEnableAgent(value);
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                _Section(
+                  label: 'Cockpit',
+                  child: _Card(
+                    children: [
+                      _Row(
+                        title: tr.showCockpitTitle,
+                        description: tr.showCockpitDesc,
+                        trailing: Switch(
+                          value: s.showCockpit,
+                          onChanged: controller.setShowCockpit,
+                        ),
+                      ),
+                      _Row(
+                        title: tr.launchAtStartupTitle,
+                        description: tr.launchAtStartupDesc,
+                        trailing: Switch(
+                          value: s.launchAtStartup,
+                          onChanged: controller.setLaunchAtStartup,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                _Section(
+                  label: tr.sectionUpdates,
+                  child: _Card(
+                    children: [
+                      _Row(
+                        title: tr.checkUpdatesTitle,
+                        description: tr.checkUpdatesDesc,
+                        trailing: _UpdateCheckDropdown(
+                          value: s.updateCheckFrequency,
+                          onChanged: controller.setUpdateCheckFrequency,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               _Section(
-                label: 'Agent',
+                label: context.t.settings.language.title,
                 child: _Card(
                   children: [
                     _Row(
-                      title: 'Enable agents',
-                      description:
-                          'Show the option to open agent tabs (pi). When off, '
-                          'Cockpit works as a terminal-only workspace.',
-                      // Mantém o switch clicável: tentar DESLIGAR com um agente em
-                      // uso mostra um erro explicando o porquê (em vez de um switch
-                      // inerte, sem feedback). Ligar é sempre permitido.
-                      trailing: Switch(
-                        value: s.enableAgent,
-                        onChanged: (value) {
-                          if (!value && agentsInUse) {
-                            _notifyAgentsInUse(context);
-                            return;
-                          }
-                          controller.setEnableAgent(value);
-                        },
+                      title: context.t.settings.language.title,
+                      trailing: _LocaleDropdown(
+                        value: s.locale,
+                        onChanged: controller.setLocale,
                       ),
                     ),
                   ],
                 ),
               ),
-              _Section(
-                label: 'Cockpit',
-                child: _Card(
-                  children: [
-                    _Row(
-                      title: 'Show Cockpit terminal',
-                      description:
-                          'Keep a pathless, terminal-only workspace pinned at '
-                          'the top of the rail. Turning it off closes its '
-                          'terminals.',
-                      trailing: Switch(
-                        value: s.showCockpit,
-                        onChanged: controller.setShowCockpit,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              _Section(
-                label: 'Updates',
-                child: _Card(
-                  children: [
-                    _Row(
-                      title: 'Check for updates',
-                      description: 'How often Cockpit should look for new versions.',
-                      trailing: _UpdateCheckDropdown(
-                        value: s.updateCheckFrequency,
-                        onChanged: controller.setUpdateCheckFrequency,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const _StorageSection(),
+              // Local de Armazenamento: escolher pasta/relocar não se aplica ao
+              // mobile (sandbox do app, sem pastas do usuário como no desktop).
+              if (!isMobilePlatform) const _StorageSection(),
               const _DiagnosticsSection(),
             ],
           ),
@@ -441,8 +584,7 @@ class _GeneralPanel extends StatelessWidget {
               ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 320),
                 child: Text(
-                  "Can't turn agents off while an agent tab is open. "
-                  'Close all agent tabs first, then disable it.',
+                  context.t.settings.page.general.agentsInUseError,
                   style: context.typo.label.copyWith(color: colors.text),
                 ),
               ),
@@ -450,6 +592,267 @@ class _GeneralPanel extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Automations
+// ---------------------------------------------------------------------------
+
+class _AutomationsPanel extends StatefulWidget {
+  const _AutomationsPanel();
+
+  @override
+  State<_AutomationsPanel> createState() => _AutomationsPanelState();
+}
+
+class _AutomationsPanelState extends State<_AutomationsPanel> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(_discoverAndReconcile());
+    });
+  }
+
+  Future<void> _discoverAndReconcile({bool force = false}) async {
+    final automation = context.read<AutomationController>();
+    final settings = context.read<SettingsController>();
+    if (force) {
+      await automation.refresh();
+    } else {
+      await automation.ensureInitialized();
+    }
+    if (!mounted) return;
+    automation.reconcileStaleModel(
+      harnessId: settings.settings.automationHarnessId,
+      modelId: settings.settings.selectedAutomationModelId,
+      clearToCliDefault: () => settings.setAutomationModel(null),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final automation = context.watch<AutomationController>();
+    final settings = context.watch<SettingsController>();
+    final selected = automation.harnessFor(
+      settings.settings.automationHarnessId,
+    );
+    final selectedId = settings.settings.automationHarnessId;
+    final modelId = settings.settings.selectedAutomationModelId;
+    final colors = context.colors;
+    final tr = context.t.settings.page.automations;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(28, 24, 28, 40),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 680),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _Section(
+                label: tr.sectionCommitMessages,
+                child: _Card(
+                  children: [
+                    _Row(
+                      title: tr.harness,
+                      description: automation.discovering
+                          ? tr.harnessDiscovering
+                          : automation.harnesses.isEmpty
+                          ? tr.harnessNoneFound
+                          : selected == null && selectedId != null
+                          ? tr.harnessConfiguredUnavailable(
+                              harness: selectedId.label,
+                            )
+                          : selected == null
+                          ? tr.harnessChoose
+                          : selected.executablePath,
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _AutomationHarnessDropdown(
+                            selected: selectedId,
+                            harnesses: automation.harnesses,
+                            onChanged: settings.setAutomationHarness,
+                          ),
+                          const SizedBox(width: 8),
+                          AppTooltip(
+                            message: tr.harnessRefresh,
+                            child: IconButton.outline(
+                              onPressed: automation.discovering
+                                  ? null
+                                  : () => unawaited(
+                                      _discoverAndReconcile(force: true),
+                                    ),
+                              icon: automation.discovering
+                                  ? const CircularProgressIndicator(size: 14)
+                                  : const Icon(Icons.refresh, size: 16),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (selectedId != null)
+                      _Row(
+                        title: tr.model,
+                        description: selected == null
+                            ? tr.modelUnavailable
+                            : selectedId.pinnedModelId != null
+                            ? tr.modelAutoRouted
+                            : selected.models.isEmpty
+                            ? tr.modelCliOnly
+                            : tr.modelAccountOnly,
+                        trailing: _AutomationModelDropdown(
+                          value: modelId,
+                          harness: selected,
+                          onChanged: settings.setAutomationModel,
+                        ),
+                      ),
+                    _Row(
+                      title: tr.generateFromSourceControl,
+                      description: tr.generateFromSourceControlDescription,
+                      trailing: Icon(
+                        Icons.auto_awesome,
+                        size: 18,
+                        color: selected == null ? colors.text4 : colors.accent,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (automation.error != null)
+                Text(
+                  automationErrorMessage(context, automation.error!),
+                  style: context.typo.label.copyWith(color: colors.error),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AutomationHarnessDropdown extends StatelessWidget {
+  const _AutomationHarnessDropdown({
+    required this.selected,
+    required this.harnesses,
+    required this.onChanged,
+  });
+
+  final HarnessKind? selected;
+  final List<AutomationHarness> harnesses;
+  final ValueChanged<HarnessKind?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return _DropdownChip(
+      label:
+          selected?.label ?? context.t.settings.page.automations.notConfigured,
+      leading: selected == null ? null : _HarnessIcon(selected!),
+      onTap: () async {
+        final picked = await showAppMenu<Object>(
+          context,
+          minWidth: 190,
+          items: <AppMenuItem<Object>>[
+            AppMenuItem<Object>(
+              value: 'disabled',
+              label: context.t.settings.page.automations.notConfigured,
+              selected: selected == null,
+            ),
+            for (final harness in harnesses)
+              AppMenuItem<Object>(
+                value: harness.id,
+                label: harness.label,
+                leading: _HarnessIcon(harness.id),
+                selected: selected == harness.id,
+              ),
+          ],
+        );
+        if (picked == 'disabled') onChanged(null);
+        if (picked is HarnessKind) onChanged(picked);
+      },
+    );
+  }
+}
+
+class _AutomationModelDropdown extends StatelessWidget {
+  const _AutomationModelDropdown({
+    required this.value,
+    required this.harness,
+    required this.onChanged,
+  });
+
+  final String? value;
+  final AutomationHarness? harness;
+  final ValueChanged<String?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final tr = context.t.settings.page.automations;
+    final models = harness?.models ?? const <AutomationModel>[];
+    final defaultId = harness?.defaultModelId;
+    final known = models.where((model) => model.id == value).firstOrNull;
+    // Sem escolha explícita o rótulo mostra para onde o harness vai cair:
+    // "Auto" quando ele roteia sozinho, "CLI default" quando não.
+    final fallbackLabel = defaultId == kAutomationAutoModelId
+        ? tr.modelAuto
+        : tr.modelCliDefault;
+    return _DropdownChip(
+      label: known?.label ?? value ?? fallbackLabel,
+      // Harness com modelo fixo (Copilot em `auto`) não oferece escolha.
+      onTap: harness?.allowsModelChoice != true
+          ? null
+          : () async {
+              final picked = await showAppMenu<String>(
+                context,
+                minWidth: 220,
+                searchHint: tr.modelSearch(count: models.length),
+                collapsedLimit: AutomationModelCatalog.curatedLimit,
+                items: [
+                  AppMenuItem<String>(
+                    value: '',
+                    label: fallbackLabel,
+                    selected: value == null,
+                  ),
+                  for (final model in models)
+                    AppMenuItem<String>(
+                      value: model.id,
+                      // O "· Recomendado" é texto de UI, não faz parte do nome
+                      // do modelo — por isso mora aqui e não no label da
+                      // entidade.
+                      label: model.id == defaultId
+                          ? '${model.label} · ${tr.recommendedSuffix}'
+                          : model.label,
+                      selected: value == model.id,
+                    ),
+                ],
+              );
+              if (picked != null) onChanged(picked.isEmpty ? null : picked);
+            },
+    );
+  }
+}
+
+/// Logo do harness — o mesmo SVG que a aba de terminal usa (catálogo único).
+class _HarnessIcon extends StatelessWidget {
+  const _HarnessIcon(this.kind);
+
+  final HarnessKind kind;
+
+  @override
+  Widget build(BuildContext context) {
+    final spec = kind.spec;
+    return SvgPicture.asset(
+      spec.assetPath,
+      width: 15,
+      height: 15,
+      colorFilter: spec.isMonochrome
+          ? ColorFilter.mode(context.colors.text3, BlendMode.srcIn)
+          : null,
     );
   }
 }
@@ -470,36 +873,33 @@ class _DiagnosticsSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dir = DiagnosticsLog.instance.directory;
+    final tr = context.t.settings.page.diagnostics;
     return _Section(
-      label: 'Diagnostics',
+      label: tr.sectionTitle,
       child: _Card(
         children: [
           _Row(
-            title: 'Log file',
-            description:
-                'Errors and startup events are recorded here, kept for '
-                '${DiagnosticsLog.retentionDays} days.'
-                '\n${dir?.path ?? 'unavailable'}',
+            title: tr.logFileTitle,
+            description: tr.logFileDesc(
+              days: DiagnosticsLog.retentionDays,
+              path: dir?.path ?? tr.unavailable,
+            ),
             trailing: OutlineButton(
               onPressed: dir == null ? null : () => _revealFolder(dir.path),
-              child: const Text('Reveal'),
+              child: Text(tr.reveal),
             ),
           ),
           _Row(
-            title: 'Report a problem',
-            description:
-                'Opens a pre-filled issue with your version, OS and recent '
-                'log. Nothing is sent automatically — you review it first.',
+            title: tr.reportTitle,
+            description: tr.reportDesc,
             trailing: OutlineButton(
               onPressed: () => showErrorReportDialog(
                 context,
-                title: 'Problem report',
-                error: 'Reported manually from Settings.',
-                description:
-                    'Describe what went wrong in the issue. The recent log is '
-                    'included below and in "Copy details".',
+                title: tr.reportDialogTitle,
+                error: tr.reportDialogError,
+                description: tr.reportDialogDescription,
               ),
-              child: const Text('Report…'),
+              child: Text(tr.reportButton),
             ),
           ),
         ],
@@ -560,8 +960,9 @@ class _StorageSectionState extends State<_StorageSection> {
 
   Future<void> _changeFolder() async {
     if (_busy) return;
+    final tr = context.t.settings.page.storage;
     final picked = await NativeFolderPicker.pick(
-      dialogTitle: 'Choose a folder for Cockpit data',
+      dialogTitle: tr.chooseFolderDialogTitle,
       initialDirectory: _root, // abre na pasta atual do Cockpit
     );
     if (picked == null || !mounted) return;
@@ -572,9 +973,7 @@ class _StorageSectionState extends State<_StorageSection> {
     await StorageLocation.setOverrideRoot(picked);
     if (!mounted) return;
     setState(() => _busy = false);
-    await _promptRestart(
-      'Cockpit will use this folder from the next launch:\n$picked',
-    );
+    await _promptRestart(tr.restartChangeFolderMessage(path: picked));
   }
 
   Future<void> _useDefault() async {
@@ -582,8 +981,7 @@ class _StorageSectionState extends State<_StorageSection> {
     await StorageLocation.setOverrideRoot(null);
     if (!mounted) return;
     await _promptRestart(
-      'Cockpit will use the default system location from the next launch. '
-      'Your data in the custom folder is left untouched.',
+      context.t.settings.page.storage.restartUseDefaultMessage,
     );
   }
 
@@ -593,7 +991,7 @@ class _StorageSectionState extends State<_StorageSection> {
     await StorageLocation.resetAll();
     if (!mounted) return;
     await _promptRestart(
-      'All Cockpit data was cleared. Restart to start fresh.',
+      context.t.settings.page.storage.restartResetMessage,
       quitOnly: true,
     );
   }
@@ -601,41 +999,42 @@ class _StorageSectionState extends State<_StorageSection> {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final tr = context.t.settings.page.storage;
     return _Section(
-      label: 'Storage',
+      label: tr.sectionTitle,
       child: _Card(
         children: [
           _Row(
-            title: 'Storage location',
+            title: tr.locationTitle,
             description: _loading
-                ? 'Loading…'
-                : 'Cockpit keeps its projects, layouts and settings here. '
-                      'Point it at a synced folder to back it up.\n${_root ?? '—'}',
+                ? context.t.common.loading
+                : tr.locationDesc(root: _root ?? '—'),
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (_custom) ...[
                   GhostButton(
                     onPressed: _loading || _busy ? null : _useDefault,
-                    child: const Text('Use default'),
+                    child: Text(tr.useDefault),
                   ),
                   const SizedBox(width: 8),
                 ],
                 OutlineButton(
                   onPressed: _loading || _busy ? null : _changeFolder,
-                  child: Text(_busy ? 'Working…' : 'Change…'),
+                  child: Text(_busy ? tr.working : tr.change),
                 ),
               ],
             ),
           ),
           _Row(
-            title: 'Reset Cockpit',
-            description:
-                'Delete all local data — projects, layouts, settings and '
-                'terminal history — and return to the default location.',
+            title: tr.resetTitle,
+            description: tr.resetDesc,
             trailing: DestructiveButton(
               onPressed: _loading ? null : _reset,
-              child: Text('Reset…', style: TextStyle(color: colors.error)),
+              child: Text(
+                tr.resetButton,
+                style: TextStyle(color: colors.error),
+              ),
             ),
           ),
         ],
@@ -647,12 +1046,13 @@ class _StorageSectionState extends State<_StorageSection> {
   Future<bool?> _confirmReset() {
     return showDialog<bool>(
       context: context,
-      barrierColor: const Color(0x99000000),
+      barrierColor: context.colors.scrim,
       builder: (context) {
         final colors = context.colors;
+        final tr = context.t.settings.page.storage;
         return AlertDialog(
           title: Text(
-            'Reset Cockpit?',
+            tr.resetDialogTitle,
             style: context.typo.title.copyWith(
               fontSize: 15,
               color: colors.text,
@@ -661,9 +1061,7 @@ class _StorageSectionState extends State<_StorageSection> {
           content: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 380),
             child: Text(
-              'This permanently deletes all local Cockpit data — projects, '
-              'layouts, settings and terminal history. This cannot be undone. '
-              'Cockpit will close so you can start fresh.',
+              tr.resetDialogContent,
               style: context.typo.body.copyWith(
                 fontSize: 13.5,
                 color: colors.text2,
@@ -673,11 +1071,14 @@ class _StorageSectionState extends State<_StorageSection> {
           actions: [
             GhostButton(
               onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancel'),
+              child: Text(context.t.common.cancel),
             ),
             DestructiveButton(
               onPressed: () => Navigator.of(context).pop(true),
-              child: Text('Reset', style: TextStyle(color: colors.error)),
+              child: Text(
+                tr.resetConfirm,
+                style: TextStyle(color: colors.error),
+              ),
             ),
           ],
         );
@@ -691,12 +1092,13 @@ class _StorageSectionState extends State<_StorageSection> {
   Future<void> _promptRestart(String message, {bool quitOnly = false}) {
     return showDialog<void>(
       context: context,
-      barrierColor: const Color(0x99000000),
+      barrierColor: context.colors.scrim,
       builder: (context) {
         final colors = context.colors;
+        final tr = context.t.settings.page.storage;
         return AlertDialog(
           title: Text(
-            'Restart required',
+            tr.restartRequiredTitle,
             style: context.typo.title.copyWith(
               fontSize: 15,
               color: colors.text,
@@ -716,7 +1118,7 @@ class _StorageSectionState extends State<_StorageSection> {
             if (!quitOnly)
               GhostButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Later'),
+                child: Text(tr.later),
               ),
             PrimaryButton(
               // Encerra abrupto de propósito: descarta escritas pendentes nas
@@ -728,7 +1130,7 @@ class _StorageSectionState extends State<_StorageSection> {
                 DiagnosticsLog.instance.markCleanExit();
                 exit(0);
               },
-              child: const Text('Quit Cockpit'),
+              child: Text(tr.quitCockpit),
             ),
           ],
         );
@@ -761,6 +1163,7 @@ class _TerminalPanel extends StatelessWidget {
     final effective = resolver.effectiveDefault(
       controller.settings.defaultTerminalProfileId,
     );
+    final tr = context.t.settings.page.terminal;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(28, 24, 28, 40),
@@ -771,7 +1174,7 @@ class _TerminalPanel extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _Section(
-                label: 'Default terminal',
+                label: tr.sectionDefaultTerminal,
                 child: _Card(
                   children: [
                     // O seletor de engine some no Windows: Ghostty ainda engole
@@ -779,10 +1182,8 @@ class _TerminalPanel extends StatelessWidget {
                     // no xterm (ver `terminalEngineIsSelectable`).
                     if (terminalEngineIsSelectable)
                       _Row(
-                        title: 'Engine',
-                        description:
-                            'Used by new terminal tabs and task output buffers. '
-                            'Open tabs keep their current engine.',
+                        title: tr.engineTitle,
+                        description: tr.engineDesc,
                         trailing: _TerminalEngineDropdown(
                           value: controller.settings.terminalEngine,
                           onChanged: controller.setTerminalEngine,
@@ -790,10 +1191,8 @@ class _TerminalPanel extends StatelessWidget {
                       ),
                     if (Platform.isWindows)
                       _Row(
-                        title: 'Shell',
-                        description:
-                            'Which shell new terminal tabs open. The arrow next '
-                            'to + still opens any other one, just for that tab.',
+                        title: tr.shellTitle,
+                        description: tr.shellDesc,
                         trailing: _TerminalProfileDropdown(
                           profiles: profiles,
                           value: effective,
@@ -812,8 +1211,7 @@ class _TerminalPanel extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.only(left: 4, right: 4),
                   child: Text(
-                    'No WSL distros found. Install one (wsl.exe --install) and '
-                    'restart Cockpit to see it listed here.',
+                    tr.noWslMessage,
                     style: context.typo.label.copyWith(
                       color: context.colors.text3,
                     ),
@@ -850,6 +1248,41 @@ class _TerminalEngineDropdown extends StatelessWidget {
           items: [
             for (final engine in TerminalEngine.values)
               AppMenuItem(value: engine, label: label(engine)),
+          ],
+        );
+        if (picked != null) onChanged(picked);
+      },
+    );
+  }
+}
+
+class _TerminalWeightDropdown extends StatelessWidget {
+  const _TerminalWeightDropdown({required this.value, required this.onChanged});
+
+  final TerminalFontWeight value;
+  final ValueChanged<TerminalFontWeight> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final tr = context.t.settings.page.appearance;
+    String label(TerminalFontWeight weight) => switch (weight) {
+      TerminalFontWeight.auto => tr.terminalWeightAuto,
+      TerminalFontWeight.light => tr.terminalWeightLight,
+      TerminalFontWeight.normal => tr.terminalWeightNormal,
+      TerminalFontWeight.medium => tr.terminalWeightMedium,
+      TerminalFontWeight.semiBold => tr.terminalWeightSemiBold,
+    };
+
+    return _DropdownChip(
+      icon: Icons.format_bold,
+      label: label(value),
+      onTap: () async {
+        final picked = await showAppMenu<TerminalFontWeight>(
+          context,
+          minWidth: 200,
+          items: [
+            for (final weight in TerminalFontWeight.values)
+              AppMenuItem(value: weight, label: label(weight)),
           ],
         );
         if (picked != null) onChanged(picked);
@@ -907,10 +1340,23 @@ class _TerminalProfileDropdown extends StatelessWidget {
 class _AppearancePanel extends StatelessWidget {
   const _AppearancePanel();
 
+  /// Descrição da linha "Modo". Um tema pode trazer só um dos dois variants;
+  /// nesse caso escolher claro/escuro não muda nada, e é melhor dizer isso do
+  /// que deixar o usuário achar que o controle está quebrado.
+  String _modeDescription(BuildContext context, SettingsController controller) {
+    final tr = context.t.settings.page.appearance;
+    final theme = controller.activeTheme;
+    if (theme.hasDark && theme.hasLight) return tr.modeDesc;
+    return theme.hasDark
+        ? tr.modeOnlyDark(theme: theme.name)
+        : tr.modeOnlyLight(theme: theme.name);
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = context.watch<SettingsController>();
     final s = controller.settings;
+    final tr = context.t.settings.page.appearance;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(28, 24, 28, 40),
@@ -920,28 +1366,69 @@ class _AppearancePanel extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // Tema e modo claro/escuro moram na MESMA seção: "modo" é uma
+              // faceta do tema (qual variant dele usar), não uma preferência
+              // paralela. Separados, a tela mostrava duas coisas chamadas
+              // "Theme" e o usuário tinha de adivinhar qual era qual.
+              // Layout antes do tema: é a preferência que muda a FORMA da tela,
+              // e quem procura por ela procura no topo de Aparência.
               _Section(
-                label: 'Theme',
+                label: tr.sectionLayout,
                 child: _Card(
                   children: [
                     _Row(
-                      title: 'Theme',
-                      trailing: _ThemeDropdown(
-                        value: s.themeMode,
-                        onChanged: controller.setThemeMode,
+                      title: tr.swapPanelsTitle,
+                      description: tr.swapPanelsDesc,
+                      trailing: Switch(
+                        value: s.swapSidePanels,
+                        onChanged: controller.setSwapSidePanels,
                       ),
                     ),
                   ],
                 ),
               ),
               _Section(
-                label: 'Fonts',
+                label: tr.sectionTheme,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _Card(
+                      children: [
+                        _Row(
+                          title: tr.themeTitle,
+                          description: tr.themeDesc,
+                          // `activeTheme.id` e não `s.themeId`: um id salvo que
+                          // não existe mais (tema removido do disco, ou built-in
+                          // que saiu numa atualização) resolve pro default, e o
+                          // seletor tem que mostrar o que está pintando a tela.
+                          trailing: _ThemeDropdown(
+                            value: controller.activeTheme.id,
+                            onChanged: controller.setThemeId,
+                          ),
+                        ),
+                        _Row(
+                          title: tr.modeTitle,
+                          description: _modeDescription(context, controller),
+                          trailing: _ThemeModeDropdown(
+                            value: s.themeMode,
+                            onChanged: controller.setThemeMode,
+                          ),
+                        ),
+                        const _ThemeFileRow(),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    const _ThemePreview(),
+                  ],
+                ),
+              ),
+              _Section(
+                label: tr.sectionFonts,
                 child: _Card(
                   children: [
                     _Row(
-                      title: 'Interface font',
-                      description:
-                          'Used across the whole app. Empty = system default.',
+                      title: tr.interfaceFontTitle,
+                      description: tr.interfaceFontDesc,
                       trailing: _FontField(
                         value: s.interfaceFont,
                         hint: 'Space Grotesk · Hanken',
@@ -949,7 +1436,7 @@ class _AppearancePanel extends StatelessWidget {
                       ),
                     ),
                     _Row(
-                      title: 'Interface size',
+                      title: tr.interfaceSizeTitle,
                       trailing: _SizeStepper(
                         value: s.interfaceSize,
                         min: 11,
@@ -958,16 +1445,17 @@ class _AppearancePanel extends StatelessWidget {
                       ),
                     ),
                     _Row(
-                      title: 'Code font',
-                      description: 'Code and diffs. Empty = system default.',
+                      title: tr.codeFontTitle,
+                      description: tr.codeFontDesc,
                       trailing: _FontField(
                         value: s.codeFont,
                         hint: 'JetBrains Mono',
+                        monospacedOnly: true,
                         onChanged: controller.setCodeFont,
                       ),
                     ),
                     _Row(
-                      title: 'Code size',
+                      title: tr.codeSizeTitle,
                       trailing: _SizeStepper(
                         value: s.codeSize,
                         min: 9,
@@ -976,50 +1464,44 @@ class _AppearancePanel extends StatelessWidget {
                       ),
                     ),
                     _Row(
-                      title: 'Terminal font',
-                      description:
-                          'Uses the code size. Empty = system default.',
+                      title: tr.terminalFontTitle,
+                      description: tr.terminalFontDesc,
                       trailing: _FontField(
                         value: s.terminalFont,
                         hint: 'Menlo · monospace',
+                        monospacedOnly: true,
                         onChanged: controller.setTerminalFont,
+                      ),
+                    ),
+                    _Row(
+                      title: tr.terminalSizeTitle,
+                      description: tr.terminalSizeDesc,
+                      trailing: _OptionalSizeStepper(
+                        value: s.terminalSize,
+                        inherited: s.codeSize,
+                        min: 9,
+                        max: 24,
+                        onChanged: controller.setTerminalSize,
+                      ),
+                    ),
+                    _Row(
+                      title: tr.terminalWeightTitle,
+                      description: tr.terminalWeightDesc,
+                      trailing: _TerminalWeightDropdown(
+                        value: s.terminalFontWeight,
+                        onChanged: controller.setTerminalFontWeight,
                       ),
                     ),
                   ],
                 ),
               ),
               _Section(
-                label: 'Syntax',
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _Card(
-                      children: [
-                        _Row(
-                          title: 'Highlight theme',
-                          description:
-                              'Code colors, independent of the app theme.',
-                          trailing: _SyntaxDropdown(
-                            value: s.syntaxTheme,
-                            onChanged: controller.setSyntaxTheme,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    const _SyntaxPreview(),
-                  ],
-                ),
-              ),
-              _Section(
-                label: 'Conversation',
+                label: tr.sectionConversation,
                 child: _Card(
                   children: [
                     _Row(
-                      title: 'Pin user message',
-                      description:
-                          'The question stays fixed at the top while the answer '
-                          'scrolls.',
+                      title: tr.pinUserMessageTitle,
+                      description: tr.pinUserMessageDesc,
                       trailing: Switch(
                         value: s.pinUserMessage,
                         onChanged: controller.setPinUserMessage,
@@ -1050,6 +1532,7 @@ class _NotificationsPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final controller = context.watch<SettingsController>();
     final s = controller.settings;
+    final tr = context.t.settings.page.notifications;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(28, 24, 28, 40),
@@ -1060,14 +1543,12 @@ class _NotificationsPanel extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _Section(
-                label: 'Notifications',
+                label: tr.sectionTitle,
                 child: _Card(
                   children: [
                     _Row(
-                      title: 'Enable notifications',
-                      description:
-                          'Alert me when an agent finishes a turn and the window '
-                          'is not focused.',
+                      title: tr.enableTitle,
+                      description: tr.enableDesc,
                       trailing: Switch(
                         value: s.notificationsEnabled,
                         onChanged: controller.setNotificationsEnabled,
@@ -1075,22 +1556,175 @@ class _NotificationsPanel extends StatelessWidget {
                     ),
                     if (Platform.isMacOS && s.notificationsEnabled)
                       const _NotificationPermissionRow(),
+                  ],
+                ),
+              ),
+              _Section(
+                label: tr.soundsTitle,
+                child: _Card(
+                  children: [
                     _Row(
-                      title: 'Play sound on finish',
-                      description:
-                          'Play a short chime when a turn finishes and the '
-                          'window is focused (on any tab or workspace).',
-                      trailing: Switch(
-                        value: s.soundEnabled,
-                        onChanged: controller.setSoundEnabled,
+                      title: tr.soundVolumeTitle,
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            width: 140,
+                            child: Slider(
+                              value: SliderValue.single(s.soundVolume),
+                              min: 0,
+                              max: 100,
+                              onChanged: (v) =>
+                                  controller.setSoundVolume(v.value),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          SizedBox(
+                            width: 36,
+                            child: Text(
+                              '${s.soundVolume.round()}%',
+                              textAlign: TextAlign.right,
+                              style: context.typo.label.copyWith(
+                                color: context.colors.text3,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
+                    for (final event in SoundEvent.values)
+                      _SoundEventRow(event: event),
                   ],
                 ),
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Linha de um [SoundEvent]: toggle + áudio custom (`.wav`/`.mp3`) com
+/// preview e volta ao padrão. O arquivo escolhido é **copiado** pro storage
+/// pelo controller ([SettingsController.importSoundOverride]); "reset" apaga a
+/// cópia e volta ao som embarcado.
+class _SoundEventRow extends StatefulWidget {
+  const _SoundEventRow({required this.event});
+  final SoundEvent event;
+
+  @override
+  State<_SoundEventRow> createState() => _SoundEventRowState();
+}
+
+class _SoundEventRowState extends State<_SoundEventRow> {
+  /// Player do preview, criado no primeiro uso (re-`open` reinicia o som).
+  Player? _player;
+
+  @override
+  void dispose() {
+    _player?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _preview(String? customPath, double volume) async {
+    final player = _player ??= Player();
+    final media = customPath != null && File(customPath).existsSync()
+        ? Media(customPath)
+        : Media('asset:///assets/sounds/${widget.event.defaultAsset}');
+    try {
+      await player.setVolume(volume.clamp(0, 100));
+      await player.open(media);
+    } catch (_) {
+      // preview é best-effort; o fallback pro embarcado acontece em runtime
+    }
+  }
+
+  Future<void> _choose() async {
+    final controller = context.read<SettingsController>();
+    final picked = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['wav', 'mp3'],
+    );
+    final path = picked?.files.singleOrNull?.path;
+    if (path == null) return;
+    await controller.importSoundOverride(widget.event, path);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = context.watch<SettingsController>();
+    final s = controller.settings;
+    final tr = context.t.settings.page.notifications;
+    final colors = context.colors;
+
+    final (title, description) = switch (widget.event) {
+      SoundEvent.turnDone => (tr.soundTurnDone, tr.soundTurnDoneDesc),
+      SoundEvent.actionRequired => (
+        tr.soundActionRequired,
+        tr.soundActionRequiredDesc,
+      ),
+      SoundEvent.agentError => (tr.soundAgentError, tr.soundAgentErrorDesc),
+    };
+    final customPath = s.soundOverrides[widget.event];
+    final enabled = s.soundEvents[widget.event] ?? true;
+    final onActiveTab = s.soundOnActiveTab[widget.event] ?? false;
+    // `agentError` sempre toca (inclusive na aba ativa) — sem toggle.
+    final hasActiveTabToggle = widget.event != SoundEvent.agentError;
+
+    return _Row(
+      title: title,
+      description: customPath == null
+          ? description
+          : tr.soundCustom(name: p.basename(customPath)),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AppTooltip(
+            message: tr.soundPreview,
+            child: IconButton.ghost(
+              icon: Icon(Icons.volume_up_outlined, size: 16),
+              onPressed: () => unawaited(_preview(customPath, s.soundVolume)),
+            ),
+          ),
+          AppTooltip(
+            message: tr.soundChooseFile,
+            child: IconButton.ghost(
+              icon: Icon(Icons.folder_open_outlined, size: 16),
+              onPressed: () => unawaited(_choose()),
+            ),
+          ),
+          if (customPath != null)
+            AppTooltip(
+              message: tr.soundReset,
+              child: IconButton.ghost(
+                icon: Icon(Icons.replay, size: 16, color: colors.text3),
+                onPressed: () => unawaited(
+                  context.read<SettingsController>().clearSoundOverride(
+                    widget.event,
+                  ),
+                ),
+              ),
+            ),
+          if (hasActiveTabToggle)
+            AppTooltip(
+              message: tr.soundOnActiveTab,
+              child: IconButton.ghost(
+                icon: Icon(
+                  Icons.tab,
+                  size: 16,
+                  color: onActiveTab ? colors.accent : colors.text3,
+                ),
+                onPressed: () =>
+                    controller.setSoundOnActiveTab(widget.event, !onActiveTab),
+              ),
+            ),
+          const SizedBox(width: 8),
+          Switch(
+            value: enabled,
+            onChanged: (v) => controller.setSoundEventEnabled(widget.event, v),
+          ),
+        ],
       ),
     );
   }
@@ -1130,11 +1764,10 @@ class _NotificationPermissionRowState
     final colors = context.colors;
     final granted =
         context.watch<NotificationsViewModel>().status == CheckStatus.ok;
+    final tr = context.t.settings.page.notifications;
     return _Row(
-      title: 'System permission',
-      description: granted
-          ? 'Cockpit is allowed to send notifications.'
-          : 'macOS has not granted notification access yet.',
+      title: tr.systemPermissionTitle,
+      description: granted ? tr.grantedDesc : tr.notGrantedDesc,
       trailing: granted
           ? Row(
               mainAxisSize: MainAxisSize.min,
@@ -1142,14 +1775,14 @@ class _NotificationPermissionRowState
                 Icon(Icons.check_circle, size: 18, color: colors.online),
                 const SizedBox(width: 6),
                 Text(
-                  'Granted',
+                  tr.granted,
                   style: context.typo.label.copyWith(color: colors.text2),
                 ),
               ],
             )
           : SecondaryButton(
               onPressed: _request,
-              child: const Text('Request permission'),
+              child: Text(tr.requestPermission),
             ),
     );
   }
@@ -1157,8 +1790,10 @@ class _NotificationPermissionRowState
 
 /// Amostra de código realçada com o tema de syntax atual (atualiza ao trocar o
 /// dropdown). Usa o `context.syntax` (fundo + cores) e o `buildCodeSpan`.
-class _SyntaxPreview extends StatelessWidget {
-  const _SyntaxPreview();
+/// Preview do tema: como o **código** e o **terminal** vão aparecer, no mesmo
+/// campo em que aparecem no app.
+class _ThemePreview extends StatelessWidget {
+  const _ThemePreview();
 
   static const String _sample =
       '{\n'
@@ -1182,15 +1817,122 @@ class _SyntaxPreview extends StatelessWidget {
       language: 'json',
       baseStyle: base,
     );
+    final colors = context.colors;
+    final tr = context.t.settings.page.appearance;
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        color: syntax.background,
+        // O MESMO campo para código e terminal — é o que a unificação faz, e o
+        // preview só prova isso se os dois dividirem um retângulo só, sem
+        // costura no meio. `syntax.background` já é este valor; ler daqui
+        // deixa a intenção explícita.
+        color: colors.panel,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: context.colors.border),
+        border: Border.all(color: colors.border),
       ),
-      child: span == null ? Text(_sample, style: base) : Text.rich(span),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _PreviewSection(
+            label: tr.previewCode,
+            child: span == null ? Text(_sample, style: base) : Text.rich(span),
+          ),
+          // Divisor fino, não uma borda: o campo continua; o que muda é o que
+          // está desenhado em cima dele.
+          Container(height: 1, color: colors.border),
+          _PreviewSection(
+            label: tr.previewTerminal,
+            child: _TerminalPreviewLines(mono: base),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Um bloco rotulado dentro do preview. O rótulo é discreto de propósito: quem
+/// olha aqui quer ver as cores, não ler.
+class _PreviewSection extends StatelessWidget {
+  const _PreviewSection({required this.label, required this.child});
+  final String label;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label.toUpperCase(),
+            style: context.typo.label.copyWith(
+              fontSize: 9.5,
+              letterSpacing: 0.8,
+              color: context.colors.text4,
+            ),
+          ),
+          const SizedBox(height: 7),
+          child,
+        ],
+      ),
+    );
+  }
+}
+
+/// Amostra da paleta **ANSI** do tema: prompt, caminho, saída e cursor. Antes
+/// nenhuma tela mostrava isso — o terminal entrou no tema junto com a UI, mas
+/// só dava para conferir abrindo uma aba e trocando de tema no escuro.
+class _TerminalPreviewLines extends StatelessWidget {
+  const _TerminalPreviewLines({required this.mono});
+  final TextStyle mono;
+
+  @override
+  Widget build(BuildContext context) {
+    final term = context.terminalTheme;
+    TextSpan span(String text, Color color) => TextSpan(
+      text: text,
+      style: mono.copyWith(color: color),
+    );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text.rich(
+          TextSpan(
+            children: [
+              span('➜  ', term.green),
+              span('cockpit ', term.blue),
+              span('git:', term.brightBlack),
+              span('(main) ', term.magenta),
+              span('flutter test', term.foreground),
+            ],
+          ),
+        ),
+        Text.rich(
+          TextSpan(
+            children: [
+              span('00:18 ', term.brightBlack),
+              span('+814', term.green),
+              span(': ', term.brightBlack),
+              span('All tests passed!', term.foreground),
+              // Cursor como bloco: é a peça do terminal que mais depende do
+              // tema e a que some primeiro num tema mal calibrado.
+              WidgetSpan(
+                alignment: PlaceholderAlignment.middle,
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 3),
+                  child: Container(
+                    width: 7,
+                    height: (mono.fontSize ?? 12.5) * 1.15,
+                    color: term.cursor,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
@@ -1224,7 +1966,7 @@ class _ShortcutsPanel extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.only(left: 4, bottom: 20),
                 child: Text(
-                  'Keyboard shortcuts are not customizable yet.',
+                  context.t.settings.page.shortcuts.notCustomizable,
                   style: context.typo.label.copyWith(color: colors.text3),
                 ),
               ),
@@ -1280,6 +2022,275 @@ class _ShortcutKeys extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Remote hosts (plano 58)
+// ---------------------------------------------------------------------------
+
+class _RemoteHostsPanel extends StatelessWidget {
+  const _RemoteHostsPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = context.watch<RemoteHostsController>();
+    final tr = context.t.settings.remoteHosts;
+    final colors = context.colors;
+    final hosts = controller.hosts;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(28, 24, 28, 40),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 680),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Ajuda: a pessoa precisa saber que o host tem que ter o Cockpit
+              // (desktop) ou o cockpit-server instalado + a chave autorizada.
+              _Section(
+                label: tr.helpTitle,
+                child: _Card(
+                  children: [
+                    _Row(title: tr.helpTitle, description: tr.helpBody),
+                  ],
+                ),
+              ),
+              // Chave do dispositivo (mobile): o iPad/Android não tem ~/.ssh,
+              // então mostramos a pública gerada pra o usuário autorizar no host.
+              if (isMobilePlatform) _DeviceKeySection(controller: controller),
+              _Section(
+                label: tr.title,
+                child: _Card(
+                  children: [
+                    _Row(
+                      title: tr.title,
+                      description: tr.description,
+                      trailing: PrimaryButton(
+                        onPressed: () => _add(context, controller),
+                        child: Text(tr.add),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (hosts.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 24),
+                  child: Text(
+                    tr.empty,
+                    textAlign: TextAlign.center,
+                    style: context.typo.body.copyWith(color: colors.text3),
+                  ),
+                )
+              else
+                _Card(
+                  children: [
+                    for (final h in hosts)
+                      _Row(
+                        title: h.name,
+                        description:
+                            '${h.sshTarget}  ·  ${_statusLabel(context, controller.phaseOf(h.id))}'
+                            '  ·  ${tr.workspacesCount(count: controller.pins.where((p) => p.hostId == h.id).length)}',
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Host fora do ar: atalho pra tentar já. O retry
+                            // automático segue rodando em paralelo (backoff até
+                            // 30s); este botão só antecipa a próxima tentativa.
+                            if (controller.isDisconnected(h.id)) ...[
+                              GhostButton(
+                                onPressed: () => controller.reconnect(h.id),
+                                child: Text(tr.reconnect),
+                              ),
+                              const SizedBox(width: 4),
+                            ],
+                            GhostButton(
+                              onPressed: () => _edit(context, controller, h),
+                              child: Text(tr.edit),
+                            ),
+                            const SizedBox(width: 4),
+                            GhostButton(
+                              onPressed: () => _remove(context, controller, h),
+                              child: Text(
+                                tr.remove,
+                                style: TextStyle(color: colors.error),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _statusLabel(BuildContext context, RemoteHostPhase phase) {
+    final tr = context.t.settings.remoteHosts;
+    return switch (phase) {
+      RemoteHostPhase.connected => tr.statusConnected,
+      RemoteHostPhase.openingTunnel ||
+      RemoteHostPhase.installingServer ||
+      RemoteHostPhase.connecting => tr.statusConnecting,
+      // Reconectando tem rótulo PRÓPRIO: dizer "conectando" aqui escondia a
+      // diferença entre uma abertura em curso e um host que caiu e está no
+      // ciclo de retry — os dois pareciam a mesma coisa presa para sempre.
+      RemoteHostPhase.reconnecting => tr.statusReconnecting,
+      RemoteHostPhase.failed => tr.statusOffline,
+      RemoteHostPhase.idle => tr.statusIdle,
+    };
+  }
+
+  Future<void> _add(
+    BuildContext context,
+    RemoteHostsController controller,
+  ) async {
+    final draft = await showAddRemoteHostDialog(context);
+    if (draft == null) return;
+    await controller.addHost(
+      name: draft.name,
+      sshTarget: draft.sshTarget,
+      port: draft.port,
+      auth: draft.auth,
+      password: draft.password,
+      identityFile: draft.identityFile,
+    );
+  }
+
+  Future<void> _edit(
+    BuildContext context,
+    RemoteHostsController controller,
+    RemoteHost host,
+  ) async {
+    final hasPassword = await controller.hasStoredPassword(host.id);
+    if (!context.mounted) return;
+    final draft = await showAddRemoteHostDialog(
+      context,
+      initialName: host.name,
+      initialSshTarget: host.sshTarget,
+      initialPort: host.port,
+      initialAuth: host.auth,
+      initialIdentityFile: host.identityFile,
+      hasStoredPassword: hasPassword,
+      edit: true,
+    );
+    if (draft == null) return;
+    await controller.editHost(
+      host.id,
+      name: draft.name,
+      sshTarget: draft.sshTarget,
+      port: draft.port,
+      auth: draft.auth,
+      password: draft.password,
+      identityFile: draft.identityFile,
+    );
+  }
+
+  Future<void> _remove(
+    BuildContext context,
+    RemoteHostsController controller,
+    RemoteHost host,
+  ) async {
+    final tr = context.t.settings.remoteHosts;
+    final ok = await showConfirmDialog(
+      context,
+      title: tr.removeTitle,
+      message: tr.removeMessage(name: host.name),
+      confirmLabel: context.t.common.remove,
+      danger: true,
+    );
+    if (!ok) return;
+    await controller.removeHost(host.id);
+  }
+}
+
+/// Chave pública deste dispositivo (mobile): mono-box + copiar. Gera a chave na
+/// 1ª renderização (via controller → MobileSshKeyStore, guardada no Keychain).
+class _DeviceKeySection extends StatelessWidget {
+  const _DeviceKeySection({required this.controller});
+
+  final RemoteHostsController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final tr = context.t.settings.remoteHosts;
+    final colors = context.colors;
+    return _Section(
+      label: tr.deviceKeyTitle,
+      child: _Card(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  tr.deviceKeyDesc,
+                  style: context.typo.body.copyWith(color: colors.text2),
+                ),
+                const SizedBox(height: 12),
+                FutureBuilder<String>(
+                  future: controller.devicePublicKey(),
+                  builder: (context, snap) {
+                    final key = snap.data ?? '';
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: colors.panel3,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: colors.border),
+                          ),
+                          child: SelectableText(
+                            key.isEmpty ? '…' : key,
+                            style: context.typo.mono.copyWith(
+                              fontSize: 12,
+                              color: colors.text,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: SecondaryButton(
+                            onPressed: key.isEmpty
+                                ? null
+                                : () async {
+                                    await Clipboard.setData(
+                                      ClipboardData(text: key),
+                                    );
+                                    if (!context.mounted) return;
+                                    showToast(
+                                      context: context,
+                                      location: ToastLocation.bottomRight,
+                                      builder: (context, _) => SurfaceCard(
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(12),
+                                          child: Text(tr.deviceKeyCopied),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                            leading: const Icon(Icons.copy, size: 15),
+                            child: Text(tr.deviceKeyCopy),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1347,10 +2358,10 @@ class _Card extends StatelessWidget {
 }
 
 class _Row extends StatelessWidget {
-  const _Row({required this.title, required this.trailing, this.description});
+  const _Row({required this.title, this.trailing, this.description});
   final String title;
   final String? description;
-  final Widget trailing;
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -1381,8 +2392,7 @@ class _Row extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(width: 16),
-          trailing,
+          if (trailing != null) ...[const SizedBox(width: 16), trailing!],
         ],
       ),
     );
@@ -1391,55 +2401,78 @@ class _Row extends StatelessWidget {
 
 /// Gatilho de dropdown (rótulo + chevron) que abre o `showAppMenu`.
 class _DropdownChip extends StatelessWidget {
-  const _DropdownChip({required this.label, required this.onTap, this.icon});
+  const _DropdownChip({
+    required this.label,
+    required this.onTap,
+    this.icon,
+    this.leading,
+  });
   final String label;
   final IconData? icon;
-  final VoidCallback onTap;
+
+  /// Ícone rico à esquerda (ex.: logo SVG do harness). Vence [icon].
+  final Widget? leading;
+
+  /// `null` desabilita o gatilho: o valor está fixo e não há o que escolher
+  /// (harness com roteamento automático obrigatório).
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final enabled = onTap != null;
     return HoverTap(
-      color: colors.panel3,
+      color: enabled ? colors.panel3 : Colors.transparent,
       borderRadius: BorderRadius.circular(7),
       onTap: onTap,
       padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (icon != null) ...[
+          if (leading != null) ...[
+            leading!,
+            const SizedBox(width: 7),
+          ] else if (icon != null) ...[
             Icon(icon, size: 14, color: colors.text2),
             const SizedBox(width: 7),
           ],
           Text(
             label,
-            style: context.typo.body.copyWith(fontSize: 13, color: colors.text),
+            style: context.typo.body.copyWith(
+              fontSize: 13,
+              color: enabled ? colors.text : colors.text3,
+            ),
           ),
-          const SizedBox(width: 6),
-          Icon(Icons.keyboard_arrow_down, size: 16, color: colors.text3),
+          if (enabled) ...[
+            const SizedBox(width: 6),
+            Icon(Icons.keyboard_arrow_down, size: 16, color: colors.text3),
+          ],
         ],
       ),
     );
   }
 }
 
-class _ThemeDropdown extends StatelessWidget {
-  const _ThemeDropdown({required this.value, required this.onChanged});
+class _ThemeModeDropdown extends StatelessWidget {
+  const _ThemeModeDropdown({required this.value, required this.onChanged});
   final AppThemeMode value;
   final ValueChanged<AppThemeMode> onChanged;
 
-  static const _meta = <AppThemeMode, ({String label, IconData icon})>{
-    AppThemeMode.system: (
-      label: 'System',
-      icon: Icons.desktop_windows_outlined,
-    ),
-    AppThemeMode.light: (label: 'Light', icon: Icons.light_mode_outlined),
-    AppThemeMode.dark: (label: 'Dark', icon: Icons.dark_mode_outlined),
-  };
-
   @override
   Widget build(BuildContext context) {
-    final current = _meta[value]!;
+    final tr = context.t.settings.page.appearance;
+    final meta = <AppThemeMode, ({String label, IconData icon})>{
+      AppThemeMode.system: (
+        label: tr.themeSystem,
+        icon: Icons.desktop_windows_outlined,
+      ),
+      AppThemeMode.light: (
+        label: tr.themeLight,
+        icon: Icons.light_mode_outlined,
+      ),
+      AppThemeMode.dark: (label: tr.themeDark, icon: Icons.dark_mode_outlined),
+    };
+    final current = meta[value]!;
     return _DropdownChip(
       icon: current.icon,
       label: current.label,
@@ -1448,7 +2481,7 @@ class _ThemeDropdown extends StatelessWidget {
           context,
           minWidth: 180,
           items: [
-            for (final e in _meta.entries)
+            for (final e in meta.entries)
               AppMenuItem(
                 value: e.key,
                 label: e.value.label,
@@ -1463,32 +2496,250 @@ class _ThemeDropdown extends StatelessWidget {
   }
 }
 
-class _SyntaxDropdown extends StatelessWidget {
-  const _SyntaxDropdown({required this.value, required this.onChanged});
-  final SyntaxThemeId value;
-  final ValueChanged<SyntaxThemeId> onChanged;
+/// Opções de idioma da interface. `system` = seguir o locale do SO
+/// (`AppSettings.locale == null`); as demais mapeiam pro código raw persistido
+/// e repassado ao `slang` (`LocaleSettings.setLocaleRaw`).
+enum _LocaleOption { system, en, es, ptBr }
 
-  static const _labels = <SyntaxThemeId, String>{
-    SyntaxThemeId.one: 'One',
-    SyntaxThemeId.dracula: 'Dracula',
-    SyntaxThemeId.github: 'GitHub',
+class _LocaleDropdown extends StatelessWidget {
+  const _LocaleDropdown({required this.value, required this.onChanged});
+
+  /// Código raw persistido (`null` = System). Ver [AppSettings.locale].
+  final String? value;
+  final ValueChanged<String?> onChanged;
+
+  static const _codes = <_LocaleOption, String?>{
+    _LocaleOption.system: null,
+    _LocaleOption.en: 'en',
+    _LocaleOption.es: 'es',
+    _LocaleOption.ptBr: 'pt-BR',
+  };
+
+  _LocaleOption _optionOf(String? code) => switch (code) {
+    'en' => _LocaleOption.en,
+    'es' => _LocaleOption.es,
+    'pt-BR' => _LocaleOption.ptBr,
+    _ => _LocaleOption.system,
   };
 
   @override
   Widget build(BuildContext context) {
+    final tr = context.t.settings.language;
+    final labels = <_LocaleOption, ({String label, IconData icon})>{
+      _LocaleOption.system: (
+        label: tr.system,
+        icon: Icons.desktop_windows_outlined,
+      ),
+      _LocaleOption.en: (label: tr.english, icon: Icons.language),
+      _LocaleOption.es: (label: tr.spanish, icon: Icons.language),
+      _LocaleOption.ptBr: (label: tr.portugueseBr, icon: Icons.language),
+    };
+    final current = _optionOf(value);
+    final currentMeta = labels[current]!;
     return _DropdownChip(
-      label: _labels[value]!,
+      icon: currentMeta.icon,
+      label: currentMeta.label,
       onTap: () async {
-        final picked = await showAppMenu<SyntaxThemeId>(
+        final picked = await showAppMenu<_LocaleOption>(
           context,
           minWidth: 180,
           items: [
-            for (final e in _labels.entries)
+            for (final e in labels.entries)
               AppMenuItem(
                 value: e.key,
-                label: e.value,
-                selected: e.key == value,
+                label: e.value.label,
+                icon: e.value.icon,
+                selected: e.key == current,
               ),
+          ],
+        );
+        if (picked != null) onChanged(_codes[picked]);
+      },
+    );
+  }
+}
+
+/// Importar / exportar / remover tema. Fica logo abaixo do seletor porque as
+/// três ações operam sobre a mesma escolha.
+///
+/// Import/export de arquivo vem antes de um editor visual de propósito: resolve
+/// portabilidade entre máquinas e permite editar o tema no editor de código
+/// (com `$schema` ligando o autocomplete), que é o fluxo de quem faz tema.
+class _ThemeFileRow extends StatelessWidget {
+  const _ThemeFileRow();
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = context.watch<SettingsController>();
+    final tr = context.t.settings.page.appearance;
+    final isCustom = controller.isCustomTheme(controller.activeTheme.id);
+    return _Row(
+      title: tr.themeFileTitle,
+      description: tr.themeFileDesc,
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          OutlineButton(
+            onPressed: () => _import(context),
+            child: Text(tr.importTheme),
+          ),
+          const SizedBox(width: 8),
+          OutlineButton(
+            onPressed: () => _export(context),
+            child: Text(tr.exportTheme),
+          ),
+          if (isCustom) ...[
+            const SizedBox(width: 8),
+            OutlineButton(
+              onPressed: () => _delete(context),
+              child: Text(tr.deleteTheme),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _import(BuildContext context) async {
+    final controller = context.read<SettingsController>();
+    final tr = context.t.settings.page.appearance;
+    final picked = await FilePicker.platform.pickFiles(
+      dialogTitle: tr.importThemeDialog,
+      type: FileType.custom,
+      allowedExtensions: const ['json'],
+    );
+    final path = picked?.files.singleOrNull?.path;
+    if (path == null) return;
+
+    final result = await controller.importTheme(File(path));
+    if (!context.mounted) return;
+    result.fold(
+      (theme) => _toast(context, tr.themeImported(name: theme.name)),
+      (error) => _toast(
+        context,
+        themeStoreErrorMessage(context, error),
+        isError: true,
+      ),
+    );
+  }
+
+  Future<void> _export(BuildContext context) async {
+    final controller = context.read<SettingsController>();
+    final tr = context.t.settings.page.appearance;
+    final path = await FilePicker.platform.saveFile(
+      dialogTitle: tr.exportThemeDialog,
+      fileName: '${controller.activeTheme.id}.json',
+      type: FileType.custom,
+      allowedExtensions: const ['json'],
+    );
+    if (path == null) return;
+
+    final result = await controller.exportActiveTheme(path);
+    if (!context.mounted) return;
+    result.fold(
+      (_) => _toast(context, tr.themeExported),
+      (error) => _toast(
+        context,
+        themeStoreErrorMessage(context, error),
+        isError: true,
+      ),
+    );
+  }
+
+  Future<void> _delete(BuildContext context) async {
+    final controller = context.read<SettingsController>();
+    final tr = context.t.settings.page.appearance;
+    final result = await controller.deleteTheme(controller.activeTheme.id);
+    if (!context.mounted) return;
+    result.fold(
+      (_) => _toast(context, tr.themeDeleted),
+      (error) => _toast(
+        context,
+        themeStoreErrorMessage(context, error),
+        isError: true,
+      ),
+    );
+  }
+
+  void _toast(BuildContext context, String message, {bool isError = false}) {
+    final colors = context.colors;
+    showToast(
+      context: context,
+      location: ToastLocation.bottomRight,
+      builder: (context, overlay) => SurfaceCard(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                isError ? Icons.error_outline : Icons.check_circle_outline,
+                size: 18,
+                color: isError ? colors.error : colors.ok,
+              ),
+              const SizedBox(width: 10),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 360),
+                child: Text(
+                  message,
+                  style: context.typo.label.copyWith(color: colors.text),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Seletor do tema ativo. Escolher um tema é a mesma ação seja ele nativo ou
+/// importado, então os dois convivem numa lista só — mas a **origem** é
+/// distinguível: os importados vêm depois de um divisor e com ícone.
+///
+/// Isso importa na hora de remover: o botão "Remover" só aparece para tema
+/// importado, e sem a marca o usuário não teria como prever quando ele some.
+/// (Não confundir com o `_ThemeModeDropdown`, que escolhe qual **variant** do
+/// tema usar.)
+class _ThemeDropdown extends StatelessWidget {
+  const _ThemeDropdown({required this.value, required this.onChanged});
+  final String value;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = context.watch<SettingsController>();
+    final themes = controller.availableThemes;
+    final current = themes.firstWhere(
+      (t) => t.id == value,
+      orElse: () => cockpitDefaultTheme,
+    );
+    // `availableThemes` já entrega os nativos primeiro; separar aqui mantém
+    // essa ordem sendo a única fonte da divisão.
+    final builtIn = themes.where((t) => !controller.isCustomTheme(t.id));
+    final imported = themes.where((t) => controller.isCustomTheme(t.id));
+
+    AppMenuItem<String> itemFor(CockpitThemeSpec theme, {required bool own}) =>
+        AppMenuItem(
+          value: theme.id,
+          label: theme.name,
+          // Só o importado leva ícone: marcar os dois grupos gastaria atenção
+          // para dizer o que o divisor já diz. O `trailing` segue livre para a
+          // marca de seleção.
+          icon: own ? Icons.file_download_outlined : null,
+          selected: theme.id == value,
+        );
+
+    return _DropdownChip(
+      label: current.name,
+      onTap: () async {
+        final picked = await showAppMenu<String>(
+          context,
+          minWidth: 200,
+          items: [
+            for (final theme in builtIn) itemFor(theme, own: false),
+            if (imported.isNotEmpty) const AppMenuItem<String>.divider(),
+            for (final theme in imported) itemFor(theme, own: true),
           ],
         );
         if (picked != null) onChanged(picked);
@@ -1502,23 +2753,23 @@ class _UpdateCheckDropdown extends StatelessWidget {
   final UpdateCheckFrequency value;
   final ValueChanged<UpdateCheckFrequency> onChanged;
 
-  static const _labels = <UpdateCheckFrequency, String>{
-    UpdateCheckFrequency.daily: 'Daily',
-    UpdateCheckFrequency.weekly: 'Weekly',
-    UpdateCheckFrequency.monthly: 'Monthly',
-    UpdateCheckFrequency.never: 'Never',
-  };
-
   @override
   Widget build(BuildContext context) {
+    final tr = context.t.settings.page.general.updateFrequency;
+    final labels = <UpdateCheckFrequency, String>{
+      UpdateCheckFrequency.daily: tr.daily,
+      UpdateCheckFrequency.weekly: tr.weekly,
+      UpdateCheckFrequency.monthly: tr.monthly,
+      UpdateCheckFrequency.never: tr.never,
+    };
     return _DropdownChip(
-      label: _labels[value]!,
+      label: labels[value]!,
       onTap: () async {
         final picked = await showAppMenu<UpdateCheckFrequency>(
           context,
           minWidth: 180,
           items: [
-            for (final e in _labels.entries)
+            for (final e in labels.entries)
               AppMenuItem(
                 value: e.key,
                 label: e.value,
@@ -1533,47 +2784,139 @@ class _UpdateCheckDropdown extends StatelessWidget {
 }
 
 /// Campo de família de fonte (texto livre; vazio = padrão).
-class _FontField extends StatefulWidget {
+/// Seleção de família de fonte.
+///
+/// Substituiu um campo de texto livre que falhava em silêncio: nome com erro de
+/// digitação ou fonte não instalada caíam no fallback sem nenhum aviso. Agora a
+/// escolha sai de uma lista do que a máquina realmente tem (ver
+/// [showFontPickerDialog]), o nome escolhido é desenhado **na própria fonte**, e
+/// uma família que não resolve é sinalizada aqui no chip.
+class _FontField extends StatelessWidget {
   const _FontField({
     required this.value,
     required this.hint,
     required this.onChanged,
+    this.monospacedOnly = false,
   });
+
   final String? value;
+
+  /// Descrição do padrão do design, mostrada quando não há escolha.
   final String hint;
   final ValueChanged<String?> onChanged;
-
-  @override
-  State<_FontField> createState() => _FontFieldState();
-}
-
-class _FontFieldState extends State<_FontField> {
-  late final TextEditingController _ctrl;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = TextEditingController(text: widget.value ?? '');
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
+  final bool monospacedOnly;
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    return SizedBox(
-      width: 240,
-      child: TextField(
-        controller: _ctrl,
-        onChanged: (v) => widget.onChanged(v.trim().isEmpty ? null : v.trim()),
-        style: context.typo.body.copyWith(fontSize: 13, color: colors.text),
-        placeholder: Text(widget.hint),
-        borderRadius: BorderRadius.circular(7),
-      ),
+    final family = value;
+    final missing = family != null && !isFontAvailable(family);
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (missing) ...[
+          AppTooltip(
+            message: context.t.settings.page.appearance.fontMissing,
+            child: Icon(Icons.warning_amber, size: 15, color: colors.warn),
+          ),
+          const SizedBox(width: 6),
+        ],
+        HoverTap(
+          color: colors.panel3,
+          borderRadius: BorderRadius.circular(7),
+          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+          onTap: () async {
+            final choice = await showFontPickerDialog(
+              context,
+              current: family,
+              defaultLabel: hint,
+              monospacedOnly: monospacedOnly,
+            );
+            // Dialog dispensado devolve null; só uma escolha real muda algo.
+            if (choice != null) onChanged(choice.family);
+          },
+          child: SizedBox(
+            width: 218,
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    family ?? hint,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: family == null
+                        ? context.typo.body.copyWith(
+                            fontSize: 13,
+                            color: colors.text3,
+                          )
+                        : TextStyle(
+                            fontFamily: family,
+                            fontSize: 13,
+                            color: colors.text,
+                          ),
+                  ),
+                ),
+                Icon(Icons.keyboard_arrow_down, size: 16, color: colors.text3),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Stepper de tamanho que aceita "sem valor próprio", herdando de outro ajuste.
+///
+/// Sem override, mostra o valor herdado esmaecido; mexer nos botões passa a
+/// definir um valor explícito, e o terceiro botão desfaz o override.
+class _OptionalSizeStepper extends StatelessWidget {
+  const _OptionalSizeStepper({
+    required this.value,
+    required this.inherited,
+    required this.min,
+    required this.max,
+    required this.onChanged,
+  });
+
+  /// `null` = herdando [inherited].
+  final double? value;
+  final double inherited;
+  final double min;
+  final double max;
+  final ValueChanged<double?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final overridden = value != null;
+    final effective = value ?? inherited;
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (overridden)
+          AppTooltip(
+            message: context.t.settings.page.appearance.terminalSizeInherit,
+            child: HoverTap(
+              borderRadius: BorderRadius.circular(7),
+              onTap: () => onChanged(null),
+              child: SizedBox(
+                width: 30,
+                height: 32,
+                child: Icon(Icons.link, size: 15, color: colors.text2),
+              ),
+            ),
+          ),
+        _SizeStepper(
+          value: effective,
+          min: min,
+          max: max,
+          onChanged: onChanged,
+          muted: !overridden,
+        ),
+      ],
     );
   }
 }
@@ -1585,11 +2928,15 @@ class _SizeStepper extends StatelessWidget {
     required this.min,
     required this.max,
     required this.onChanged,
+    this.muted = false,
   });
   final double value;
   final double min;
   final double max;
   final ValueChanged<double> onChanged;
+
+  /// Esmaece o número quando ele é apenas herdado, e não uma escolha.
+  final bool muted;
 
   @override
   Widget build(BuildContext context) {
@@ -1613,7 +2960,7 @@ class _SizeStepper extends StatelessWidget {
               textAlign: TextAlign.center,
               style: context.typo.mono.copyWith(
                 fontSize: 12.5,
-                color: colors.text,
+                color: muted ? colors.text2 : colors.text,
               ),
             ),
           ),
@@ -1654,19 +3001,19 @@ class _LanguagesPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final ctrl = context.watch<SettingsController>();
     final settings = ctrl.settings;
+    final tr = context.t.settings.page.languages;
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(28, 24, 28, 40),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _Section(
-            label: 'FORMATTING',
+            label: tr.sectionFormatting,
             child: _Card(
               children: [
                 _Row(
-                  title: 'Format on save',
-                  description:
-                      'Format the file automatically when you save (⌘S).',
+                  title: tr.formatOnSaveTitle,
+                  description: tr.formatOnSaveDesc,
                   trailing: Switch(
                     value: settings.formatOnSave,
                     onChanged: ctrl.setFormatOnSave,
@@ -1676,7 +3023,7 @@ class _LanguagesPanel extends StatelessWidget {
             ),
           ),
           _Section(
-            label: 'LANGUAGE SERVERS',
+            label: tr.sectionLanguageServers,
             child: _Card(
               children: [
                 for (final def in kLanguageDefs)
@@ -1692,10 +3039,7 @@ class _LanguagesPanel extends StatelessWidget {
             ),
           ),
           Text(
-            'Errors and formatting use each language\'s language server. '
-            'Cockpit does not install servers — it uses what is already on your '
-            'machine. ● responds · ○ not found or invalid command (install the '
-            'server or adjust the command).',
+            tr.footerNote,
             style: context.typo.label.copyWith(color: context.colors.text3),
           ),
         ],
@@ -1842,11 +3186,17 @@ class _LanguageRowState extends State<_LanguageRow> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _fieldLabel(context, 'Language server command'),
+                _fieldLabel(
+                  context,
+                  context.t.settings.page.languages.serverCommandLabel,
+                ),
                 const SizedBox(height: 6),
                 _commandField(context, _serverCtrl, _default),
                 const SizedBox(height: 14),
-                _fieldLabel(context, 'Formatter command (optional)'),
+                _fieldLabel(
+                  context,
+                  context.t.settings.page.languages.formatterCommandLabel,
+                ),
                 const SizedBox(height: 6),
                 _commandField(
                   context,
@@ -1855,8 +3205,7 @@ class _LanguageRowState extends State<_LanguageRow> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'External formatter with %FILE% placeholder. Takes precedence '
-                  'over the LSP formatter when set.',
+                  context.t.settings.page.languages.formatterHint,
                   style: context.typo.label.copyWith(color: colors.text4),
                 ),
                 const SizedBox(height: 12),
@@ -1870,7 +3219,7 @@ class _LanguageRowState extends State<_LanguageRow> {
                         vertical: 7,
                       ),
                       child: Text(
-                        'Reset to default',
+                        context.t.settings.page.languages.resetToDefault,
                         style: context.typo.body.copyWith(
                           fontSize: 12.5,
                           color: colors.text2,
@@ -1887,7 +3236,7 @@ class _LanguageRowState extends State<_LanguageRow> {
                         vertical: 7,
                       ),
                       child: Text(
-                        'Save & restart',
+                        context.t.settings.page.languages.saveAndRestart,
                         style: context.typo.body.copyWith(
                           fontSize: 12.5,
                           color: _dirty ? colors.accentText : colors.text4,
@@ -1933,10 +3282,11 @@ class _StatusDot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final tr = context.t.settings.page.languages;
     final (Color color, String tip) = switch (available) {
-      true => (const Color(0xFF22C55E), 'Server responds'),
-      false => (colors.text4, 'Server not found or command invalid'),
-      null => (colors.border, 'Checking…'),
+      true => (colors.online, tr.statusResponds),
+      false => (colors.text4, tr.statusNotFound),
+      null => (colors.border, context.t.common.checking),
     };
     return AppTooltip(
       message: tip,
@@ -1997,33 +3347,32 @@ class _ConnectivityPanelState extends State<_ConnectivityPanel> {
     final vm = context.read<ConnectivityViewModel>();
     final colors = context.colors;
     final name = device.label.isEmpty ? device.shortId : device.label;
+    final tr = context.t.settings.page.connectivity;
 
     final confirmed = await showDialog<bool>(
       context: context,
-      barrierColor: const Color(0x99000000),
+      barrierColor: context.colors.scrim,
       builder: (ctx) => AlertDialog(
         title: Text(
-          'Revoke device?',
+          tr.revokeDialogTitle,
           style: ctx.typo.title.copyWith(fontSize: 15, color: colors.text),
         ),
         content: Text(
-          '"$name" will lose access to your agents and will need to pair again.'
-          '\n\nYou must be connected to the relay — the app will connect '
-          'automatically to revoke.',
+          tr.revokeDialogContent(name: name),
           style: ctx.typo.body.copyWith(fontSize: 13.5, color: colors.text2),
         ),
         actions: [
           GhostButton(
             onPressed: () => Navigator.of(ctx).pop(false),
             child: Text(
-              'Cancel',
+              context.t.common.cancel,
               style: ctx.typo.body.copyWith(fontSize: 13, color: colors.text2),
             ),
           ),
           GhostButton(
             onPressed: () => Navigator.of(ctx).pop(true),
             child: Text(
-              'Revoke',
+              tr.revoke,
               style: ctx.typo.body.copyWith(
                 fontSize: 13,
                 color: colors.error,
@@ -2052,6 +3401,7 @@ class _ConnectivityPanelState extends State<_ConnectivityPanel> {
   @override
   Widget build(BuildContext context) {
     final vm = context.watch<ConnectivityViewModel>();
+    final tr = context.t.settings.page.connectivity;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(28, 24, 28, 40),
@@ -2061,12 +3411,12 @@ class _ConnectivityPanelState extends State<_ConnectivityPanel> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const _Section(
-                label: 'Relay',
-                child: _Card(children: [_RelayEditor()]),
+              _Section(
+                label: tr.sectionRelay,
+                child: const _Card(children: [_RelayEditor()]),
               ),
               _Section(
-                label: 'Paired devices',
+                label: tr.sectionPairedDevices,
                 trailing: _ReloadButton(
                   busy: vm.devicesLoad == ConnLoad.loading,
                   onTap: vm.loadDevices,
@@ -2089,6 +3439,7 @@ class _ConnectivityPanelState extends State<_ConnectivityPanel> {
 
   Widget _devicesCard(BuildContext context, ConnectivityViewModel vm) {
     final colors = context.colors;
+    final tr = context.t.settings.page.connectivity;
 
     // Primeira carga (ainda sem dados).
     if (vm.devicesLoad == ConnLoad.loading && vm.devices.isEmpty) {
@@ -2103,7 +3454,7 @@ class _ConnectivityPanelState extends State<_ConnectivityPanel> {
             ),
             const SizedBox(width: 10),
             Text(
-              'Loading…',
+              context.t.common.loading,
               style: context.typo.body.copyWith(
                 fontSize: 13.5,
                 color: colors.text3,
@@ -2117,7 +3468,7 @@ class _ConnectivityPanelState extends State<_ConnectivityPanel> {
     if (vm.devicesLoad == ConnLoad.error && vm.devices.isEmpty) {
       return _MessageCard(
         child: Text(
-          vm.devicesError ?? 'Failed to list devices.',
+          vm.devicesError ?? tr.failedToListDevices,
           style: context.typo.body.copyWith(
             fontSize: 13.5,
             color: colors.error,
@@ -2129,7 +3480,7 @@ class _ConnectivityPanelState extends State<_ConnectivityPanel> {
     if (vm.devices.isEmpty) {
       return _MessageCard(
         child: Text(
-          'No paired devices.',
+          tr.noPairedDevices,
           style: context.typo.body.copyWith(
             fontSize: 13.5,
             color: colors.text3,
@@ -2198,6 +3549,7 @@ class _RelayEditorState extends State<_RelayEditor> {
     final value = _ctrl.text.trim();
     final canSave =
         !vm.savingRelay && value.isNotEmpty && value != (vm.relayUrl ?? '');
+    final tr = context.t.settings.page.connectivity;
 
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -2205,7 +3557,7 @@ class _RelayEditorState extends State<_RelayEditor> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Relay address',
+            tr.relayAddressTitle,
             style: context.typo.body.copyWith(
               fontSize: 13.5,
               color: colors.text,
@@ -2213,8 +3565,7 @@ class _RelayEditorState extends State<_RelayEditor> {
           ),
           const SizedBox(height: 3),
           Text(
-            'Server that connects your agents to the phone. Applies to every '
-            'agent with the relay enabled.',
+            tr.relayAddressDesc,
             style: context.typo.label.copyWith(color: colors.text3),
           ),
           const SizedBox(height: 12),
@@ -2241,7 +3592,7 @@ class _RelayEditorState extends State<_RelayEditor> {
               const SizedBox(width: 8),
               PrimaryButton(
                 onPressed: canSave ? () => _save() : null,
-                child: Text(vm.savingRelay ? 'Saving…' : 'Save'),
+                child: Text(vm.savingRelay ? tr.saving : context.t.common.save),
               ),
             ],
           ),
@@ -2260,7 +3611,7 @@ class _RelayEditorState extends State<_RelayEditor> {
                     ? null
                     : () => vm.checkRelay(_ctrl.text),
                 leading: const Icon(Icons.wifi_tethering, size: 15),
-                child: const Text('Check'),
+                child: Text(tr.check),
               ),
               const SizedBox(width: 12),
               Expanded(child: _HealthIndicator(vm: vm)),
@@ -2280,6 +3631,7 @@ class _HealthIndicator extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final tr = context.t.settings.page.connectivity;
 
     if (vm.healthState == HealthState.checking) {
       return Row(
@@ -2291,7 +3643,7 @@ class _HealthIndicator extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           Text(
-            'Checking…',
+            context.t.common.checking,
             style: context.typo.label.copyWith(color: colors.text3),
           ),
         ],
@@ -2299,13 +3651,13 @@ class _HealthIndicator extends StatelessWidget {
     }
 
     final (Color dot, String label, Color text) = switch (vm.healthState) {
-      HealthState.healthy => (colors.online, 'Online', colors.text2),
+      HealthState.healthy => (colors.online, tr.healthOnline, colors.text2),
       HealthState.unhealthy => (
         colors.error,
-        vm.healthMessage ?? 'No response',
+        vm.healthMessage ?? tr.healthNoResponse,
         colors.error,
       ),
-      _ => (colors.text4, 'Not checked', colors.text3),
+      _ => (colors.text4, tr.healthNotChecked, colors.text3),
     };
 
     return Row(
@@ -2350,7 +3702,9 @@ class _DeviceTile extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  device.label.isEmpty ? 'Device' : device.label,
+                  device.label.isEmpty
+                      ? context.t.settings.page.connectivity.deviceDefaultLabel
+                      : device.label,
                   style: context.typo.body.copyWith(
                     fontSize: 13.5,
                     color: colors.text,
@@ -2369,7 +3723,7 @@ class _DeviceTile extends StatelessWidget {
           ),
           const SizedBox(width: 12),
           AppTooltip(
-            message: 'Revoke',
+            message: context.t.settings.page.connectivity.revoke,
             child: HoverTap(
               borderRadius: BorderRadius.circular(6),
               onTap: onRevoke,
@@ -2396,7 +3750,7 @@ class _ReloadButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     return AppTooltip(
-      message: 'Reload',
+      message: context.t.settings.page.connectivity.reloadTooltip,
       child: HoverTap(
         borderRadius: BorderRadius.circular(6),
         onTap: busy ? null : () => onTap(),
@@ -2461,7 +3815,7 @@ class _PairButton extends StatelessWidget {
           Icon(Icons.qr_code_2, size: 17, color: colors.accentText),
           const SizedBox(width: 8),
           Text(
-            'Pair new device',
+            context.t.settings.page.connectivity.pairNewDevice,
             style: context.typo.body.copyWith(
               fontSize: 13.5,
               color: colors.accentText,
@@ -2536,31 +3890,34 @@ class _AgendamentosPanelState extends State<_AgendamentosPanel> {
   Future<void> _confirmRemove(CronJob job) async {
     final vm = context.read<CronViewModel>();
     final colors = context.colors;
+    final tr = context.t.settings.page.schedules;
     final confirmed = await showDialog<bool>(
       context: context,
-      barrierColor: const Color(0x99000000),
+      barrierColor: context.colors.scrim,
       builder: (ctx) => AlertDialog(
         title: Text(
-          'Remove schedule?',
+          tr.removeScheduleDialogTitle,
           style: ctx.typo.title.copyWith(fontSize: 15, color: colors.text),
         ),
         content: Text(
-          'The job "${job.schedule}" for ${vm.daemonName(job.daemonId)} is deleted. '
-          'Its runs stop.',
+          tr.removeScheduleDialogContent(
+            schedule: job.schedule,
+            daemon: vm.daemonName(job.daemonId),
+          ),
           style: ctx.typo.body.copyWith(fontSize: 13.5, color: colors.text2),
         ),
         actions: [
           GhostButton(
             onPressed: () => Navigator.of(ctx).pop(false),
             child: Text(
-              'Cancel',
+              context.t.common.cancel,
               style: ctx.typo.body.copyWith(fontSize: 13, color: colors.text2),
             ),
           ),
           GhostButton(
             onPressed: () => Navigator.of(ctx).pop(true),
             child: Text(
-              'Remove',
+              context.t.common.remove,
               style: ctx.typo.body.copyWith(
                 fontSize: 13,
                 color: colors.error,
@@ -2596,7 +3953,8 @@ class _AgendamentosPanelState extends State<_AgendamentosPanel> {
                 const SizedBox(height: 16),
               ],
               _Section(
-                label: 'Scheduled prompts',
+                label:
+                    context.t.settings.page.schedules.sectionScheduledPrompts,
                 trailing: _ReloadButton(
                   busy: vm.load == CronLoad.loading,
                   onTap: vm.reload,
@@ -2612,18 +3970,19 @@ class _AgendamentosPanelState extends State<_AgendamentosPanel> {
 
   Widget _cronActions(BuildContext context, CronViewModel vm) {
     final colors = context.colors;
+    final tr = context.t.settings.page.schedules;
     return Row(
       children: [
         PrimaryButton(
           onPressed: vm.hasDaemons ? () => _openEditor() : null,
           leading: const Icon(Icons.add, size: 16),
-          child: const Text('Create schedule'),
+          child: Text(tr.createSchedule),
         ),
         if (!vm.hasDaemons) ...[
           const SizedBox(width: 12),
           Flexible(
             child: Text(
-              'Create a Daemon Agent first.',
+              tr.createDaemonFirst,
               style: context.typo.label.copyWith(color: colors.text3),
             ),
           ),
@@ -2634,12 +3993,12 @@ class _AgendamentosPanelState extends State<_AgendamentosPanel> {
 
   Widget _body(BuildContext context, CronViewModel vm) {
     final colors = context.colors;
+    final tr = context.t.settings.page.schedules;
 
     if (!vm.online && vm.load != CronLoad.loading) {
       return _MessageCard(
         child: Text(
-          'Supervisor offline. Schedules need pi-supervisord running '
-          '(`remote-pi install`).',
+          tr.supervisorOffline,
           style: context.typo.body.copyWith(
             fontSize: 13.5,
             color: colors.text3,
@@ -2659,7 +4018,7 @@ class _AgendamentosPanelState extends State<_AgendamentosPanel> {
             ),
             const SizedBox(width: 10),
             Text(
-              'Loading…',
+              context.t.common.loading,
               style: context.typo.body.copyWith(
                 fontSize: 13.5,
                 color: colors.text3,
@@ -2672,7 +4031,7 @@ class _AgendamentosPanelState extends State<_AgendamentosPanel> {
     if (vm.load == CronLoad.error && vm.jobs.isEmpty) {
       return _MessageCard(
         child: Text(
-          vm.error ?? 'Failed to list schedules.',
+          vm.error ?? tr.failedToListSchedules,
           style: context.typo.body.copyWith(
             fontSize: 13.5,
             color: colors.error,
@@ -2683,7 +4042,7 @@ class _AgendamentosPanelState extends State<_AgendamentosPanel> {
     if (vm.jobs.isEmpty) {
       return _MessageCard(
         child: Text(
-          'No schedules. Create a recurring prompt for a daemon.',
+          tr.noSchedules,
           style: context.typo.body.copyWith(
             fontSize: 13.5,
             color: colors.text3,
@@ -2788,9 +4147,24 @@ class _CronTile extends StatelessWidget {
             )
           else ...[
             Switch(value: job.enabled, onChanged: onToggle),
-            _cronAct(context, Icons.play_arrow, 'Run now', onRun),
-            _cronAct(context, Icons.history, 'View log', onLog),
-            _cronAct(context, Icons.delete_outline, 'Remove', onRemove),
+            _cronAct(
+              context,
+              Icons.play_arrow,
+              context.t.settings.page.schedules.runNow,
+              onRun,
+            ),
+            _cronAct(
+              context,
+              Icons.history,
+              context.t.settings.page.schedules.viewLog,
+              onLog,
+            ),
+            _cronAct(
+              context,
+              Icons.delete_outline,
+              context.t.common.remove,
+              onRemove,
+            ),
           ],
         ],
       ),
@@ -2826,19 +4200,20 @@ class _CronMeta extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final tr = context.t.settings.page.schedules;
     final children = <Widget>[];
 
     if (!job.enabled) {
       children.add(
         Text(
-          'disabled',
+          tr.disabled,
           style: context.typo.label.copyWith(color: colors.text4),
         ),
       );
     } else if (job.nextRun != null) {
       children.add(
         Text(
-          'next ${_fmtIso(job.nextRun)}',
+          tr.nextRun(when: _fmtIso(job.nextRun)),
           style: context.typo.label.copyWith(color: colors.text3),
         ),
       );
@@ -2858,7 +4233,10 @@ class _CronMeta extends StatelessWidget {
         );
       }
       children.add(
-        Text('last: $label', style: context.typo.label.copyWith(color: color)),
+        Text(
+          tr.lastRun(label: label),
+          style: context.typo.label.copyWith(color: color),
+        ),
       );
     }
 
@@ -2889,13 +4267,6 @@ class _CronEditorDialogState extends State<_CronEditorDialog> {
   bool _saving = false;
   String? _localError;
 
-  static const _examples = <(String, String)>[
-    ('0 9 * * *', 'every day 9am'),
-    ('0 * * * *', 'hourly'),
-    ('*/15 * * * *', 'every 15 min'),
-    ('0 18 * * 1-5', 'weekdays 6pm'),
-  ];
-
   @override
   void initState() {
     super.initState();
@@ -2912,18 +4283,21 @@ class _CronEditorDialogState extends State<_CronEditorDialog> {
   }
 
   String get _previewText {
+    final tr = context.t.settings.page.schedules;
     final expr = _expr.text.trim();
-    if (expr.isEmpty) return 'Next run shows up here';
+    if (expr.isEmpty) return tr.previewPlaceholder;
     final next = nextCronRun(expr, DateTime.now());
-    if (next == null) return 'Next: computed on save';
-    return 'Next: ${_fmtDateTime(next)}';
+    if (next == null) return tr.previewComputed;
+    return tr.previewNext(when: _fmtDateTime(next));
   }
 
   Future<void> _submit() async {
     final expr = _expr.text.trim();
     final prompt = _prompt.text.trim();
     if (expr.isEmpty || prompt.isEmpty) {
-      setState(() => _localError = 'Fill in the expression and the prompt.');
+      setState(
+        () => _localError = context.t.settings.page.schedules.fillRequiredError,
+      );
       return;
     }
     setState(() {
@@ -2946,7 +4320,9 @@ class _CronEditorDialogState extends State<_CronEditorDialog> {
     } else {
       setState(() {
         _saving = false;
-        _localError = widget.vm.actionError ?? 'Failed to create the schedule.';
+        _localError =
+            widget.vm.actionError ??
+            context.t.settings.page.schedules.failedToCreateSchedule;
       });
     }
   }
@@ -2955,10 +4331,17 @@ class _CronEditorDialogState extends State<_CronEditorDialog> {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final vm = widget.vm;
+    final tr = context.t.settings.page.schedules;
+    final examples = <(String, String)>[
+      ('0 9 * * *', tr.exampleEveryDay9am),
+      ('0 * * * *', tr.exampleHourly),
+      ('*/15 * * * *', tr.exampleEvery15Min),
+      ('0 18 * * 1-5', tr.exampleWeekdays6pm),
+    ];
 
     return AlertDialog(
       title: Text(
-        'New schedule',
+        tr.newScheduleTitle,
         style: context.typo.title.copyWith(fontSize: 15, color: colors.text),
       ),
       content: SizedBox(
@@ -2968,7 +4351,7 @@ class _CronEditorDialogState extends State<_CronEditorDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _fieldLabel(context, 'Daemon'),
+              _fieldLabel(context, tr.daemonLabel),
               const SizedBox(height: 6),
               // Builder garante um BuildContext cujo RenderBox é o próprio chip,
               // não o do AlertDialog — senão o menu ancora fora do dialog.
@@ -2994,7 +4377,7 @@ class _CronEditorDialogState extends State<_CronEditorDialog> {
                 ),
               ),
               const SizedBox(height: 16),
-              _fieldLabel(context, 'When (cron expression)'),
+              _fieldLabel(context, tr.whenLabel),
               const SizedBox(height: 6),
               _dialogField(context, _expr, 'e.g. 0 9 * * *', mono: true),
               const SizedBox(height: 6),
@@ -3007,7 +4390,7 @@ class _CronEditorDialogState extends State<_CronEditorDialog> {
                 spacing: 6,
                 runSpacing: 6,
                 children: [
-                  for (final (expr, label) in _examples)
+                  for (final (expr, label) in examples)
                     _ExampleChip(
                       expr: expr,
                       label: label,
@@ -3021,7 +4404,7 @@ class _CronEditorDialogState extends State<_CronEditorDialog> {
                 ],
               ),
               const SizedBox(height: 16),
-              _fieldLabel(context, 'Prompt'),
+              _fieldLabel(context, tr.promptLabel),
               const SizedBox(height: 6),
               _dialogField(
                 context,
@@ -3030,7 +4413,7 @@ class _CronEditorDialogState extends State<_CronEditorDialog> {
                 maxLines: 3,
               ),
               const SizedBox(height: 16),
-              _fieldLabel(context, 'Timezone (optional)'),
+              _fieldLabel(context, tr.timezoneLabel),
               const SizedBox(height: 6),
               _dialogField(
                 context,
@@ -3040,17 +4423,17 @@ class _CronEditorDialogState extends State<_CronEditorDialog> {
               ),
               const SizedBox(height: 12),
               _CronOptionSwitch(
-                label: 'Skip if the agent is busy',
+                label: tr.skipIfBusy,
                 value: _skipIfBusy,
                 onChanged: (v) => setState(() => _skipIfBusy = v),
               ),
               _CronOptionSwitch(
-                label: 'Wake the daemon if stopped',
+                label: tr.wakeIfStopped,
                 value: _wake,
                 onChanged: (v) => setState(() => _wake = v),
               ),
               _CronOptionSwitch(
-                label: 'Recover 1 missed run (catchup)',
+                label: tr.catchup,
                 value: _catchup,
                 onChanged: (v) => setState(() => _catchup = v),
               ),
@@ -3069,7 +4452,7 @@ class _CronEditorDialogState extends State<_CronEditorDialog> {
         GhostButton(
           onPressed: _saving ? null : () => Navigator.of(context).pop(),
           child: Text(
-            'Cancel',
+            context.t.common.cancel,
             style: context.typo.body.copyWith(
               fontSize: 13,
               color: colors.text2,
@@ -3079,7 +4462,7 @@ class _CronEditorDialogState extends State<_CronEditorDialog> {
         GhostButton(
           onPressed: _saving ? null : _submit,
           child: Text(
-            _saving ? 'Creating…' : 'Create',
+            _saving ? tr.creating : context.t.common.create,
             style: context.typo.body.copyWith(
               fontSize: 13,
               color: colors.accentText,
@@ -3203,7 +4586,8 @@ class _CronLogDialogState extends State<_CronLogDialog> {
     setState(() {
       _entries = entries;
       _error = entries == null
-          ? (widget.vm.actionError ?? 'Failed to read the log.')
+          ? (widget.vm.actionError ??
+                context.t.settings.page.schedules.failedToReadLog)
           : null;
       _loading = false;
     });
@@ -3214,7 +4598,9 @@ class _CronLogDialogState extends State<_CronLogDialog> {
     final colors = context.colors;
     return AlertDialog(
       title: Text(
-        'History — ${widget.job.schedule}',
+        context.t.settings.page.schedules.historyTitle(
+          schedule: widget.job.schedule,
+        ),
         style: context.typo.title.copyWith(fontSize: 15, color: colors.text),
       ),
       content: SizedBox(width: 460, child: _content(context)),
@@ -3222,7 +4608,7 @@ class _CronLogDialogState extends State<_CronLogDialog> {
         GhostButton(
           onPressed: () => Navigator.of(context).pop(),
           child: Text(
-            'Close',
+            context.t.common.close,
             style: context.typo.body.copyWith(
               fontSize: 13,
               color: colors.text2,
@@ -3256,7 +4642,7 @@ class _CronLogDialogState extends State<_CronLogDialog> {
     final entries = _entries ?? const <CronLogEntry>[];
     if (entries.isEmpty) {
       return Text(
-        'No records yet.',
+        context.t.settings.page.schedules.noRecordsYet,
         style: context.typo.body.copyWith(fontSize: 13.5, color: colors.text3),
       );
     }
@@ -3334,13 +4720,14 @@ class _CronLogDialogState extends State<_CronLogDialog> {
 
 (Color, String) _cronResultView(BuildContext context, CronResult r) {
   final colors = context.colors;
+  final tr = context.t.settings.page.schedules;
   return switch (r) {
-    CronResult.delivered => (colors.online, 'delivered'),
-    CronResult.wokeAndDelivered => (colors.online, 'woke + delivered'),
-    CronResult.deliverFailed => (colors.error, 'failed'),
-    CronResult.skippedBusy => (colors.warn, 'skipped (busy)'),
-    CronResult.skippedDown => (colors.text4, 'skipped (stopped)'),
-    CronResult.skippedDisabled => (colors.text4, 'skipped (disabled)'),
+    CronResult.delivered => (colors.online, tr.cronDelivered),
+    CronResult.wokeAndDelivered => (colors.online, tr.cronWokeDelivered),
+    CronResult.deliverFailed => (colors.error, tr.cronFailed),
+    CronResult.skippedBusy => (colors.warn, tr.cronSkippedBusy),
+    CronResult.skippedDown => (colors.text4, tr.cronSkippedStopped),
+    CronResult.skippedDisabled => (colors.text4, tr.cronSkippedDisabled),
     CronResult.unknown => (colors.text4, '—'),
   };
 }
@@ -3419,31 +4806,31 @@ class _DaemonsPanelState extends State<_DaemonsPanel> {
   Future<void> _confirmRestartSupervisor() async {
     final vm = context.read<DaemonsViewModel>();
     final colors = context.colors;
+    final tr = context.t.settings.page.daemons;
     final confirmed = await showDialog<bool>(
       context: context,
-      barrierColor: const Color(0x99000000),
+      barrierColor: context.colors.scrim,
       builder: (ctx) => AlertDialog(
         title: Text(
-          'Restart the supervisor?',
+          tr.restartSupervisorDialogTitle,
           style: ctx.typo.title.copyWith(fontSize: 15, color: colors.text),
         ),
         content: Text(
-          'Restarts the supervisor process (reloads the code). All daemons '
-          'restart with it and go offline for a few seconds.',
+          tr.restartSupervisorDialogContent,
           style: ctx.typo.body.copyWith(fontSize: 13.5, color: colors.text2),
         ),
         actions: [
           GhostButton(
             onPressed: () => Navigator.of(ctx).pop(false),
             child: Text(
-              'Cancel',
+              context.t.common.cancel,
               style: ctx.typo.body.copyWith(fontSize: 13, color: colors.text2),
             ),
           ),
           GhostButton(
             onPressed: () => Navigator.of(ctx).pop(true),
             child: Text(
-              'Restart',
+              context.t.common.restart,
               style: ctx.typo.body.copyWith(
                 fontSize: 13,
                 color: colors.warn,
@@ -3461,31 +4848,31 @@ class _DaemonsPanelState extends State<_DaemonsPanel> {
   Future<void> _confirmRemove(DaemonInfo daemon) async {
     final vm = context.read<DaemonsViewModel>();
     final colors = context.colors;
+    final tr = context.t.settings.page.daemons;
     final confirmed = await showDialog<bool>(
       context: context,
-      barrierColor: const Color(0x99000000),
+      barrierColor: context.colors.scrim,
       builder: (ctx) => AlertDialog(
         title: Text(
-          'Remove daemon?',
+          tr.removeDaemonDialogTitle,
           style: ctx.typo.title.copyWith(fontSize: 15, color: colors.text),
         ),
         content: Text(
-          '"${daemon.name}" stops running and leaves the registry. The folder and '
-          'its local config are kept — you can recreate it later.',
+          tr.removeDaemonDialogContent(name: daemon.name),
           style: ctx.typo.body.copyWith(fontSize: 13.5, color: colors.text2),
         ),
         actions: [
           GhostButton(
             onPressed: () => Navigator.of(ctx).pop(false),
             child: Text(
-              'Cancel',
+              context.t.common.cancel,
               style: ctx.typo.body.copyWith(fontSize: 13, color: colors.text2),
             ),
           ),
           GhostButton(
             onPressed: () => Navigator.of(ctx).pop(true),
             child: Text(
-              'Remove',
+              context.t.common.remove,
               style: ctx.typo.body.copyWith(
                 fontSize: 13,
                 color: colors.error,
@@ -3525,7 +4912,7 @@ class _DaemonsPanelState extends State<_DaemonsPanel> {
                 const SizedBox(height: 16),
               ],
               _Section(
-                label: 'Always-on agents',
+                label: context.t.settings.page.daemons.sectionAlwaysOnAgents,
                 trailing: _ReloadButton(
                   busy: vm.load == DaemonsLoad.loading,
                   onTap: vm.reload,
@@ -3541,6 +4928,7 @@ class _DaemonsPanelState extends State<_DaemonsPanel> {
 
   Widget _body(BuildContext context, DaemonsViewModel vm) {
     final colors = context.colors;
+    final tr = context.t.settings.page.daemons;
 
     if (!vm.online && vm.load != DaemonsLoad.loading) {
       return _MessageCard(
@@ -3552,7 +4940,7 @@ class _DaemonsPanelState extends State<_DaemonsPanel> {
                 Icon(Icons.power_off_outlined, size: 16, color: colors.text3),
                 const SizedBox(width: 8),
                 Text(
-                  'Supervisor offline',
+                  tr.supervisorOfflineTitle,
                   style: context.typo.body.copyWith(
                     fontSize: 13.5,
                     color: colors.text2,
@@ -3562,8 +4950,7 @@ class _DaemonsPanelState extends State<_DaemonsPanel> {
             ),
             const SizedBox(height: 6),
             Text(
-              'pi-supervisord is not running. Install it with '
-              '`remote-pi install` to manage 24/7 agents.',
+              tr.supervisorOfflineDesc,
               style: context.typo.label.copyWith(color: colors.text3),
             ),
           ],
@@ -3583,7 +4970,7 @@ class _DaemonsPanelState extends State<_DaemonsPanel> {
             ),
             const SizedBox(width: 10),
             Text(
-              'Loading…',
+              context.t.common.loading,
               style: context.typo.body.copyWith(
                 fontSize: 13.5,
                 color: colors.text3,
@@ -3597,7 +4984,7 @@ class _DaemonsPanelState extends State<_DaemonsPanel> {
     if (vm.load == DaemonsLoad.error && vm.daemons.isEmpty) {
       return _MessageCard(
         child: Text(
-          vm.error ?? 'Failed to list daemons.',
+          vm.error ?? tr.failedToListDaemons,
           style: context.typo.body.copyWith(
             fontSize: 13.5,
             color: colors.error,
@@ -3609,7 +4996,7 @@ class _DaemonsPanelState extends State<_DaemonsPanel> {
     if (vm.daemons.isEmpty) {
       return _MessageCard(
         child: Text(
-          'No registered agents. Create one from a folder.',
+          tr.noRegisteredAgents,
           style: context.typo.body.copyWith(
             fontSize: 13.5,
             color: colors.text3,
@@ -3649,6 +5036,7 @@ class _DaemonActionsBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final tr = context.t.settings.page.daemons;
     final hasDaemons = vm.daemons.isNotEmpty;
     final fleetEnabled = hasDaemons && !vm.busyAll;
 
@@ -3660,7 +5048,7 @@ class _DaemonActionsBar extends StatelessWidget {
         PrimaryButton(
           onPressed: () => onCreate(),
           leading: const Icon(Icons.add, size: 16),
-          child: const Text('Create daemon'),
+          child: Text(tr.createDaemon),
         ),
         if (vm.busyAll)
           CircularProgressIndicator(
@@ -3669,22 +5057,22 @@ class _DaemonActionsBar extends StatelessWidget {
             color: colors.text3,
           ),
         _FleetButton(
-          label: 'Start all',
+          label: tr.startAll,
           icon: Icons.play_arrow,
           onTap: fleetEnabled ? vm.startAll : null,
         ),
         _FleetButton(
-          label: 'Stop all',
+          label: tr.stopAll,
           icon: Icons.stop,
           onTap: fleetEnabled ? vm.stopAll : null,
         ),
         _FleetButton(
-          label: 'Restart all',
+          label: tr.restartAll,
           icon: Icons.restart_alt,
           onTap: fleetEnabled ? vm.restartAll : null,
         ),
         _FleetButton(
-          label: 'Restart supervisor',
+          label: tr.restartSupervisor,
           icon: Icons.sync,
           tint: colors.warn,
           onTap: vm.busyAll ? null : onRestartSupervisor,
@@ -3800,13 +5188,30 @@ class _DaemonTile extends StatelessWidget {
                 _act(
                   context,
                   running ? Icons.stop : Icons.play_arrow,
-                  running ? 'Stop' : 'Start',
+                  running
+                      ? context.t.settings.page.daemons.stop
+                      : context.t.settings.page.daemons.start,
                   running ? onStop : onStart,
                 ),
                 if (running)
-                  _act(context, Icons.restart_alt, 'Restart', onRestart),
-                _act(context, Icons.edit_outlined, 'Edit', onEdit),
-                _act(context, Icons.delete_outline, 'Remove', onRemove),
+                  _act(
+                    context,
+                    Icons.restart_alt,
+                    context.t.common.restart,
+                    onRestart,
+                  ),
+                _act(
+                  context,
+                  Icons.edit_outlined,
+                  context.t.settings.page.daemons.edit,
+                  onEdit,
+                ),
+                _act(
+                  context,
+                  Icons.delete_outline,
+                  context.t.common.remove,
+                  onRemove,
+                ),
               ],
             ),
         ],
@@ -3827,11 +5232,12 @@ class _DaemonTile extends StatelessWidget {
 
   (Color, String) _stateView(BuildContext context, DaemonState state) {
     final colors = context.colors;
+    final tr = context.t.settings.page.daemons;
     return switch (state) {
-      DaemonState.running => (colors.online, 'running'),
-      DaemonState.starting => (colors.warn, 'starting'),
-      DaemonState.stopped => (colors.text4, 'stopped'),
-      DaemonState.crashed => (colors.error, 'failed'),
+      DaemonState.running => (colors.online, tr.stateRunning),
+      DaemonState.starting => (colors.warn, tr.stateStarting),
+      DaemonState.stopped => (colors.text4, tr.stateStopped),
+      DaemonState.crashed => (colors.error, tr.stateFailed),
       DaemonState.unknown => (colors.text4, '—'),
     };
   }
@@ -3946,7 +5352,7 @@ class _DaemonEditorDialogState extends State<_DaemonEditorDialog> {
 
   Future<void> _pickFolder() async {
     final picked = await NativeFolderPicker.pick(
-      dialogTitle: 'Choose the Daemon Agent folder',
+      dialogTitle: context.t.settings.page.daemons.pickFolderDialogTitle,
       initialDirectory: _cwd, // reabre onde já estava, se já escolhido
     );
     if (picked == null || !mounted) return;
@@ -3961,19 +5367,20 @@ class _DaemonEditorDialogState extends State<_DaemonEditorDialog> {
 
   void _submit() {
     final name = _nameCtrl.text.trim();
+    final tr = context.t.settings.page.daemons;
     String? nameError;
     String? pathError;
 
     if (name.isEmpty) {
-      nameError = 'Enter a name.';
+      nameError = tr.nameRequiredError;
     } else if (widget.existingNames.contains(name.toLowerCase())) {
-      nameError = 'An agent with this name already exists.';
+      nameError = tr.nameDuplicateError;
     }
     if (!_isEdit) {
       if (_cwd == null) {
-        pathError = 'Choose a folder.';
+        pathError = tr.folderRequiredError;
       } else if (widget.existingCwds.contains(_cwd)) {
-        pathError = 'An agent already exists in this folder.';
+        pathError = tr.folderDuplicateError;
       }
     }
 
@@ -3995,10 +5402,11 @@ class _DaemonEditorDialogState extends State<_DaemonEditorDialog> {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final tr = context.t.settings.page.daemons;
 
     return AlertDialog(
       title: Text(
-        _isEdit ? 'Edit daemon' : 'New daemon',
+        _isEdit ? tr.editDaemonTitle : tr.newDaemonTitle,
         style: context.typo.title.copyWith(fontSize: 15, color: colors.text),
       ),
       content: SizedBox(
@@ -4007,7 +5415,7 @@ class _DaemonEditorDialogState extends State<_DaemonEditorDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _label(context, 'Name'),
+            _label(context, tr.nameLabel),
             const SizedBox(height: 6),
             TextField(
               controller: _nameCtrl,
@@ -4020,7 +5428,7 @@ class _DaemonEditorDialogState extends State<_DaemonEditorDialog> {
                 fontSize: 13.5,
                 color: colors.text,
               ),
-              placeholder: const Text('e.g. PC, Server, Home'),
+              placeholder: Text(tr.namePlaceholder),
               borderRadius: BorderRadius.circular(7),
             ),
             if (_nameError != null) ...[
@@ -4031,7 +5439,7 @@ class _DaemonEditorDialogState extends State<_DaemonEditorDialog> {
               ),
             ],
             const SizedBox(height: 16),
-            _label(context, 'Folder'),
+            _label(context, tr.folderLabel),
             const SizedBox(height: 6),
             if (_isEdit)
               SizedBox(
@@ -4044,21 +5452,21 @@ class _DaemonEditorDialogState extends State<_DaemonEditorDialog> {
                   Expanded(
                     child: _pathBox(
                       context,
-                      _cwd ?? 'No folder chosen',
+                      _cwd ?? tr.noFolderChosen,
                       enabled: _cwd != null,
                     ),
                   ),
                   const SizedBox(width: 8),
                   OutlineButton(
                     onPressed: () => _pickFolder(),
-                    child: Text(_cwd == null ? 'Choose' : 'Change'),
+                    child: Text(_cwd == null ? tr.choose : tr.changeFolder),
                   ),
                 ],
               ),
             if (_isEdit) ...[
               const SizedBox(height: 6),
               Text(
-                'The folder cannot be changed.',
+                tr.folderCannotBeChanged,
                 style: context.typo.label.copyWith(color: colors.text3),
               ),
             ],
@@ -4076,7 +5484,7 @@ class _DaemonEditorDialogState extends State<_DaemonEditorDialog> {
         GhostButton(
           onPressed: () => Navigator.of(context).pop(),
           child: Text(
-            'Cancel',
+            context.t.common.cancel,
             style: context.typo.body.copyWith(
               fontSize: 13,
               color: colors.text2,
@@ -4086,7 +5494,7 @@ class _DaemonEditorDialogState extends State<_DaemonEditorDialog> {
         GhostButton(
           onPressed: _submit,
           child: Text(
-            _isEdit ? 'Save' : 'Create',
+            _isEdit ? context.t.common.save : context.t.common.create,
             style: context.typo.body.copyWith(
               fontSize: 13,
               color: colors.accentText,

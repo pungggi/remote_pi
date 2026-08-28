@@ -7,9 +7,12 @@ import 'package:cockpit/app/core/ui/menu/editor_menu_bridge.dart';
 import 'package:cockpit/app/core/ui/menu/menu_model.dart';
 import 'package:cockpit/app/core/ui/menu/workspace_menu_bridge.dart';
 import 'package:cockpit/app/core/ui/clamping_scroll_behavior.dart';
+import 'package:cockpit/app/core/ui/widgets/devtools_inspector.dart';
 import 'package:cockpit/app/core/ui/overlay/app_popover_handler.dart';
 import 'package:cockpit/app/core/ui/settings_controller.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:cockpit/app/core/utils/platform_kind.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
@@ -25,6 +28,9 @@ class AppRoot extends StatelessWidget {
   Widget build(BuildContext context) {
     final controller = context.watch<SettingsController>();
     final s = controller.settings;
+    // O tema ativo (built-in ou importado) alimenta tanto o ThemeData do shadcn
+    // quanto os tokens bespoke — uma escolha só pinta o app inteiro.
+    final theme = controller.activeTheme;
     // "Tamanho da interface" = **zoom do app inteiro** (texto, panes, ícones,
     // app bar, terminal). Baseline 14 = 1.0x. Ver [_AppZoom].
     final uiScale = s.interfaceSize / 14.0;
@@ -34,7 +40,7 @@ class AppRoot extends StatelessWidget {
     // (Save/Discard/Format) reconstrói e re-habilita conforme a aba focada.
     final editor = context.watch<EditorMenuBridge>();
     final workspace = context.watch<WorkspaceMenuBridge>();
-    final menus = buildAppMenus(controller, editor, workspace);
+    final menus = buildAppMenus(context.t, controller, editor, workspace);
     final app = ShadcnApp.router(
       title: 'Cockpit',
       debugShowCheckedModeBanner: false,
@@ -47,8 +53,16 @@ class AppRoot extends StatelessWidget {
       // Física de scroll CLAMP em todo o app (mata o bounce/overscroll estranho
       // do default BouncingScrollPhysics do shadcn). Ver ClampingScrollBehavior.
       scrollBehavior: const ClampingScrollBehavior(),
-      theme: buildTheme(brightness: Brightness.light, settings: s),
-      darkTheme: buildTheme(brightness: Brightness.dark, settings: s),
+      theme: buildTheme(
+        brightness: Brightness.light,
+        settings: s,
+        theme: theme,
+      ),
+      darkTheme: buildTheme(
+        brightness: Brightness.dark,
+        settings: s,
+        theme: theme,
+      ),
       themeMode: _themeMode(s.themeMode),
       routerConfig: ModularApp.routerConfigOf(context),
       builder: (context, child) {
@@ -58,7 +72,37 @@ class AppRoot extends StatelessWidget {
         final tokens = buildTokens(
           brightness: Theme.of(context).brightness,
           settings: s,
+          theme: theme,
         );
+        // App content zoomado + tema. No mobile (iPad/Android) envolvemos em
+        // SafeArea pra não passar por baixo da status bar / home indicator; o
+        // fundo do tema é pintado **edge-to-edge** (ColoredBox) atrás da
+        // SafeArea, então os insets ficam na cor do app, nunca pretos.
+        // Cor de seleção do app inteiro. O `ShadcnApp` não é `MaterialApp`, e
+        // sem um `DefaultSelectionStyle` acima o fallback do Flutter tem
+        // `selectionColor` NULO — qualquer widget que o desreferencie com `!`
+        // crasha ao montar. Foi o que derrubou o markdown do agente
+        // (`gpt_markdown`, `_SelectableAdapter.createRenderObject`), e valeria
+        // para qualquer coisa selecionável daqui pra frente.
+        //
+        // Fica no topo, junto do tema: cor de seleção é decisão de tema, não
+        // de widget.
+        Widget content = DefaultSelectionStyle(
+          selectionColor: tokens.terminal.selection,
+          cursorColor: tokens.colors.accent,
+          child: _AppZoom(
+            scale: uiScale,
+            child: CockpitTheme(
+              colors: tokens.colors,
+              typo: tokens.typo,
+              syntax: tokens.syntax,
+              terminal: tokens.terminal,
+              child: child ?? const SizedBox(),
+            ),
+          ),
+        );
+        if (isMobilePlatform) content = SafeArea(child: content);
+        content = ColoredBox(color: tokens.colors.bg, child: content);
         return CallbackShortcuts(
           // Atalhos globais (sempre na cadeia de foco): zoom (⌘=/⌘-/⌘0) e foco do
           // input (⌘L). CallbackShortcuts é aditivo (não quebra copiar/colar) e
@@ -77,15 +121,7 @@ class AppRoot extends StatelessWidget {
           // barra de título do shell pelo [WindowMenuBar].
           child: AppMenuBar(
             menus: menus,
-            child: _AppZoom(
-              scale: uiScale,
-              child: CockpitTheme(
-                colors: tokens.colors,
-                typo: tokens.typo,
-                syntax: tokens.syntax,
-                child: child ?? const SizedBox(),
-              ),
-            ),
+            child: DevToolsInspector(child: content),
           ),
         );
       },

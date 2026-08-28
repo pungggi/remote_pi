@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_gateway.dart';
 import 'package:cockpit/app/core/domain/entities/terminal_profile.dart';
+import 'package:cockpit/app/core/utils/spawn_directory.dart';
 import 'package:cockpit_pty/cockpit_pty.dart';
 
 /// PTY nativo via `kyroon_pty`. Roda o `{executable, args}` do
@@ -10,6 +11,16 @@ import 'package:cockpit_pty/cockpit_pty.dart';
 /// decisão do `TerminalProfileResolver` (plano 50), não daqui.
 class PtyTerminalGateway implements TerminalGateway {
   Pty? _pty;
+
+  /// Preenchido quando o [workingDirectory] pedido não existia e o spawn caiu
+  /// num ancestral/home. A `ui/` lê pra avisar o usuário no próprio terminal.
+  SpawnDirectory? _resolvedDirectory;
+
+  @override
+  SpawnDirectory? get spawnDirectory => _resolvedDirectory;
+
+  @override
+  int? get rootProcessId => _pty?.pid;
 
   @override
   void start({
@@ -19,13 +30,22 @@ class PtyTerminalGateway implements TerminalGateway {
     int columns = 80,
     Map<String, String> extraEnv = const <String, String>{},
   }) {
+    // Pasta inexistente é erro fatal do SO no spawn (Windows: CreateProcessW
+    // GetLastError=267), não algo recuperável depois. Resolvemos ANTES: some a
+    // pasta do workspace e o terminal ainda abre, no ancestral mais próximo.
+    final dir = resolveSpawnDirectory(workingDirectory);
+    _resolvedDirectory = dir;
     _pty = Pty.start(
       profile.executable,
       arguments: profile.args,
-      workingDirectory: workingDirectory.isEmpty ? null : workingDirectory,
+      workingDirectory: dir.path.isEmpty ? null : dir.path,
       environment: _terminalEnv(extraEnv),
       rows: rows,
       columns: columns,
+      // Backpressure: a thread nativa só lê o próximo chunk depois de
+      // [acknowledgeOutput]. Evita saturar o isolate principal sob TUI busy
+      // (claude/htop/lazygit) — ver plan/57.
+      ackRead: true,
     );
   }
 
@@ -39,6 +59,9 @@ class PtyTerminalGateway implements TerminalGateway {
 
   @override
   void resize(int rows, int columns) => _pty?.resize(rows, columns);
+
+  @override
+  void acknowledgeOutput() => _pty?.ackRead();
 
   @override
   Future<void> kill() async {

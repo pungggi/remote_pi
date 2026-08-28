@@ -3,7 +3,9 @@ import 'dart:io';
 import 'package:cockpit/app/cockpit/ui/widgets/workspace_avatar.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:path/path.dart' as p;
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 // DEBUG temporário: marcadores síncronos pra localizar o segfault no Windows ARM.
@@ -37,15 +39,17 @@ showWorkspaceSettingsDialog(
   required int colorValue,
   required String path,
   String? imagePath,
+  ({String host, String path})? remote,
 }) {
   return showDialog<({String name, int colorValue, String? imagePath})>(
     context: context,
-    barrierColor: const Color(0x99000000),
+    barrierColor: context.colors.scrim,
     builder: (context) => _WorkspaceSettingsDialog(
       name: name,
       colorValue: colorValue,
       path: path,
       imagePath: imagePath,
+      remote: remote,
     ),
   );
 }
@@ -56,12 +60,19 @@ class _WorkspaceSettingsDialog extends StatefulWidget {
     required this.colorValue,
     required this.path,
     required this.imagePath,
+    this.remote,
   });
 
   final String name;
   final int colorValue;
+
+  /// Pasta LOCAL do workspace. Vazia em workspace remoto e no de sistema; serve
+  /// só para o seletor de imagem abrir num lugar útil.
   final String path;
   final String? imagePath;
+
+  /// Workspace remoto: host e pasta NO HOST. `null` em workspace local.
+  final ({String host, String path})? remote;
 
   @override
   State<_WorkspaceSettingsDialog> createState() =>
@@ -105,13 +116,38 @@ class _WorkspaceSettingsDialogState extends State<_WorkspaceSettingsDialog> {
     _trace('save:after-pop');
   }
 
+  /// Pasta em que o seletor abre: a da imagem atual (se ainda existir) ou a
+  /// raiz do workspace. `null` quando nenhuma das duas serve (ex.: workspace de
+  /// sistema, que tem path vazio) — aí o SO decide.
+  String? get _pickerInitialDirectory {
+    final current = _imagePath;
+    if (current != null && current.isNotEmpty) {
+      final dir = _nativeDirIfExists(p.dirname(current));
+      if (dir != null) return dir;
+    }
+    return _nativeDirIfExists(widget.path);
+  }
+
+  /// Normaliza para o separador nativo e confirma que a pasta existe. O diálogo
+  /// nativo do Windows ignora `initialDirectory` silenciosamente se o caminho
+  /// vier com `/` (nossos paths circulam com barra normal em layouts `.ckp`,
+  /// CLI e estado JSON) — então `\` é obrigatório lá.
+  String? _nativeDirIfExists(String dir) {
+    if (dir.isEmpty) return null;
+    final normalized = p.normalize(
+      Platform.isWindows ? dir.replaceAll('/', r'\') : dir,
+    );
+    return Directory(normalized).existsSync() ? normalized : null;
+  }
+
   /// Escolhe um PNG/JPG para o avatar do workspace. Guarda só o caminho — se o
   /// arquivo sumir depois, o `WorkspaceAvatar` mostra o placeholder de erro.
   Future<void> _pickImage() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: const ['png', 'jpg', 'jpeg', 'svg'],
-      dialogTitle: 'Choose workspace photo',
+      dialogTitle: context.t.cockpit.workspaceSettingsDialog.choosePhotoTitle,
+      initialDirectory: _pickerInitialDirectory,
     );
     if (!mounted || result == null) return;
     final path = result.files.single.path;
@@ -127,9 +163,10 @@ class _WorkspaceSettingsDialogState extends State<_WorkspaceSettingsDialog> {
         ? '?'
         : _name.text.trim()[0].toUpperCase();
 
+    final tr = context.t.cockpit.workspaceSettingsDialog;
     return AlertDialog(
       title: Text(
-        'Workspace settings',
+        tr.title,
         style: context.typo.title.copyWith(fontSize: 15, color: colors.text),
       ),
       content: ConstrainedBox(
@@ -153,7 +190,7 @@ class _WorkspaceSettingsDialogState extends State<_WorkspaceSettingsDialog> {
                     controller: _name,
                     focusNode: _nameFocus,
                     onChanged: (_) => setState(() {}),
-                    placeholder: const Text('Workspace name'),
+                    placeholder: Text(tr.namePlaceholder),
                     style: context.typo.body.copyWith(
                       fontSize: 14,
                       color: colors.text,
@@ -168,14 +205,14 @@ class _WorkspaceSettingsDialogState extends State<_WorkspaceSettingsDialog> {
               children: [
                 _PhotoButton(
                   icon: Icons.image_outlined,
-                  label: _imagePath == null ? 'Add photo' : 'Change photo',
+                  label: _imagePath == null ? tr.addPhoto : tr.changePhoto,
                   onTap: _pickImage,
                 ),
                 if (_imagePath != null) ...[
                   const SizedBox(width: 8),
                   _PhotoButton(
                     icon: Icons.delete_outline,
-                    label: 'Remove',
+                    label: tr.remove,
                     danger: true,
                     onTap: () => setState(() => _imagePath = null),
                   ),
@@ -184,7 +221,7 @@ class _WorkspaceSettingsDialogState extends State<_WorkspaceSettingsDialog> {
             ),
             const SizedBox(height: 18),
             Text(
-              'Color',
+              tr.color,
               style: context.typo.label.copyWith(color: colors.text2),
             ),
             const SizedBox(height: 10),
@@ -200,28 +237,18 @@ class _WorkspaceSettingsDialogState extends State<_WorkspaceSettingsDialog> {
                   ),
               ],
             ),
-            const SizedBox(height: 18),
-            Text(
-              'Folder',
-              style: context.typo.label.copyWith(color: colors.text2),
-            ),
-            const SizedBox(height: 6),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-              decoration: BoxDecoration(
-                color: colors.panel2,
-                borderRadius: BorderRadius.circular(7),
-                border: Border.all(color: colors.border),
-              ),
-              child: Text(
-                widget.path,
-                style: context.typo.mono.copyWith(
-                  fontSize: 12,
-                  color: colors.text2,
-                ),
-              ),
-            ),
+            // Workspace remoto mostra HOST + pasta do host; o local mostra só
+            // a pasta. Sem isso, um workspace remoto exibia um campo "Pasta"
+            // vazio, sem dizer em qual máquina ele vive.
+            if (widget.remote case final remote?) ...[
+              const SizedBox(height: 18),
+              _ReadOnlyField(label: tr.host, value: remote.host),
+              const SizedBox(height: 12),
+              _ReadOnlyField(label: tr.folder, value: remote.path),
+            ] else ...[
+              const SizedBox(height: 18),
+              _ReadOnlyField(label: tr.folder, value: widget.path),
+            ],
           ],
         ),
       ),
@@ -232,9 +259,9 @@ class _WorkspaceSettingsDialogState extends State<_WorkspaceSettingsDialog> {
             Navigator.of(context).pop();
             _trace('cancel:after-pop');
           },
-          child: const Text('Cancel'),
+          child: Text(context.t.common.cancel),
         ),
-        PrimaryButton(onPressed: _save, child: const Text('Save')),
+        PrimaryButton(onPressed: _save, child: Text(context.t.common.save)),
       ],
     );
   }
@@ -261,12 +288,15 @@ class _Swatch extends StatelessWidget {
         decoration: BoxDecoration(
           color: Color(color),
           borderRadius: BorderRadius.circular(7),
-          border: selected
-              ? Border.all(color: Colors.white, width: 2)
-              : Border.all(color: Colors.transparent, width: 2),
+          // O anel de seleção contrasta com a SUPERFÍCIE do dialog (branco
+          // sobre dialog claro era invisível); o check contrasta com o swatch.
+          border: Border.all(
+            color: selected ? context.colors.text : Colors.transparent,
+            width: 2,
+          ),
         ),
         child: selected
-            ? const Icon(Icons.check, size: 15, color: Colors.white)
+            ? Icon(Icons.check, size: 15, color: onColor(Color(color)))
             : null,
       ),
     );
@@ -304,6 +334,43 @@ class _PhotoButton extends StatelessWidget {
           Text(label, style: context.typo.label.copyWith(color: fg)),
         ],
       ),
+    );
+  }
+}
+
+/// Rótulo + caixa somente-leitura (host, pasta). Mesma moldura dos demais
+/// campos do dialog; o valor é monoespaçado por ser caminho/endereço.
+class _ReadOnlyField extends StatelessWidget {
+  const _ReadOnlyField({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: context.typo.label.copyWith(color: colors.text2)),
+        const SizedBox(height: 6),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          decoration: BoxDecoration(
+            color: colors.panel2,
+            borderRadius: BorderRadius.circular(7),
+            border: Border.all(color: colors.border),
+          ),
+          child: Text(
+            value,
+            style: context.typo.mono.copyWith(
+              fontSize: 12,
+              color: colors.text2,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

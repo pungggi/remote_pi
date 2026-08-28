@@ -108,6 +108,21 @@ class DbConnection {
     this.ssh,
   });
 
+  /// Ordem canônica de uma lista de conexões: alfabética por nome, insensível
+  /// a caixa.
+  ///
+  /// A lista NÃO segue ordem de gravação: salvar uma conexão fazia ela pular de
+  /// lugar (ou ir pro fim), e o painel inteiro parecia embaralhar sozinho. Como
+  /// a origem (registrada/local/detectada) só vira um selo na linha, e não uma
+  /// seção, alfabética é a única ordem estável e previsível aqui.
+  ///
+  /// Desempate pelo nome cru: dois nomes que só diferem na caixa precisam de
+  /// ordem determinística, senão a lista muda entre execuções.
+  static int compareByName(DbConnection a, DbConnection b) {
+    final byLower = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    return byLower != 0 ? byLower : a.name.compareTo(b.name);
+  }
+
   /// Conexão sqlite a partir de um path (registrada ou detectada).
   factory DbConnection.sqlite(
     String name,

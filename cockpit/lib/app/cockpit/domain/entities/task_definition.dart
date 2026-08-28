@@ -97,6 +97,16 @@ class TaskProfile {
   final Map<String, String> env;
 }
 
+/// Quando o link de preview abre sozinho. Restart de um dev-server não deveria
+/// jogar uma aba nova na cara de quem já está com a app (ou o Swagger) aberto.
+///
+/// - [always]: abre em todo start, restart incluso (default — comportamento
+///   histórico, preservado para quem não configura nada).
+/// - [start]: abre só no start; o botão Restart e o restart do watcher não
+///   reabrem. Um stop + start manual conta como start novo e abre.
+/// - [never]: nunca abre sozinho.
+enum TaskPreviewOpen { always, start, never }
+
 /// Definição estática de uma task (detectada ou do JSON). Tudo aqui é genérico.
 class TaskDefinition {
   const TaskDefinition({
@@ -111,6 +121,9 @@ class TaskDefinition {
     this.interactiveKeys = const [],
     this.watch,
     this.progressPatterns = const [],
+    this.previewEnabled = true,
+    this.previewUrl,
+    this.previewOpen = TaskPreviewOpen.always,
   });
 
   /// Identidade estável dentro de um projeto (ex.: `"npm:dev"`, `"flutter:run"`).
@@ -143,6 +156,29 @@ class TaskDefinition {
 
   /// Padrões begin/end pro badge building→running (vazio = sem oscilação).
   final List<ProgressPattern> progressPatterns;
+
+  /// Auto-open do navegador (plano 58). `"preview": false` no tasks.json
+  /// desliga a detecção de URL local no output desta task.
+  final bool previewEnabled;
+
+  /// `"preview": "<url>"` — URL fixa aberta no start, sem depender do output.
+  final String? previewUrl;
+
+  /// `"previewOpen"` — em quais execuções o auto-open vale. Default [always]
+  /// (retrocompatível). Ignorado quando [previewEnabled] é `false`.
+  final TaskPreviewOpen previewOpen;
+
+  /// Este run deve abrir o link sozinho? `preview: false` desliga tudo; fora
+  /// isso quem manda é [previewOpen]. [isRestart] é `true` só quando o run
+  /// nasceu de um restart (botão ou watcher), nunca de um start.
+  bool shouldOpenPreview({required bool isRestart}) {
+    if (!previewEnabled) return false;
+    return switch (previewOpen) {
+      TaskPreviewOpen.always => true,
+      TaskPreviewOpen.start => !isRestart,
+      TaskPreviewOpen.never => false,
+    };
+  }
 
   /// Linha de comando final (preview na UI e execução): base + args do profile.
   List<String> resolveArgs(TaskProfile? profile) => [

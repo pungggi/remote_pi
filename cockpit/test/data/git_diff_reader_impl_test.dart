@@ -61,6 +61,67 @@ void main() {
     expect(removed.newLine, isNull);
   });
 
+  test('diff historico → mudanca introduzida pelo commit', () async {
+    if (!await gitAvailable()) {
+      markTestSkipped('git nao disponivel');
+      return;
+    }
+    await write('a.txt', 'line1\nCOMMIT CHANGE\nline3\n');
+    await git(['add', 'a.txt']);
+    await git(['commit', '-m', 'change a']);
+    final hash = (await git(['rev-parse', 'HEAD'])).stdout.toString().trim();
+
+    final diff = await reader.readCommit(repo.path, hash, 'a.txt');
+
+    expect(diff.kind, FileDiffKind.modified);
+    expect(diff.beforeRevision, isNotNull);
+    expect(diff.afterRevision, hash);
+    expect(
+      diff.hunks
+          .expand((hunk) => hunk.lines)
+          .any(
+            (line) =>
+                line.kind == DiffLineKind.added && line.text == 'COMMIT CHANGE',
+          ),
+      isTrue,
+    );
+  });
+
+  test('rename historico compara o caminho anterior ao novo', () async {
+    if (!await gitAvailable()) {
+      markTestSkipped('git nao disponivel');
+      return;
+    }
+    await git(['mv', 'a.txt', 'renamed.txt']);
+    await write('renamed.txt', 'line1\nRENAMED CHANGE\nline3\n');
+    await git(['add', '-A']);
+    await git(['commit', '-m', 'rename a']);
+    final hash = (await git(['rev-parse', 'HEAD'])).stdout.toString().trim();
+
+    final diff = await reader.readCommit(
+      repo.path,
+      hash,
+      'renamed.txt',
+      previousRelativePath: 'a.txt',
+    );
+
+    final lines = diff.hunks.expand((hunk) => hunk.lines).toList();
+    expect(diff.kind, FileDiffKind.modified);
+    expect(
+      lines.any(
+        (line) => line.kind == DiffLineKind.removed && line.text == 'line2',
+      ),
+      isTrue,
+    );
+    expect(
+      lines.any(
+        (line) =>
+            line.kind == DiffLineKind.added && line.text == 'RENAMED CHANGE',
+      ),
+      isTrue,
+    );
+  });
+
   test('untracked file → tudo adicionado', () async {
     if (!await gitAvailable()) {
       markTestSkipped('git não disponível');
@@ -94,6 +155,41 @@ void main() {
     final diff = await reader.read(repo.path, '${repo.path}/a.txt');
     expect(diff.kind, FileDiffKind.unchanged);
     expect(diff.hunks, isEmpty);
+  });
+
+  test(
+    'untracked com acentos UTF-8 → texto preservado sem corrupção',
+    () async {
+      if (!await gitAvailable()) {
+        markTestSkipped('git não disponível');
+        return;
+      }
+      const accentedContent = 'ação\ntambém\nvocê\ninformação\n';
+      await write('accents.txt', accentedContent);
+      final diff = await reader.read(repo.path, '${repo.path}/accents.txt');
+      expect(diff.kind, FileDiffKind.added);
+      final lines = diff.hunks
+          .expand((h) => h.lines)
+          .map((l) => l.text)
+          .toList();
+      expect(lines, ['ação', 'também', 'você', 'informação']);
+    },
+  );
+
+  test('modificado com acentos UTF-8 → diff preserva acentos', () async {
+    if (!await gitAvailable()) {
+      markTestSkipped('git não disponível');
+      return;
+    }
+    await write('a.txt', 'line1\nação\nline3\n');
+    final diff = await reader.read(repo.path, '${repo.path}/a.txt');
+    expect(diff.kind, FileDiffKind.modified);
+    final addedLines = diff.hunks
+        .expand((h) => h.lines)
+        .where((l) => l.kind == DiffLineKind.added)
+        .map((l) => l.text)
+        .toList();
+    expect(addedLines.any((t) => t == 'ação'), isTrue);
   });
 
   test('binário → FileDiffKind.binary', () async {

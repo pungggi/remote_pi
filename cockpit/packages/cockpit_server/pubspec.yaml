@@ -1,0 +1,33 @@
+name: cockpit_server
+description: O cockpit-server (plano 58) — binário Dart headless que serve o motor do Cockpit via protocolo JSONL sobre socket local.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  auto_injector: ^2.0.0
+  cockpit_core:
+    path: ../cockpit_core
+  cockpit_engine:
+    path: ../cockpit_engine
+  cockpit_protocol:
+    path: ../cockpit_protocol
+  # Deps diretas dos drivers de DB: o `dart compile exe` só empacota os native
+  # assets das dependências DIRETAS do pacote raiz — via cockpit_engine
+  # (transitivo) os dylibs do anaki ficavam de fora ("No available native
+  # assets"). Declarar aqui força o bundle no binário do servidor.
+  anaki_sqlite: ^0.1.4
+  anaki_postgres: ^0.1.5
+  anaki_mysql: ^0.1.7
+  anaki_mssql: ^0.1.4
+  anaki_redis: ^0.1.4
+  anaki_mongodb: ^0.1.7
+  meta: ^1.19.0
+
+dev_dependencies:
+  test: ^1.25.0
+
+executables:
+  cockpit_server: cockpit_server

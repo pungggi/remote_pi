@@ -68,10 +68,13 @@ class _FakeClient implements LspClient {
     if (gate != null) return gate.future;
     return const Success(null);
   }
+
   @override
-  Future<Result<Object?, LspError>> definition(String path,
-          {required int line, required int character}) async =>
-      const Success(null);
+  Future<Result<Object?, LspError>> definition(
+    String path, {
+    required int line,
+    required int character,
+  }) async => const Success(null);
   @override
   Future<void> kill() async => _running = false;
   @override
@@ -256,11 +259,7 @@ void main() {
       );
       // Classe do SDK aberta por go-to-definition.
       final sdkFile = '${external.path}/framework.dart';
-      await pool.openDocument(
-        path: sdkFile,
-        text: 'b',
-        fallbackRoot: tmp.path,
-      );
+      await pool.openDocument(path: sdkFile, text: 'b', fallbackRoot: tmp.path);
 
       // UM servidor só (o do projeto) — não subiu outro com raiz no SDK.
       expect(shared.created, hasLength(1));
@@ -272,33 +271,36 @@ void main() {
       pool.dispose();
     });
 
-    test('monorepo: subpacote DENTRO do workspace ganha servidor próprio', () async {
-      final shared = _Shared();
-      final pool = LspServerPool(_FakeFactory(shared));
+    test(
+      'monorepo: subpacote DENTRO do workspace ganha servidor próprio',
+      () async {
+        final shared = _Shared();
+        final pool = LspServerPool(_FakeFactory(shared));
 
-      // `tmp/sub/pubspec.yaml` → pacote distinto dentro do mesmo workspace.
-      final sub = Directory('${tmp.path}/sub')..createSync();
-      File('${sub.path}/pubspec.yaml').writeAsStringSync('name: sub');
-      final subFile = '${sub.path}/main.dart';
+        // `tmp/sub/pubspec.yaml` → pacote distinto dentro do mesmo workspace.
+        final sub = Directory('${tmp.path}/sub')..createSync();
+        File('${sub.path}/pubspec.yaml').writeAsStringSync('name: sub');
+        final subFile = '${sub.path}/main.dart';
 
-      await pool.openDocument(
-        path: dartFile,
-        text: 'a',
-        fallbackRoot: tmp.path,
-      );
-      await pool.openDocument(
-        path: subFile,
-        text: 'b',
-        fallbackRoot: tmp.path,
-      );
+        await pool.openDocument(
+          path: dartFile,
+          text: 'a',
+          fallbackRoot: tmp.path,
+        );
+        await pool.openDocument(
+          path: subFile,
+          text: 'b',
+          fallbackRoot: tmp.path,
+        );
 
-      // DOIS servidores: o walk-up ainda manda dentro do workspace.
-      expect(shared.created, hasLength(2));
-      expect(shared.created[0].opened, [dartFile]);
-      expect(shared.created[1].opened, [subFile]);
+        // DOIS servidores: o walk-up ainda manda dentro do workspace.
+        expect(shared.created, hasLength(2));
+        expect(shared.created[0].opened, [dartFile]);
+        expect(shared.created[1].opened, [subFile]);
 
-      pool.dispose();
-    });
+        pool.dispose();
+      },
+    );
 
     test('sem workspace, arquivo solto usa a própria raiz achada', () async {
       final shared = _Shared();

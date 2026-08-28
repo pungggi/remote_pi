@@ -173,7 +173,7 @@ class UpdateViewModel extends ChangeNotifier {
 
     final freq =
         _settingsController?.settings.updateCheckFrequency ??
-            UpdateCheckFrequency.never;
+        UpdateCheckFrequency.never;
     if (!force) {
       if (freq == UpdateCheckFrequency.never) return;
 

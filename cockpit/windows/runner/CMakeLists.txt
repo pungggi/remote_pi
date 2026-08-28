@@ -35,10 +35,16 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION=\"${FLUTTER_V
 # o VERSIONINFO precisa publicar a mesma coisa. O build number não se perde: segue
 # no 4º campo do FILEVERSION numérico (`1,8,4,21`), que é o lugar convencional
 # dele no Windows.
-if(FLUTTER_VERSION)
-  string(REGEX REPLACE "\\+.*$" "" FLUTTER_VERSION_MARKETING "${FLUTTER_VERSION}")
-  target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION_MARKETING=\"${FLUTTER_VERSION_MARKETING}\"")
+# Sem FLUTTER_VERSION não há o que publicar no VERSIONINFO: abortar no configure
+# é melhor que gerar um binário com versão falsa e descobrir pelo self-update
+# quebrado na máquina do usuário.
+if(NOT FLUTTER_VERSION)
+  message(FATAL_ERROR
+    "FLUTTER_VERSION não definido: o VERSIONINFO sairia com versão falsa e o "
+    "self-update do WinSparkle compararia contra ela.")
 endif()
+string(REGEX REPLACE "\\+.*$" "" FLUTTER_VERSION_MARKETING "${FLUTTER_VERSION}")
+target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION_MARKETING=\"${FLUTTER_VERSION_MARKETING}\"")
 
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION_MAJOR=${FLUTTER_VERSION_MAJOR}")
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION_MINOR=${FLUTTER_VERSION_MINOR}")

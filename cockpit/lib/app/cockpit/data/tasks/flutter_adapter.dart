@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:cockpit/app/cockpit/data/tasks/project_paths.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/task_adapter.dart';
 import 'package:cockpit/app/cockpit/domain/entities/task_definition.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 
 /// Detecta tasks Flutter a partir do `pubspec.yaml`. É a ÚNICA borda que
 /// conhece `flutter run`, as teclas `r`/`R` e o reload-on-save — o core ignora
@@ -31,22 +32,22 @@ class FlutterAdapter implements TaskAdapter {
         command: 'flutter',
         args: const ['run'],
         kind: TaskKind.watch,
-        interactiveKeys: const [
+        interactiveKeys: [
           InteractiveKey(
             key: 'r',
-            label: 'Hot reload',
+            label: t.cockpit.tasks.hotReload,
             icon: 'refresh',
             primary: true,
           ),
           InteractiveKey(
             key: 'R',
-            label: 'Hot restart',
+            label: t.cockpit.tasks.hotRestart,
             icon: 'restart',
             primary: true,
           ),
-          InteractiveKey(key: 'p', label: 'Toggle debug paint'),
-          InteractiveKey(key: 'o', label: 'Toggle platform'),
-          InteractiveKey(key: 'q', label: 'Quit', icon: 'stop'),
+          InteractiveKey(key: 'p', label: t.cockpit.tasks.toggleDebugPaint),
+          InteractiveKey(key: 'o', label: t.cockpit.tasks.togglePlatform),
+          InteractiveKey(key: 'q', label: t.cockpit.tasks.quit, icon: 'stop'),
         ],
         // `flutter run` CLI não recarrega ao salvar — o cockpit observa e
         // manda `r` (o que o plugin do IDE faz por baixo).

@@ -11,13 +11,31 @@ import 'package:flutter/foundation.dart';
 /// selecionado e dirige o ciclo de vida via [TaskRunnerGateway], refletindo o
 /// stream de estados vivos. A `ui/` nunca toca `data/` direto.
 class TasksViewModel extends ChangeNotifier {
-  TasksViewModel(this._discovery, this._runner) {
+  TasksViewModel(this._localDiscovery, this._localRunner) {
+    _subscribeRuns();
+  }
+
+  final TaskDiscovery _localDiscovery;
+  final TaskRunnerGateway _localRunner;
+
+  /// Contexto de tasks REMOTO por cwd (plano 58): setado pela `CockpitPage`,
+  /// devolve o par (descoberta + runner) do host quando o workspace é remoto,
+  /// ou `null` no local. O par por host é cacheado no call-site (runner precisa
+  /// sobreviver às trocas de cwd pra manter as tasks rodando).
+  ({TaskDiscovery discovery, TaskRunnerGateway runner})? Function(String cwd)?
+  remoteContextFor;
+
+  ({TaskDiscovery discovery, TaskRunnerGateway runner})? _remote;
+
+  TaskDiscovery get _discovery => _remote?.discovery ?? _localDiscovery;
+  TaskRunnerGateway get _runner => _remote?.runner ?? _localRunner;
+
+  StreamSubscription<TaskRun>? _sub;
+  void _subscribeRuns() {
+    _sub?.cancel();
     _sub = _runner.runs().listen(_onRun);
   }
 
-  final TaskDiscovery _discovery;
-  final TaskRunnerGateway _runner;
-  StreamSubscription<TaskRun>? _sub;
   StreamSubscription<FileSystemEvent>? _configWatch;
   Timer? _reloadDebounce;
 
@@ -49,8 +67,15 @@ class TasksViewModel extends ChangeNotifier {
 
   /// (Re)carrega as tasks do projeto em [cwd]. No-op se já é o cwd corrente.
   Future<void> loadFor(String cwd) async {
-    if (cwd == _cwd) return;
+    final remote = remoteContextFor?.call(cwd);
+    if (cwd == _cwd && identical(remote?.runner, _remote?.runner)) return;
     _cwd = cwd;
+    // Troca de runner (local ↔ remoto, ou entre hosts) → reassina o stream de
+    // estados e reaponta a descoberta.
+    if (!identical(remote?.runner, _remote?.runner)) {
+      _remote = remote;
+      _subscribeRuns();
+    }
     _watchConfig(cwd);
     await _runDiscovery();
   }
@@ -67,15 +92,23 @@ class TasksViewModel extends ChangeNotifier {
         : await _discovery.discover(cwd);
     if (cwd != _cwd) return; // corrida com outra troca de projeto
     _tasks = found;
-    _hasConfig = cwd.isNotEmpty && File(_configPath(cwd)).existsSync();
+    // Remoto: o tasks.json vive no host — não dá pra `File.existsSync` aqui;
+    // a presença é inferida por ter descoberto tasks.
+    _hasConfig = _remote != null
+        ? found.isNotEmpty
+        : (cwd.isNotEmpty && File(_configPath(cwd)).existsSync());
     _loading = false;
     notifyListeners();
   }
 
+  /// `true` quando o workspace ativo é remoto (o painel esconde ações que só
+  /// fazem sentido no local — criar o tasks.json de exemplo).
+  bool get isRemote => _remote != null;
+
   /// Cria um `.cockpit/tasks.json` de exemplo (Flutter + Node + C#) no projeto
   /// atual, se ainda não existe; depois redescobre. Botão "Create tasks.json".
   Future<void> createExampleConfig() async {
-    if (_cwd.isEmpty) return;
+    if (_cwd.isEmpty || _remote != null) return; // remoto: edita no host
     final sep = Platform.pathSeparator;
     final dir = Directory('$_cwd$sep.cockpit');
     await dir.create(recursive: true);
@@ -92,7 +125,9 @@ class TasksViewModel extends ChangeNotifier {
   void _watchConfig(String cwd) {
     _configWatch?.cancel();
     _configWatch = null;
-    if (cwd.isEmpty) return;
+    // Remoto: sem watch de FS do host (o tasks.json muda no host). Refresh só
+    // manual pelo botão. Local segue com o watcher.
+    if (cwd.isEmpty || _remote != null) return;
     final dir = Directory('$cwd${Platform.pathSeparator}.cockpit');
     try {
       if (!dir.existsSync()) return;
@@ -143,8 +178,8 @@ class TasksViewModel extends ChangeNotifier {
   void resize(String taskId, int rows, int columns) =>
       _runner.resize(taskId, rows, columns);
 
-  /// Bytes do output de uma task (pra um terminal embutido — passo futuro).
-  Stream<List<int>> output(String taskId) => _runner.output(taskId);
+  /// Output decodificado de uma task para o terminal embutido.
+  Stream<String> output(String taskId) => _runner.output(taskId);
 
   void _onRun(TaskRun run) {
     _states[run.taskId] = run;
@@ -230,6 +265,13 @@ const String _exampleConfig = '''
       "cwd": "site",
       "command": "npm",
       "args": ["run", "dev"]
+      // Browser auto-open. "preview": true (default) opens the first local URL
+      // found in the output; false turns it off; a string opens that fixed URL
+      // right at start.
+      // "preview": "http://localhost:3000",
+      // When it opens: "always" (default: start and restart), "start" (only on
+      // start — Restart and the file watcher won't reopen it) or "never".
+      // "previewOpen": "start",
     },
     {
       "label": "C# Example",

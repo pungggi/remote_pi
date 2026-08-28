@@ -5,6 +5,7 @@ import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:cockpit/app/core/ui/widgets/app_tooltip.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 /// Checklist do ambiente de **agente** (pi + extensão remote-pi + supervisor),
@@ -68,7 +69,7 @@ class _AgentSetupChecklistState extends State<AgentSetupChecklist>
     return showDialog<void>(
       context: context,
       barrierDismissible: false,
-      barrierColor: const Color(0x99000000),
+      barrierColor: context.colors.scrim,
       builder: (_) => _InstallDialog(title: title, runner: runner),
     );
   }
@@ -77,6 +78,7 @@ class _AgentSetupChecklistState extends State<AgentSetupChecklist>
   Widget build(BuildContext context) {
     final colors = context.colors;
     final vm = context.watch<SetupViewModel>();
+    final tr = context.t.cockpit.agentSetupChecklist;
 
     return ColoredBox(
       color: colors.panel,
@@ -94,7 +96,7 @@ class _AgentSetupChecklistState extends State<AgentSetupChecklist>
                     Icon(Icons.auto_awesome, color: colors.accentText),
                     const SizedBox(width: 10),
                     Text(
-                      'Set up the agent environment',
+                      tr.title,
                       style: context.typo.title.copyWith(
                         fontSize: 18,
                         color: colors.text,
@@ -104,8 +106,7 @@ class _AgentSetupChecklistState extends State<AgentSetupChecklist>
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Running an agent needs Pi installed. Complete the steps below '
-                  '— terminals and files work without any of this.',
+                  tr.intro,
                   style: context.typo.body.copyWith(
                     fontSize: 13.5,
                     color: colors.text2,
@@ -114,39 +115,39 @@ class _AgentSetupChecklistState extends State<AgentSetupChecklist>
                 const SizedBox(height: 22),
                 _StepCard(
                   index: 1,
-                  title: 'Pi Code installed',
-                  description: 'The `pi` binary must be accessible.',
+                  title: tr.step1Title,
+                  description: tr.step1Description,
                   status: vm.pi,
                   onRecheck: vm.recheckPi,
                 ),
                 _StepCard(
                   index: 2,
-                  title: 'remote-pi extension on Pi',
-                  description: 'Registered in ~/.pi/agent/settings.json.',
+                  title: tr.step2Title,
+                  description: tr.step2Description,
                   status: vm.extension,
                   onRecheck: vm.recheckExtension,
                   action: _StepAction(
-                    label: 'Install',
+                    label: tr.install,
                     onTap: () => _install(
                       context,
-                      title: 'Install remote-pi extension',
+                      title: tr.installExtensionTitle,
                       runner: vm.installExtension,
                     ),
                   ),
                 ),
                 _StepCard(
                   index: 3,
-                  title: 'Supervisor installed',
-                  description: 'pi-supervisord service (remote-pi install).',
+                  title: tr.step3Title,
+                  description: tr.step3Description,
                   status: vm.supervisor,
                   onRecheck: vm.recheckSupervisor,
                   // Sem a extensão não há index.js pra rodar o instalador.
                   action: vm.extension == CheckStatus.ok
                       ? _StepAction(
-                          label: 'Install',
+                          label: tr.install,
                           onTap: () => _install(
                             context,
-                            title: 'Install supervisor',
+                            title: tr.installSupervisorTitle,
                             runner: vm.installSupervisor,
                           ),
                         )
@@ -158,7 +159,7 @@ class _AgentSetupChecklistState extends State<AgentSetupChecklist>
                   child: PrimaryButton(
                     onPressed: vm.agentReady ? widget.onReady : null,
                     leading: const Icon(Icons.auto_awesome, size: 16),
-                    child: const Text('Create agent'),
+                    child: Text(tr.createAgent),
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -166,7 +167,7 @@ class _AgentSetupChecklistState extends State<AgentSetupChecklist>
                   child: GhostButton(
                     onPressed: widget.onCancel,
                     child: Text(
-                      'Back',
+                      tr.back,
                       style: context.typo.body.copyWith(
                         fontSize: 13,
                         color: colors.text3,
@@ -256,7 +257,7 @@ class _StepCard extends StatelessWidget {
           ],
           if (status != CheckStatus.notApplicable)
             AppTooltip(
-              message: 'Check again',
+              message: context.t.cockpit.agentSetupChecklist.checkAgain,
               child: HoverTap(
                 borderRadius: BorderRadius.circular(6),
                 onTap: () => onRecheck(),
@@ -298,7 +299,7 @@ class _StatusDot extends StatelessWidget {
         );
       case CheckStatus.notApplicable:
         return AppTooltip(
-          message: 'Not required in this setup',
+          message: context.t.cockpit.agentSetupChecklist.notRequired,
           child: Icon(
             Icons.remove_circle_outline,
             size: 20,
@@ -383,7 +384,7 @@ class _InstallDialogState extends State<_InstallDialog> {
                   ),
                   const SizedBox(width: 12),
                   Text(
-                    'Installing…',
+                    context.t.cockpit.agentSetupChecklist.installing,
                     style: context.typo.body.copyWith(
                       fontSize: 13.5,
                       color: colors.text2,
@@ -402,7 +403,13 @@ class _InstallDialogState extends State<_InstallDialog> {
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
-                      result.ok ? 'Installed successfully.' : result.detail,
+                      result.ok
+                          ? context
+                                .t
+                                .cockpit
+                                .agentSetupChecklist
+                                .installedSuccessfully
+                          : result.detail,
                       style: context.typo.body.copyWith(
                         fontSize: 13.5,
                         color: colors.text2,
@@ -416,7 +423,7 @@ class _InstallDialogState extends State<_InstallDialog> {
         GhostButton(
           onPressed: result == null ? null : () => Navigator.of(context).pop(),
           child: Text(
-            'Close',
+            context.t.common.close,
             style: context.typo.body.copyWith(
               fontSize: 13,
               color: result == null ? colors.text4 : colors.text2,

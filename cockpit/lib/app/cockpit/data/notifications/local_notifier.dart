@@ -1,4 +1,8 @@
+import 'dart:io';
+
 import 'package:cockpit/app/cockpit/domain/contracts/notifier.dart';
+import 'package:cockpit/app/core/domain/entities/sound_event.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:media_kit/media_kit.dart';
 
@@ -26,19 +30,28 @@ class LocalNotifier implements Notifier {
 
   @override
   Future<void> init() async {
+    // O chime (media_kit) vale em TODAS as plataformas, inclusive iOS/Android —
+    // é o player do som de turno. Criar SEMPRE, antes de qualquer coisa que
+    // possa lançar, senão `play()` fica mudo no mobile (plano 60, Wave G).
     _chime = Player();
-    const settings = InitializationSettings(
-      macOS: DarwinInitializationSettings(
-        requestAlertPermission: true,
-        requestBadgePermission: true,
-        requestSoundPermission: true,
-        // Desktop app está sempre em foreground: sem esses flags o
-        // UNUserNotificationCenter suprime o banner silenciosamente.
-        defaultPresentAlert: true,
-        defaultPresentBadge: true,
-        defaultPresentSound: true,
+    const darwin = DarwinInitializationSettings(
+      requestAlertPermission: true,
+      requestBadgePermission: true,
+      requestSoundPermission: true,
+      // Desktop app está sempre em foreground: sem esses flags o
+      // UNUserNotificationCenter suprime o banner silenciosamente.
+      defaultPresentAlert: true,
+      defaultPresentBadge: true,
+      defaultPresentSound: true,
+    );
+    final settings = InitializationSettings(
+      // Sem o bloco `iOS` o `initialize` lança "iOS settings must be set" —
+      // era por isso que o init morria no mobile (e levava o chime junto).
+      iOS: darwin,
+      macOS: darwin,
+      linux: LinuxInitializationSettings(
+        defaultActionName: t.cockpit.notifications.open,
       ),
-      linux: LinuxInitializationSettings(defaultActionName: 'Open'),
       // Sem este bloco a plataforma Windows nunca é inicializada e todo
       // `show()` lança LateInitializationError (issue #91).
       windows: WindowsInitializationSettings(
@@ -47,18 +60,38 @@ class LocalNotifier implements Notifier {
         guid: _windowsNotifierGuid,
       ),
     );
-    await _plugin.initialize(settings: settings);
+    // O init do plugin de notificações do SO é best-effort — se falhar (ex.:
+    // Android sem o bloco android:), não pode derrubar o chime já criado.
+    try {
+      await _plugin.initialize(settings: settings);
+    } catch (_) {
+      // notificação do SO indisponível; o chime segue funcionando.
+    }
   }
 
   @override
   Future<void> agentFinished({
     required String agentName,
     required String workspace,
-  }) async {
+  }) => _show(t.cockpit.notifications.agentFinished, agentName, workspace);
+
+  @override
+  Future<void> agentNeedsAction({
+    required String agentName,
+    required String workspace,
+  }) => _show(t.cockpit.notifications.agentNeedsAction, agentName, workspace);
+
+  @override
+  Future<void> agentCrashed({
+    required String agentName,
+    required String workspace,
+  }) => _show(t.cockpit.notifications.agentCrashed, agentName, workspace);
+
+  Future<void> _show(String title, String agentName, String workspace) async {
     final subtitle = workspace.isEmpty ? agentName : '$agentName · $workspace';
     await _plugin.show(
       id: _id++,
-      title: 'Agent finished',
+      title: title,
       body: subtitle,
       notificationDetails: const NotificationDetails(
         macOS: DarwinNotificationDetails(
@@ -73,11 +106,32 @@ class LocalNotifier implements Notifier {
   }
 
   @override
-  Future<void> playTurnChime() async {
+  Future<void> play(
+    SoundEvent event, {
+    String? customPath,
+    double volume = 50,
+  }) async {
     try {
-      await _chime?.open(Media('asset:///assets/sounds/turn_done.wav'));
+      await _chime?.setVolume(volume.clamp(0, 100));
     } catch (_) {
-      // som é best-effort: nunca quebra o fluxo de fim de turno.
+      // volume é best-effort; toca no que estiver
+    }
+    // Custom primeiro; se o arquivo sumiu ou o media_kit não abre, cai no
+    // embarcado — nunca fica mudo em silêncio por causa de um override podre.
+    if (customPath != null && customPath.isNotEmpty) {
+      try {
+        if (await File(customPath).exists()) {
+          await _chime?.open(Media(customPath));
+          return;
+        }
+      } catch (_) {
+        // cai no default abaixo
+      }
+    }
+    try {
+      await _chime?.open(Media('asset:///assets/sounds/${event.defaultAsset}'));
+    } catch (_) {
+      // som é best-effort: nunca quebra o fluxo do evento.
     }
   }
 }

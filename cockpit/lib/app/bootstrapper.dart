@@ -5,27 +5,38 @@ import 'dart:ui' show AppExitResponse;
 import 'package:cockpit/app/app_module.dart';
 import 'package:cockpit/app/app_widget.dart';
 import 'package:cockpit/app/cockpit/data/hooks/claude_hook_installer_impl.dart';
+import 'package:cockpit/app/cockpit/data/hooks/codex_hook_installer_impl.dart';
 import 'package:cockpit/app/cockpit/data/rpc/pi_process_registry.dart';
 import 'package:cockpit/app/cockpit/data/tasks/task_process_registry.dart';
+import 'package:cockpit/app/cockpit/domain/contracts/hook_installer.dart';
 import 'package:cockpit/app/core/data/diagnostics/diagnostics_log.dart';
 import 'package:cockpit/app/core/data/lsp/lsp_process_registry.dart';
 import 'package:cockpit/app/core/data/repositories/json_settings_store.dart';
+import 'package:cockpit/app/core/utils/platform_kind.dart';
 import 'package:cockpit/app/core/data/setup/hive_migration.dart';
+import 'package:cockpit/app/core/data/setup/local_network_permission.dart';
 import 'package:cockpit/app/core/data/setup/json_state_store.dart';
 import 'package:cockpit/app/core/data/setup/storage_location.dart';
+import 'package:cockpit/app/core/data/theme_store.dart';
 import 'package:cockpit/app/core/domain/entities/app_settings.dart';
+import 'package:cockpit/app/core/domain/services/window_placement.dart';
 import 'package:cockpit/app/core/env.dart';
+import 'package:cockpit/app/core/ui/automation_controller.dart';
 import 'package:cockpit/app/core/ui/menu/editor_menu_bridge.dart';
 import 'package:cockpit/app/core/ui/menu/workspace_menu_bridge.dart';
 import 'package:cockpit/app/core/ui/settings_controller.dart';
+import 'package:cockpit/app/core/ui/window_activity_controller.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/bootstrap_error_view.dart';
+import 'package:cockpit/app/core/ui/widgets/devtools_inspector.dart';
 import 'package:cockpit/app/core/ui/widgets/error_report_dialog.dart';
 import 'package:cockpit/app/core/ui/widgets/loading_screen.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/confirm_dialog.dart';
 import 'package:cockpit/app/core/utils/login_shell.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:screen_retriever/screen_retriever.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -57,6 +68,7 @@ class _CockpitBootstrapperState extends State<CockpitBootstrapper> {
   JsonStateStore? _winStore;
 
   AppLifecycleListener? _lifecycle;
+  final WindowActivityController _windowActivity = WindowActivityController();
 
   /// Chave do Navigator raiz (dentro do `ModularApp`). O `context` deste
   /// State fica **acima** do `ShadcnApp`, então `showDialog` a partir dele
@@ -74,8 +86,13 @@ class _CockpitBootstrapperState extends State<CockpitBootstrapper> {
       onExitRequested: () async {
         // Descarrega qualquer escrita ainda na janela de debounce dos stores
         // (bounds da janela, layout) antes do processo morrer.
+        // Com teto, pelo mesmo motivo do fechamento pela janela: o engine
+        // espera esta resposta para encerrar, e um flush lento vira app que
+        // não morre.
         try {
-          await JsonStateStore.flushAll();
+          await JsonStateStore.flushAll().timeout(const Duration(seconds: 2));
+        } on TimeoutException {
+          DiagnosticsLog.instance.log('exit', 'flush estourou 2s — saindo');
         } on Object catch (e, stack) {
           DiagnosticsLog.instance.logError('exit-flush', e, stack);
         }
@@ -116,7 +133,10 @@ class _CockpitBootstrapperState extends State<CockpitBootstrapper> {
         stateDir,
         JsonSettingsStore.storeName,
       );
-      final settings = SettingsController(JsonSettingsStore(settingsStore));
+      final settings = SettingsController(
+        JsonSettingsStore(settingsStore),
+        const ThemeStore(),
+      );
       await settings.load();
 
       final winStore = await JsonStateStore.open(stateDir, 'window_state');
@@ -138,7 +158,16 @@ class _CockpitBootstrapperState extends State<CockpitBootstrapper> {
         // Finder/Dock não há `$SHELL` (launchd não tem shell-pai) — a
         // resolução consulta o SO (dscl/getent) e o spawn de PTY, síncrono,
         // lê do cache. Ver login_shell.dart / issue #42.
-        await resolveLoginShell();
+        // Mobile: sem shell local (e `Process.run` é proibido no iOS real, só
+        // funciona no simulador que é macOS por baixo) → pula.
+        if (!isMobilePlatform) await resolveLoginShell();
+
+        // iOS: provoca o diálogo de rede local agora, enquanto nada depende
+        // dele. A tentativa que provoca o pedido sempre falha (ele aparece
+        // depois dela), e era isso que fazia o cadastro de um host da LAN dar
+        // erro na primeira vez, só funcionando após reabrir o app. Não
+        // aguardamos: o boot não fica refém da resposta do usuário.
+        unawaited(LocalNetworkPermission.prime());
 
         // Mata filhos órfãos desta instância ou de instâncias já encerradas,
         // preservando agents/LSP/tasks de outros Cockpits ainda vivos.
@@ -148,19 +177,29 @@ class _CockpitBootstrapperState extends State<CockpitBootstrapper> {
           TaskProcessRegistry.cleanOrphans(),
         ]);
 
-        // Hooks do Cockpit no ~/.claude/settings.json (idempotente) pra
-        // sessões `claude` nas abas reportarem status de turno. Não-fatal.
-        unawaited(
-          ClaudeHookInstallerImpl().ensureInstalled().then((r) {
-            r.fold(
-              (_) {},
-              (e) => debugPrint('[claude-hook] install falhou: $e'),
+        // Hooks do Cockpit nos harnesses suportados (idempotente) pra sessões
+        // de agente nas abas reportarem status de turno: Claude Code em
+        // ~/.claude/settings.json, Codex CLI em ~/.codex/hooks.json (+ trust no
+        // config.toml). Não-fatal e independentes. Desktop-only (mobile não tem
+        // ~/.claude nem ~/.codex, plano 59).
+        if (!isMobilePlatform) {
+          for (final installer in const <HookInstaller>[
+            ClaudeHookInstallerImpl(),
+            CodexHookInstallerImpl(),
+          ]) {
+            unawaited(
+              installer.ensureInstalled().then((r) {
+                r.fold((_) {}, (e) => debugPrint('[hook] install falhou: $e'));
+              }),
             );
-          }),
-        );
+          }
+        }
 
         final config = await PiSpawnConfig.resolve();
-        _appModule = await buildAppModule(config: config);
+        _appModule = await buildAppModule(
+          config: config,
+          windowActivity: _windowActivity,
+        );
       })();
 
       await Future.wait([initTask, Future.delayed(_splashFloor)]);
@@ -174,8 +213,13 @@ class _CockpitBootstrapperState extends State<CockpitBootstrapper> {
       // Sessão anterior morreu sem passar pelo encerramento limpo (SIGPIPE,
       // segfault, força bruta). Nenhum handler Dart vê isso — só o marcador.
       // Oferecido depois do boot pra não competir com a tela de loading.
+      //
+      // Sessão de **debug** não gera aviso: lá o processo é morto a cada hot
+      // restart e a cada stop da IDE, então o marcador sujo é a regra, não a
+      // exceção. Segue registrado no log — só não interrompe quem está
+      // desenvolvendo.
       final crash = DiagnosticsLog.instance.previousCrash;
-      if (crash != null && mounted) {
+      if (crash != null && !crash.debug && mounted) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) unawaited(_offerCrashReport(crash));
         });
@@ -236,26 +280,23 @@ class _CockpitBootstrapperState extends State<CockpitBootstrapper> {
     BuildContext context,
     DirtySession crash,
   ) async {
+    final tr = context.t.core.crash;
     final ok = await showConfirmDialog(
       context,
-      title: 'Cockpit closed unexpectedly',
-      message:
-          'The previous session (version ${crash.appVersion}) ended without '
-          'shutting down cleanly. Want to report it? The log is included and '
-          'you can review everything before sending.',
-      confirmLabel: 'Report',
-      cancelLabel: 'Dismiss',
+      title: tr.bannerTitle,
+      message: tr.crashMessage(version: crash.appVersion),
+      confirmLabel: tr.report,
+      cancelLabel: tr.dismiss,
     );
     if (!ok || !context.mounted) return;
     await showErrorReportDialog(
       context,
-      title: 'Unexpected shutdown',
-      error:
-          'Session started at ${crash.startedAt.toIso8601String()} '
-          '(pid ${crash.pid}) ended without a clean shutdown.',
-      description:
-          'No error was captured — the app was terminated by the system. The '
-          'log below is from that session and is the most useful part.',
+      title: tr.title,
+      error: tr.crashError(
+        startedAt: crash.startedAt.toIso8601String(),
+        pid: crash.pid,
+      ),
+      description: tr.crashDescription,
     );
   }
 
@@ -276,25 +317,78 @@ class _CockpitBootstrapperState extends State<CockpitBootstrapper> {
   Future<void> _setupWindow(JsonStateStore winStore) async {
     if (!(Platform.isMacOS || Platform.isWindows || Platform.isLinux)) return;
     await windowManager.ensureInitialized();
-    final w = (winStore.get('width') as num?)?.toDouble() ?? 1280;
-    final h = (winStore.get('height') as num?)?.toDouble() ?? 720;
-    final x = (winStore.get('x') as num?)?.toDouble();
-    final y = (winStore.get('y') as num?)?.toDouble();
+    const minSize = Size(720, 480);
+    var w = (winStore.get('width') as num?)?.toDouble() ?? 1280;
+    var h = (winStore.get('height') as num?)?.toDouble() ?? 720;
+    var x = (winStore.get('x') as num?)?.toDouble();
+    var y = (winStore.get('y') as num?)?.toDouble();
+
+    // Os bounds salvos descrevem o arranjo de telas do último encerramento.
+    // Reencaixa no arranjo de agora (ver [fitWindowBounds]) — desacoplar um
+    // monitor externo, ou vir de um maior pra um menor, senão faz a janela
+    // reabrir fora da vista.
+    if (x != null && y != null) {
+      final fitted = fitWindowBounds(
+        saved: Rect.fromLTWH(x, y, w, h),
+        workAreas: await _workAreas(),
+        minSize: minSize,
+      );
+      x = fitted.left;
+      y = fitted.top;
+      w = fitted.width;
+      h = fitted.height;
+    }
+
     final options = WindowOptions(
       titleBarStyle: TitleBarStyle.hidden,
       windowButtonVisibility: false,
-      minimumSize: const Size(720, 480),
+      minimumSize: minSize,
       size: Size(w, h),
       // Sem posição salva (1ª execução): centraliza.
       center: x == null || y == null,
     );
+    // Assume o fechamento da janela: sem isso, o X da barra de título e o Quit
+    // do menu (ambos `windowManager.close()`) destroem a janela sem passar pelo
+    // Dart, e a sessão nunca é marcada como encerrada. Ver
+    // [WindowStateKeeperState.onWindowClose].
+    //
+    // Ligado aqui, e não no listener, porque a janela já é fechável antes de o
+    // shell montar — um fechamento nessa janela de tempo escaparia.
+    await windowManager.setPreventClose(true);
+    final wasMaximized = winStore.get('maximized') == true;
     await windowManager.waitUntilReadyToShow(options, () async {
       if (x != null && y != null) {
         await windowManager.setBounds(Rect.fromLTWH(x, y, w, h));
       }
+      // Maximizada é um ESTADO, não um tamanho: restaurar por bounds daria uma
+      // janela do tamanho da tela sem estar maximizada (no Win/Linux os bounds
+      // de uma janela maximizada extrapolam a work area pelas bordas
+      // invisíveis, então ela ainda cobriria a barra de tarefas, e o botão
+      // restaurar não teria o que restaurar). Os bounds salvos acima são os do
+      // último estado NÃO maximizado — é pra eles que o restaurar volta.
+      if (wasMaximized) await windowManager.maximize();
       await windowManager.show();
       await windowManager.focus();
     });
+  }
+
+  /// Áreas úteis (sem barra de tarefas/dock) de cada monitor, a primária
+  /// primeiro — a ordem que [fitWindowBounds] usa como desempate. Falha do
+  /// plugin devolve lista vazia, e o encaixe vira no-op (melhor abrir na
+  /// posição salva do que travar o boot por causa de geometria).
+  Future<List<Rect>> _workAreas() async {
+    try {
+      final primary = await screenRetriever.getPrimaryDisplay();
+      final displays = await screenRetriever.getAllDisplays();
+      final ordered = [primary, ...displays.where((d) => d.id != primary.id)];
+      return [
+        for (final d in ordered)
+          (d.visiblePosition ?? Offset.zero) & (d.visibleSize ?? d.size),
+      ];
+    } on Object catch (e, stack) {
+      DiagnosticsLog.instance.logError('window-displays', e, stack);
+      return const [];
+    }
   }
 
   /// Shell mínimo (tema resolvido) pras fases pré-ModularApp.
@@ -311,7 +405,8 @@ class _CockpitBootstrapperState extends State<CockpitBootstrapper> {
           colors: tokens.colors,
           typo: tokens.typo,
           syntax: tokens.syntax,
-          child: child ?? const SizedBox(),
+          terminal: tokens.terminal,
+          child: DevToolsInspector(child: child ?? const SizedBox()),
         );
       },
     );
@@ -338,11 +433,18 @@ class _CockpitBootstrapperState extends State<CockpitBootstrapper> {
 
     return WindowStateKeeper(
       store: _winStore!,
+      activity: _windowActivity,
       child: ModularApp(
         module: _appModule!,
         navigatorKey: _navigatorKey,
         provide: (s) => s
           ..addChangeNotifier<SettingsController>(() => _settings!)
+          ..addChangeNotifier<WindowActivityController>(() => _windowActivity)
+          // A mesma instância bootstrap-owned é observada por Settings e Source
+          // Control e injetada nos controllers da feature Cockpit.
+          ..addChangeNotifier<AutomationController>(
+            () => inject<AutomationController>(),
+          )
           ..addChangeNotifier<EditorMenuBridge>(EditorMenuBridge.new)
           ..addChangeNotifier<WorkspaceMenuBridge>(WorkspaceMenuBridge.new),
         child: const AppRoot(),
@@ -356,9 +458,11 @@ class WindowStateKeeper extends StatefulWidget {
   const WindowStateKeeper({
     super.key,
     required this.store,
+    required this.activity,
     required this.child,
   });
   final JsonStateStore store;
+  final WindowActivityController activity;
   final Widget child;
 
   @override
@@ -368,12 +472,26 @@ class WindowStateKeeper extends StatefulWidget {
 class WindowStateKeeperState extends State<WindowStateKeeper>
     with WindowListener {
   Timer? _debounce;
+  late final WindowActivitySynchronizer _activitySync;
 
   @override
   void initState() {
     super.initState();
+    _activitySync = WindowActivitySynchronizer(
+      activity: widget.activity,
+      readSnapshot: _readNativeActivity,
+    );
+    // O listener entra antes do snapshot: se a janela mudar durante os awaits,
+    // o synchronizer preserva o evento mais novo e descarta a leitura obsoleta.
     windowManager.addListener(this);
+    unawaited(_activitySync.synchronize());
   }
+
+  Future<WindowActivitySnapshot> _readNativeActivity() async =>
+      WindowActivitySnapshot(
+        focused: await windowManager.isFocused(),
+        minimized: await windowManager.isMinimized(),
+      );
 
   @override
   void dispose() {
@@ -388,22 +506,122 @@ class WindowStateKeeperState extends State<WindowStateKeeper>
   @override
   void onWindowMove() => _persistBounds();
 
+  @override
+  void onWindowFocus() => _activitySync.focus();
+
+  @override
+  void onWindowBlur() => _activitySync.blur();
+
+  @override
+  void onWindowMinimize() => _activitySync.minimize();
+
+  @override
+  void onWindowRestore() => _activitySync.restore();
+
+  @override
+  void onWindowMaximize() => _persistMaximized(true);
+
+  @override
+  void onWindowUnmaximize() => _persistMaximized(false);
+
+  /// Teto de cada etapa do fechamento. Curto de propósito: o usuário já clicou
+  /// em fechar, e uma janela que não responde é pior do que perder a última
+  /// gravação de bounds.
+  static const _closeStepTimeout = Duration(seconds: 2);
+
+  /// Roda uma etapa do fechamento com teto de tempo e **registra quanto
+  /// demorou**.
+  ///
+  /// O fechamento roda com a janela já interceptada (`setPreventClose`), então
+  /// tudo o que demora aqui aparece como tela travada. Sem medição não havia
+  /// como saber qual etapa era a lenta numa máquina que não é a nossa — e no
+  /// Windows a escrita atômica pode custar caro (antivírus, pasta
+  /// sincronizada), sem nada disso aparecer no macOS.
+  Future<void> _closeStep(String tag, Future<void> Function() step) async {
+    final started = DateTime.now();
+    try {
+      await step().timeout(_closeStepTimeout);
+    } on TimeoutException {
+      DiagnosticsLog.instance.log(
+        'close',
+        '$tag estourou ${_closeStepTimeout.inSeconds}s — seguindo sem esperar',
+      );
+      return;
+    } on Object catch (e, stack) {
+      DiagnosticsLog.instance.logError('close-$tag', e, stack);
+      return;
+    }
+    final ms = DateTime.now().difference(started).inMilliseconds;
+    // Só o que demora vira linha de log; fechamento normal não polui o arquivo.
+    if (ms >= 250) DiagnosticsLog.instance.log('close', '$tag levou ${ms}ms');
+  }
+
+  /// Fechamento da janela: **este** é o encerramento limpo do Cockpit.
+  ///
+  /// Só chega aqui porque o boot liga `setPreventClose(true)`. Sem isso, tanto
+  /// o X da barra de título quanto o Quit do menu chamam `windowManager.close()`
+  /// e o processo morre sem o Dart saber — e o boot seguinte encontra o
+  /// marcador de sessão viva e acusa crash. Era o motivo de o aviso "o Cockpit
+  /// fechou inesperadamente" voltar a **cada** inicialização no Windows: o app
+  /// nunca conseguia registrar uma saída limpa. No macOS o ⌘Q passa pelo
+  /// handshake de saída do engine (`onExitRequested`), que já marcava — por
+  /// isso lá o sintoma não aparecia.
+  ///
+  /// Nada aqui pode lançar: com `preventClose` ligado, uma exceção antes do
+  /// `destroy()` deixaria uma janela que **não fecha**. Cada passo é isolado, e
+  /// o `destroy()` roda no `finally`.
+  @override
+  Future<void> onWindowClose() async {
+    // Bounds pendentes no debounce: fechar 400 ms depois de mover a janela
+    // perderia a posição.
+    _debounce?.cancel();
+    await _closeStep('bounds', _persistBoundsNow);
+    await _closeStep('flush', JsonStateStore.flushAll);
+    try {
+      DiagnosticsLog.instance.markCleanExit();
+    } on Object catch (_) {
+      /* o próprio markCleanExit já é best-effort */
+    } finally {
+      await windowManager.destroy();
+    }
+  }
+
   /// Persiste tamanho + posição (bounds completos) com debounce. Um único
   /// caminho para resize e move — ambos alteram os bounds que restauramos no
   /// próximo boot.
   void _persistBounds() {
     _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 400), () async {
-      final bounds = await windowManager.getBounds();
-      await widget.store.putAll({
-        'x': bounds.left,
-        'y': bounds.top,
-        'width': bounds.width,
-        'height': bounds.height,
-      });
+    _debounce = Timer(
+      const Duration(milliseconds: 400),
+      () => unawaited(_persistBoundsNow()),
+    );
+  }
+
+  Future<void> _persistBoundsNow() async {
+    // Maximizada, os bounds são os da tela — gravá-los apagaria o tamanho
+    // "normal" pro qual o restaurar volta, e o boot seguinte abriria uma janela
+    // de tela cheia que não desmaximiza. Só o flag muda nesse estado; os bounds
+    // ficam congelados no último tamanho normal.
+    if (await windowManager.isMaximized()) return;
+    final bounds = await windowManager.getBounds();
+    await widget.store.putAll({
+      'x': bounds.left,
+      'y': bounds.top,
+      'width': bounds.width,
+      'height': bounds.height,
     });
   }
 
+  /// Grava o estado maximizado na hora (sem debounce): é um evento discreto,
+  /// não um fluxo contínuo como resize/move.
+  void _persistMaximized(bool maximized) {
+    // Um maximize dispara resize junto; cancelar o debounce pendente evita que
+    // ele grave bounds de tela cheia por chegar antes do flag valer.
+    _debounce?.cancel();
+    unawaited(widget.store.put('maximized', maximized));
+  }
+
   @override
-  Widget build(BuildContext context) => widget.child;
+  Widget build(BuildContext context) =>
+      WindowActivityBoundary(activity: widget.activity, child: widget.child);
 }

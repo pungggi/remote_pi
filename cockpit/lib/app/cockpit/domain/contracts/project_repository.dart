@@ -9,6 +9,14 @@ abstract class ProjectRepository {
   /// Cria ou atualiza um projeto.
   Future<void> save(Project project);
 
+  /// Grava vários projetos de uma vez.
+  ///
+  /// Existe por causa do custo: cada `save` agenda uma escrita própria e só
+  /// resolve quando ela acontece, então salvar N projetos em série custa N
+  /// janelas de debounce — era isso que fazia o arrastar-e-soltar do rail levar
+  /// ~2s para assentar com muitos workspaces.
+  Future<void> saveAll(List<Project> projects);
+
   /// Remove um projeto pelo id.
   Future<void> remove(String id);
 

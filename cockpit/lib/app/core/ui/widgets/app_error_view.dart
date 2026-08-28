@@ -1,5 +1,6 @@
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/error_report_dialog.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 /// Substitui a caixa cinza (release) / faixa vermelha (debug) que o Flutter
@@ -32,7 +33,7 @@ class AppErrorView extends StatelessWidget {
             Icon(Icons.error_outline, size: 28, color: colors.error),
             const SizedBox(height: 10),
             Text(
-              'This part of the app failed to render',
+              context.t.core.appErrorView.renderFailed,
               textAlign: TextAlign.center,
               style: context.typo.title.copyWith(
                 fontSize: 14,
@@ -54,11 +55,11 @@ class AppErrorView extends StatelessWidget {
             OutlineButton(
               onPressed: () => showErrorReportDialog(
                 context,
-                title: 'Render error',
+                title: context.t.core.appErrorView.renderErrorTitle,
                 error: details.exception,
                 stack: details.stack,
               ),
-              child: const Text('Details'),
+              child: Text(context.t.core.appErrorView.details),
             ),
           ],
         ),

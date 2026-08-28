@@ -1,6 +1,7 @@
 import 'package:cockpit/app/cockpit/domain/entities/session_info.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 /// Lista as sessões salvas do pi para a pasta do agente. Devolve a [SessionInfo]
@@ -11,7 +12,7 @@ Future<SessionInfo?> showHistoryDialog(
 }) {
   return showDialog<SessionInfo>(
     context: context,
-    barrierColor: const Color(0x99000000),
+    barrierColor: context.colors.scrim,
     builder: (context) => _HistoryDialog(sessions: sessions),
   );
 }
@@ -23,13 +24,14 @@ class _HistoryDialog extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final tr = context.t.cockpit.historyDialog;
     return AlertDialog(
       title: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Session history',
+            tr.title,
             style: context.typo.title.copyWith(
               fontSize: 15,
               color: colors.text,
@@ -37,7 +39,7 @@ class _HistoryDialog extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            'Opening one replaces this agent\'s current transcript',
+            tr.subtitle,
             style: context.typo.label.copyWith(color: colors.text3),
           ),
         ],
@@ -48,7 +50,7 @@ class _HistoryDialog extends StatelessWidget {
             ? Padding(
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 child: Text(
-                  'No saved sessions in this folder.',
+                  tr.empty,
                   style: context.typo.body.copyWith(color: colors.text3),
                 ),
               )
@@ -62,7 +64,7 @@ class _HistoryDialog extends StatelessWidget {
       actions: [
         OutlineButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          child: Text(context.t.common.cancel),
         ),
       ],
     );
@@ -88,7 +90,8 @@ class _SessionRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  session.title ?? 'Untitled session',
+                  session.title ??
+                      context.t.cockpit.historyDialog.untitledSession,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: context.typo.body.copyWith(
@@ -108,7 +111,7 @@ class _SessionRow extends StatelessWidget {
             ),
           ),
           Text(
-            _relative(session.modifiedAt),
+            _relative(context, session.modifiedAt),
             style: context.typo.label.copyWith(color: colors.text3),
           ),
         ],
@@ -121,11 +124,12 @@ class _SessionRow extends StatelessWidget {
   String _formatDate(DateTime d) =>
       '${_two(d.day)}/${_two(d.month)}/${d.year}  ${_two(d.hour)}:${_two(d.minute)}';
 
-  String _relative(DateTime d) {
+  String _relative(BuildContext context, DateTime d) {
     final diff = DateTime.now().difference(d);
-    if (diff.inMinutes < 1) return 'now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
-    if (diff.inHours < 24) return '${diff.inHours} h ago';
-    return '${diff.inDays} d ago';
+    final tr = context.t.cockpit.historyDialog;
+    if (diff.inMinutes < 1) return tr.justNow;
+    if (diff.inMinutes < 60) return tr.minutesAgo(n: diff.inMinutes);
+    if (diff.inHours < 24) return tr.hoursAgo(n: diff.inHours);
+    return tr.daysAgo(n: diff.inDays);
   }
 }

@@ -60,20 +60,24 @@ IDI_APP_ICON            ICON                    "resources\\app_icon.ico"
 // Version
 //
 
-#if defined(FLUTTER_VERSION_MAJOR) && defined(FLUTTER_VERSION_MINOR) && defined(FLUTTER_VERSION_PATCH) && defined(FLUTTER_VERSION_BUILD)
-#define VERSION_AS_NUMBER FLUTTER_VERSION_MAJOR,FLUTTER_VERSION_MINOR,FLUTTER_VERSION_PATCH,FLUTTER_VERSION_BUILD
-#else
-#define VERSION_AS_NUMBER 1,0,0,0
+// Sem fallback: versão ausente vira ERRO de compilação, não `1,0,0,0`.
+// Publicar um binário dizendo-se 1.0.0 quebra o self-update em silêncio (o
+// WinSparkle passa a oferecer qualquer appcast pra sempre) e só apareceria
+// depois, na máquina do usuário.
+#if !defined(FLUTTER_VERSION_MAJOR) || !defined(FLUTTER_VERSION_MINOR) || !defined(FLUTTER_VERSION_PATCH) || !defined(FLUTTER_VERSION_BUILD)
+#error "FLUTTER_VERSION_* ausente: o VERSIONINFO ficaria com versão falsa e o self-update quebraria."
 #endif
+#define VERSION_AS_NUMBER FLUTTER_VERSION_MAJOR,FLUTTER_VERSION_MINOR,FLUTTER_VERSION_PATCH,FLUTTER_VERSION_BUILD
 
 // A versão marketing (sem o `+build`), e NÃO o FLUTTER_VERSION cru: o `+21` do
 // pubspec faz o WinSparkle ler a versão instalada como pré-lançamento e
 // reoferecer o update em loop. Ver o porquê em CMakeLists.txt, que define isto.
-#if defined(FLUTTER_VERSION_MARKETING)
-#define VERSION_AS_STRING FLUTTER_VERSION_MARKETING
-#else
-#define VERSION_AS_STRING "1.0.0"
+// Mesma regra do número acima: sem fallback. Um `"1.0.0"` fixo aqui faria o
+// WinSparkle comparar a versão errada e reoferecer update em loop.
+#if !defined(FLUTTER_VERSION_MARKETING)
+#error "FLUTTER_VERSION_MARKETING ausente: o self-update compararia a versão errada."
 #endif
+#define VERSION_AS_STRING FLUTTER_VERSION_MARKETING
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION VERSION_AS_NUMBER

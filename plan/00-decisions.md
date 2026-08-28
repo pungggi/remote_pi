@@ -31,6 +31,13 @@ Numeração `00-` é proposital: este arquivo carrega antes dos planos numerados
 | **Limites honestos aceitos** | `targetSdk=36` → Android 15/16 impõe o **teto de 6h** no tipo `dataSync` (depois o WS cai e reconecta no próximo foreground) + deep Doze limita rede. Isso é o **teto do Android**, não lacuna a fechar com outro plano: o backoff de retry + reconnect-on-resume recuperam sem perda de dados (relay resincroniza). Sobrevivência "infinita" em background não é perseguida |
 | **Toggle no Settings, default ON** | `Preferences.keepAliveInBackground` (default `true`). Usuário pode desligar pra economizar bateria (comportamento = hoje: cai ao trocar de app). Android-only; no-op nas demais plataformas |
 | **Notificação de conclusão = local, sobre o link vivo (fechado 2026-08-27, plano 132)** | Toggle por sessão (long-press no tile) + marcador `room_meta_update.meta.run_done` emitido no `agent_end` (uma vez por run), broadcast-only no relay (nunca persistido, nunca em `room_announced`). O app dispara notificação local quando backgrounded. Push/FCM (plano 36) permanece **diferido e não adotado** — sem Firebase; limites honestos (processo morto = sem banner; vê ao abrir o app) |
+## Cockpit — motor de agente (fechado 2026-08-12 — plano 58)
+
+| Decisão | Razão / nota |
+|---|---|
+| **`pi --mode rpc` DEPRECADO como motor do Cockpit** | ~~Cockpit spawna `pi --mode rpc` como motor do agente (plano 37, decisão B/C)~~ **revertido**. O Cockpit virou **terminal-first**: harnesses (Pi, Claude Code, Codex CLI) rodam como **programas de terminal** comuns, não via harness RPC. A flag `enableAgent` nasce **OFF** (terminal puro); o RPC era um acoplamento a mais sem ganho pro fluxo real |
+| **Domínios estruturados = `cockpit-server`, não RPC** | Terminais/arquivos/git/databases (local via sidecar loopback, remoto via SSH) rodam no **`cockpit-server`** (Dart AOT, plano 58) — protocolo JSONL próprio, não o `pi --mode rpc`. Local-only (decisão B do plano 37) reaberto: o Cockpit alcança hosts remotos por SSH |
+| **Sem remoção imediata do código RPC** | Deprecação é de **direção**, não big-bang: o harness RPC (`lib/app/cockpit/data/rpc/`) e os docs (`docs/rpc-protocol.md`) seguem no repo enquanto houver quem os use; feature nova não deve depender de `pi --mode rpc` |
 
 ## Pareamento
 

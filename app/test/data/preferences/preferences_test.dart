@@ -167,6 +167,42 @@ void main() {
       },
     );
 
+    // Plan 131 (upstream #114) — in-app text size (our UiFontScale port of the
+    // upstream feature; composes onto the OS text scale instead of replacing).
+    test('uiFontScale defaults to normal and round-trips through storage', () async {
+      final store = _FakeSecureStorage();
+      final p = Preferences(store);
+      await p.load();
+      expect(p.uiFontScale, UiFontScale.normal);
+
+      await p.setUiFontScale(UiFontScale.large);
+      expect(p.uiFontScale, UiFontScale.large);
+
+      final reloaded = Preferences(store);
+      await reloaded.load();
+      expect(reloaded.uiFontScale, UiFontScale.large);
+    });
+
+    test('an unknown persisted font scale falls back to normal', () async {
+      final store = _FakeSecureStorage();
+      // A stale/corrupt value must never leave the app at an unreadable size.
+      await store.write(key: 'prefs.ui_font_scale', value: 'gigantic');
+      final p = Preferences(store);
+      await p.load();
+      expect(p.uiFontScale, UiFontScale.normal);
+    });
+
+    test('setUiFontScale notifies listeners only on a real change', () async {
+      final p = Preferences(_FakeSecureStorage());
+      var calls = 0;
+      p.addListener(() => calls++);
+
+      await p.setUiFontScale(UiFontScale.small);
+      expect(calls, 1);
+      await p.setUiFontScale(UiFontScale.small);
+      expect(calls, 1);
+    });
+
     test('setSelectedRoom with null epk clears the selection', () async {
       final store = _FakeSecureStorage();
       final p = Preferences(store);

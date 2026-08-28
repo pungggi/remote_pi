@@ -93,3 +93,10 @@ SESSION-STATUS.md
 *.stackdump
 /data/
 cockpit/test/core/terminal/xterm/src/failures/
+
+# Material de divulgação (slides, PNGs exportados, copy de post). É conteúdo de
+# campanha, não do produto: muda por rede social e por publicação, e os PNGs
+# exportados são derivados dos .html. Fica local.
+marketing/
+
+openspec

@@ -1,0 +1,10 @@
+name: cockpit_protocol
+description: Mensagens do protocolo cliente/servidor do Cockpit Remote (plano 58). A mesma classe dos dois lados do fio.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.9.0
+
+dev_dependencies:
+  test: ^1.25.0

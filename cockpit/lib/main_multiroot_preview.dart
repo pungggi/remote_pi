@@ -60,9 +60,7 @@ const List<_MockRoot> _roots = [
     _MockNode('auth_service.ts', git: Color(0xFFE0A33A)), // modificado
     _MockNode('session.ts', git: Color(0xFF4F9DF0)), // novo
   ]),
-  _MockRoot('infra', 'main', 0, [
-    _MockNode('terraform', isDir: true),
-  ]),
+  _MockRoot('infra', 'main', 0, [_MockNode('terraform', isDir: true)]),
   _MockRoot('shared-libs', 'develop', 1, [
     _MockNode('ui-kit', isDir: true),
     _MockNode('tokens.css', git: Color(0xFFE0A33A)),
@@ -411,8 +409,7 @@ class _FileTreeColumnState extends State<_FileTreeColumn> {
                 : ListView(
                     padding: const EdgeInsets.only(top: 4, bottom: 12),
                     children: [
-                      for (final root in _roots)
-                        ..._rootSection(context, root),
+                      for (final root in _roots) ..._rootSection(context, root),
                     ],
                   ),
           ),
@@ -471,11 +468,7 @@ class _FileTreeColumnState extends State<_FileTreeColumn> {
             color: selected ? _c.panel3 : null,
             borderRadius: BorderRadius.circular(5),
           ),
-          child: Icon(
-            icon,
-            size: 15,
-            color: selected ? _c.text : _c.text4,
-          ),
+          child: Icon(icon, size: 15, color: selected ? _c.text : _c.text4),
         ),
       ),
     );
@@ -538,10 +531,7 @@ class _FileTreeColumnState extends State<_FileTreeColumn> {
                 const SizedBox(width: 6),
                 Text(
                   node.name,
-                  style: TextStyle(
-                    color: node.git ?? _c.text2,
-                    fontSize: 12.5,
-                  ),
+                  style: TextStyle(color: node.git ?? _c.text2, fontSize: 12.5),
                 ),
               ],
             ),
@@ -608,10 +598,7 @@ class _SourceControlView extends StatelessWidget {
               ],
             ),
           ),
-          if (asTree)
-            ..._treeRows(root)
-          else
-            ..._listRows(root),
+          if (asTree) ..._treeRows(root) else ..._listRows(root),
           const SizedBox(height: 6),
         ],
       ],
@@ -630,10 +617,7 @@ class _SourceControlView extends StatelessWidget {
               children: [
                 Icon(Icons.insert_drive_file, size: 12, color: _c.text4),
                 const SizedBox(width: 6),
-                Text(
-                  f.name,
-                  style: TextStyle(color: f.git, fontSize: 12.5),
-                ),
+                Text(f.name, style: TextStyle(color: f.git, fontSize: 12.5)),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -705,10 +689,7 @@ class _NewTabRootButton extends StatelessWidget {
               children: [
                 Icon(Icons.folder, size: 13, color: _c.text3),
                 const SizedBox(width: 8),
-                Text(
-                  r.name,
-                  style: TextStyle(color: _c.text, fontSize: 12.5),
-                ),
+                Text(r.name, style: TextStyle(color: _c.text, fontSize: 12.5)),
                 const Spacer(),
                 Text(
                   r.branch,
@@ -786,10 +767,7 @@ void _showRootPicker(BuildContext context, String action) {
               children: [
                 Icon(Icons.folder, size: 13, color: _c.text3),
                 const SizedBox(width: 8),
-                Text(
-                  r.name,
-                  style: TextStyle(color: _c.text, fontSize: 12.5),
-                ),
+                Text(r.name, style: TextStyle(color: _c.text, fontSize: 12.5)),
                 const SizedBox(width: 10),
                 Icon(Icons.call_split, size: 11, color: _c.warn),
                 const SizedBox(width: 3),
@@ -851,10 +829,7 @@ void _showRootContextMenu(BuildContext context, _MockRoot root) {
           const SizedBox(width: 10),
           Icon(Icons.call_split, size: 12, color: _c.warn),
           const SizedBox(width: 3),
-          Text(
-            root.branch,
-            style: TextStyle(color: _c.warn, fontSize: 11),
-          ),
+          Text(root.branch, style: TextStyle(color: _c.warn, fontSize: 11)),
         ],
       ),
       children: [

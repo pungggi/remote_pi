@@ -104,8 +104,16 @@ String? redisReadViolation(List<String> parts) {
     if ((cmd == 'config' || cmd == 'client' || cmd == 'memory') &&
         parts.length > 1) {
       final sub = parts[1].toLowerCase();
-      const readSubs = {'get', 'list', 'info', 'getname', 'usage', 'stats',
-          'doctor', 'help'};
+      const readSubs = {
+        'get',
+        'list',
+        'info',
+        'getname',
+        'usage',
+        'stats',
+        'doctor',
+        'help',
+      };
       if (!readSubs.contains(sub)) {
         return 'read_only_connection: "${parts.first.toUpperCase()} '
             '${parts[1].toUpperCase()}" is not allowed on a read-only '
@@ -138,9 +146,21 @@ String? mongoForcedDatabase(Map<String, dynamic> command) {
 
 /// Comandos Mongo (primeira chave do runCommand) permitidos em `read`.
 const _mongoReadCommands = {
-  'find', 'aggregate', 'count', 'distinct', 'listcollections',
-  'listindexes', 'listdatabases', 'collstats', 'dbstats', 'explain',
-  'buildinfo', 'hello', 'ismaster', 'ping', 'serverstatus',
+  'find',
+  'aggregate',
+  'count',
+  'distinct',
+  'listcollections',
+  'listindexes',
+  'listdatabases',
+  'collstats',
+  'dbstats',
+  'explain',
+  'buildinfo',
+  'hello',
+  'ismaster',
+  'ping',
+  'serverstatus',
 };
 
 /// Valida um runCommand Mongo pra conexão `read`. `aggregate` é leitura,

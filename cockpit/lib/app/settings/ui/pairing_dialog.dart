@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/settings/ui/pairing_controller.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
@@ -68,7 +69,7 @@ class _PairingDialogState extends State<PairingDialog> {
         children: [
           Expanded(
             child: Text(
-              'Pair device',
+              context.t.settings.pairingDialog.title,
               style: context.typo.title.copyWith(
                 fontSize: 16,
                 color: colors.text,
@@ -103,7 +104,7 @@ class _PairingDialogState extends State<PairingDialog> {
           const CircularProgressIndicator(size: 34),
           const SizedBox(height: 18),
           Text(
-            'Connecting to the relay…',
+            context.t.settings.pairingDialog.connectingToRelay,
             style: context.typo.body.copyWith(
               fontSize: 13.5,
               color: colors.text2,
@@ -121,9 +122,9 @@ class _PairingDialogState extends State<PairingDialog> {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _step(context, 1, 'Open the Remote Pi app on your phone.'),
-        _step(context, 2, 'Tap add / pair device.'),
-        _step(context, 3, 'Point the camera at the QR below.'),
+        _step(context, 1, context.t.settings.pairingDialog.step1),
+        _step(context, 2, context.t.settings.pairingDialog.step2),
+        _step(context, 3, context.t.settings.pairingDialog.step3),
         const SizedBox(height: 18),
         Center(
           child: Container(
@@ -143,7 +144,7 @@ class _PairingDialogState extends State<PairingDialog> {
                 height: 200,
                 child: Center(
                   child: Text(
-                    'Could not generate the QR.',
+                    context.t.settings.pairingDialog.qrGenerationFailed,
                     textAlign: TextAlign.center,
                     style: context.typo.label.copyWith(color: colors.text3),
                   ),
@@ -162,7 +163,7 @@ class _PairingDialogState extends State<PairingDialog> {
             const SizedBox(width: 6),
             Flexible(
               child: Text(
-                'The code refreshes on its own. Keep this window open.',
+                context.t.settings.pairingDialog.autoRefreshHint,
                 style: context.typo.label.copyWith(color: colors.text3),
               ),
             ),
@@ -182,7 +183,7 @@ class _PairingDialogState extends State<PairingDialog> {
           Icon(Icons.error_outline, size: 30, color: colors.error),
           const SizedBox(height: 12),
           Text(
-            ctrl.error ?? 'Pairing failed.',
+            ctrl.error ?? context.t.settings.pairingDialog.pairingFailed,
             textAlign: TextAlign.center,
             style: context.typo.body.copyWith(
               fontSize: 13.5,
@@ -195,14 +196,14 @@ class _PairingDialogState extends State<PairingDialog> {
               Expanded(
                 child: OutlineButton(
                   onPressed: () => Navigator.of(context).pop(false),
-                  child: const Text('Close'),
+                  child: Text(context.t.common.close),
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
                 child: PrimaryButton(
                   onPressed: () => ctrl.retry(),
-                  child: const Text('Try again'),
+                  child: Text(context.t.settings.pairingDialog.tryAgain),
                 ),
               ),
             ],
@@ -267,7 +268,9 @@ class _CopyButton extends StatelessWidget {
         color: colors.accentText,
       ),
       child: Text(
-        copied ? 'Copied!' : 'Copy data',
+        copied
+            ? context.t.settings.pairingDialog.copied
+            : context.t.settings.pairingDialog.copyData,
         style: context.typo.body.copyWith(
           fontSize: 13,
           color: colors.accentText,

@@ -5,9 +5,23 @@ import 'package:cockpit/app/cockpit/domain/contracts/db_driver.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/mongo_database_store.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/nosql_runner.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/ssh_tunnel.dart';
+import 'package:cockpit/app/cockpit/domain/db_schema_sql.dart';
 import 'package:cockpit/app/cockpit/domain/entities/db_connection.dart';
 import 'package:cockpit/app/cockpit/domain/entities/db_result.dart';
 import 'package:cockpit/app/cockpit/domain/entities/ssh_tunnel_config.dart';
+
+/// Executa uma query SQL num host remoto (plano 58, Wave 4). Implementado
+/// pelo app (fala com o `cockpit-server` via `RemoteDbService`); o
+/// `DbQueryService` só o invoca quando o workspace ativo é remoto. Recebe a
+/// conexão + senha já resolvidas no cliente e devolve o `DbResult`.
+typedef RemoteDbExecutor =
+    Future<DbResult> Function(
+      DbConnection conn,
+      String sql, {
+      required int limit,
+      required bool dml,
+      String? password,
+    });
 
 /// Orquestra a execução de queries — o **mesmo** motor pra tab `.dbq` e pra
 /// CLI `cockpit db` (decisão J do plano 51): resolve a conexão por nome no
@@ -41,10 +55,33 @@ class DbQueryService {
   /// ausente = recusa honesta, nunca confiança cega.
   HostKeyPrompt? hostKeyPrompt;
 
+  /// Executor remoto (plano 58, Wave 4): resolvido por workspace. Quando
+  /// devolve não-nulo, a query SQL vai pro `cockpit-server` do host (que
+  /// alcança o DB pela rede dele) em vez do driver local — sem túnel SSH
+  /// local. A conexão e o segredo continuam resolvidos no cliente. O app
+  /// seta este resolvedor; workspaces locais devolvem `null`.
+  RemoteDbExecutor? Function(String workspaceId)? remoteExecutorFor;
+
+  /// Conexões de um workspace remoto (o `.cockpit/databases.json` vive no
+  /// host). Setado pelo app junto do [remoteExecutorFor]; usado pra resolver
+  /// o nome da conexão no caminho remoto (o store local não vê o host).
+  Future<List<DbConnection>>? Function(String workspaceId, String root)?
+  remoteConnectionsFor;
+
+  /// Runner NoSQL remoto (plano 58, Wave 4): Redis/Mongo executados no
+  /// `cockpit-server` do host. Setado pelo app junto do [remoteExecutorFor];
+  /// não-nulo só em workspace remoto. Mesma resolução de conexão/senha do
+  /// caminho SQL — só o destino do comando muda.
+  NoSqlRunner? Function(String workspaceId)? remoteNoSqlFor;
+
   /// Passphrases digitadas mas **não** salvas no cofre: valem enquanto o app
   /// viver. É o que permite "não quero segredo em cofre nenhum" sem punir com
   /// um prompt por query.
   final Map<String, String> _passphraseCache = {};
+
+  /// Senhas de banco já lidas do cofre nesta sessão, por [secretKey]. Evita
+  /// reler o Keychain (e re-disparar o prompt de ACL do macOS) a cada query.
+  final Map<String, String> _passwordCache = {};
 
   /// Limite default de linhas quando nem chamada nem `.dbq` especificam.
   static const defaultLimit = 200;
@@ -74,6 +111,19 @@ class DbQueryService {
     int? limit,
     bool dml = false,
   }) async {
+    // Workspace remoto (plano 58): a query roda no cockpit-server do host.
+    final remote = remoteExecutorFor?.call(workspaceId);
+    if (remote != null) {
+      final conn = await _resolveRemote(workspaceId, workspaceRoot, connName);
+      final password = await _passwordFor(conn, workspaceId);
+      return remote(
+        conn,
+        sql,
+        limit: limit ?? defaultLimit,
+        dml: dml,
+        password: password,
+      );
+    }
     // Resolver conexão e abrir túnel ficam FORA da fila: não tocam o dylib, e
     // prender o slot durante um handshake SSH atrasaria as outras queries do
     // mesmo engine à toa.
@@ -102,6 +152,19 @@ class DbQueryService {
     String? table,
     String? schema,
   }) async {
+    // Remoto: introspecção roda a SQL de schema no host, via o executor.
+    final remote = remoteExecutorFor?.call(workspaceId);
+    if (remote != null) {
+      final conn = await _resolveRemote(workspaceId, workspaceRoot, connName);
+      final password = await _passwordFor(conn, workspaceId);
+      return remote(
+        conn,
+        dbSchemaSql(conn.engine, table: table, schema: schema),
+        limit: 10000,
+        dml: false,
+        password: password,
+      );
+    }
     final conn = await _resolve(workspaceRoot, workspaceId, connName);
     final driver = _driverFor(conn);
     final password = await _passwordFor(conn, workspaceId);
@@ -133,6 +196,23 @@ class DbQueryService {
     if (statements.isEmpty) {
       throw const DbQueryException('query_failed', 'Nothing to run.');
     }
+    // Remoto: roda cada statement no host, devolve o último (mesma semântica).
+    final remote = remoteExecutorFor?.call(workspaceId);
+    if (remote != null) {
+      final conn = await _resolveRemote(workspaceId, workspaceRoot, connName);
+      final password = await _passwordFor(conn, workspaceId);
+      DbResult? last;
+      for (final sql in statements) {
+        last = await remote(
+          conn,
+          sql,
+          limit: limit ?? defaultLimit,
+          dml: false,
+          password: password,
+        );
+      }
+      return last!;
+    }
     final conn = await _resolve(workspaceRoot, workspaceId, connName);
     final driver = _driverFor(conn);
     final password = await _passwordFor(conn, workspaceId);
@@ -162,6 +242,13 @@ class DbQueryService {
     required String connName,
     required List<String> parts,
   }) async {
+    final remote = remoteNoSqlFor?.call(workspaceId);
+    if (remote != null) {
+      final conn = await _resolveRemote(workspaceId, workspaceRoot, connName);
+      _requireEngine(conn, DbEngine.redis, connName);
+      final password = await _passwordFor(conn, workspaceId);
+      return remote.redis(conn, parts, password: password);
+    }
     final conn = await _resolve(workspaceRoot, workspaceId, connName);
     _requireEngine(conn, DbEngine.redis, connName);
     final password = await _passwordFor(conn, workspaceId);
@@ -180,6 +267,13 @@ class DbQueryService {
     required String connName,
     required List<List<String>> commands,
   }) async {
+    final remote = remoteNoSqlFor?.call(workspaceId);
+    if (remote != null) {
+      final conn = await _resolveRemote(workspaceId, workspaceRoot, connName);
+      _requireEngine(conn, DbEngine.redis, connName);
+      final password = await _passwordFor(conn, workspaceId);
+      return remote.redisMany(conn, commands, password: password);
+    }
     final conn = await _resolve(workspaceRoot, workspaceId, connName);
     _requireEngine(conn, DbEngine.redis, connName);
     final password = await _passwordFor(conn, workspaceId);
@@ -201,6 +295,14 @@ class DbQueryService {
     required Map<String, dynamic> command,
     String? database,
   }) async {
+    final remote = remoteNoSqlFor?.call(workspaceId);
+    if (remote != null) {
+      final conn = await _resolveRemote(workspaceId, workspaceRoot, connName);
+      _requireEngine(conn, DbEngine.mongo, connName);
+      final password = await _passwordFor(conn, workspaceId);
+      final target = database ?? mongoDatabase(workspaceId, conn);
+      return remote.mongo(conn, command, password: password, database: target);
+    }
     final conn = await _resolve(workspaceRoot, workspaceId, connName);
     _requireEngine(conn, DbEngine.mongo, connName);
     final password = await _passwordFor(conn, workspaceId);
@@ -260,6 +362,27 @@ class DbQueryService {
   /// destino pra ponta local do túnel** (plano 54, decisão A). Este é o único
   /// ponto do fluxo que sabe da existência de SSH: drivers, views, sessões e
   /// CLI recebem uma `DbConnection` TCP comum.
+  /// Resolve a conexão pelo nome a partir das conexões REMOTAS do host
+  /// (`.cockpit/databases.json` lá) — sem túnel local, sem store local.
+  Future<DbConnection> _resolveRemote(
+    String workspaceId,
+    String root,
+    String name,
+  ) async {
+    final all =
+        await (remoteConnectionsFor?.call(workspaceId, root) ??
+            Future.value(const <DbConnection>[]));
+    for (final c in all) {
+      if (c.name == name) return c;
+    }
+    final available = all.map((c) => c.name).join(', ');
+    throw DbQueryException(
+      'unknown_connection',
+      'No connection named "$name" in this workspace. '
+          'Available: ${available.isEmpty ? '(none)' : available}',
+    );
+  }
+
   Future<DbConnection> _resolve(
     String root,
     String workspaceId,
@@ -403,12 +526,18 @@ class DbQueryService {
   /// desmontar o shell — o TTL ocioso cobre o resto.
   Future<void> closeSshTunnels() async {
     _passphraseCache.clear();
+    _passwordCache.clear();
     await _tunnel.closeAll();
   }
 
   /// Esquece a passphrase de sessão (renome/remoção de conexão).
   void forgetSshPassphrase(String workspaceId, String connName) =>
       _passphraseCache.remove(sshSecretKey(workspaceId, connName));
+
+  /// Esquece a senha de banco cacheada nesta sessão (renome/remoção/edição de
+  /// conexão) — a próxima query relê o cofre com o valor atual.
+  void forgetPassword(String workspaceId, String connName) =>
+      _passwordCache.remove(secretKey(workspaceId, connName));
 
   DbDriver _driverFor(DbConnection conn) {
     final driver = _registry.forEngine(conn.engine);
@@ -424,9 +553,19 @@ class DbQueryService {
 
   Future<String?> _passwordFor(DbConnection conn, String workspaceId) async {
     if (conn.engine == DbEngine.sqlite) return null;
+    final key = secretKey(workspaceId, conn.name);
+    // Cache de sessão: sem ele, cada query relê o cofre nativo, e no macOS
+    // toda leitura do Keychain pode disparar o prompt de autorização (ACL
+    // atrelada à assinatura) — o usuário via "pediu a senha de novo" a cada
+    // operação num workspace remoto. Uma leitura por conexão por sessão basta.
+    final cached = _passwordCache[key];
+    if (cached != null) return cached;
     if (conn.savePassword) {
-      final saved = await _secrets.read(secretKey(workspaceId, conn.name));
-      if (saved != null) return saved;
+      final saved = await _secrets.read(key);
+      if (saved != null) {
+        _passwordCache[key] = saved;
+        return saved;
+      }
     }
     // Fallback: senha embutida na URL — o caminho de quem NÃO usa o cofre
     // (dialog com "Save Password" off grava `user:senha@` no databases.json)

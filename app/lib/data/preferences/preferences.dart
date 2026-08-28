@@ -138,6 +138,13 @@ class Preferences extends ChangeNotifier {
   /// in `main.dart` and set from the Settings "Display" section.
   ThemeMode get themeMode => _themeMode;
 
+  /// Plan 131 (upstream #114) — text-size preset. Applied as a composed
+  /// `TextScaler` in `main.dart`'s builder (see `UiFontScale` above), so it
+  /// scales the whole UI — including the per-widget `copyWith(fontSize: …)`
+  /// overrides a typography-only change would miss — MULTIPLYING the OS
+  /// accessibility scale instead of replacing it.
+  UiFontScale get uiFontScale => _uiFontScale;
+
   /// Hydrate from secure storage. Safe to call multiple times.
   Future<void> load() async {
     var changed = false;
@@ -420,11 +427,6 @@ class Preferences extends ChangeNotifier {
   }
 
   // ── Plan 131 — font-size preset (upstream #114) ────────────────────────
-
-  /// Text-size preset for the whole app UI. Multiplied onto the OS text
-  /// scale (see [UiFontScale]); `normal` (default) leaves the system value
-  /// untouched.
-  UiFontScale get uiFontScale => _uiFontScale;
 
   /// Persist the preferred font-size preset. Stored as a stable enum name
   /// (same convention as [setThemeMode]) so the value survives reordering.

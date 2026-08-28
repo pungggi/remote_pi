@@ -16,31 +16,27 @@ import 'package:flutter_test/flutter_test.dart';
 /// opção foi consumida; "socks5-proxy feature is not enabled" denuncia a
 /// regressão.
 void main() {
-  test(
-    'a dylib do anaki_mongodb tem suporte a SOCKS5',
-    () async {
-      final conn = DbConnection.fromJson({
-        'name': 'proxy-check',
-        // Porta 1 do loopback: garantidamente fechada.
-        'url':
-            'mongodb://u:p@db.invalid:27017/db'
-            '?proxyHost=127.0.0.1&proxyPort=1&serverSelectionTimeoutMS=2000',
-      });
+  test('a dylib do anaki_mongodb tem suporte a SOCKS5', () async {
+    final conn = DbConnection.fromJson({
+      'name': 'proxy-check',
+      // Porta 1 do loopback: garantidamente fechada.
+      'url':
+          'mongodb://u:p@db.invalid:27017/db'
+          '?proxyHost=127.0.0.1&proxyPort=1&serverSelectionTimeoutMS=2000',
+    });
 
-      await expectLater(
-        const NoSqlRunnerImpl().mongo(conn, const {'ping': 1}),
-        throwsA(
-          isA<DbQueryException>().having(
-            (e) => e.message,
-            'message',
-            allOf(
-              contains('proxy host'),
-              isNot(contains('socks5-proxy feature is not enabled')),
-            ),
+    await expectLater(
+      const NoSqlRunnerImpl().mongo(conn, const {'ping': 1}),
+      throwsA(
+        isA<DbQueryException>().having(
+          (e) => e.message,
+          'message',
+          allOf(
+            contains('proxy host'),
+            isNot(contains('socks5-proxy feature is not enabled')),
           ),
         ),
-      );
-    },
-    timeout: const Timeout(Duration(seconds: 30)),
-  );
+      ),
+    );
+  }, timeout: const Timeout(Duration(seconds: 30)));
 }

@@ -52,9 +52,7 @@ Body text.
     final fm = MarkdownFrontmatter.split(skillMd).frontmatter!;
     await tester.pumpWidget(
       MaterialApp(
-        home: Scaffold(
-          body: MarkdownFrontmatterTable(frontmatter: fm),
-        ),
+        home: Scaffold(body: MarkdownFrontmatterTable(frontmatter: fm)),
       ),
     );
     expect(find.text('name'), findsOneWidget);
@@ -68,9 +66,7 @@ Body text.
   ) async {
     final split = MarkdownFrontmatter.split(skillMd);
     await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(body: GptMarkdown(split.body.trim())),
-      ),
+      MaterialApp(home: Scaffold(body: GptMarkdown(split.body.trim()))),
     );
     expect(find.textContaining('Code Reviewer'), findsWidgets);
   });

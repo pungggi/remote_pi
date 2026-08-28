@@ -16,7 +16,7 @@ publish_to: "none" # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.19.2+54
+version: 1.28.17+80
 
 environment:
   sdk: ^3.12.0
@@ -47,8 +47,20 @@ dependencies:
   flutter:
     sdk: flutter
 
+  # Plano 58 (Cockpit Remote): contratos compartilhados + proxies do
+  # cockpit-server. O app NUNCA importa cockpit_engine (guardrail mobile:
+  # código nativo só existe no servidor).
+  cockpit_core:
+    path: packages/cockpit_core
+  cockpit_remote:
+    path: packages/cockpit_remote
+
   # Parse dos layouts `.ckp` (orquestração de panes) — YAML puro-Dart.
   yaml: ^3.1.2
+
+  # sha256 do trust hash dos hooks do Codex CLI (o Codex só executa hook cujo
+  # hash está confiado no config.toml). Já vinha transitivo; virou direta.
+  crypto: ^3.0.7
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
@@ -98,6 +110,11 @@ dependencies:
   # Wave 2 — esconde a barra nativa da janela (temos a customizada) e permite
   # arrastar/min/max pela nossa barra. macOS/Windows/Linux.
   window_manager: ^0.4.3
+
+  # Topologia de monitores, pra reencaixar a janela salva no arranjo de telas
+  # atual (ver core/domain/services/window_placement.dart). Já vinha transitivo
+  # pelo window_manager; explícito porque agora é usado direto.
+  screen_retriever: ^0.2.0
 
   # Wave 2 — aba de terminal: emulador (absorvido) + PTY nativo (plugin interno).
   # xterm foi ABSORVIDO como módulo interno em lib/app/core/terminal/xterm/
@@ -167,6 +184,12 @@ dependencies:
   package_info_plus: ^8.0.0
   url_launcher: ^6.3.0
 
+  # Plano 58 — navegador embutido + preview de markdown/HTML via webview.
+  # WKWebView (macOS) / WebView2 (Windows) inline na árvore de widgets. Sem
+  # implementação Linux: lá o BrowserCapability degrada pra url_launcher
+  # (browser do SO) e o preview de .md segue no gpt_markdown.
+  flutter_inappwebview: ^6.1.5
+
   # Plano 47 — self-update nativo: Sparkle (macOS) + WinSparkle (Windows) via o
   # plugin federado auto_updater. No Linux é no-op (NoopSelfUpdater) e o caminho
   # de notify+download manual (UpdateChecker/UpdateCard) assume. O macOS embarca
@@ -205,6 +228,13 @@ dependencies:
   # `~/.ssh/config`, ProxyJump, known_hosts nem o agent.
   dartssh2: ^2.22.4
 
+  # i18n (en default / pt-BR / es). `slang` (dev, abaixo) gera as classes
+  # tipadas em lib/i18n/strings.g.dart a partir dos .i18n.json; `slang_flutter`
+  # é o runtime (TranslationProvider, LocaleSettings, `t` global).
+  slang_flutter: ^4.18.0
+  launch_at_startup: ^0.5.1
+  pinenacl: ^0.6.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -221,6 +251,22 @@ dev_dependencies:
   # Relógio virtual para testes com Timer (ex.: poll periódico do GitController).
   # Já vinha transitivo via flutter_test; declarado direto pra satisfazer o lint.
   fake_async: ^1.3.1
+  # Codegen do i18n: lê lib/i18n/*.i18n.json (config em slang.yaml) e gera
+  # lib/i18n/strings.g.dart. Rodar via `dart run slang`.
+  slang: ^4.18.0
+  # Gera os ícones de app iOS/Android a partir do ícone único (plano 60, Wave
+  # E). Só mobile — macOS/Windows mantêm os próprios. Rodar via
+  # `dart run flutter_launcher_icons`.
+  flutter_launcher_icons: ^0.14.4
+
+# Ícone do app mobile (plano 60, Wave E). Fonte = o ícone real do desktop; o
+# mesmo símbolo, gerado nos tamanhos de iOS/Android. `remove_alpha_ios` porque
+# a App Store rejeita ícone com canal alfa.
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "macos/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_1024.png"
+  remove_alpha_ios: true
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -237,8 +283,13 @@ flutter:
   assets:
     - assets/file_icons/
     - assets/db_icons/
+    - assets/harness_icons/
     - assets/sounds/
     - assets/branding/
+    # Plano 58 — pipeline local do preview de markdown (markdown-it +
+    # sanitizador + diff de DOM + CSS por variáveis de tema). Sem rede: a
+    # webview carrega só estes assets, sob CSP restritiva.
+    - assets/md_preview/
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
@@ -301,21 +352,30 @@ dependency_overrides:
   #
   # Voltar pro pub.dev quando elias8/libghostty#119 e #120 forem merjados e
   # sair release.
-  # Tag unificada (mesma ref para os dois pacotes) com quatro fixes:
-  #  - scroll de TUI (wheel/trackpad) no flterm
-  #  - IME dead-key/acentos parando quando outro cliente rouba a
-  #    TextInputConnection singleton
-  #  - isolamento do git no build hook (GIT_CEILING_DIRECTORIES) p/ tag de
-  #    release fora do padrao vX.Y.Z nao dar panic no ghostty
-  #  - compile no CPU baseline (-Dtarget sempre) p/ a .dll do Windows nao sair
-  #    com AVX2/AVX-512 e crashar (0xC000001D) em CPUs sem essas extensoes
+  # Tag unificada (mesma ref para os dois pacotes) = upstream main @611cf21 +
+  # 1 patch nosso. TODOS os nossos fixes antigos (scroll, IME, git-isolation,
+  # CPU baseline) ja estao no upstream main: o scroll foi absorvido pelo
+  # refactor #143 (scroll_gesture_region), os outros 3 merjados (#120/#126/#132).
+  # O main tras tambem o refactor de controller/view (#143/#144), suporte a
+  # Flutter 3.47 (#142) e novas APIs (notifications, progress reports).
+  #
+  # O unico patch que ainda carregamos: recuperacao do text input quando uma
+  # delta desincroniza do sentinel — no iOS, digitar um acento congelava toda a
+  # digitacao (setEditingState ignorado -> delta.apply estoura -> canal morre).
+  #
+  # ATENCAO CI: ao trocar esta ref muda o ghostty.version; o cache de native
+  # asset (.dart_tool/hooks_runner, build/native_assets) precisa ser invalidado,
+  # senao a dylib velha crasha o processo (exit -10) ao carregar os bindings novos.
+  #
+  # Quando sair release do flterm com o refactor + nosso patch de iOS (ou o
+  # patch for merjado upstream), trocar por versoes do pub.dev e remover os git.
   flterm:
     git:
       url: https://github.com/jacobaraujo7/libghostty.git
-      ref: cockpit-pin-flterm-cpu-baseline
+      ref: 3dc78a42b016ba90ef36f50f16f3c28e4a706f50
       path: packages/flterm
   libghostty:
     git:
       url: https://github.com/jacobaraujo7/libghostty.git
-      ref: cockpit-pin-flterm-cpu-baseline
+      ref: 3dc78a42b016ba90ef36f50f16f3c28e4a706f50
       path: packages/libghostty

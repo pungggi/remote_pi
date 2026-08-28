@@ -64,11 +64,17 @@ void main() {
       'SELECT id, customer, total FROM orders ORDER BY id',
       limit: 100,
     );
-    expect(r.columns.map((c) => c.name), containsAll(['id', 'customer', 'total']));
+    expect(
+      r.columns.map((c) => c.name),
+      containsAll(['id', 'customer', 'total']),
+    );
     expect(r.rows, hasLength(10));
     expect(r.truncated, isFalse);
     // Linha 1 por nome de coluna (ordem das colunas é a do JSON do anaki).
-    final byName = Map.fromIterables(r.columns.map((c) => c.name), r.rows.first);
+    final byName = Map.fromIterables(
+      r.columns.map((c) => c.name),
+      r.rows.first,
+    );
     expect(byName['id'], 1);
     expect(byName['customer'], 'c1');
     expect(byName['total'], 1.5);
@@ -98,7 +104,10 @@ void main() {
 
     final cols = await driver.schema(conn(), table: 'orders');
     final cIx = cols.columns.indexWhere((c) => c.name == 'column');
-    expect(cols.rows.map((r) => r[cIx]), containsAll(['id', 'customer', 'total']));
+    expect(
+      cols.rows.map((r) => r[cIx]),
+      containsAll(['id', 'customer', 'total']),
+    );
   });
 
   test('erro de SQL vira DbQueryException query_failed', () async {

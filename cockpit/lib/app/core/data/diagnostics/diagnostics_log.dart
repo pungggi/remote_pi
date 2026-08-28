@@ -135,11 +135,16 @@ class DiagnosticsLog {
   }
 
   void _append(String entry) {
+    final line = '${DateTime.now().toIso8601String()} $entry\n';
+    // Espelha no console ANTES de olhar o arquivo: em `flutter run` é onde
+    // o dev vê primeiro, e é o ÚNICO canal quando não há arquivo — caso do
+    // iOS/iPad, onde o log fica dentro do sandbox e a UI de "revelar pasta"
+    // não leva a lugar nenhum. Com o `return` antes daqui, um cliente sem
+    // arquivo perdia TODO o diagnóstico, inclusive rodando em debug — que é
+    // exatamente quando alguém está tentando enxergar.
+    debugPrint(line.trimRight());
     final file = currentFile;
     if (file == null) return;
-    final line = '${DateTime.now().toIso8601String()} $entry\n';
-    // Espelha no console: em `flutter run` é onde o dev vê primeiro.
-    debugPrint(line.trimRight());
     try {
       if (_truncated) return;
       if (file.existsSync() && file.lengthSync() > maxFileBytes) {
@@ -185,6 +190,10 @@ class DiagnosticsLog {
         'appVersion': _appVersion,
         'startedAt': DateTime.now().toIso8601String(),
         'platform': _platformLine(),
+        // Em debug o processo é morto o tempo todo pelo ferramental (hot
+        // restart, stop da IDE), e nada disso é crash. Quem grava a sessão é
+        // quem sabe em que build ela rodou.
+        'debug': kDebugMode,
       }),
     );
   }
@@ -201,6 +210,7 @@ class DiagnosticsLog {
             DateTime.tryParse(map['startedAt'] as String? ?? '') ??
             DateTime.fromMillisecondsSinceEpoch(0),
         platform: map['platform'] as String? ?? '',
+        debug: map['debug'] as bool? ?? false,
       );
     } on Object catch (_) {
       return null; // marcador ilegível → trata como saída limpa
@@ -223,10 +233,19 @@ class DirtySession {
     required this.appVersion,
     required this.startedAt,
     required this.platform,
+    this.debug = false,
   });
 
   final int pid;
   final String appVersion;
   final DateTime startedAt;
   final String platform;
+
+  /// A sessão morta rodava um build de **debug**.
+  ///
+  /// Ali o processo é encerrado à força a cada hot restart e a cada stop da
+  /// IDE, então "morreu sem saída limpa" é o caso normal, não o excepcional.
+  /// Continua indo para o log — só não vira aviso na cara de quem está
+  /// desenvolvendo.
+  final bool debug;
 }

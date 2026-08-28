@@ -141,8 +141,11 @@ class TerminalLinkDetector {
         }
         final raw = text.substring(m.start, end);
         final lineMatch = _lineSuffix.firstMatch(raw);
-        final path = lineMatch != null ? raw.substring(0, lineMatch.start) : raw;
-        final anchored = raw.startsWith('/') ||
+        final path = lineMatch != null
+            ? raw.substring(0, lineMatch.start)
+            : raw;
+        final anchored =
+            raw.startsWith('/') ||
             raw.startsWith('./') ||
             raw.startsWith('../') ||
             raw.startsWith('~/');

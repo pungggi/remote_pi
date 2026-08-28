@@ -41,10 +41,13 @@ void main() {
   });
 
   test('acha matches e reporta linha + range + caminho relativo', () async {
-    await write('app/auth/session.ts', 'import { Clock } from "x";\n'
-        'class SessionStore {\n'
-        '  now() { return this.clock.now(); }\n'
-        '}\n');
+    await write(
+      'app/auth/session.ts',
+      'import { Clock } from "x";\n'
+          'class SessionStore {\n'
+          '  now() { return this.clock.now(); }\n'
+          '}\n',
+    );
 
     final results = await run('clock');
     expect(results, hasLength(1));
@@ -76,10 +79,7 @@ void main() {
     final re = await run(r'\d+', regex: true);
     expect(re.single.matches.single.ranges.single, isA<MatchRange>());
 
-    expect(
-      () => run('[', regex: true),
-      throwsA(isA<FormatException>()),
-    );
+    expect(() => run('[', regex: true), throwsA(isA<FormatException>()));
   });
 
   test('pula pastas ruidosas (node_modules) e arquivos binários', () async {
@@ -87,7 +87,9 @@ void main() {
     await write('src/app.js', 'needle');
     // Binário: byte nulo no começo.
     final bin = File('${root.path}/blob.bin');
-    await bin.writeAsBytes(Uint8List.fromList([0, 110, 101, 101, 100, 108, 101]));
+    await bin.writeAsBytes(
+      Uint8List.fromList([0, 110, 101, 101, 100, 108, 101]),
+    );
 
     final results = await run('needle');
     expect(results, hasLength(1));

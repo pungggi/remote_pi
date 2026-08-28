@@ -288,6 +288,9 @@ contexto pras próximas waves:
   --dart-define=COCKPIT_PI_MODEL=deepseek-chat` (chaves já em `~/.pi/agent/auth.json`).
 - **Dep nova não prevista no plano**: `file_picker` (seleção de pasta no macOS).
   provider/auto_injector/go_router já eram a stack declarada.
+- **Dep nova (plano 58, 2026-08-09)**: `flutter_inappwebview` ^6.1.5 — navegador
+  embutido + preview de markdown/HTML via webview (WKWebView/WebView2; sem
+  implementação Linux, fallback = browser do SO via `url_launcher`).
 
 ## Trade-offs explícitos
 

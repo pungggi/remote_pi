@@ -18,7 +18,9 @@ Widget _host(Widget child) => ShadcnApp(
   theme: buildTheme(
     brightness: Brightness.dark,
   ).copyWith(platform: () => TargetPlatform.windows),
-  home: Scaffold(child: Align(alignment: Alignment.topLeft, child: child)),
+  home: Scaffold(
+    child: Align(alignment: Alignment.topLeft, child: child),
+  ),
 );
 
 void main() {
@@ -65,7 +67,9 @@ void main() {
     expect(find.text('New Terminal'), findsNothing);
   });
 
-  testWidgets('submenu aninhado abre e dispara a ação da folha', (tester) async {
+  testWidgets('submenu aninhado abre e dispara a ação da folha', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       _host(WindowMenuBar(menus: menus(), renderOnMacOS: true)),
     );

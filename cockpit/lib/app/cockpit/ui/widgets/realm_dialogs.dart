@@ -2,9 +2,8 @@ import 'package:cockpit/app/cockpit/domain/entities/realm.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/cockpit_viewmodel.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/confirm_dialog.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
-
-const Color _barrier = Color(0x99000000);
 
 /// Dialog de nome de realm (criar/renomear). Valida ao vivo: não-vazio e único
 /// entre [takenNames] (case-insensitive; o nome atual em rename fica de fora).
@@ -18,7 +17,7 @@ Future<String?> showRealmNameDialog(
 }) {
   return showDialog<String>(
     context: context,
-    barrierColor: _barrier,
+    barrierColor: context.colors.scrim,
     builder: (context) => _RealmNameDialog(
       title: title,
       confirmLabel: confirmLabel,
@@ -83,14 +82,14 @@ class _RealmNameDialogState extends State<_RealmNameDialog> {
             TextField(
               controller: _name,
               autofocus: true,
-              placeholder: const Text('Realm name'),
+              placeholder: Text(context.t.cockpit.realmDialogs.namePlaceholder),
               onChanged: (_) => setState(() {}),
               onSubmitted: (_) => _submit(),
             ),
             if (_trimmed.isNotEmpty && !_valid) ...[
               const SizedBox(height: 8),
               Text(
-                'A realm with this name already exists.',
+                context.t.cockpit.realmDialogs.duplicateName,
                 style: context.typo.label.copyWith(color: colors.error),
               ),
             ],
@@ -100,7 +99,7 @@ class _RealmNameDialogState extends State<_RealmNameDialog> {
       actions: [
         OutlineButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          child: Text(context.t.common.cancel),
         ),
         PrimaryButton(
           onPressed: _valid ? _submit : null,
@@ -121,7 +120,7 @@ Future<void> showRealmManagerDialog(
 }) {
   return showDialog<void>(
     context: context,
-    barrierColor: _barrier,
+    barrierColor: context.colors.scrim,
     builder: (context) => _RealmManagerDialog(vm: vm),
   );
 }
@@ -132,10 +131,11 @@ class _RealmManagerDialog extends StatelessWidget {
   final CockpitViewModel vm;
 
   Future<void> _create(BuildContext context) async {
+    final tr = context.t.cockpit.realmDialogs;
     final name = await showRealmNameDialog(
       context,
-      title: 'New realm',
-      confirmLabel: 'Create',
+      title: tr.newRealmTitle,
+      confirmLabel: context.t.common.create,
       takenNames: vm.realms.map((r) => r.name).toSet(),
     );
     if (name == null) return;
@@ -143,10 +143,11 @@ class _RealmManagerDialog extends StatelessWidget {
   }
 
   Future<void> _rename(BuildContext context, Realm realm) async {
+    final tr = context.t.cockpit.realmDialogs;
     final name = await showRealmNameDialog(
       context,
-      title: 'Rename realm',
-      confirmLabel: 'Rename',
+      title: tr.renameRealmTitle,
+      confirmLabel: tr.rename,
       initial: realm.name,
       takenNames: vm.realms
           .where((r) => r.id != realm.id)
@@ -158,19 +159,18 @@ class _RealmManagerDialog extends StatelessWidget {
   }
 
   Future<void> _delete(BuildContext context, Realm realm) async {
+    final tr = context.t.cockpit.realmDialogs;
     final count = vm.workspaceCountInRealm(realm.id);
     final suffix = count == 0
         ? ''
         : count == 1
-        ? ' Its workspace will move to Default.'
-        : ' Its $count workspaces will move to Default.';
+        ? tr.deleteSuffixOne
+        : tr.deleteSuffixMany(count: count);
     final ok = await showConfirmDialog(
       context,
-      title: 'Delete realm',
-      message:
-          'Delete "${realm.name}"? No workspace is deleted — the folder list '
-          'just changes.$suffix',
-      confirmLabel: 'Delete',
+      title: tr.deleteRealmTitle,
+      message: tr.deleteMessage(name: realm.name, suffix: suffix),
+      confirmLabel: context.t.common.delete,
       danger: true,
     );
     if (!ok) return;
@@ -182,7 +182,7 @@ class _RealmManagerDialog extends StatelessWidget {
     final colors = context.colors;
     return AlertDialog(
       title: Text(
-        'Manage realms',
+        context.t.cockpit.realmDialogs.manageRealmsTitle,
         style: context.typo.title.copyWith(fontSize: 15, color: colors.text),
       ),
       content: ConstrainedBox(
@@ -214,11 +214,11 @@ class _RealmManagerDialog extends StatelessWidget {
       actions: [
         OutlineButton(
           onPressed: () => _create(context),
-          child: const Text('New realm'),
+          child: Text(context.t.cockpit.realmDialogs.newRealmTitle),
         ),
         PrimaryButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Done'),
+          child: Text(context.t.common.done),
         ),
       ],
     );
@@ -268,7 +268,7 @@ class _RealmRow extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  count == 1 ? '1 workspace' : '$count workspaces',
+                  context.t.cockpit.realmDialogs.workspaceCount(n: count),
                   style: context.typo.label.copyWith(color: colors.text3),
                 ),
               ],

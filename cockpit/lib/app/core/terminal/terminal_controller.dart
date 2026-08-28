@@ -25,6 +25,14 @@ sealed class CockpitTerminalController {
   void restore(String data);
   void paste(String text);
   List<String> plainLines();
+
+  /// Texto atualmente selecionado, ou vazio se não há seleção.
+  ///
+  /// Serve o botão de copiar da barra de teclas do mobile, que não tem como
+  /// alcançar a view. No xterm absorvido a seleção vive no controller da
+  /// **view** (`CockpitTerminal`), fora do alcance da sessão — lá devolve vazio.
+  String selectedText();
+
   void dispose();
 }
 
@@ -65,6 +73,12 @@ final class XtermTerminalController implements CockpitTerminalController {
     return [for (var i = 0; i < lines.length; i++) lines[i].getText()];
   }
 
+  /// A seleção do xterm pertence ao controller da view (`CockpitTerminal`), que
+  /// a sessão não enxerga — o motor em si não guarda seleção. Copiar por aqui
+  /// só existe no Ghostty (o padrão dos buffers novos, inclusive no mobile).
+  @override
+  String selectedText() => '';
+
   @override
   void dispose() {}
 }
@@ -75,7 +89,9 @@ final class GhosttyTerminalController implements CockpitTerminalController {
         config: const ghost.TerminalConfig(
           cols: 80,
           rows: 25,
-          scrollbackLimit: 10 * 1024 * 1024,
+          // Renomeado no upstream (flterm main): scrollbackLimit -> scrollbackMaxBytes.
+          // Mantemos 10 MB explicito; o novo default e apenas 10 KB.
+          scrollbackMaxBytes: 10 * 1024 * 1024,
         ),
       ) {
     controller.onOutput = (data) {
@@ -87,30 +103,41 @@ final class GhosttyTerminalController implements CockpitTerminalController {
       if (_replaying) return;
       onOutput?.call(data);
     };
-    controller.onResize = (columns, rows) {
-      final isInitialResize = !_hasInitialResize;
-      _hasInitialResize = true;
-      if (isInitialResize &&
-          SchedulerBinding.instance.schedulerPhase ==
-              SchedulerPhase.persistentCallbacks) {
-        // flterm reports its grid size from performLayout. Restored OSC state
-        // can notify TerminalView, so applying it here would call setState
-        // while the render tree is still being laid out.
-        _deferWritesUntilPostFrame = true;
-      }
-      onResize?.call(columns, rows);
-
-      if (!isInitialResize) return;
-      if (_deferWritesUntilPostFrame) {
-        SchedulerBinding.instance.addPostFrameCallback((_) {
-          _flushPendingWrites();
-        });
-      } else {
-        _flushPendingWrites();
-      }
-    };
+    controller.onResize = _handleControllerResize;
     controller.onTitleChanged = () => onTitleChanged?.call(controller.title);
   }
+
+  void _handleControllerResize(int columns, int rows) {
+    final isInitialResize = !_hasInitialResize;
+    _hasInitialResize = true;
+    if (isInitialResize &&
+        SchedulerBinding.instance.schedulerPhase ==
+            SchedulerPhase.persistentCallbacks) {
+      // flterm reports its grid size from performLayout. Restored OSC state
+      // can notify TerminalView, so applying it here would call setState
+      // while the render tree is still being laid out.
+      _deferWritesUntilPostFrame = true;
+    }
+    onResize?.call(columns, rows);
+
+    if (!isInitialResize) return;
+    if (_deferWritesUntilPostFrame) {
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        _flushPendingWrites();
+      });
+    } else {
+      _flushPendingWrites();
+    }
+  }
+
+  /// Drives the controller's resize handling directly.
+  ///
+  /// In production flterm's `TerminalView` reports its measured grid through
+  /// the (setter-only) `controller.onResize`. Tests have no view, so this hook
+  /// simulates that report to exercise the initial-resize replay flush.
+  @visibleForTesting
+  void handleResize(int columns, int rows) =>
+      _handleControllerResize(columns, rows);
 
   final ghost.TerminalController controller;
 
@@ -213,6 +240,10 @@ final class GhosttyTerminalController implements CockpitTerminalController {
   }
 
   @override
+  String selectedText() =>
+      controller.hasSelection ? controller.selectedText() : '';
+
+  @override
   void dispose() {
     _disposed = true;
     controller.dispose();
@@ -230,6 +261,13 @@ bool get terminalEngineIsSelectable => true;
 
 /// Resolve o engine efetivo pra plataforma — hoje passa direto (sem gate de
 /// plataforma). Mantido como ponto único caso precise re-travar alguma engine.
+///
+/// Histórico: o mobile chegou a ser travado no xterm por um `EXC_BAD_ACCESS` na
+/// init do Ghostty no iOS. A causa era mismatch de ABI do enum de options entre
+/// `flterm 0.0.4` e `libghostty 0.0.11` (versões descasadas), não um bug de
+/// iOS. Com o pin casado (`cockpit-pin-flterm-ios-recover`: flterm 0.0.5 +
+/// libghostty 0.0.12 na mesma ref) o Ghostty voltou a rodar no iOS, então o
+/// gate saiu.
 TerminalEngine resolveTerminalEngine(TerminalEngine engine) => engine;
 
 CockpitTerminalController createTerminalController(

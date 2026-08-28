@@ -11,6 +11,7 @@ import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/app_menu.dart';
 import 'package:cockpit/app/core/ui/widgets/app_tooltip.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:flutter/services.dart' show KeyDownEvent, LogicalKeyboardKey;
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
@@ -338,7 +339,9 @@ class _RedisTableViewState extends State<RedisTableView> {
     setState(_closeEditors);
     final seconds = raw.isEmpty || raw == '-1' ? null : int.tryParse(raw);
     if (raw.isNotEmpty && raw != '-1' && seconds == null) {
-      setState(() => _view.error = 'TTL must be a number of seconds.');
+      setState(
+        () => _view.error = context.t.cockpit.dbRedisTable.ttlMustBeNumber,
+      );
       return;
     }
     await _commit(key, () => _view.service.setTtl(key, seconds));
@@ -397,11 +400,12 @@ class _RedisTableViewState extends State<RedisTableView> {
   // ── delete / criar ─────────────────────────────────────────────────────────
 
   Future<void> _delete(RedisKeyEntry entry) async {
+    final tr = context.t.cockpit.dbRedisTable;
     final ok = await showConfirmDialog(
       context,
-      title: 'Delete key',
-      message: 'Delete "${entry.key}" from this Redis database?',
-      confirmLabel: 'Delete',
+      title: tr.deleteKeyTitle,
+      message: tr.deleteKeyMessage(key: entry.key),
+      confirmLabel: context.t.common.delete,
       danger: true,
     );
     if (!ok || !mounted) return;
@@ -497,7 +501,7 @@ class _RedisTableViewState extends State<RedisTableView> {
               controller: _pattern,
               style: typo.mono.copyWith(fontSize: 11.5, color: colors.text),
               placeholder: Text(
-                'Search — pattern, e.g. user:*',
+                context.t.cockpit.dbRedisTable.searchHint,
                 style: typo.mono.copyWith(fontSize: 11.5, color: colors.text4),
               ),
               features: [
@@ -517,13 +521,13 @@ class _RedisTableViewState extends State<RedisTableView> {
           ),
           const Spacer(),
           Text(
-            '${_view.entries.length} key${_view.entries.length == 1 ? '' : 's'}'
+            '${context.t.cockpit.dbRedisTable.keyCount(n: _view.entries.length)}'
             '${_view.cursor == '0' ? '' : '+'}',
             style: typo.label.copyWith(fontSize: 11, color: colors.text3),
           ),
           const SizedBox(width: 8),
           AppTooltip(
-            message: 'Refresh',
+            message: context.t.cockpit.dbRedisTable.refresh,
             child: HoverTap(
               onTap: _loading ? null : _refresh,
               padding: const EdgeInsets.all(4),
@@ -531,7 +535,7 @@ class _RedisTableViewState extends State<RedisTableView> {
             ),
           ),
           AppTooltip(
-            message: 'New key',
+            message: context.t.cockpit.dbRedisTable.newKey,
             child: HoverTap(
               onTap: _openDraft,
               padding: const EdgeInsets.all(4),
@@ -575,6 +579,7 @@ class _RedisTableViewState extends State<RedisTableView> {
   Widget _header(BuildContext context) {
     final colors = context.colors;
     final typo = context.typo;
+    final tr = context.t.cockpit.dbRedisTable;
     TextStyle style = typo.label.copyWith(
       fontSize: 10.5,
       letterSpacing: 0.6,
@@ -591,16 +596,16 @@ class _RedisTableViewState extends State<RedisTableView> {
           const SizedBox(width: 10),
           SizedBox(
             width: _kKeyWidth,
-            child: Text('KEY', style: style),
+            child: Text(tr.columnKey, style: style),
           ),
-          Expanded(child: Text('VALUE', style: style)),
+          Expanded(child: Text(tr.columnValue, style: style)),
           SizedBox(
             width: _kTypeWidth,
-            child: Text('TYPE', style: style),
+            child: Text(tr.columnType, style: style),
           ),
           SizedBox(
             width: _kTtlWidth,
-            child: Text('TTL', style: style),
+            child: Text(tr.columnTtl, style: style),
           ),
           const SizedBox(width: 30),
         ],
@@ -639,12 +644,13 @@ class _RedisTableViewState extends State<RedisTableView> {
           );
         }
         if (showEmpty) {
+          final tr = context.t.cockpit.dbRedisTable;
           return Padding(
             padding: const EdgeInsets.all(16),
             child: Text(
               _view.pattern.isEmpty
-                  ? 'No keys in this database.'
-                  : 'No keys match "${_view.pattern}".',
+                  ? tr.noKeys
+                  : tr.noKeysMatch(pattern: _view.pattern),
               style: typo.label.copyWith(fontSize: 11.5, color: colors.text3),
             ),
           );
@@ -656,7 +662,7 @@ class _RedisTableViewState extends State<RedisTableView> {
             child: OutlineButton(
               onPressed: () => _loadMore(),
               child: Text(
-                'Load more',
+                context.t.cockpit.dbRedisTable.loadMore,
                 style: typo.label.copyWith(fontSize: 11.5),
               ),
             ),
@@ -807,7 +813,7 @@ class _RedisTableViewState extends State<RedisTableView> {
           ? Padding(
               padding: const EdgeInsets.all(8),
               child: Text(
-                'Loading full value…',
+                context.t.cockpit.dbRedisTable.loadingFullValue,
                 style: typo.label.copyWith(fontSize: 11, color: colors.text3),
               ),
             )
@@ -840,12 +846,12 @@ class _RedisTableViewState extends State<RedisTableView> {
                     const Spacer(),
                     OutlineButton(
                       onPressed: () => setState(_closeEditors),
-                      child: const Text('Cancel'),
+                      child: Text(context.t.common.cancel),
                     ),
                     const SizedBox(width: 6),
                     PrimaryButton(
                       onPressed: () => _commitExpanded(entry),
-                      child: const Text('Save'),
+                      child: Text(context.t.common.save),
                     ),
                   ],
                 ),
@@ -858,6 +864,7 @@ class _RedisTableViewState extends State<RedisTableView> {
   Widget _draftRow(BuildContext context, _NewKeyDraft d) {
     final colors = context.colors;
     final typo = context.typo;
+    final tr = context.t.cockpit.dbRedisTable;
     final mono = typo.mono.copyWith(fontSize: 12, color: colors.text);
     Widget field(TextEditingController ctrl, String hint, {int maxLines = 1}) =>
         TextField(
@@ -885,7 +892,10 @@ class _RedisTableViewState extends State<RedisTableView> {
           children: [
             Row(
               children: [
-                SizedBox(width: _kKeyWidth + 30, child: field(d.key, 'key')),
+                SizedBox(
+                  width: _kKeyWidth + 30,
+                  child: field(d.key, tr.keyFieldHint),
+                ),
                 const SizedBox(width: 8),
                 // Seletor de tipo — SÓ aqui (decisão D: type é imutável em
                 // chave existente).
@@ -909,14 +919,14 @@ class _RedisTableViewState extends State<RedisTableView> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                SizedBox(width: 110, child: field(d.ttl, 'ttl (s, optional)')),
+                SizedBox(width: 110, child: field(d.ttl, tr.ttlFieldHint)),
               ],
             ),
             const SizedBox(height: 6),
             field(
               d.value,
               d.kind == RedisValueKind.string
-                  ? 'value'
+                  ? tr.valueFieldHint
                   : switch (d.kind) {
                       RedisValueKind.hash => '{"field": "value"}',
                       RedisValueKind.zset =>
@@ -942,13 +952,10 @@ class _RedisTableViewState extends State<RedisTableView> {
                     d.dispose();
                     _draft = null;
                   }),
-                  child: const Text('Cancel'),
+                  child: Text(context.t.common.cancel),
                 ),
                 const SizedBox(width: 6),
-                PrimaryButton(
-                  onPressed: _commitDraft,
-                  child: const Text('Add key'),
-                ),
+                PrimaryButton(onPressed: _commitDraft, child: Text(tr.addKey)),
               ],
             ),
           ],

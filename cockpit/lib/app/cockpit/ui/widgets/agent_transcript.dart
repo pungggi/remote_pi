@@ -5,6 +5,7 @@ import 'package:cockpit/app/cockpit/ui/session/agent_entry.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/agent_markdown.dart';
 import 'package:cockpit/app/core/ui/file_icons/file_icons.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
 import 'package:cockpit/app/core/ui/settings_controller.dart';
 // SelectionArea (widget Material) envolve o scrollable → seleção de texto com
@@ -49,7 +50,7 @@ class AgentTranscript extends StatelessWidget {
     if (entries.isEmpty) {
       return Center(
         child: Text(
-          'Send a prompt to get the agent started.',
+          context.t.cockpit.transcript.startHint,
           style: context.typo.body.copyWith(color: context.colors.text3),
         ),
       );
@@ -226,7 +227,9 @@ class _EntryView extends StatelessWidget {
             Icon(Icons.schedule, size: 13, color: context.colors.text3),
             const SizedBox(width: 7),
             Text(
-              'Worked for ${_formatWorked(duration)}',
+              context.t.cockpit.transcript.workedFor(
+                duration: _formatWorked(duration),
+              ),
               style: context.typo.label.copyWith(color: context.colors.text3),
             ),
           ],
@@ -844,7 +847,7 @@ class _UiRequestCardState extends State<_UiRequestCard> {
               onPressed: () =>
                   _respond(<String, dynamic>{'cancelled': true}, 'cancelled'),
               child: Text(
-                'Cancel',
+                context.t.common.cancel,
                 style: context.typo.label.copyWith(color: colors.text3),
               ),
             ),
@@ -879,7 +882,8 @@ class _UiRequestCardState extends State<_UiRequestCard> {
       case 'editor':
         return _InputRow(
           controller: _input,
-          hint: entry.placeholder ?? 'Type your answer',
+          hint:
+              entry.placeholder ?? context.t.cockpit.transcript.typeYourAnswer,
           onSubmit: () {
             final v = _input.text.trim();
             if (v.isEmpty) return;
@@ -963,7 +967,11 @@ class _InputRow extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 8),
-        _ChoiceButton(label: 'Send', filled: true, onTap: onSubmit),
+        _ChoiceButton(
+          label: context.t.cockpit.transcript.send,
+          filled: true,
+          onTap: onSubmit,
+        ),
       ],
     );
   }

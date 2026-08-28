@@ -2,6 +2,7 @@ import 'package:cockpit/app/cockpit/cockpit_module.dart';
 import 'package:cockpit/app/core/core_module.dart';
 import 'package:cockpit/app/core/data/terminal/terminal_profile_resolver_impl.dart';
 import 'package:cockpit/app/core/env.dart';
+import 'package:cockpit/app/core/ui/window_activity_controller.dart';
 import 'package:cockpit/app/settings/settings_module.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 
@@ -14,7 +15,10 @@ import 'package:flutter_modular/flutter_modular.dart';
 /// terminal: ambos moram no core (root-owned) e as features os resolvem
 /// **upward**; os demais async (boxes/versão/notifier) cada builder resolve
 /// sozinho. Construído **uma vez** no `main` — dedup por identidade preservado.
-Future<Module> buildAppModule({required PiSpawnConfig config}) async {
+Future<Module> buildAppModule({
+  required PiSpawnConfig config,
+  required WindowActivityController windowActivity,
+}) async {
   // Plano 50: descobre os perfis de terminal e injeta a instância **já
   // aquecida** — o `+` resolve o padrão de forma síncrona ao criar a aba. Aqui
   // (e não no `core_module`) porque `register` é síncrono e não há bind async;
@@ -27,7 +31,7 @@ Future<Module> buildAppModule({required PiSpawnConfig config}) async {
     config: config,
     terminalProfiles: terminalProfiles,
   );
-  final cockpit = await buildCockpitModule();
+  final cockpit = await buildCockpitModule(windowActivity: windowActivity);
   final settings = buildSettingsModule();
   return createModule(
     register: (c) => c

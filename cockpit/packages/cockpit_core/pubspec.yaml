@@ -1,0 +1,10 @@
+name: cockpit_core
+description: Contratos de domínio compartilhados entre o cliente Cockpit e o cockpit-server (plano 58). Dart puro, sem Flutter.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.9.0
+
+dev_dependencies:
+  test: ^1.25.0

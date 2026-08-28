@@ -1,6 +1,6 @@
 name: cockpit_pty
 description: Native pseudo-terminal (PTY) for Flutter — spawn shells and processes with full ANSI, resize and job control. Backed by ConPTY/forkpty and ready to pair with xterm.
-version: 1.0.6
+version: 1.0.7
 # Plugin INTERNO do Cockpit (não publicado). Absorvido 2026-07-19 do fork
 # jacobaraujo7/kyroon_pty v1.0.6 (upstream cesarmod2017/kyroon_pty; MIT em
 # LICENSE). Renomeado kyroon_pty->cockpit_pty; manutenção é nossa a partir

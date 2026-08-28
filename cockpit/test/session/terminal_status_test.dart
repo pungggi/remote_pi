@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_gateway.dart';
+import 'package:cockpit/app/core/utils/spawn_directory.dart';
 import 'package:cockpit/app/core/domain/entities/terminal_profile.dart';
 import 'package:cockpit/app/cockpit/ui/session/terminal_session.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -8,6 +9,13 @@ import 'package:flutter_test/flutter_test.dart';
 /// [TerminalGateway] inerte — não sobe PTY nenhum; só satisfaz o construtor da
 /// [TerminalSession] pra testar a máquina de status de turno isoladamente.
 class _NoopGateway implements TerminalGateway {
+  // `implements` não herda o corpo default do contrato: precisa declarar.
+  @override
+  SpawnDirectory? get spawnDirectory => null;
+
+  @override
+  int? get rootProcessId => null;
+
   final _out = StreamController<List<int>>();
 
   @override
@@ -24,6 +32,8 @@ class _NoopGateway implements TerminalGateway {
   void write(List<int> data) {}
   @override
   void resize(int rows, int columns) {}
+  @override
+  void acknowledgeOutput() {}
   @override
   Future<void> kill() async {
     await _out.close();

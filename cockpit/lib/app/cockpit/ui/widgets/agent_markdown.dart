@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
 // `gpt_markdown` é um pacote Material: estiliza headings/links/code via
 // `Theme.of(context)` Material + uma `GptMarkdownThemeData` (ThemeExtension do
@@ -42,56 +43,66 @@ class AgentMarkdown extends StatelessWidget {
     final base = brightness == Brightness.dark
         ? m.ThemeData.dark()
         : m.ThemeData.light();
-    return m.Theme(
-      data: base.copyWith(
-        colorScheme: base.colorScheme.copyWith(
-          surface: colors.panel,
-          onSurface: colors.text,
-          onSurfaceVariant: colors.text2,
-          error: colors.error,
+    // Cor de seleção EXPLÍCITA. O `gpt_markdown` desreferencia
+    // `DefaultSelectionStyle.of(context).selectionColor!` ao montar
+    // (`_SelectableAdapter.createRenderObject`), e o fallback do Flutter traz
+    // NULO — num app que não é MaterialApp (o nosso é ShadcnApp) isso crasha a
+    // árvore inteira. O root do app também provê, mas este widget é o que
+    // encosta na landmine, então não depende de quem o hospeda.
+    return m.DefaultSelectionStyle(
+      selectionColor: context.terminalTheme.selection,
+      cursorColor: colors.accent,
+      child: m.Theme(
+        data: base.copyWith(
+          colorScheme: base.colorScheme.copyWith(
+            surface: colors.panel,
+            onSurface: colors.text,
+            onSurfaceVariant: colors.text2,
+            error: colors.error,
+          ),
+          extensions: [
+            GptMarkdownThemeData(
+              brightness: brightness,
+              h1: typo.display.copyWith(color: colors.text, fontSize: 22),
+              h2: typo.display.copyWith(color: colors.text, fontSize: 18),
+              h3: typo.title.copyWith(color: colors.text, fontSize: 16),
+              h4: typo.title.copyWith(color: colors.text, fontSize: 14.5),
+              h5: typo.title.copyWith(color: colors.text, fontSize: 13.5),
+              h6: typo.title.copyWith(color: colors.text2, fontSize: 12.5),
+              linkColor: colors.accentText,
+              linkHoverColor: colors.accent,
+              hrLineColor: colors.border2,
+              highlightColor: colors.panel3,
+            ),
+          ],
         ),
-        extensions: [
-          GptMarkdownThemeData(
-            brightness: brightness,
-            h1: typo.display.copyWith(color: colors.text, fontSize: 22),
-            h2: typo.display.copyWith(color: colors.text, fontSize: 18),
-            h3: typo.title.copyWith(color: colors.text, fontSize: 16),
-            h4: typo.title.copyWith(color: colors.text, fontSize: 14.5),
-            h5: typo.title.copyWith(color: colors.text, fontSize: 13.5),
-            h6: typo.title.copyWith(color: colors.text2, fontSize: 12.5),
-            linkColor: colors.accentText,
-            linkHoverColor: colors.accent,
-            hrLineColor: colors.border2,
-            highlightColor: colors.panel3,
-          ),
-        ],
-      ),
-      child: m.Column(
-        mainAxisSize: m.MainAxisSize.min,
-        crossAxisAlignment: m.CrossAxisAlignment.start,
-        children: [
-          if (frontmatter != null)
-            MarkdownFrontmatterTable(
-              frontmatter: frontmatter,
-              style: typo.body.copyWith(color: colors.text),
-            ),
-          GptMarkdown(
-            body,
-            style: typo.body.copyWith(color: colors.text),
-            // `code` inline — fundo sutil, mono.
-            highlightBuilder: (context, text, style) => Text(
-              text,
-              style: typo.mono.copyWith(
-                fontSize: 12,
-                color: colors.text,
-                backgroundColor: colors.panel3,
+        child: m.Column(
+          mainAxisSize: m.MainAxisSize.min,
+          crossAxisAlignment: m.CrossAxisAlignment.start,
+          children: [
+            if (frontmatter != null)
+              MarkdownFrontmatterTable(
+                frontmatter: frontmatter,
+                style: typo.body.copyWith(color: colors.text),
               ),
+            GptMarkdown(
+              body,
+              style: typo.body.copyWith(color: colors.text),
+              // `code` inline — fundo sutil, mono.
+              highlightBuilder: (context, text, style) => Text(
+                text,
+                style: typo.mono.copyWith(
+                  fontSize: 12,
+                  color: colors.text,
+                  backgroundColor: colors.panel3,
+                ),
+              ),
+              // Blocos ``` — card escuro com header (linguagem + copiar).
+              codeBuilder: (context, name, code, closed) =>
+                  _CodeBlock(language: name, code: code),
             ),
-            // Blocos ``` — card escuro com header (linguagem + copiar).
-            codeBuilder: (context, name, code, closed) =>
-                _CodeBlock(language: name, code: code),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -206,7 +217,7 @@ class _CopyButtonState extends State<_CopyButton> {
   Widget build(BuildContext context) {
     final colors = context.colors;
     return AppTooltip(
-      message: 'Copy code',
+      message: context.t.common.copyCode,
       child: HoverTap(
         onTap: _copy,
         borderRadius: BorderRadius.circular(5),

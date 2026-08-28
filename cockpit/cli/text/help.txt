@@ -1,0 +1,108 @@
+cockpit — Cockpit's internal CLI (visible only inside the app's terminals)
+
+`ck` is a shorter name for the same command: `ck list-tabs` == `cockpit
+list-tabs`. (If you already have your own `ck` alias, yours wins.)
+
+A **tab** is a terminal/agent session (what this CLI addresses). A **pane** is
+the split leaf that groups tabs — not addressed here. `list-panes`/`read-pane`
+are legacy aliases of `list-tabs`/`read-tab`.
+
+USAGE:
+  cockpit send      [--tab-id <id>] [--enter] <text>   type text (--enter submits)
+  cockpit send-key  [--tab-id <id>] <Key>...   press named key(s)
+  cockpit open      [--tab-id <id>] <file>     open the file in the app's viewer
+  cockpit <file>                               shortcut for `open` (e.g. cockpit .zprofile)
+  cockpit read-tab  [<label|tab-id>]           read a tab's rendered output (alias: read-pane)
+  cockpit read-task <task-id>                  read a task's output (even w/o tab)
+  cockpit list-tabs       [--json]             list active tabs (alias: list-panes)
+  cockpit list-workspaces [--json]             list workspaces (projects)
+  cockpit list-tasks      [--json]             list this workspace's tasks (Task Run)
+  cockpit new-tab [--cwd <dir>] [--title <name>] [--split h|v]
+                                               open a new terminal tab (prints its id)
+  cockpit db <list|schema|query|run|execute>   SQL databases (see `cockpit db --help`)
+  cockpit redis [browse] --db <conn> ...       Redis command / open key table
+  cockpit mongo [browse] --db <conn> [--database <name>] ...
+                                               MongoDB runCommand / open browser
+  cockpit http <list|run> <file.http>          run HTTP requests from a .http
+                                               file (see `cockpit http --help`)
+  cockpit browse <url> [--json]                open the built-in browser tab at
+                                               <url> (system browser on Linux)
+  cockpit orchestrate <file.ckp> [--json]      apply a .ckp pane layout (open
+                                               terminals/splits + run commands)
+  cockpit install-skill   [--force]            install the Claude Code skill
+  cockpit --help | --version
+
+READ (read-tab / read-task):
+  --lines N     how many lines (default 100, server cap 2000)
+  --offset N    skip N lines from the anchor (pagination)
+  --from-start  anchor at the start of the buffer (default: tail/end)
+  Output is always chronological (top→bottom); flags only pick the window.
+  read-tab without a target reads the CURRENT tab; a target may be a stable
+  tab label or a tab-id.
+
+TASKS (list-tasks / read-task):
+  Task ids are stable per workspace: npm:<script> (package.json), flutter:run /
+  flutter:test, json:<label> (.cockpit/tasks.json). Discover them with
+  `cockpit list-tasks` — `[output]` marks tasks whose output `read-task` can
+  read (ran this boot); ● marks tasks running right now. Task-output tabs in
+  `list-tabs --json` also carry the task id as `taskId`.
+
+DATABASES (db):
+  Connections live per workspace in .cockpit/databases.json (+ auto-detected
+  SQLite files). Output is one JSON line — made for agents. Examples:
+    cockpit db list
+    cockpit db schema --db dev-local orders
+    cockpit db query --db dev-local --sql "SELECT * FROM orders LIMIT 5"
+    cockpit db run reports/daily.dbq
+  Full reference: `cockpit db --help`.
+
+HTTP (http):
+  Runs requests written in a .http file (REST Client / JetBrains syntax). The
+  app renders the same file as a request tab. Output is one JSON line:
+    cockpit http list api/users.http
+    cockpit http run  api/users.http --request "Create user"
+  Full reference: `cockpit http --help`.
+
+IDS:
+  Workspace ids are opaque UUIDs — use `workspacePath` (list-tabs) / `path`
+  (list-workspaces) when you need the folder on disk.
+
+FLAGS:
+  --enter         (send only) press Enter right after the text, as a separate
+                  keystroke. Same as `send …` followed by `send-key … Enter`,
+                  in one call.
+  --focused       target the tab you are LOOKING AT, whatever it is. Resolved by
+                  the app, so no id to copy. Works from outside a Cockpit
+                  terminal too (dictation tools, scripts): with no env inherited
+                  the CLI finds the app through ~/.cockpit/status.sock.
+
+TARGET:
+  --tab-id <id>   target tab (--focused wins over it). Default = $COCKPIT_TAB_ID
+                  (the current tab;
+                  legacy fallback $COCKPIT_PANE_ID). Ids (t0, t1…) reset on every
+                  app boot → find them with `cockpit list-tabs` before targeting
+                  another tab (cross-tab).
+
+KEYS (send-key):
+  Enter Tab Escape Space BSpace Up Down Left Right Home End
+  PageUp PageDown Delete   |   C-<letter> (e.g. C-c = Ctrl+C)
+
+NEW-TAB:
+  --cwd <dir>     working directory (default: current directory)
+  --title <name>  stable tab label (send/read-tab can target it by name)
+  --split h|v     h (or right) = side by side; v (or down) = stacked.
+                  Omit to open as a new tab in the same pane.
+  Anchored at the emitting tab's pane/workspace. Prints the new tab id.
+
+EXAMPLES:
+  cockpit send "echo hi" && cockpit send-key Enter
+  id=$(cockpit new-tab --cwd ~/proj --title Worker --split h)
+  cockpit send --tab-id "$id" --enter "npm test"   # text + Enter in one call
+  cockpit send-key C-c
+  cockpit send --tab-id t3 --enter "ls"
+  cockpit .zprofile          # opens the file in the viewer (relative to tab cwd)
+  cockpit open ~/.gitconfig
+  cockpit read-tab Extension --lines 50        # last 50 lines of tab "Extension"
+  cockpit read-tab t4 --lines 200 --from-start
+  cockpit list-tasks                           # discover task ids (npm:dev, ...)
+  cockpit read-task npm:dev --lines 80         # tail of task "npm:dev" output

@@ -1,0 +1,25 @@
+name: cockpit_engine
+description: Implementações nativas do motor do Cockpit (plano 58). Só o cockpit-server importa; nunca o cliente.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  cockpit_core:
+    path: ../cockpit_core
+  ffi: ^2.1.0
+  # Drivers de DB (Rust/FFI, Dart puro) — o servidor executa as queries no
+  # host (plano 58, Wave 4). Gate validado: rodam headless + sobrevivem ao
+  # bundle do `dart build cli`. SQL + NoSQL (Redis/Mongo por comando).
+  anaki_orm: ^0.1.1
+  anaki_sqlite: ^0.1.4
+  anaki_postgres: ^0.1.5
+  anaki_mysql: ^0.1.7
+  anaki_mssql: ^0.1.4
+  anaki_redis: ^0.1.4
+  anaki_mongodb: ^0.1.7
+
+dev_dependencies:
+  test: ^1.25.0

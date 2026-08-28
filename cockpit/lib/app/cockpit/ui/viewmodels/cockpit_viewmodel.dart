@@ -1,23 +1,29 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io'
-    show Directory, File, FileSystemEntity, FileSystemEntityType, Platform;
+    show Directory, File, FileSystemEntity, FileSystemException, Platform;
 import 'dart:math' show max;
 
 import 'package:cockpit/app/core/data/setup/remote_pi_resolver.dart';
+import 'package:flutter/services.dart' show PlatformException;
+import 'package:url_launcher/url_launcher.dart' as url_launcher;
 
 import 'package:cockpit/app/cockpit/domain/contracts/app_launcher.dart';
 import 'package:cockpit/app/cockpit/domain/services/db_query_service.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/content_searcher.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/file_reader.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/file_searcher.dart';
-import 'package:cockpit/app/cockpit/domain/contracts/file_system_mutator.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/file_system_reader.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/folder_lister.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/git_command_runner.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/git_diff_reader.dart';
+import 'package:cockpit/app/cockpit/domain/contracts/git_history_reader.dart';
+import 'package:cockpit/app/cockpit/domain/entities/scm_line_decorations.dart';
+import 'package:cockpit/app/cockpit/domain/exceptions/git_history_error.dart';
+import 'package:cockpit/app/cockpit/domain/services/scm_baseline_cache.dart';
+import 'package:cockpit/app/cockpit/domain/services/scm_line_decoration_calculator.dart';
+import 'package:cockpit/app/cockpit/domain/contracts/http_request_runner.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/layout_loader.dart';
-import 'package:cockpit/app/cockpit/domain/contracts/notifier.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/project_repository.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/rpc_gateway_factory.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/session_history.dart';
@@ -25,13 +31,22 @@ import 'package:cockpit/app/cockpit/domain/contracts/terminal_gateway_factory.da
 import 'package:cockpit/app/core/domain/contracts/terminal_profile_resolver.dart';
 import 'package:cockpit/app/core/domain/entities/terminal_profile.dart';
 import 'package:cockpit/app/core/domain/entities/app_settings.dart';
+import 'package:cockpit/app/core/domain/entities/sound_event.dart';
+import 'package:cockpit/app/core/domain/entities/automation.dart';
+import 'package:cockpit/app/core/domain/exceptions/automation_error.dart';
+import 'package:cockpit/app/core/domain/exceptions/file_operation_error.dart';
+import 'package:cockpit/app/core/domain/services/commit_message_prompt.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_status_server.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/workspace_layout_store.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/worktree_manager.dart';
 import 'package:cockpit/app/cockpit/domain/entities/content_search.dart';
+import 'package:cockpit/app/cockpit/domain/entities/file_diff.dart';
 import 'package:cockpit/app/cockpit/domain/entities/file_node.dart';
 import 'package:cockpit/app/cockpit/domain/entities/file_view.dart';
 import 'package:cockpit/app/cockpit/domain/entities/git_commit.dart';
+import 'package:cockpit/app/cockpit/domain/entities/git_history_commit.dart';
+import 'package:cockpit/app/cockpit/domain/entities/git_history_file_change.dart';
+import 'package:cockpit/app/cockpit/domain/git_history_parsers.dart';
 import 'package:cockpit/app/cockpit/domain/entities/layout_spec.dart';
 import 'package:cockpit/app/cockpit/domain/entities/git_file_status.dart';
 import 'package:cockpit/app/cockpit/domain/entities/git_info.dart';
@@ -42,31 +57,50 @@ import 'package:cockpit/app/cockpit/domain/value_objects/uid.dart';
 import 'package:cockpit/app/cockpit/domain/entities/session_info.dart';
 import 'package:cockpit/app/cockpit/domain/entities/thinking_level.dart';
 import 'package:cockpit/app/cockpit/domain/entities/worktree.dart';
+import 'package:cockpit/app/cockpit/domain/services/worktree_reconciler.dart';
+import 'package:cockpit/app/cockpit/ui/session/scm_line_decoration_coordinator.dart';
 import 'package:cockpit/app/core/data/lsp/lsp_server_pool.dart';
 import 'package:cockpit/app/core/data/lsp/lsp_text_edit.dart';
 import 'package:cockpit/app/core/domain/entities/lsp_diagnostic.dart';
 import 'package:cockpit/app/core/domain/entities/lsp_semantic_tokens.dart';
 import 'package:cockpit/app/core/domain/result.dart';
+import 'package:cockpit/app/core/ui/automation_controller.dart';
 import 'package:cockpit/app/core/utils/path_utils.dart';
+import 'package:cockpit/app/core/utils/platform_kind.dart';
 import 'package:cockpit/app/core/utils/user_home.dart';
 import 'package:cockpit/app/cockpit/ui/session/agent_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/diff_viewer_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/file_viewer_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/mongo_browser_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/pane_item.dart';
+import 'package:cockpit/app/cockpit/domain/entities/browser_capability.dart';
+import 'package:cockpit/app/cockpit/ui/session/browser_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/redis_browser_session.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/task_discovery.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/task_runner_gateway.dart';
 import 'package:cockpit/app/cockpit/ui/session/task_output_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/task_terminal_store.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_scrollback_store.dart';
+import 'package:cockpit/app/cockpit/domain/services/terminal_harness_monitor.dart';
 import 'package:cockpit/app/cockpit/ui/session/terminal_session.dart';
 import 'package:cockpit/app/cockpit/ui/states/pane_node.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/cockpit_cli_handler.dart';
+import 'package:cockpit_remote/cockpit_remote.dart' show RemoteCliCommand;
+import 'package:cockpit/app/cockpit/data/filesystem/unified_diff_parser.dart';
+import 'package:cockpit/app/cockpit/domain/entities/remote_host.dart';
+import 'package:cockpit/app/cockpit/domain/entities/remote_workspace_pin.dart';
+import 'package:cockpit_core/cockpit_core.dart' show GitRunResult;
+import 'package:cockpit_remote/cockpit_remote.dart'
+    show RemoteGitService, RemoteTurnStatus;
+import 'package:cockpit/app/cockpit/domain/contracts/terminal_gateway.dart';
+import 'package:cockpit/app/cockpit/ui/remote/remote_hosts_controller.dart';
+import 'package:cockpit/app/cockpit/ui/viewmodels/file_ops_controller.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/git_controller.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/realm_controller.dart';
+import 'package:cockpit/app/cockpit/ui/viewmodels/session_notifications_controller.dart';
+import 'package:cockpit/app/cockpit/ui/viewmodels/remote_workspace_controller.dart';
 import 'package:flutter/foundation.dart';
-import 'package:window_manager/window_manager.dart';
+import 'package:flutter/scheduler.dart';
 
 /// Controlador do shell: projetos, árvore de splits **por projeto**, sessões de
 /// agente, foco.
@@ -84,9 +118,9 @@ class CockpitViewModel extends ChangeNotifier {
     this._factory,
     this._folders,
     this._history,
-    this._notifier,
     this._fileSystem,
     this._terminalFactory,
+    this._sidecar,
     this._terminalProfiles,
     this._fileReader,
     this._layoutStore,
@@ -94,7 +128,6 @@ class CockpitViewModel extends ChangeNotifier {
     this._fileSearcher,
     this._launcher,
     this._worktreeMgr,
-    this._fileMutator,
     this._lsp,
     this._statusServer,
     this._contentSearcher,
@@ -102,22 +135,81 @@ class CockpitViewModel extends ChangeNotifier {
     this._scrollback,
     this._gitRunner,
     this._gitDiff,
+    this._gitHistory,
+    this._automation,
     this.realmCtrl,
     this._taskDiscovery,
     this._taskRunner,
     this._dbService,
+    this._httpRunner,
     this._layoutLoader,
+    this._remoteHosts,
+    this._scmBaselineCache,
+    this._scmCalculator,
+    this._harnessMonitor,
+    this.remote,
+    this.files,
+    this.notifications,
   ) {
+    _worktreeReconciler = WorktreeReconciler(_worktreeMgr);
     // Contexto do shell que o GitController precisa (page-scoped, mesma vida).
     git
       ..resolvePath = ((id) => _projectById(id)?.path)
-      ..isSystemTerminal = isSystemTerminal
+      // Pathless (Cockpit + hosts remotos): git local não sobe (path vazio).
+      ..isSystemTerminal = isPathless
       ..selectedProjectId = (() => _selectedProjectId)
       ..pollTargets = _gitPollTargets
       ..onStructuralFsChange = _bumpFileTree
       ..onPoll = _reconcileOpenWorktrees;
-    git.addListener(notifyListeners);
+    // Mesmo contrato do GitController: o motor remoto recebe o contexto do
+    // shell (projetos/seleção) e devolve os forks pro VM reconciliar.
+    remote
+      ..resolveProject = _projectById
+      ..remoteWorkspaces = (() => remoteWorkspaces)
+      ..selectedId = (() => _selectedProjectId)
+      ..selectProject = selectProject
+      ..forkOrigin = ((forkId) => _forkOrigin[forkId])
+      ..applyForks = _applyRemoteForks;
+    files
+      ..openFile = openFile
+      ..retargetSessions = _retargetSessions
+      ..closeSessionsUnder = _closeSessionsUnder
+      ..onTreeChanged = _bumpFileTree;
+    notifications
+      ..focusedTabId = (() => _focusedAgentId)
+      ..workspaceName = ((projectId) => _projectById(projectId)?.name ?? '');
+    notifications.addListener(notifyListeners);
+    files.addListener(notifyListeners);
+    remote.addListener(notifyListeners);
+    _lastGitRevision = git.revision;
+    git.addListener(_onGitNotify);
     realmCtrl.addListener(notifyListeners);
+    // Auto-open do navegador quando uma task anuncia dev server (plano 58).
+    _previewSub = _taskRunner.previewUrls().listen(_onTaskPreviewUrl);
+  }
+
+  StreamSubscription<TaskPreviewUrl>? _previewSub;
+
+  /// Assinatura do turn-status remoto (Wave G); cancelada no dispose.
+  StreamSubscription<RemoteTurnStatus>? _remoteTurnSub;
+
+  /// Assinatura dos comandos da CLI vindos dos hosts; cancelada no dispose.
+  StreamSubscription<RemoteCliCommand>? _remoteCliSub;
+
+  /// Idem para o sidecar LOCAL — desde que o PTY nasce nele, é por aqui que o
+  /// turn-status do agente local chega (ver [init]).
+  StreamSubscription<ClaudeStatusUpdate>? _sidecarTurnSub;
+
+  /// Task emitiu URL local (`npm run dev` etc.): abre o navegador embutido
+  /// nela — reusando a aba já aberta na mesma origem — ou, sem webview inline
+  /// (Linux), o browser do SO.
+  void _onTaskPreviewUrl(TaskPreviewUrl preview) {
+    final url = normalizeBrowserUrl(preview.url);
+    if (BrowserCapability.resolve().isInline) {
+      openWebBrowser(url, reuse: true);
+    } else {
+      unawaited(openUrlExternally(url));
+    }
   }
 
   /// Alvos do poll de git: a família visível na rail (raiz do projeto
@@ -138,6 +230,11 @@ class CockpitViewModel extends ChangeNotifier {
   /// o estado e mantém aqui só a orquestração de troca/exclusão.
   final RealmController realmCtrl;
 
+  /// Última seleção **desta sessão** por realm, incluindo worktrees (que são
+  /// runtime e não entram na preferência persistida). Usada pelo [switchRealm]
+  /// para devolver o foco exatamente onde o usuário estava naquele realm.
+  final Map<String, String> _sessionSelectionByRealm = <String, String>{};
+
   /// Descoberta e estado de tasks — usados só pelo comando `list-tasks` da CLI
   /// interna (mesmos binds do painel Tasks → mesma lista que a UI mostra).
   final TaskDiscovery _taskDiscovery;
@@ -146,13 +243,22 @@ class CockpitViewModel extends ChangeNotifier {
   /// Motor de queries da DB tab — compartilhado com a CLI `cockpit db`
   /// (plano 51): mesma resolução de conexão/senha, mesma serialização.
   final DbQueryService _dbService;
+
+  /// Motor de requests da HTTP tab — compartilhado com a CLI `cockpit http`,
+  /// pelo mesmo motivo do [_dbService].
+  final HttpRequestRunner _httpRunner;
   final LayoutLoader _layoutLoader;
+  final RemoteHostsController _remoteHosts;
+  final TerminalHarnessMonitor _harnessMonitor;
   final RpcGatewayFactory _factory;
   final FolderLister _folders;
   final SessionHistory _history;
-  final Notifier _notifier;
   final FileSystemReader _fileSystem;
   final TerminalGatewayFactory _terminalFactory;
+
+  /// Fonte de turn-status das PTYs que nascem FORA do app (hoje: o sidecar
+  /// local). O spawn continua indo pelo [_terminalFactory].
+  final TurnStatusSource _sidecar;
   final TerminalProfileResolver _terminalProfiles;
   final FileReader _fileReader;
   final WorkspaceLayoutStore _layoutStore;
@@ -160,17 +266,80 @@ class CockpitViewModel extends ChangeNotifier {
   /// Estado git extraído (info/roots/watcher/poll/comandos). O VM delega as
   /// leituras pra manter a API pública da UI e re-emite os notify dele.
   final GitController git;
+
+  /// Motor dos workspaces remotos (git do host, worktrees remotos). Mesmo
+  /// contrato do [git]: estado próprio, contexto injetado pelo VM.
+  final RemoteWorkspaceController remote;
+
+  /// Mutação de arquivos + clipboard da árvore (mesmo contrato).
+  final FileOpsController files;
+
+  /// Badge/notificação do SO/chime de fim de turno (mesmo contrato).
+  final SessionNotificationsController notifications;
   final FileSearcher _fileSearcher;
   final AppLauncherGateway _launcher;
   final WorktreeManager _worktreeMgr;
-  final FileSystemMutator _fileMutator;
   final LspServerPool _lsp;
   final TerminalStatusServer _statusServer;
   final ContentSearcher _contentSearcher;
   final TaskTerminalStore _taskTerminals;
+
+  /// Store de terminais de task (app-scoped). Exposto para o call-site remoto
+  /// registrar cada `RemoteTaskRunner` novo (senão o output remoto não alimenta
+  /// a aba — plano 60, Wave D).
+  TaskTerminalStore get taskTerminals => _taskTerminals;
+
   final TerminalScrollbackStore _scrollback;
   final GitCommandRunner _gitRunner;
   final GitDiffReader _gitDiff;
+  final GitHistoryReader _gitHistory;
+  final AutomationController _automation;
+  final ScmBaselineCache _scmBaselineCache;
+  final ScmLineDecorationCalculator _scmCalculator;
+  AutomationSelection? _automationSelection;
+  int _lastGitRevision = 0;
+
+  void _onGitNotify() {
+    final rev = git.revision;
+    if (rev != _lastGitRevision) {
+      _lastGitRevision = rev;
+      for (final s in _sessions.values) {
+        if (s is FileViewerSession) {
+          s.scmCoordinator?.onGitRevisionChanged();
+        }
+      }
+    }
+    notifyListeners();
+  }
+
+  /// Garante coordenador SCM na sessão (abertura, restore ou mount do FileViewer).
+  void ensureScmCoordinator(FileViewerSession session) =>
+      _ensureScmCoordinator(session);
+
+  void _ensureScmCoordinator(FileViewerSession session) {
+    final editable =
+        session.view is FileViewText ||
+        session.view is FileViewMarkdown ||
+        session.view is FileViewSvg;
+    if (session.scratch || !editable) {
+      session.clearScmDecorations();
+      return;
+    }
+    // Não recria se já existe — o FileViewer mantém o controller ligado.
+    if (session.scmCoordinator != null) return;
+    session.attachScmCoordinator(
+      ScmLineDecorationCoordinator(
+        session: session,
+        cache: _scmBaselineCache,
+        calculator: _scmCalculator,
+        resolveGitRoot: (path) => rootContaining(session.projectId, path),
+      ),
+    );
+  }
+
+  void setAutomationSelection(AutomationSelection? selection) {
+    _automationSelection = selection;
+  }
 
   List<LaunchableApp> _availableApps = const [];
 
@@ -248,6 +417,11 @@ class CockpitViewModel extends ChangeNotifier {
   /// Debounce de gravação por projeto (o resize é arrasto contínuo).
   final Map<String, Timer> _saveTimers = <String, Timer>{};
 
+  /// Override em memória do toggle de worktrees (V37), por workspace raiz. Só
+  /// ganha entrada quando o usuário alterna; a leitura cai no documento de
+  /// layout salvo (e daí no default expandido) enquanto não houver override.
+  final Map<String, bool> _worktreesExpanded = <String, bool>{};
+
   /// `true` enquanto reconstruímos um projeto — evita gravar layout meio-feito.
   bool _restoring = false;
 
@@ -256,6 +430,7 @@ class CockpitViewModel extends ChangeNotifier {
   /// existência mora no git, não no Hive (decisões 4, 17). Os mesmos `Project`s
   /// também entram em [_projectList] (pro IndexedStack e o lookup).
   final Map<String, List<Project>> _worktrees = <String, List<Project>>{};
+  late final WorktreeReconciler _worktreeReconciler;
 
   /// Root (path absoluto) que **originou** cada fork (fork.id → root path).
   /// Em single-root é o próprio path do pai; em multi-root, o repo filho de
@@ -305,16 +480,23 @@ class CockpitViewModel extends ChangeNotifier {
       onPanelVisibilityChanged?.call(_railVisible, _treeVisible);
   int _seq = 0;
 
-  /// Espelha `AppSettings.notificationsEnabled` (app-scoped, fora do grafo desta
-  /// VM page-scoped). A `CockpitPage` empurra o valor do `SettingsController`.
-  /// Gateia o disparo de notificação de fim de turno.
-  bool _notificationsEnabled = true;
-  void setNotificationsEnabled(bool value) => _notificationsEnabled = value;
+  /// Espelham as preferências de notificação/som do `SettingsController`
+  /// app-scoped (a `CockpitPage` empurra; a VM é page-scoped e não o enxerga).
+  /// O motor mora no [SessionNotificationsController].
+  void setNotificationsEnabled(bool value) =>
+      notifications.notificationsEnabled = value;
 
-  /// Espelha `AppSettings.soundEnabled`. Gateia o chime de fim de turno (tocado
-  /// com a janela focada). A `CockpitPage` empurra o valor do controller.
-  bool _soundEnabled = true;
-  void setSoundEnabled(bool value) => _soundEnabled = value;
+  void setSoundPrefs({
+    required Map<SoundEvent, bool> events,
+    required Map<SoundEvent, String> overrides,
+    required Map<SoundEvent, bool> onActiveTab,
+    required double volume,
+  }) => notifications.setSoundPrefs(
+    events: events,
+    overrides: overrides,
+    onActiveTab: onActiveTab,
+    volume: volume,
+  );
 
   /// Espelha `AppSettings.defaultTerminalProfileId` (plano 50). A `CockpitPage`
   /// empurra o valor do controller app-scoped. `null` = sem escolha → o resolver
@@ -378,6 +560,8 @@ class CockpitViewModel extends ChangeNotifier {
         .where(
           (p) =>
               p.parentId == null &&
+              // Remotos (plano 58) participam da lista/realm/reorder igual aos
+              // locais; só o Cockpit sintético (systemTerminal) fica de fora.
               !p.isSystemTerminal &&
               p.realmId == realmCtrl.activeId,
         )
@@ -403,9 +587,39 @@ class CockpitViewModel extends ChangeNotifier {
   bool isSystemTerminal(String? id) =>
       _projectById(id)?.isSystemTerminal ?? false;
 
+  /// `true` se [id] é um workspace SEM pasta local (Cockpit ou host remoto):
+  /// os serviços de path locais (git/árvore/tasks/Files/agente) não sobem.
+  bool isPathless(String? id) => _projectById(id)?.isPathless ?? false;
+
+  /// Workspaces de hosts remotos injetados (plano 58). Renderizados num slot
+  /// próprio no rail, fora de realm/reorder/persist (são pins, não projetos).
+  List<Project> get remoteWorkspaces => _projectList
+      .where((p) => p.isRemoteTerminal && p.parentId == null)
+      .toList(growable: false);
+
   /// Worktrees (forks) de um workspace raiz, na ordem do git (vazio se nenhuma).
   List<Project> worktreesOf(String rootId) =>
       _worktrees[rootId] ?? const <Project>[];
+
+  /// `true` se a lista de worktrees de [rootId] está expandida no rail (V37).
+  /// Sem override do usuário, vale o que o documento de layout salvo diz — e
+  /// layout antigo/inexistente vem expandido.
+  bool worktreesExpanded(String rootId) =>
+      _worktreesExpanded[rootId] ?? worktreesExpandedOf(_savedLayouts[rootId]);
+
+  /// Expande/recolhe a lista de worktrees de [rootId] e agenda a gravação no
+  /// **mesmo** documento de layout do workspace (sem storage paralelo).
+  void setWorktreesExpanded(String rootId, bool expanded) {
+    if (worktreesExpanded(rootId) == expanded) return;
+    _worktreesExpanded[rootId] = expanded;
+    final saved = _savedLayouts[rootId];
+    _savedLayouts[rootId] = <String, dynamic>{
+      ...?saved,
+      kWorktreesExpandedKey: expanded,
+    };
+    notifyListeners();
+    _scheduleSave(rootId);
+  }
 
   String? get selectedProjectId => _selectedProjectId;
   Project? get selectedProject => _projectById(_selectedProjectId);
@@ -454,6 +668,7 @@ class CockpitViewModel extends ChangeNotifier {
   late final CockpitCliHandler _cli = CockpitCliHandler(
     this,
     _dbService,
+    _httpRunner,
     _taskDiscovery,
     _taskRunner,
     _taskTerminals,
@@ -468,24 +683,48 @@ class CockpitViewModel extends ChangeNotifier {
 
   /// Roots git do projeto. Sempre não-vazio: single-root = `[path]`
   /// (comportamento histórico, N=1); multi-root = as filhas-repo derivadas.
-  List<String> rootsOf(String projectId) => git.rootsOf(projectId);
+  /// Vale igual para workspace **local e remoto** — no remoto as roots são
+  /// descobertas por `fs.list` no host (ver `RemoteRootFinder`).
+  List<String> rootsOf(String projectId) =>
+      _isRemote(projectId) ? remote.rootsOf(projectId) : git.rootsOf(projectId);
 
   /// `true` quando o workspace é multi-root (pasta-mãe sem `.git` com 2+
   /// repos filhos). Toda a UI multi-root é gateada por isto — N=1 nunca muda.
   bool isMultiRoot(String projectId) => rootsOf(projectId).length > 1;
 
-  /// Estado git de uma **root** específica ([rootPath] absoluto).
-  GitInfo? gitInfoForRoot(String rootPath) => git.infoForRoot(rootPath);
+  /// `true` se [projectId] é um workspace de host remoto.
+  bool _isRemote(String projectId) =>
+      projectById(projectId)?.isRemoteTerminal ?? false;
+
+  /// Estado git de uma **root** específica ([rootPath] absoluto) do workspace
+  /// ativo. Para perguntar por outro workspace (badge do rail), use
+  /// [gitInfoForRootIn] — no remoto a mesma root só faz sentido dentro do seu
+  /// workspace, já que dois hosts têm caminhos iguais.
+  GitInfo? gitInfoForRoot(String rootPath) {
+    final pid = _selectedProjectId;
+    if (pid == null) return git.infoForRoot(rootPath);
+    return gitInfoForRootIn(pid, rootPath);
+  }
+
+  /// Estado git da root [rootPath] **no workspace [projectId]**.
+  GitInfo? gitInfoForRootIn(String projectId, String rootPath) =>
+      _isRemote(projectId)
+      ? remote.infoForRoot(projectId, rootPath)
+      : git.infoForRoot(rootPath);
 
   /// Estado git do projeto (branch + sujos), ou `null` se não for repo git.
   /// Em multi-root não existe "o" GitInfo do workspace — devolve `null` (a
   /// rail usa [rootsGitSummary] pro chip agregado).
-  GitInfo? gitInfo(String projectId) => git.infoOf(projectId);
+  GitInfo? gitInfo(String projectId) => _isRemote(projectId)
+      ? remote.gitInfoOf(projectId)
+      : git.infoOf(projectId);
 
   /// Agregado pro chip da rail em multi-root: (nº de roots, roots com
   /// **alteração de arquivo**). Ver [GitController.rootsSummary].
   (int roots, int dirtyRoots) rootsGitSummary(String projectId) =>
-      git.rootsSummary(projectId);
+      _isRemote(projectId)
+      ? remote.rootsSummary(projectId)
+      : git.rootsSummary(projectId);
 
   /// Root (path absoluto) que contém [absolutePath] no projeto [projectId],
   /// ou `null` se o caminho está fora de todas (ex.: solto na pasta-mãe).
@@ -503,12 +742,20 @@ class CockpitViewModel extends ChangeNotifier {
   GitFileStatus? gitStatusForPath(String absolutePath) {
     final pid = _selectedProjectId;
     if (pid == null) return null;
+    // Workspace remoto: o controller resolve a root dona do caminho (multirepo)
+    // e calcula o relativo contra ela.
+    if (_activeRemoteHost() != null) {
+      return remote.statusForPath(
+        selectedProject?.remotePath ?? '',
+        absolutePath,
+      );
+    }
     final root = rootContaining(pid, absolutePath);
     if (root == null) return null;
     // A própria pasta da root (multi-root): o rel seria vazio e sumiria — usa
     // o agregado da root inteira pra pasta acender visto de fora.
     if (absolutePath == root) return git.statusForRoot(root);
-    return git.statusForRelPath(root, _subOf(absolutePath, root));
+    return git.statusForRelPath(root, relativeUnder(absolutePath, root));
   }
 
   /// Aba que o usuário está olhando.
@@ -517,9 +764,194 @@ class CockpitViewModel extends ChangeNotifier {
     return id == null ? null : _sessions[id];
   }
 
-  /// Filhos de uma pasta (lazy-load da árvore de arquivos).
-  Future<List<FileNode>> listChildren(String path) =>
-      _fileSystem.children(path);
+  /// Filhos de uma pasta (lazy-load da árvore de arquivos). Roteia pro
+  /// filesystem REMOTO quando o workspace ativo é um host remoto (plano 58);
+  /// senão, o filesystem local.
+  Future<List<FileNode>> listChildren(String path) async {
+    final host = _activeRemoteHost();
+    if (host == null) return _fileSystem.children(path);
+    try {
+      final service = await _remoteHosts.fileServiceFor(host);
+      final entries = await service.list(path);
+      final dirs = <FileNode>[];
+      final files = <FileNode>[];
+      for (final e in entries) {
+        if (e.name == '.DS_Store') continue;
+        if (e.isDirectory && const {'.git', '.hg', '.svn'}.contains(e.name)) {
+          continue;
+        }
+        final joined = path.endsWith('/')
+            ? '$path${e.name}'
+            : '$path/${e.name}';
+        (e.isDirectory ? dirs : files).add(
+          FileNode(name: e.name, path: joined, isDirectory: e.isDirectory),
+        );
+      }
+      return [...dirs, ...files];
+    } catch (_) {
+      // Falha de conexão/permissão → árvore vazia (sem crash); o badge de
+      // conexão do host já sinaliza o estado.
+      return const <FileNode>[];
+    }
+  }
+
+  /// Raiz da árvore de arquivos do workspace ativo: a pasta remota quando é um
+  /// host remoto, senão o path local. Vazio = sem árvore (Cockpit/sem seleção).
+  String get treeRootPath {
+    final p = selectedProject;
+    if (p == null) return '';
+    if (p.isRemoteTerminal) return p.remotePath ?? '';
+    return p.path;
+  }
+
+  /// Roots da árvore — multirepo vale igual no local e no remoto: a árvore
+  /// aparece seccionada por repo em vez de uma raiz só.
+  List<String> get treeRoots {
+    final p = selectedProject;
+    if (p == null) return const [];
+    return rootsOf(p.id);
+  }
+
+  /// `true` se o workspace ativo mostra árvore de arquivos (local com pasta ou
+  /// remoto); `false` pro Cockpit (systemTerminal, sem pasta).
+  bool get activeHasFileTree {
+    final p = selectedProject;
+    if (p == null) return false;
+    if (p.isSystemTerminal) return false;
+    return treeRootPath.isNotEmpty;
+  }
+
+  /// Lê um arquivo para o viewer, roteando pro host remoto quando o workspace
+  /// ativo é remoto (plano 58). Remoto suporta texto/markdown/svg (o conteúdo
+  /// vem como string via `fs.read`); imagem/áudio/vídeo remotos = unsupported
+  /// por ora (precisariam de download; melhoria futura).
+  Future<FileView> _readFile(String path) async {
+    final host = _activeRemoteHost();
+    if (host == null) return _fileReader.read(path);
+    try {
+      final service = await _remoteHosts.fileServiceFor(host);
+      final bytes = await service.read(path);
+      final text = utf8.decode(bytes, allowMalformed: true);
+      final ext = path.contains('.')
+          ? path.substring(path.lastIndexOf('.') + 1).toLowerCase()
+          : '';
+      if (_kRemoteMediaExts.contains(ext)) return const FileViewUnsupported();
+      if (const {'md', 'mdx', 'markdown'}.contains(ext)) {
+        return FileViewMarkdown(text);
+      }
+      if (ext == 'svg') return FileViewSvg(path, text);
+      return FileViewText(text, language: ext.isEmpty ? null : ext);
+    } catch (_) {
+      // fs.read falhou (too_large, permissão, conexão) → não abre.
+      return const FileViewUnsupported();
+    }
+  }
+
+  /// Diff de um arquivo do workspace remoto (working tree, e index se não
+  /// houver mudança no working tree), parseado com o mesmo parser do local.
+  /// Untracked (index 'A' vindo do status) → `--cached` mostra o conteúdo novo.
+  Future<FileDiff> _remoteFileDiff(String root, String absPath) async {
+    final rel = relativeUnder(absPath, root);
+    try {
+      final service = await _activeRemoteGit();
+      var raw = await service.diff(root, rel);
+      if (raw.trim().isEmpty) {
+        // Sem mudança no working tree → tenta o staged (arquivo novo/add).
+        raw = await service.diff(root, rel, staged: true);
+      }
+      if (raw.trim().isEmpty) return FileDiff.unchanged(absPath);
+      if (unifiedDiffLooksBinary(raw)) return FileDiff.binary(absPath);
+      final (hunks, kind) = parseUnifiedDiff(raw);
+      if (hunks.isEmpty) return FileDiff.unchanged(absPath);
+      return FileDiff(path: absPath, kind: kind, hunks: hunks);
+    } catch (_) {
+      return FileDiff.unchanged(absPath);
+    }
+  }
+
+  // === Motor remoto (plano 58) ===========================================
+  // Cache do `git status` por host, worktrees remotos e as ops que rodam via
+  // SSH moram no [RemoteWorkspaceController]. O VM só delega e mantém a
+  // reconciliação de forks (que mexe em projetos/sessões).
+
+  /// O [RemoteHost] do workspace ativo, ou `null` se o ativo é local.
+  RemoteHost? _activeRemoteHost() => remote.activeHost;
+
+  /// O [RemoteHost] dono do workspace [workspaceId], ou `null` se local. Usado
+  /// pelo roteamento de DB remoto (o DbQueryService pergunta por workspace).
+  RemoteHost? remoteHostForWorkspace(String? workspaceId) =>
+      remote.hostForWorkspace(workspaceId);
+
+  /// GitInfo remoto de um workspace [wsId] (pro badge do rail).
+  GitInfo? remoteGitInfoOf(String wsId) => remote.gitInfoOf(wsId);
+
+  Future<void> _refreshRemoteGit() => remote.refreshActive();
+
+  Future<RemoteGitService> _activeRemoteGit() => remote.activeGitService();
+
+  void _ensureRemoteGitLoaded() => remote.ensureLoaded();
+
+  /// Pasta do workspace remoto [wsId] no host (a raiz do pin). É o fallback
+  /// das ações git quando o menu não direciona uma root (single-root).
+  String remoteRootOf(String wsId) => _projectById(wsId)?.remotePath ?? '';
+
+  /// Namespace (branches/worktrees/base) do host — valida o dialog de criar.
+  /// [root] escolhe o repo em multirepo; omitido = a pasta do pin.
+  Future<WorktreeNamespace> remoteWorktreeNamespace(
+    String wsId, {
+    String? root,
+  }) => remote.worktreeNamespace(wsId, root: root);
+
+  WorktreeAddRun<Project> createRemoteWorktree(
+    String wsId,
+    String name, {
+    String? baseRef,
+    String? root,
+  }) => remote.createWorktree(wsId, name, baseRef: baseRef, root: root);
+
+  Future<Result<void, WorktreeOpError>> removeRemoteWorktree(String forkId) =>
+      remote.removeWorktree(forkId);
+
+  /// `true` se a branch do fork remoto já foi mergeada — aviso antes de remover.
+  Future<bool> isRemoteWorktreeBranchMerged(String forkId) =>
+      remote.isWorktreeBranchMerged(forkId);
+
+  GitMergeOutcome mergeRemoteWorktreeToParent(Project fork) =>
+      remote.mergeWorktreeToParent(fork);
+
+  GitRun updateRemoteWorktreeFromParent(Project fork) =>
+      remote.updateWorktreeFromParent(fork);
+
+  /// Aplica a lista de forks remotos reconciliada pelo [RemoteWorkspaceController]:
+  /// tira da UI os que sumiram (encerrando o runtime no fim do frame), insere ou
+  /// atualiza os que ficaram e registra a origem de cada um.
+  void _applyRemoteForks(
+    String wsId,
+    List<Project> forks,
+    Map<String, String> originOf,
+  ) {
+    for (final f in forks) {
+      // Origem = a root do host de onde ESTE fork saiu (multirepo tem várias).
+      final origin = originOf[f.id];
+      if (origin != null) _forkOrigin[f.id] = origin;
+    }
+    final newIds = forks.map((f) => f.id).toSet();
+    for (final f in _worktrees[wsId] ?? const <Project>[]) {
+      if (newIds.contains(f.id)) continue;
+      _projectList.removeWhere((p) => p.id == f.id);
+      if (_selectedProjectId == f.id) _selectedProjectId = wsId;
+      unawaited(_disposeRuntimeAfterFrame(f.id));
+    }
+    _worktrees[wsId] = forks;
+    for (final f in forks) {
+      final idx = _projectList.indexWhere((p) => p.id == f.id);
+      if (idx < 0) {
+        _projectList.add(f);
+      } else {
+        _projectList[idx] = f;
+      }
+    }
+  }
 
   /// Arquivos de [cwd] que casam com [query] (autocomplete do `@`). Caminhos
   /// relativos a [cwd].
@@ -596,6 +1028,7 @@ class CockpitViewModel extends ChangeNotifier {
     String path, {
     String? inPane,
     bool isPreview = true,
+    int? revealLine,
   }) async {
     final projectId = _selectedProjectId;
     final tree = _activeTree;
@@ -616,6 +1049,8 @@ class CockpitViewModel extends ChangeNotifier {
         // Se já aberto, só seleciona (mas transforma preview em normal se não é preview).
         if (s.path == path) {
           if (!isPreview && s.isPreview) s.pin();
+          _ensureScmCoordinator(s);
+          if (revealLine != null) s.reveal(revealLine, select: false);
           _trees[projectId] = updateLeaf(
             tree,
             paneId,
@@ -631,7 +1066,24 @@ class CockpitViewModel extends ChangeNotifier {
       }
     }
 
-    final view = await _fileReader.read(path);
+    // REMOTO: `fs.read` viaja pela rede. Abrimos a aba JÁ visível em loading e
+    // lemos depois (plano 60, Wave A) — em host lento não fica "nada
+    // acontecendo" antes da aba surgir. No local o read é de disco
+    // (instantâneo), então segue read-first, sem skeleton.
+    if (_activeRemoteHost() != null) {
+      await _openRemoteFileLoading(
+        path: path,
+        projectId: projectId,
+        tree: tree,
+        paneId: paneId,
+        isPreview: isPreview,
+        previewCandidate: previewCandidate,
+        revealLine: revealLine,
+      );
+      return;
+    }
+
+    final view = await _readFile(path);
     if (view is FileViewUnsupported) return; // binário/vídeo: não abre
 
     // Se é preview e temos um candidato, reutiliza (substitui conteúdo).
@@ -639,7 +1091,15 @@ class CockpitViewModel extends ChangeNotifier {
       previewCandidate.path = path;
       previewCandidate.view = view;
       previewCandidate.dirty = false;
-      previewCandidate.notifyListeners(); // Força rebuild do FileViewer
+      previewCandidate.revealLine = null;
+      previewCandidate.setScmDecorations(ScmLineDecorations.empty);
+      _ensureScmCoordinator(previewCandidate);
+      previewCandidate.scmCoordinator?.onSessionPathChanged();
+      if (revealLine != null) {
+        previewCandidate.reveal(revealLine, select: false);
+      } else {
+        previewCandidate.notifyListeners(); // Força rebuild do FileViewer
+      }
       _trees[projectId] = updateLeaf(
         tree,
         paneId,
@@ -657,11 +1117,23 @@ class CockpitViewModel extends ChangeNotifier {
       view: view,
       isPreview: isPreview,
     );
+    _ensureScmCoordinator(viewer);
+    if (revealLine != null) viewer.reveal(revealLine, select: false);
     _sessions[viewer.id] = viewer;
     _watchFileViewer(viewer);
+    _placeNewViewer(viewer, projectId, paneId, tree, isPreview: isPreview);
+  }
 
-    // Se a pane só tem o placeholder vazio, substitui; senão adiciona aba.
-    // Se é preview e a aba ativa é um FileViewer, substitui em vez de adicionar.
+  /// Insere uma aba de viewer recém-criada na pane [paneId]: substitui o
+  /// placeholder vazio ou outro preview, ou adiciona ao lado. Extraído de
+  /// [openFile] para reuso pelo caminho remoto (skeleton, Wave A).
+  void _placeNewViewer(
+    FileViewerSession viewer,
+    String projectId,
+    String paneId,
+    PaneNode tree, {
+    required bool isPreview,
+  }) {
     final current = _trees[projectId] ?? tree;
     final lf = findLeaf(current, paneId);
     final activeTabId = lf?.active;
@@ -709,6 +1181,193 @@ class CockpitViewModel extends ChangeNotifier {
       );
     }
     notifyListeners();
+  }
+
+  /// Caminho remoto de [openFile]: cria a aba imediatamente em loading, lê o
+  /// conteúdo pela rede e preenche (ou descarta se ilegível). Preserva a
+  /// semântica de preview. As decorações de SCM vêm do coordenador (buffer vs
+  /// `HEAD`), não injetadas aqui.
+  Future<void> _openRemoteFileLoading({
+    required String path,
+    required String projectId,
+    required PaneNode tree,
+    required String paneId,
+    required bool isPreview,
+    required FileViewerSession? previewCandidate,
+    int? revealLine,
+  }) async {
+    // Mídia é sempre unsupported no remoto (classificada por extensão em
+    // _readFile) — filtra aqui pra não piscar uma aba que seria descartada.
+    if (_isRemoteMediaPath(path)) return;
+
+    final reused = isPreview && previewCandidate != null;
+    final FileViewerSession target;
+    if (reused) {
+      target = previewCandidate;
+      target.path = path;
+      target.dirty = false;
+      target.revealLine = null;
+      target.loading = true;
+      target.notifyListeners();
+      _trees[projectId] = updateLeaf(
+        tree,
+        paneId,
+        (p) => p.copyWith(active: target.id),
+      );
+      notifyListeners();
+    } else {
+      target = FileViewerSession(
+        id: _nid('v'),
+        projectId: projectId,
+        path: path,
+        view: const FileViewText(''),
+        isPreview: isPreview,
+        loading: true,
+      );
+      _sessions[target.id] = target;
+      _watchFileViewer(target);
+      _placeNewViewer(target, projectId, paneId, tree, isPreview: isPreview);
+    }
+
+    final view = await _readFile(path);
+    // A aba pode ter sido fechada durante o read.
+    if (_sessions[target.id] != target) return;
+    if (view is FileViewUnsupported) {
+      // Ilegível (too_large/permissão/conexão). Aba nova → fecha; preview
+      // reusado → só encerra o loading (mantém o conteúdo anterior).
+      if (reused) {
+        target.loading = false;
+        target.notifyListeners();
+      } else {
+        final leaf = _leafOf(target.id);
+        if (leaf != null) closeTab(leaf, target.id);
+      }
+      return;
+    }
+    target.view = view;
+    target.loading = false;
+    _ensureScmCoordinator(target);
+    if (revealLine != null) {
+      target.reveal(revealLine, select: false);
+    } else {
+      target.notifyListeners();
+    }
+  }
+
+  /// Comandos da CLI que **não** viajam de um host para cá, e por quê. A
+  /// recusa é explícita (e não um erro obscuro) porque um agente que entende o
+  /// motivo escolhe outro caminho, enquanto um erro genérico o faz insistir.
+  static const Map<String, String> _remoteCliRefusals = <String, String>{
+    'browse':
+        'browse runs on the Cockpit machine, so a URL from this host '
+        '(localhost included) would not resolve there',
+    'redis-browse':
+        'browse runs on the Cockpit machine, so a URL from this host '
+        '(localhost included) would not resolve there',
+    'mongo-browse':
+        'browse runs on the Cockpit machine, so a URL from this host '
+        '(localhost included) would not resolve there',
+    'http-run':
+        'the request would leave from the Cockpit machine, not from this '
+        'host — run it here with curl instead',
+    'http-list':
+        'the request would leave from the Cockpit machine, not from this '
+        'host — run it here with curl instead',
+    'orchestrate':
+        'layout files describe panes on the Cockpit machine; run it there',
+  };
+
+  /// Atende um comando da CLI vindo de um host remoto. Roteia para o mesmo
+  /// [CockpitCliHandler] da CLI local depois de aplicar a política do que pode
+  /// atravessar (ver [_remoteCliRefusals]).
+  Future<void> _onRemoteCliCommand(RemoteCliCommand command) async {
+    final request = command.request;
+    final cmd = (request['cmd'] ?? '').toString();
+    final refusal = _remoteCliRefusals[cmd];
+    if (refusal != null) {
+      command.fail('$cmd is not available from a remote terminal: $refusal');
+      return;
+    }
+    final tabId = request['tabId']?.toString();
+    final args = (request['args'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final result = await _cli.handle(
+      CockpitCommand(cmd: cmd, tabId: tabId, args: args),
+    );
+    if (result.ok) {
+      command.respond(result.data);
+    } else {
+      command.fail(result.error ?? 'command failed');
+    }
+  }
+
+  /// Sessão de terminal da aba ATIVA na pane focada, ou `null` (nenhuma aba, ou
+  /// a aba ativa não é terminal). Usado pela barra de teclas do mobile.
+  TerminalSession? _activeTerminal() {
+    final projectId = _selectedProjectId;
+    final tree = _activeTree;
+    if (projectId == null || tree == null) return null;
+    final paneId = _focused[projectId];
+    if (paneId == null) return null;
+    final activeId = findLeaf(tree, paneId)?.active;
+    final s = activeId == null ? null : _sessions[activeId];
+    return s is TerminalSession ? s : null;
+  }
+
+  /// A aba ativa (pane focada) é um terminal? Gate da barra de teclas mobile.
+  bool get activeTabIsTerminal => _activeTerminal() != null;
+
+  /// Envia bytes crus (ESC, setas, F-keys, Ctrl+C...) ao terminal ativo. No-op
+  /// se a aba ativa não for terminal.
+  void sendKeysToActiveTerminal(List<int> bytes) =>
+      _activeTerminal()?.sendKeys(bytes);
+
+  /// Copia a seleção do terminal ativo (botão da barra de teclas do mobile).
+  /// No-op sem seleção — ou quando a aba ativa não é terminal.
+  void copyFromActiveTerminal() => _activeTerminal()?.copySelection();
+
+  /// Cola o clipboard no terminal ativo (mesmo caminho do ⌘V do desktop, com
+  /// suporte a imagem). No-op se a aba ativa não é terminal.
+  Future<void> pasteToActiveTerminal() async =>
+      _activeTerminal()?.pasteFromClipboard();
+
+  /// Id da pane (folha) que contém a aba [tabId] na árvore ativa, ou `null`.
+  String? _leafOf(String tabId) {
+    final tree = _activeTree;
+    if (tree == null) return null;
+    for (final leaf in leaves(tree)) {
+      if (leaf.tabs.contains(tabId)) return leaf.id;
+    }
+    return null;
+  }
+
+  /// Extensões que o viewer remoto trata como mídia/binário (não abre). Espelha
+  /// a classificação de [_readFile] no ramo remoto.
+  static const Set<String> _kRemoteMediaExts = {
+    'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', //
+    'mp4', 'mov', 'mkv', 'webm', 'mp3', 'wav', 'flac', 'ogg', 'm4a', 'pdf',
+  };
+
+  bool _isRemoteMediaPath(String path) {
+    final ext = path.contains('.')
+        ? path.substring(path.lastIndexOf('.') + 1).toLowerCase()
+        : '';
+    return _kRemoteMediaExts.contains(ext);
+  }
+
+  /// Abre uma mudança do Source Control no editor normal. Decorações vêm do
+  /// coordenador SCM (buffer vs `HEAD`), não de uma injeção pontual do diff.
+  /// Arquivos apagados não existem mais no working tree e continuam no diff.
+  Future<void> openChangedFile(String path) async {
+    final projectId = _selectedProjectId;
+    if (projectId == null) return;
+    final root = rootContaining(projectId, path);
+    if (root == null) return;
+
+    final diff = await _gitDiff.read(root, path);
+    if (_selectedProjectId != projectId || diff.kind == FileDiffKind.deleted) {
+      return;
+    }
+    await openFile(path, isPreview: false);
   }
 
   /// Abre uma tab `.dbq` **untitled** (scratch, VSCode-style): buffer em
@@ -792,6 +1451,70 @@ class CockpitViewModel extends ChangeNotifier {
     return true;
   }
 
+  /// Abre [url] no browser do SO — fallback das plataformas sem webview
+  /// inline (plano 58) e caminho do auto-open de task no Linux.
+  Future<bool> openUrlExternally(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return false;
+    try {
+      return await url_launcher.launchUrl(uri);
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// Abre uma aba de **navegador** (plano 58). [url] vazia = aba em branco com
+  /// o campo de URL focado (botão da pane). [inPane] força a pane alvo (botão);
+  /// default = pane focada. Com [reuse], foca uma aba de navegador já aberta na
+  /// mesma origem (host:porta) e navega nela em vez de duplicar — é o caminho
+  /// do auto-open de task e do `cockpit browse`.
+  BrowserSession? openWebBrowser(
+    String url, {
+    String? projectId,
+    String? inPane,
+    bool reuse = false,
+  }) {
+    final pid = projectId ?? _selectedProjectId;
+    final tree = pid == null ? null : _trees[pid];
+    if (pid == null || tree == null) return null;
+    final paneId = inPane ?? _focused[pid] ?? leaves(tree).firstOrNull?.id;
+    if (paneId == null) return null;
+
+    if (reuse && url.isNotEmpty) {
+      final target = Uri.tryParse(url);
+      bool sameOrigin(BrowserSession s) {
+        final cur = Uri.tryParse(s.url);
+        return target != null &&
+            cur != null &&
+            cur.host == target.host &&
+            cur.port == target.port;
+      }
+
+      for (final s in _sessions.values) {
+        if (s is BrowserSession && s.projectId == pid && sameOrigin(s)) {
+          for (final leaf in leaves(tree)) {
+            if (leaf.tabs.contains(s.id)) {
+              if (pid == _selectedProjectId) selectTab(leaf.id, s.id);
+              s.requestUrl(url);
+              return s;
+            }
+          }
+        }
+      }
+    }
+
+    final session = BrowserSession(
+      id: _nid('v'),
+      projectId: pid,
+      workingDirectory: _projectById(pid)?.path ?? '',
+    );
+    if (url.isNotEmpty) session.seedUrl = url;
+    _sessions[session.id] = session;
+    _addLeafTab(pid, paneId, session.id);
+    notifyListeners();
+    return session;
+  }
+
   /// Núcleo comum dos browsers de banco: foca a tab existente que [matches]
   /// no projeto alvo, ou cria via [make] na pane focada. Devolve a sessão
   /// (existente ou nova), ou `null` se o projeto não tem árvore montada.
@@ -827,27 +1550,43 @@ class CockpitViewModel extends ChangeNotifier {
   /// Salva um buffer scratch como arquivo real [fileName] na raiz do workspace
   /// (o `.dbq` é anexado se faltar). Retarga a sessão, arma o watcher e limpa
   /// o flag scratch → daí vira uma tab de arquivo normal. Plano 51.
-  Future<Result<void, String>> saveScratchAs(
+  Future<Result<void, FileOperationError>> saveScratchAs(
     String sessionId,
     String fileName,
     String content,
   ) async {
     final s = _sessions[sessionId];
     if (s is! FileViewerSession || !s.scratch) {
-      return const Failure('not a scratch tab');
+      return const Failure(
+        FileOperationError(FileOperationErrorKind.notScratchTab),
+      );
     }
     var name = fileName.trim();
-    if (name.isEmpty) return const Failure('empty name');
+    if (name.isEmpty) {
+      return const Failure(
+        FileOperationError(FileOperationErrorKind.emptyName),
+      );
+    }
     if (!name.toLowerCase().endsWith('.dbq')) name = '$name.dbq';
-    final invalid = _validateName(name);
+    final invalid = files.validateName(name);
     if (invalid != null) return Failure(invalid);
     final root = _projectById(s.projectId)?.path;
-    if (root == null) return const Failure('no workspace');
-    final path = _join(root, name);
-    if (await File(path).exists()) return Failure('"$name" already exists');
+    if (root == null) {
+      return const Failure(
+        FileOperationError(FileOperationErrorKind.noWorkspace),
+      );
+    }
+    final path = joinPath(root, name);
+    if (await File(path).exists()) {
+      return Failure(
+        FileOperationError(FileOperationErrorKind.alreadyExists, name: name),
+      );
+    }
 
     if (!await _fileReader.write(path, content)) {
-      return const Failure('could not write file');
+      return const Failure(
+        FileOperationError(FileOperationErrorKind.writeFailed),
+      );
     }
     s
       ..path = path
@@ -892,17 +1631,33 @@ class CockpitViewModel extends ChangeNotifier {
 
   /// `true` se o workspace [projectId] tem git — single-root: a raiz é repo;
   /// multi-root: qualquer root (habilita a aba Source Control).
-  bool isGitRepo(String projectId) => git.isGitRepo(projectId);
+  bool isGitRepo(String projectId) {
+    final p = _projectById(projectId);
+    if (p != null && p.isRemoteTerminal) return remote.hasGit(p.id);
+    return git.isGitRepo(projectId);
+  }
 
   /// Status git (relativo à **root**) dos arquivos com mudança de uma root.
+  /// No remoto multirepo cada root tem o seu — não existe mais "o" status do
+  /// workspace.
   Map<String, GitFileStatus> changedFilesOfRoot(String rootPath) =>
-      git.changedFilesOfRoot(rootPath);
+      _remoteInfoForRoot(rootPath)?.files ?? git.changedFilesOfRoot(rootPath);
 
   Map<String, GitFileStatus> stagedFilesOfRoot(String rootPath) =>
+      _remoteInfoForRoot(rootPath)?.stagedFiles ??
       git.stagedFilesOfRoot(rootPath);
 
   Map<String, GitFileStatus> unstagedFilesOfRoot(String rootPath) =>
+      _remoteInfoForRoot(rootPath)?.changedFiles ??
       git.unstagedFilesOfRoot(rootPath);
+
+  /// GitInfo remoto de [rootPath] no workspace ativo, ou `null` se o ativo é
+  /// local (aí quem responde é o [GitController]).
+  GitInfo? _remoteInfoForRoot(String rootPath) {
+    final pid = _selectedProjectId;
+    if (pid == null || _activeRemoteHost() == null) return null;
+    return remote.infoForRoot(pid, rootPath);
+  }
 
   /// Caminhos **absolutos** com mudança git do projeto selecionado (exclui
   /// ignorados), varrendo **todas as roots** — alimenta a árvore podada do
@@ -924,7 +1679,8 @@ class CockpitViewModel extends ChangeNotifier {
     final project = selectedProject;
     if (project == null) return const [];
     final out = <String>[];
-    for (var root in rootsOf(project.id)) {
+    final roots = rootsOf(project.id);
+    for (var root in roots) {
       if (root.endsWith('/')) root = root.substring(0, root.length - 1);
       for (final rel in filesForRoot(root).keys) {
         out.add('$root/$rel');
@@ -933,25 +1689,45 @@ class CockpitViewModel extends ChangeNotifier {
     return out;
   }
 
+  String _relativePath(String root, String path) {
+    final normalizedRoot = root.endsWith('/')
+        ? root.substring(0, root.length - 1)
+        : root;
+    return path.startsWith('$normalizedRoot/')
+        ? path.substring(normalizedRoot.length + 1)
+        : path;
+  }
+
   /// Abre o **diff** de um arquivo contra o HEAD numa aba de viewer (split, só
   /// leitura). Espelha [openFile]: reutiliza a aba de preview quando possível.
-  Future<void> openDiff(String path, {bool isPreview = true}) async {
+  Future<void> openDiff(
+    String path, {
+    bool isPreview = true,
+    String? commitHash,
+    String? repoRoot,
+    String? previousRelativePath,
+  }) async {
     final projectId = _selectedProjectId;
     final tree = _activeTree;
     final paneId = projectId == null ? null : _focused[projectId];
     if (projectId == null || tree == null || paneId == null) return;
     final leaf = findLeaf(tree, paneId);
     if (leaf == null) return;
-    // Diff roda contra a root que contém o arquivo (multi-root: o repo filho).
-    final root = rootContaining(projectId, path);
-    if (root == null) return;
+    final remoteDiff = _activeRemoteHost() != null && commitHash == null;
+    // Diff roda contra a root que contém o arquivo (multirepo: o repo filho) —
+    // local e remoto usam a mesma resolução; o fallback é a pasta do pin.
+    final root =
+        repoRoot ??
+        rootContaining(projectId, path) ??
+        (remoteDiff ? selectedProject?.remotePath : null);
+    if (root == null || root.isEmpty) return;
 
     // Já aberto? Seleciona (e fixa se não é preview).
     DiffViewerSession? previewCandidate;
     for (final tabId in leaf.tabs) {
       final s = _sessions[tabId];
       if (s is DiffViewerSession) {
-        if (s.path == path) {
+        if (s.path == path && s.commitHash == commitHash) {
           if (!isPreview && s.isPreview) s.pin();
           _trees[projectId] = updateLeaf(
             tree,
@@ -967,13 +1743,27 @@ class CockpitViewModel extends ChangeNotifier {
       }
     }
 
-    final diff = await _gitDiff.read(root, path);
+    final diff = remoteDiff
+        ? await _remoteFileDiff(root, path)
+        : commitHash == null
+        ? await _gitDiff.read(root, path)
+        : await _gitDiff.readCommit(
+            root,
+            commitHash,
+            _relativePath(root, path),
+            previousRelativePath: previousRelativePath,
+          );
 
     // Reutiliza a aba de preview de diff, se houver.
     if (isPreview && previewCandidate != null) {
       previewCandidate
         ..path = path
         ..diff = diff
+        ..commitHash = commitHash
+        ..repoRoot = commitHash == null ? null : root
+        ..previousRelativePath = commitHash == null
+            ? null
+            : previousRelativePath
         ..notifyListeners();
       _trees[projectId] = updateLeaf(
         tree,
@@ -989,6 +1779,9 @@ class CockpitViewModel extends ChangeNotifier {
       projectId: projectId,
       path: path,
       diff: diff,
+      commitHash: commitHash,
+      repoRoot: commitHash == null ? null : root,
+      previousRelativePath: commitHash == null ? null : previousRelativePath,
       isPreview: isPreview,
     );
     _sessions[viewer.id] = viewer;
@@ -1031,6 +1824,20 @@ class CockpitViewModel extends ChangeNotifier {
     }
     notifyListeners();
   }
+
+  /// Abre o diff que um commit introduziu em [relativePath].
+  Future<void> openCommitDiff(
+    String repoPath,
+    String commitHash,
+    GitHistoryFileChange change, {
+    bool isPreview = true,
+  }) => openDiff(
+    '${repoPath.endsWith('/') ? repoPath.substring(0, repoPath.length - 1) : repoPath}/${change.path}',
+    isPreview: isPreview,
+    commitHash: commitHash,
+    repoRoot: repoPath,
+    previousRelativePath: change.previousPath,
+  );
 
   /// Seleciona um arquivo no FileTreePanel (atualiza o highlight).
   void selectFileInTree(String path) {
@@ -1187,9 +1994,24 @@ class CockpitViewModel extends ChangeNotifier {
   Future<bool> saveFile(String sessionId, String content) async {
     final s = _sessions[sessionId];
     if (s is! FileViewerSession) return false;
-    final ok = await _fileReader.write(s.path, content);
-    if (!ok) return false;
-    final fresh = await _fileReader.read(s.path);
+    final host = _activeRemoteHost();
+    if (host != null) {
+      // Remoto: grava via fs.write no host e reclassifica com `_readFile`
+      // (que já roteia a leitura pro serviço remoto).
+      try {
+        final service = await _remoteHosts.fileServiceFor(host);
+        await service.write(s.path, utf8.encode(content));
+      } catch (_) {
+        return false; // fs.write falhou (permissão, conexão) → não salvou.
+      }
+    } else {
+      // Preserva o encoding original do arquivo para evitar diffs artificiais
+      // no Git (ex.: arquivo Latin-1 aberto e salvo sem edição).
+      final encoding = _encodingOf(s.view);
+      final ok = await _fileReader.write(s.path, content, encoding: encoding);
+      if (!ok) return false;
+    }
+    final fresh = await _readFile(s.path);
     final cur = _sessions[sessionId];
     if (cur is FileViewerSession && fresh is! FileViewUnsupported) {
       cur.view = fresh;
@@ -1197,6 +2019,15 @@ class CockpitViewModel extends ChangeNotifier {
     }
     return true;
   }
+
+  /// Extrai o [Encoding] original de uma [FileView] editável. Usado no save para
+  /// preservar o encoding do arquivo e não gerar diffs artificiais no Git.
+  static Encoding _encodingOf(FileView view) => switch (view) {
+    FileViewText(:final encoding) => encoding,
+    FileViewMarkdown(:final encoding) => encoding,
+    FileViewSvg(:final encoding) => encoding,
+    _ => utf8,
+  };
 
   // ---- LSP (diagnostics + formatação) ---------------------------------------
 
@@ -1295,166 +2126,47 @@ class CockpitViewModel extends ChangeNotifier {
     }
   }
 
-  // ---- mutação de arquivos (criar / renomear / deletar) ---------------------
+  // ---- mutação de arquivos + clipboard da árvore ---------------------------
+  // O motor mora no [FileOpsController]; o VM só repassa (a UI da árvore
+  // continua consumindo estes nomes) e provê os efeitos que dependem de aba.
 
-  /// Cria um arquivo vazio chamado [name] dentro de [dirPath] e o abre no pane
-  /// (quando [open]). Valida o nome (não-vazio, sem `/`). Devolve a falha
-  /// (mensagem) pra UI mostrar inline. Refaz a árvore no sucesso.
-  Future<Result<void, String>> createFileIn(
+  Future<Result<void, FileOperationError>> createFileIn(
     String dirPath,
     String name, {
     bool open = true,
-  }) async {
-    final invalid = _validateName(name);
-    if (invalid != null) return Failure(invalid);
-    final path = _join(dirPath, name.trim());
-    final r = await _fileMutator.createFile(path);
-    if (r.isSuccess) {
-      _bumpFileTree();
-      if (open) await openFile(path);
-    }
-    return r;
-  }
+  }) => files.createFileIn(dirPath, name, open: open);
 
-  /// Cria uma pasta [name] dentro de [dirPath]. Refaz a árvore no sucesso.
-  Future<Result<void, String>> createDirIn(String dirPath, String name) async {
-    final invalid = _validateName(name);
-    if (invalid != null) return Failure(invalid);
-    final r = await _fileMutator.createDirectory(_join(dirPath, name.trim()));
-    if (r.isSuccess) _bumpFileTree();
-    return r;
-  }
+  Future<Result<void, FileOperationError>> createDirIn(
+    String dirPath,
+    String name,
+  ) => files.createDirIn(dirPath, name);
 
-  /// Renomeia [path] para [newName] (mesma pasta). As abas abertas do arquivo
-  /// (ou de descendentes, se for pasta) **seguem** o novo caminho.
-  Future<Result<void, String>> renamePath(String path, String newName) async {
-    final invalid = _validateName(newName);
-    if (invalid != null) return Failure(invalid);
-    final to = _join(_parentOf(path), newName.trim());
-    final r = await _fileMutator.rename(path, to);
-    if (r.isSuccess) {
-      await _retargetSessions(path, to);
-      _bumpFileTree();
-    }
-    return r;
-  }
+  Future<Result<void, FileOperationError>> renamePath(
+    String path,
+    String newName,
+  ) => files.renamePath(path, newName);
 
-  /// Move [path] pra **dentro** de [targetDir] (drag-and-drop na árvore),
-  /// mantendo o nome. As abas abertas seguem o novo caminho, como no rename.
-  Future<Result<void, String>> movePath(String path, String targetDir) async {
-    final name = path.split('/').where((p) => p.isNotEmpty).lastOrNull;
-    if (name == null) return const Failure('Invalid path.');
-    if (_parentOf(path) == targetDir) return const Success(null); // já está lá
-    if (_isUnder(targetDir, path)) {
-      return const Failure('Cannot move a folder into itself.');
-    }
-    final to = _join(targetDir, name);
-    final r = await _fileMutator.rename(path, to);
-    if (r.isSuccess) {
-      await _retargetSessions(path, to);
-      _bumpFileTree();
-    }
-    return r;
-  }
+  Future<Result<void, FileOperationError>> movePath(
+    String path,
+    String targetDir,
+  ) => files.movePath(path, targetDir);
 
-  /// Manda [path] pra lixeira. **Fecha antes** as abas do arquivo (ou de tudo
-  /// dentro da pasta), sem prompt de salvar — a deleção sobrepõe.
-  Future<Result<void, String>> deletePath(String path) async {
-    _closeSessionsUnder(path);
-    final r = await _fileMutator.moveToTrash(path);
-    if (r.isSuccess) _bumpFileTree();
-    return r;
-  }
+  Future<Result<void, FileOperationError>> deletePath(String path) =>
+      files.deletePath(path);
 
-  // ---- clipboard da árvore (copiar / recortar / colar) ----------------------
+  bool get canPaste => files.canPaste;
 
-  /// Caminho no clipboard interno da árvore (`null` = vazio). Set por
-  /// [copyToClipboard] / [cutToClipboard], consumido por [pasteInto].
-  String? _clipboardPath;
+  void copyToClipboard(String path) => files.copyToClipboard(path);
 
-  /// `true` = recortar (move no paste), `false` = copiar (duplica no paste).
-  bool _clipboardCut = false;
+  void cutToClipboard(String path) => files.cutToClipboard(path);
 
-  /// Há algo pronto pra colar? Usado pra habilitar o item "Paste" no menu.
-  bool get canPaste => _clipboardPath != null;
-
-  /// Marca [path] pra **copiar** (o paste duplica).
-  void copyToClipboard(String path) {
-    _clipboardPath = path;
-    _clipboardCut = false;
-    notifyListeners();
-  }
-
-  /// Marca [path] pra **recortar** (o paste move e limpa o clipboard).
-  void cutToClipboard(String path) {
-    _clipboardPath = path;
-    _clipboardCut = true;
-    notifyListeners();
-  }
-
-  /// Cola o item do clipboard **dentro** de [targetDir]. Copia ou move conforme
-  /// o modo. Se o nome colidir no destino, gera um sufixo (`nome copy`,
-  /// `nome copy 2`, ...). Recorte limpa o clipboard no sucesso; cópia mantém
-  /// (permite colar várias vezes). Abas abertas seguem no move, como no rename.
-  Future<Result<void, String>> pasteInto(String targetDir) async {
-    final from = _clipboardPath;
-    if (from == null) return const Failure('Clipboard is empty.');
-    final name = from.split('/').where((p) => p.isNotEmpty).lastOrNull;
-    if (name == null) return const Failure('Invalid path.');
-    if (_clipboardCut && _isUnder(targetDir, from)) {
-      return const Failure('Cannot move a folder into itself.');
-    }
-    final to = await _uniqueDest(targetDir, name);
-    final r = _clipboardCut
-        ? await _fileMutator.rename(from, to)
-        : await _fileMutator.copy(from, to);
-    if (r.isSuccess) {
-      if (_clipboardCut) {
-        await _retargetSessions(from, to);
-        _clipboardPath = null;
-      }
-      _bumpFileTree();
-    }
-    return r;
-  }
-
-  /// Caminho livre em [dir] pra [name]: devolve `dir/name` se não existir, senão
-  /// insere ` copy`, ` copy 2`, ... antes da extensão até achar um livre.
-  Future<String> _uniqueDest(String dir, String name) async {
-    var candidate = _join(dir, name);
-    if (!await _pathExists(candidate)) return candidate;
-    final dot = name.lastIndexOf('.');
-    final hasExt = dot > 0;
-    final stem = hasExt ? name.substring(0, dot) : name;
-    final ext = hasExt ? name.substring(dot) : '';
-    for (var i = 1; ; i++) {
-      final suffix = i == 1 ? ' copy' : ' copy $i';
-      candidate = _join(dir, '$stem$suffix$ext');
-      if (!await _pathExists(candidate)) return candidate;
-    }
-  }
-
-  Future<bool> _pathExists(String path) async =>
-      await FileSystemEntity.type(path, followLinks: false) !=
-      FileSystemEntityType.notFound;
+  Future<Result<void, FileOperationError>> pasteInto(String targetDir) =>
+      files.pasteInto(targetDir);
 
   void _bumpFileTree() {
     _fileTreeRevision++;
     notifyListeners();
   }
-
-  /// `null` se válido; senão a mensagem do erro. Nesta fase: sem aninhar (`/`).
-  String? _validateName(String name) {
-    final n = name.trim();
-    if (n.isEmpty) return 'Name cannot be empty.';
-    if (n.contains('/')) return 'Name cannot contain “/”.';
-    if (n == '.' || n == '..') return 'Invalid name.';
-    return null;
-  }
-
-  String _join(String dir, String name) => joinPath(dir, name);
-
-  String _parentOf(String path) => dirnameOf(path);
 
   /// Um caminho é "sob" [root] se for ele mesmo ou um descendente (`root/...`).
   bool _isUnder(String path, String root) => isUnderPath(path, root);
@@ -1503,11 +2215,56 @@ class CockpitViewModel extends ChangeNotifier {
   /// Pane focada do projeto.
   String? focusedPaneId(String projectId) => _focused[projectId];
 
-  /// Nº de agentes do workspace que terminaram um turno e ainda não foram
-  /// vistos (badge de notificações).
-  int notificationCount(String projectId) => _sessions.values
-      .where((s) => s.projectId == projectId && s.unseenFinish)
-      .length;
+  /// A aba em foco com o que é preciso para agir sobre ela: pane, id e a
+  /// sessão. Usado pelo ⌘W (que precisa saber se há edição não salva antes de
+  /// fechar); [focusedTabId] continua servindo a quem só quer o id.
+  ///
+  /// `null` quando não há projeto/pane/aba, e também quando a aba é o
+  /// placeholder de pane vazia — que não é fechável.
+  (String paneId, String tabId, PaneItem item)? focusedTab() {
+    final paneId = _focusedLeaf()?.$1;
+    final tabId = focusedTabId;
+    if (paneId == null || tabId == null) return null;
+    final item = _sessions[tabId];
+    if (item == null) return null;
+    if (item is AgentSession && item.status == AgentStatus.empty) return null;
+    return (paneId, tabId, item);
+  }
+
+  /// Id da **aba em foco**: a aba ativa da pane focada, no projeto selecionado.
+  /// É o que a CLI resolve quando recebe `--focused`, pra uma ferramenta externa
+  /// (ex.: ditado por voz) poder digitar onde o usuário está olhando sem
+  /// precisar descobrir o id. `null` quando não há projeto/pane/aba.
+  String? get focusedTabId {
+    final pid = _selectedProjectId;
+    final tree = pid == null ? null : _trees[pid];
+    if (pid == null || tree == null) return null;
+    // Sem foco explícito (ex.: logo após o boot), a primeira folha é o que o
+    // usuário vê — mesmo fallback que o resto da VM usa.
+    final paneId = _focused[pid] ?? leaves(tree).firstOrNull?.id;
+    if (paneId == null) return null;
+    for (final leaf in leaves(tree)) {
+      if (leaf.id == paneId) return leaf.active;
+    }
+    return null;
+  }
+
+  /// Nº de agentes que terminaram um turno e ainda não foram vistos, **por
+  /// workspace** (badge de notificações da rail).
+  ///
+  /// Mapa, e não uma consulta por id, de propósito: a rail pergunta isso uma
+  /// vez por workspace E por worktree a cada build, e a consulta por id varre
+  /// todas as sessões — o que dava O(itens × sessões) por frame. Uma varredura
+  /// só resolve a rail inteira. Ausente no mapa = zero.
+  Map<String, int> get notificationCounts {
+    final counts = <String, int>{};
+    for (final s in _sessions.values) {
+      if (s.unseenFinish) {
+        counts[s.projectId] = (counts[s.projectId] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }
 
   // ---- init -----------------------------------------------------------------
   Future<void> init() async {
@@ -1515,6 +2272,33 @@ class CockpitViewModel extends ChangeNotifier {
     // Await: no Windows o `hookEnv` depende da porta ligada antes de spawnar abas.
     // O mesmo socket atende a CLI interna `cockpit` (`_onCockpitCommand`).
     await _statusServer.start(_onClaudeStatus, onCommand: _cli.handle);
+    // Turn-status REMOTO (plano 60, Wave G): o hook roda no host, o cockpit-
+    // server o reenvia pelo protocolo, e aqui cai no MESMO caminho do local
+    // (roteado por paneId → spinner/chime). Sem isso, terminal remoto não tem
+    // som/spinner (o socket local do cliente é inalcançável do host).
+    void onRemoteTurn(RemoteTurnStatus s) => _onClaudeStatus(
+      ClaudeStatusUpdate(
+        paneId: s.paneId,
+        status: s.status,
+        event: s.event,
+        sessionId: s.sid,
+        transcriptPath: s.transcriptPath,
+        harness: s.harness,
+      ),
+    );
+
+    _remoteTurnSub = _remoteHosts.turnStatus.listen(onRemoteTurn);
+    // CLI `cockpit` rodando NUM HOST remoto: o comando viaja pelo protocolo e
+    // é atendido aqui, pelo MESMO handler da CLI local — quem tem abas,
+    // workspaces e conexões de banco é este cliente, não o host.
+    _remoteCliSub = _remoteHosts.cliCommands.listen(_onRemoteCliCommand);
+    // Turn-status LOCAL pelo mesmo caminho: desde que o PTY passou a nascer no
+    // sidecar, o servidor injeta o socket de status DELE no env do shell
+    // (sobrescrevendo o `hookEnv` do cliente), então o hook do agente reporta
+    // ao sidecar — e não mais ao `_statusServer` daqui. Sem esta assinatura,
+    // terminal local ficava sem spinner/chime/notificação. O `_statusServer`
+    // continua servindo a CLI interna e o fallback in-process.
+    _sidecarTurnSub = _sidecar.turnStatus.listen(_onClaudeStatus);
     // Realms antes dos projetos: o filtro do rail e a seleção inicial dependem
     // do realm ativo. `all()` garante o Default.
     await realmCtrl.load();
@@ -1526,18 +2310,75 @@ class CockpitViewModel extends ChangeNotifier {
     // GC do scrollback: apaga arquivos de sessões de terminal que sumiram de
     // TODOS os layouts. Varre todos os layouts salvos (não só o ativo: a
     // reconstrução é lazy), senão apagaria o scrollback de projetos não-ativados.
-    unawaited(_scrollback.pruneExcept(_persistedTerminalIds()));
+    // O GC varre os layouts EM DISCO (e não só os carregados acima): os forks
+    // de worktree entram na lista de projetos depois do boot, e varrer apenas
+    // a memória apagava o scrollback dos terminais deles a cada abertura do
+    // app — era por isso que um `claude` num worktree nunca voltava.
+    unawaited(
+      _layoutStore.loadAll().then(
+        (docs) => _scrollback.pruneExcept(_terminalIdsIn(docs.values)),
+      ),
+    );
     // Injeta o workspace de sistema "Cockpit" (terminal-only), se habilitado.
     // Depois do carregamento de layouts (ele não tem layout salvo) e antes da
     // seleção inicial (que pode cair nele no 1º boot).
     if (_cockpitEnabled) _injectCockpit();
+    _syncRemoteWorkspaces();
+    // Os workspaces REMOTOS entram na lista só agora (_syncRemoteWorkspaces),
+    // depois do load de layouts acima (que só viu os locais). Sem isto o layout
+    // salvo do remoto nunca é carregado e o workspace reabre vazio — abas de
+    // arquivo/terminal não voltam. Carrega os que ainda faltam.
+    for (final project in _projectList) {
+      if (!_savedLayouts.containsKey(project.id)) {
+        _savedLayouts[project.id] = await _layoutStore.load(project.id);
+      }
+    }
     _selectedProjectId = await _initialSelection();
     // Só o projeto selecionado é ativado (sobe os processos) no boot.
     final selected = _selectedProjectId;
-    if (selected != null) await _activateProject(selected);
-    git.watchProject(selected); // watcher ao vivo do projeto inicial
+    // `init()` é chamado fire-and-forget pelo `CockpitPage` (sem await, sem
+    // catch), então qualquer exceção aqui virava erro assíncrono solto e o
+    // `_ready` nunca chegava: a tela ficava no loading pra sempre, sem nada
+    // impresso. Ativar o workspace é a parte que toca o mundo externo (spawn de
+    // PTY, git, FS) e é a que de fato quebrou em produção. Falhando, seguimos
+    // com o shell montado: melhor um workspace vazio, onde o usuário consegue
+    // trocar de projeto ou remover o quebrado, do que um app travado.
+    // Marca pronto e mostra a tela (vazia) ANTES de ativar o workspace inicial:
+    // a ativação toca o mundo externo (spawn de PTY, git, FS) e não deve
+    // segurar o primeiro frame.
+    //
+    // NOTA HISTÓRICA: este adiamento foi introduzido como suposta cura dos
+    // "terminais espelhados" do workspace inicial, na teoria de que as
+    // TerminalView irmãs cruzavam State/attach ao montarem no frame frio. Era
+    // diagnóstico errado — as sessões, controllers e views sempre foram
+    // objetos distintos. O espelho vinha do protocolo do sidecar, que casava
+    // resposta com requisição só pelo TIPO: dois `pty.open` simultâneos
+    // (justamente o restore de dois panes) eram resolvidos pela mesma
+    // `pty.opened`, os dois panes adotavam o mesmo `sessionId` e liam o mesmo
+    // PTY. Corrigido com `rid` de correlação (ver PtyOpen.rid). O adiamento
+    // ficou por mérito próprio: tela na frente do spawn.
     _ready = true;
     notifyListeners();
+    if (selected != null) {
+      SchedulerBinding.instance.addPostFrameCallback((_) async {
+        try {
+          await _activateProject(selected);
+          git.watchProject(selected); // watcher ao vivo do projeto inicial
+          // Workspace remoto como seleção inicial: carrega o git status do host
+          // (senão a aba de Source Control não aparece até trocar de workspace).
+          if (_projectById(selected)?.isRemoteTerminal ?? false) {
+            unawaited(_refreshRemoteGit());
+          }
+        } catch (error, stack) {
+          debugPrint(
+            '[boot] falha ao ativar o workspace inicial: $error\n$stack',
+          );
+        }
+      });
+    }
+    // Mudanças de host/pin vindas de OUTRA rota (aba "Remote hosts" das
+    // Configurações opera o mesmo RemoteHostsController) re-sincronizam a rail.
+    _remoteHosts.addListener(_onRemoteHostsChanged);
     // Estado git + worktrees de todos os projetos (assíncrono — a rail atualiza
     // conforme chega). Só há raízes no boot; os forks entram pela reconciliação.
     for (final project in _projectList) {
@@ -1577,7 +2418,7 @@ class CockpitViewModel extends ChangeNotifier {
   bool _visibleInActiveRealm(String id) {
     final p = _projectById(id);
     if (p == null) return false;
-    if (p.isSystemTerminal) return true;
+    if (p.isPathless) return true;
     final root = p.parentId == null ? p : _projectById(p.parentId!);
     return root != null && root.realmId == realmCtrl.activeId;
   }
@@ -1587,8 +2428,175 @@ class CockpitViewModel extends ChangeNotifier {
   /// posição é irrelevante (fica de fora de [rootProjects]; o rail o renderiza
   /// num slot próprio via [cockpitWorkspace]).
   void _injectCockpit() {
+    // Mobile (plano 59): sem shell local, o pseudo-workspace "Cockpit"
+    // (systemTerminal) não existe — o mobile é remote-only. Nunca injeta,
+    // independente de `showCockpit`.
+    if (isMobilePlatform) return;
     if (_projectById(Project.cockpitId) != null) return;
     _projectList.add(Project.systemTerminal());
+  }
+
+  /// Reconcilia os workspaces sintéticos remotos com os PINS do
+  /// [RemoteHostsController] (plano 58: workspace remoto = pasta de um host):
+  /// injeta os novos, remove os que sumiram. Runtime, nunca persistido no
+  /// repositório de projetos (o registro mora no RemoteHostsStore).
+  void _syncRemoteWorkspaces() {
+    final pins = _remoteHosts.pins;
+    final wanted = {for (final p in pins) '${Project.remotePrefix}${p.id}'};
+    // Remove workspaces de pins deletados (encerra runtime se selecionado).
+    // Só os TOP-LEVEL (parentId == null): os forks (worktrees remotos) são
+    // reconciliados por _refreshRemoteWorktrees, não por pins — sem este guard
+    // eles seriam apagados aqui logo após criados.
+    final stale = _projectList
+        .where(
+          (p) =>
+              p.isRemoteTerminal &&
+              p.parentId == null &&
+              !wanted.contains(p.id),
+        )
+        .toList();
+    for (final p in stale) {
+      _projectList.remove(p);
+      unawaited(_disposeRuntimeAfterFrame(p.id));
+      if (_selectedProjectId == p.id) _selectedProjectId = null;
+    }
+    // Injeta pins novos e reconcilia os existentes (nome/cor/imagem editados
+    // nas Configurações não apareceriam se só injetássemos os novos).
+    for (final pin in pins) {
+      final id = '${Project.remotePrefix}${pin.id}';
+      final desired =
+          Project.remoteHost(
+            pinId: pin.id,
+            hostId: pin.hostId,
+            name: pin.name,
+            remotePath: pin.path,
+            colorValue: pin.colorValue,
+          ).copyWith(
+            imagePath: pin.imagePath,
+            realmId: pin.realmId,
+            order: pin.order,
+          );
+      final idx = _projectList.indexWhere((p) => p.id == id);
+      if (idx < 0) {
+        _projectList.add(desired);
+      } else {
+        final cur = _projectList[idx];
+        if (cur.name != desired.name ||
+            cur.colorValue != desired.colorValue ||
+            cur.imagePath != desired.imagePath ||
+            cur.realmId != desired.realmId ||
+            cur.order != desired.order) {
+          _projectList[idx] = desired;
+        }
+      }
+    }
+    // Badge de git dos slots remotos: carrega em background (Opção 2, lazy).
+    _ensureRemoteGitLoaded();
+  }
+
+  /// Adiciona um host remoto (dialog "Add remote host"). Não injeta workspace:
+  /// o workspace nasce quando o usuário escolhe uma pasta ([createRemoteWorkspace]).
+  Future<void> addRemoteHost({
+    required String name,
+    required String sshTarget,
+    int port = 22,
+    RemoteHostAuth auth = RemoteHostAuth.key,
+    String? password,
+    String? identityFile,
+  }) async {
+    await _remoteHosts.addHost(
+      name: name,
+      sshTarget: sshTarget,
+      port: port,
+      auth: auth,
+      password: password,
+      identityFile: identityFile,
+    );
+    notifyListeners();
+  }
+
+  /// Remove um host remoto e todos os workspaces (pins) dele.
+  Future<void> removeRemoteHost(String hostId) async {
+    for (final pin in _remoteHosts.pins.where((p) => p.hostId == hostId)) {
+      await _remoteHosts.removePin(pin.id);
+    }
+    await _remoteHosts.removeHost(hostId);
+    _syncRemoteWorkspaces();
+    notifyListeners();
+  }
+
+  /// Controller dos hosts remotos (a UI usa pra abrir o picker de pasta).
+  RemoteHostsController get remoteHosts => _remoteHosts;
+
+  /// Cria (ou reusa) um workspace remoto pra pasta [remotePath] do host
+  /// [hostId] — o "workspace remoto = pasta" do plano 58 — e o seleciona.
+  Future<void> createRemoteWorkspace(String hostId, String remotePath) async {
+    // Nasce no realm ativo, no fim da lista (igual ao workspace local novo).
+    final roots = rootProjects;
+    final nextOrder = roots.isEmpty
+        ? 0
+        : roots.map((p) => p.order).reduce(max) + 1;
+    final pin = await _remoteHosts.addPin(
+      hostId: hostId,
+      path: remotePath,
+      realmId: realmCtrl.activeId,
+      order: nextOrder,
+    );
+    _syncRemoteWorkspaces();
+    notifyListeners();
+    selectProject('${Project.remotePrefix}${pin.id}');
+  }
+
+  /// Roda um git cru no host do workspace remoto [wsId] (Camada A do menu do
+  /// rail: pull/push/sync). [root] escolhe o repo em multirepo; omitido, roda
+  /// na pasta do pin (single-root). Lança se [wsId] não for remoto.
+  Future<GitRunResult> remoteGitRun(
+    String wsId,
+    List<String> args, {
+    String? root,
+  }) async {
+    final host = remoteHostForWorkspace(wsId);
+    if (host == null) {
+      throw StateError('remoteGitRun em workspace não-remoto: $wsId');
+    }
+    final target = (root == null || root.isEmpty) ? remoteRootOf(wsId) : root;
+    final service = await _remoteHosts.gitServiceFor(host);
+    return service.run(target, args);
+  }
+
+  /// Atualiza as Configurações de um workspace remoto (nome/cor/imagem de
+  /// fundo) — mesmo dialog do local, persistido no pin. `imagePath` omitido
+  /// mantém a imagem atual; `null` explícito remove.
+  Future<void> updateRemoteWorkspace(
+    String workspaceId, {
+    String? name,
+    int? colorValue,
+    Object? imagePath = RemoteWorkspacePin.unsetImage,
+  }) async {
+    final pinId = workspaceId.startsWith(Project.remotePrefix)
+        ? workspaceId.substring(Project.remotePrefix.length)
+        : workspaceId;
+    await _remoteHosts.updatePin(
+      pinId,
+      name: name,
+      colorValue: colorValue,
+      imagePath: imagePath,
+    );
+    _syncRemoteWorkspaces();
+    notifyListeners();
+  }
+
+  /// Refresca o git do workspace remoto ativo (após pull/push/sync no menu).
+  Future<void> refreshActiveRemoteGit() => _refreshRemoteGit();
+
+  /// Remove um workspace remoto (pin) pelo id do workspace.
+  Future<void> removeRemoteWorkspace(String workspaceId) async {
+    final pinId = workspaceId.startsWith(Project.remotePrefix)
+        ? workspaceId.substring(Project.remotePrefix.length)
+        : workspaceId;
+    await _remoteHosts.removePin(pinId);
+    _syncRemoteWorkspaces();
+    notifyListeners();
   }
 
   /// Liga/desliga o workspace de sistema "Cockpit" em runtime (empurrado pela
@@ -1608,10 +2616,13 @@ class CockpitViewModel extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    // OFF: encerra runtime (mata PTYs/sessões/timers) e remove o sintético.
+    // OFF: remove o sintético e encerra o runtime (mata PTYs/sessões/timers)
+    // — nessa ordem, e o runtime só depois do frame que desmonta os panes:
+    // liberar o terminal nativo com a view montada é SIGSEGV no libghostty
+    // (ver [removeProject]).
     final wasSelected = _selectedProjectId == Project.cockpitId;
-    _disposeProjectRuntime(Project.cockpitId);
     _projectList.removeWhere((p) => p.isSystemTerminal);
+    unawaited(_disposeRuntimeAfterFrame(Project.cockpitId));
     if (wasSelected) {
       final roots = rootProjects;
       _selectedProjectId = roots.isEmpty ? null : roots.first.id;
@@ -1643,11 +2654,43 @@ class CockpitViewModel extends ChangeNotifier {
   /// lista exibida e a seleção mudam. Restaura a última seleção do realm novo
   /// (fallback: Cockpit → primeiro workspace → nenhum).
   Future<void> switchRealm(String id) async {
+    final from = realmCtrl.activeId;
     if (!realmCtrl.setActive(id)) return;
+    // Guarda a seleção **exata** do realm que está saindo (worktree inclusa):
+    // a preferência persistida só grava a raiz — forks são runtime e sumiriam
+    // do ponteiro, devolvendo o foco pro workspace normal na volta.
+    final leaving = _selectedProjectId;
+    if (leaving != null) {
+      _sessionSelectionByRealm[from] = leaving;
+    } else {
+      _sessionSelectionByRealm.remove(from);
+    }
     String? next;
+    final remembered = _sessionSelectionByRealm[id];
+    if (remembered != null) {
+      if (_visibleInActiveRealm(remembered)) {
+        next = remembered;
+      } else {
+        // Worktree lembrada não existe mais (removida por fora, `git worktree
+        // remove`, merge): cai pra raiz dela em vez de perder o realm inteiro.
+        // O fork já não está em [_projectList], então a raiz vem do próprio id
+        // (namespaced `rootId::path` — ver [_refreshWorktrees]).
+        final sep = remembered.indexOf('::');
+        final root = sep > 0
+            ? remembered.substring(0, sep)
+            : _rootOf(remembered);
+        if (root != remembered && _visibleInActiveRealm(root)) {
+          next = root;
+        } else {
+          _sessionSelectionByRealm.remove(id);
+        }
+      }
+    }
     try {
-      final last = await _projects.loadLastSelected(id);
-      if (last != null && _visibleInActiveRealm(last)) next = last;
+      if (next == null) {
+        final last = await _projects.loadLastSelected(id);
+        if (last != null && _visibleInActiveRealm(last)) next = last;
+      }
     } catch (_) {
       // preferência ilegível → fallback abaixo.
     }
@@ -1662,6 +2705,7 @@ class CockpitViewModel extends ChangeNotifier {
     } else if (next != _selectedProjectId) {
       _selectedProjectId = next;
       _clearFocusedNotification();
+      _requestPaneKeyboard();
       unawaited(_activateProject(next));
       git.watchProject(next);
       unawaited(git.refresh(next));
@@ -1688,18 +2732,27 @@ class CockpitViewModel extends ChangeNotifier {
   /// troca pro Default antes.
   Future<void> deleteRealm(String id) async {
     if (id == Realm.defaultId || !realmCtrl.exists(id)) return;
+    // Migra na memória primeiro e persiste em LOTE: um realm cheio salvava um
+    // workspace por vez, e cada gravação espera a própria janela de debounce
+    // do store (mesma conta que fazia o reorder do rail custar ~2s).
+    final locais = <Project>[]; // forks são runtime, não persistem
+    final remotos = <Project>[];
     for (var i = 0; i < _projectList.length; i++) {
       final p = _projectList[i];
       if (p.realmId != id) continue;
       final moved = p.copyWith(realmId: Realm.defaultId);
       _projectList[i] = moved;
-      if (p.parentId == null && !p.isSystemTerminal) {
-        await _projects.save(moved); // forks são runtime, não persistem
-      }
+      if (p.parentId != null || p.isSystemTerminal) continue;
+      (p.isRemoteTerminal ? remotos : locais).add(moved);
+    }
+    if (locais.isNotEmpty) await _projects.saveAll(locais);
+    for (final p in remotos) {
+      await _remoteHosts.updatePin(_pinIdOf(p.id), realmId: Realm.defaultId);
     }
     if (realmCtrl.activeId == id) await switchRealm(Realm.defaultId);
     await realmCtrl.remove(id);
     await _projects.saveLastSelected(id, null); // limpa ponteiro órfão
+    _sessionSelectionByRealm.remove(id);
     notifyListeners();
   }
 
@@ -1714,9 +2767,15 @@ class CockpitViewModel extends ChangeNotifier {
     if (p.parentId != null || p.isSystemTerminal || p.realmId == realmId) {
       return;
     }
-    if (pathExistsInRealm(p.path, realmId)) return;
+    // Invariante "um path por realm" é do local; remoto se identifica por
+    // (host, pasta) no pin, sem colisão — não checa path vazio.
+    if (!p.isRemoteTerminal && pathExistsInRealm(p.path, realmId)) return;
     _projectList[idx] = p.copyWith(realmId: realmId);
-    await _projects.save(_projectList[idx]);
+    if (p.isRemoteTerminal) {
+      await _remoteHosts.updatePin(_pinIdOf(workspaceId), realmId: realmId);
+    } else {
+      await _projects.save(_projectList[idx]);
+    }
     // Forks acompanham a raiz (runtime; a reconciliação também os refaria).
     for (var i = 0; i < _projectList.length; i++) {
       final f = _projectList[i];
@@ -1875,32 +2934,137 @@ class CockpitViewModel extends ChangeNotifier {
     var insertAt = roots.indexWhere((p) => p.id == targetId);
     if (!before) insertAt += 1;
     roots.insert(insertAt, moved);
-    // Reatribui order sequencial (0..n) e persiste cada raiz.
+    // Reatribui order sequencial (0..n) na MEMÓRIA e pinta a tela ANTES de
+    // persistir: reordenar é gesto direto, tem que assentar no frame seguinte.
+    // Antes a UI só era notificada depois de todas as gravações, e cada uma
+    // esperava a própria janela de debounce do store — com uma dúzia de
+    // workspaces, os ~2s que o usuário via.
+    final updated = <Project>[];
     for (var i = 0; i < roots.length; i++) {
-      final updated = roots[i].copyWith(order: i);
-      final idx = _projectList.indexWhere((p) => p.id == updated.id);
-      if (idx >= 0) _projectList[idx] = updated;
-      await _projects.save(updated);
+      final p = roots[i].copyWith(order: i);
+      final idx = _projectList.indexWhere((e) => e.id == p.id);
+      if (idx >= 0) _projectList[idx] = p;
+      updated.add(p);
     }
     notifyListeners();
+
+    // Persistência depois. Locais numa escrita só (saveAll); remotos gravam no
+    // pin (RemoteHostsStore), que é outro store.
+    final locais = [
+      for (final p in updated)
+        if (!p.isRemoteTerminal) p,
+    ];
+    if (locais.isNotEmpty) await _projects.saveAll(locais);
+    for (final p in updated) {
+      if (p.isRemoteTerminal) {
+        await _remoteHosts.updatePin(_pinIdOf(p.id), order: p.order);
+      }
+    }
   }
 
+  /// Extrai o id do pin a partir do id do workspace remoto (tira o prefixo).
+  String _pinIdOf(String workspaceId) =>
+      workspaceId.startsWith(Project.remotePrefix)
+      ? workspaceId.substring(Project.remotePrefix.length)
+      : workspaceId;
+
+  /// Pra onde a seleção vai quando o workspace [excluding] deixa de existir:
+  /// o primeiro workspace raiz do realm ativo que não seja ele, senão o
+  /// Cockpit (se ligado), senão `null` — rail vazio → `WelcomeView`.
+  String? _selectionAfterClosing(String excluding) {
+    for (final p in rootProjects) {
+      if (p.id != excluding) return p.id;
+    }
+    return cockpitWorkspace != null ? Project.cockpitId : null;
+  }
+
+  /// Espera o fim do frame em que a UI aplica a última notificação — ou seja,
+  /// o frame que **desmonta** os panes de um workspace que saiu da lista.
+  ///
+  /// O timeout evita travar o fechamento se não houver frame agendado (janela
+  /// minimizada, app sem listeners): pior caso é voltar ao comportamento antigo.
+  Future<void> _endOfFrame() async {
+    try {
+      await SchedulerBinding.instance.endOfFrame.timeout(
+        const Duration(milliseconds: 500),
+      );
+    } on TimeoutException {
+      // Sem frame: segue o fechamento mesmo assim.
+    }
+  }
+
+  /// [_disposeProjectRuntime] adiado pro fim do frame — para call-sites
+  /// síncronos que acabaram de tirar o projeto da lista. Ver [removeProject].
+  Future<void> _disposeRuntimeAfterFrame(String id) async {
+    await _endOfFrame();
+    _disposeProjectRuntime(id);
+  }
+
+  /// Fecha o workspace [id] (e as worktrees dele) — remove da lista local,
+  /// encerra os processos e apaga a persistência. **Não** deleta a pasta.
+  ///
+  /// Ordem obrigatória: **sai → desmonta → destrói**. Fechar o workspace atual
+  /// crashava o app com `SIGSEGV` dentro do `libghostty`
+  /// (`ghostty_terminal_get*` na thread `io.flutter.ui`) — use-after-free do
+  /// handle nativo do terminal. O runtime era encerrado primeiro
+  /// (`_disposeProjectRuntime` → `TerminalSession.dispose` →
+  /// `GhosttyTerminalController.dispose` → libera o terminal nativo) com as
+  /// `TerminalView` do workspace **ainda montadas**: o layout/`detach()` do
+  /// frame seguinte tocava um ponteiro liberado. Não é exceção Dart — é
+  /// segfault, por isso não havia stack trace no console.
+  ///
+  /// Por isso:
+  /// 1. troca a seleção e espera o destino subir (o usuário sai do workspace
+  ///    antes de ele deixar de existir; sem destino → `WelcomeView`);
+  /// 2. tira da lista, notifica e **espera o frame**, pra Flutter desmontar as
+  ///    views enquanto os controllers ainda estão vivos (ordem que o `flterm`
+  ///    espera: `view.dispose()` → `detach()` → só depois `controller.dispose()`);
+  /// 3. só então encerra o runtime (mata `pi`/PTY e libera o Ghostty);
+  /// 4. persistência por último.
   Future<void> removeProject(String id) async {
-    // Encerra as worktrees do workspace junto (não deixa fork órfão).
-    for (final fork in _worktrees.remove(id) ?? const <Project>[]) {
+    if (_projectById(id) == null) return;
+    final selected = _selectedProjectId;
+    final forks = List<Project>.of(_worktrees[id] ?? const <Project>[]);
+    final leaving = selected == id || forks.any((f) => f.id == selected);
+
+    // (1) Sai do workspace antes de destruí-lo.
+    if (leaving) {
+      final next = _selectionAfterClosing(id);
+      _selectedProjectId = next;
+      _clearFocusedNotification();
+      _requestPaneKeyboard();
+      git.watchProject(next);
+      notifyListeners();
+      if (next != null) {
+        await _activateProject(next); // reconstrói o destino (idempotente)
+        unawaited(git.refresh(next));
+        unawaited(_projects.saveLastSelected(realmCtrl.activeId, next));
+      }
+    }
+
+    // (2) Some da UI — e espera o frame que desmonta os panes.
+    _worktrees.remove(id);
+    _projectList.removeWhere((p) => p.id == id || p.parentId == id);
+    // Rede de segurança: seleção apontando pra algo que sumiu junto (ou que já
+    // não existia) cai no mesmo fallback.
+    if (_selectedProjectId != null &&
+        _projectById(_selectedProjectId) == null) {
+      _selectedProjectId = _selectionAfterClosing(id);
+      git.watchProject(_selectedProjectId);
+    }
+    notifyListeners();
+    await _endOfFrame();
+
+    // (3) Nenhuma view referencia mais estas sessões — agora é seguro liberar
+    // os terminais nativos.
+    for (final fork in forks) {
       _disposeProjectRuntime(fork.id);
-      _projectList.removeWhere((p) => p.id == fork.id);
     }
     _disposeProjectRuntime(id);
-    _projectList.removeWhere((p) => p.id == id);
-    if (_selectedProjectId == id || _projectById(_selectedProjectId) == null) {
-      _selectedProjectId = rootProjects.isEmpty ? null : rootProjects.first.id;
-    }
+
+    // (4) Persistência por último — não segura a troca de workspace.
     await _projects.remove(id);
     await _layoutStore.remove(id);
-    final next = _selectedProjectId;
-    if (next != null) await _activateProject(next);
-    notifyListeners();
   }
 
   /// Encerra o runtime de um projeto (árvore de panes + sessões + foco + caches),
@@ -1917,83 +3081,112 @@ class CockpitViewModel extends ChangeNotifier {
     }
     _focused.remove(id);
     _savedLayouts.remove(id);
+    _worktreesExpanded.remove(id);
     git.forget(id);
     _saveTimers.remove(id)?.cancel();
   }
 
-  /// Cria uma worktree [name] no workspace [rootId] (decisões 2, 3, 14, 15). Em
-  /// sucesso, reconcilia, **auto-seleciona** o fork (pane vazia) e o devolve; em
-  /// falha, devolve o erro do git pra mostrar inline no dialog (decisão 21).
-  Future<Result<Project, WorktreeOpError>> createWorktree(
+  /// Cria uma worktree [name] no workspace [rootId] (decisoes 2, 3, 14, 15).
+  /// Devolve o handle ao vivo imediatamente; em sucesso (quando
+  /// [WorktreeAddRun.result] completa), reconcilia, **auto-seleciona** o fork
+  /// e o devolve; em falha, o erro do git vai pro dialog (decisao 21).
+  WorktreeAddRun<Project> createWorktree(
     String rootId,
     String name, {
     String? rootPath,
     String? baseRef,
     String? layoutSourceId,
-  }) async {
+    bool copyIgnored = false,
+    bool copyUntracked = false,
+    bool fetchRemote = true,
+  }) {
     final root = _projectById(rootId);
     if (root == null) {
-      return const Failure(WorktreeOpError('Workspace not found.'));
+      return WorktreeAddRun<Project>(
+        output: Stream.value('Workspace not found.'),
+        result: Future.value(
+          const Failure(WorktreeOpError('Workspace not found.')),
+        ),
+      );
     }
-    // Multi-root: o `git worktree add` parte da root escolhida, não da mãe.
+    // Multi-root: o `git worktree add` parte da root escolhida, nao da mae.
     // [baseRef] ("Fork Worktree"): ramifica da branch de outro fork, mas a
     // pasta nasce sempre no repo de origem.
-    final res = await _worktreeMgr.add(
+    final run = _worktreeMgr.add(
       rootPath ?? root.path,
       name,
       baseRef: baseRef,
+      copyIgnored: copyIgnored,
+      copyUntracked: copyUntracked,
+      fetchRemote: fetchRemote,
     );
-    switch (res) {
-      case Failure(:final error):
-        return Failure<Project, WorktreeOpError>(error);
-      case Success(:final value):
-        // Clona a estrutura (panes/abas/posições) pro fork: do pai por padrão,
-        // ou do fork de origem no "Fork Worktree" (mesma organização, pasta
-        // nova, sessões do zero — ver _cloneLayoutForWorktree).
-        final clonedLayout = _cloneLayoutForWorktree(layoutSourceId ?? rootId);
-        await _refreshWorktrees(rootId); // insere o fork em _projectList
-        // Id de fork é namespaced pela raiz (ver _refreshWorktrees) — o path
-        // cru deixou de ser o id na migração dos Realms.
-        final fork = _projectById('$rootId::${value.path}');
-        if (fork == null) {
-          return const Failure(
-            WorktreeOpError(
-              'Worktree created, but did not appear in the list.',
-            ),
+    final result = run.result.then<Result<Project, WorktreeOpError>>((
+      res,
+    ) async {
+      switch (res) {
+        case Failure(:final error):
+          return Failure<Project, WorktreeOpError>(error);
+        case Success(:final value):
+          // Clona a estrutura (panes/abas/posicoes) pro fork: do pai por padrao,
+          // ou do fork de origem no "Fork Worktree" (mesma organizacao, pasta
+          // nova, sessoes do zero — ver _cloneLayoutForWorktree).
+          final clonedLayout = _cloneLayoutForWorktree(
+            layoutSourceId ?? rootId,
           );
-        }
-        if (clonedLayout != null) {
-          // Vira o layout salvo do fork → _activateProject reconstrói a estrutura
-          // apontando pra fork.path. Persiste pra sobreviver a reload.
-          _savedLayouts[fork.id] = clonedLayout;
-          unawaited(_layoutStore.save(fork.id, clonedLayout));
-        }
-        selectProject(
-          fork.id,
-        ); // auto-select → activate → reconstrói a estrutura
-        // Orquestração: `*.ckp` com `autorun: worktree` na raiz do fork
-        // aplica o layout sozinho (worktree nasce vazia → determinístico).
-        unawaited(_autorunWorktreeLayout(fork.path));
-        return Success<Project, WorktreeOpError>(fork);
-    }
+          await _refreshWorktrees(rootId); // insere o fork em _projectList
+          // Id de fork e namespaced pela raiz (ver _refreshWorktrees) — o path
+          // cru deixou de ser o id na migracao dos Realms.
+          final fork = _projectById('$rootId::${value.path}');
+          if (fork == null) {
+            return const Failure(
+              WorktreeOpError(
+                'Worktree created, but did not appear in the list.',
+              ),
+            );
+          }
+          if (clonedLayout != null) {
+            // Vira o layout salvo do fork → _activateProject reconstrucao.
+            // Persiste pra sobreviver a reload.
+            _savedLayouts[fork.id] = clonedLayout;
+            unawaited(_layoutStore.save(fork.id, clonedLayout));
+          }
+          selectProject(fork.id); // auto-select → activate → reconstrucao
+          // Orquestracao: `*.ckp` com `autorun: worktree` na raiz do fork
+          // aplica o layout sozinho (worktree nasce vazia → deterministico).
+          unawaited(_autorunWorktreeLayout(fork.path));
+          return Success<Project, WorktreeOpError>(fork);
+      }
+    });
+    return WorktreeAddRun<Project>(output: run.output, result: result);
   }
 
-  /// Branches locais + worktrees de [rootId], pra validação ao vivo do dialog
-  /// de criar (decisão 11).
   /// "Fork Worktree": cria uma worktree nova ramificada da **branch do fork**
   /// [forkId], materializada no repo de origem (nunca aninhada). O fork novo
-  /// entra como irmão na lista (mesmo pai), herdando o layout do fork base.
-  Future<Result<Project, WorktreeOpError>> forkWorktree(
+  /// entra como irmao na lista (mesmo pai), herdando o layout do fork base.
+  WorktreeAddRun<Project> forkWorktree(
     String forkId,
-    String name,
-  ) async {
+    String name, {
+    bool copyIgnored = false,
+    bool copyUntracked = false,
+    bool fetchRemote = true,
+  }) {
     final fork = _projectById(forkId);
     if (fork == null || fork.parentId == null) {
-      return const Failure(WorktreeOpError('Worktree not found.'));
+      return WorktreeAddRun<Project>(
+        output: Stream.value('Worktree not found.'),
+        result: Future.value(
+          const Failure(WorktreeOpError('Worktree not found.')),
+        ),
+      );
     }
     final origin = _forkOriginPath(fork);
     if (origin == null) {
-      return const Failure(WorktreeOpError('Origin root not found.'));
+      return WorktreeAddRun<Project>(
+        output: Stream.value('Origin root not found.'),
+        result: Future.value(
+          const Failure(WorktreeOpError('Origin root not found.')),
+        ),
+      );
     }
     return createWorktree(
       fork.parentId!,
@@ -2001,10 +3194,25 @@ class CockpitViewModel extends ChangeNotifier {
       rootPath: origin,
       baseRef: fork.name,
       layoutSourceId: forkId,
+      copyIgnored: copyIgnored,
+      copyUntracked: copyUntracked,
+      fetchRemote: fetchRemote,
     );
   }
 
-  /// Namespace pra validação do "Fork Worktree" — o do repo de origem do fork.
+  /// `true` se o repo em [repoPath] tem hook `post-checkout`.
+  Future<bool> hasPostCheckoutHook(String repoPath) =>
+      _worktreeMgr.hasPostCheckoutHook(repoPath);
+
+  /// `true` se o repo de origem do fork [forkId] tem hook `post-checkout`.
+  Future<bool> hasPostCheckoutHookForFork(String forkId) async {
+    final fork = _projectById(forkId);
+    final origin = fork == null ? null : _forkOriginPath(fork);
+    if (origin == null) return false;
+    return _worktreeMgr.hasPostCheckoutHook(origin);
+  }
+
+  /// Namespace pra validacao do "Fork Worktree" — o do repo de origem do fork.
   Future<WorktreeNamespace> forkWorktreeNamespace(String forkId) async {
     final fork = _projectById(forkId);
     final origin = fork == null ? null : _forkOriginPath(fork);
@@ -2072,39 +3280,140 @@ class CockpitViewModel extends ChangeNotifier {
     return _worktreeMgr.isBranchMerged(origin, fork.name);
   }
 
+  /// Historico estruturado da root selecionada na visualizacao History.
+  /// Remoto (plano 58): roda o mesmo `git log` no host via `git.run` e
+  /// alimenta o parser compartilhado — zero duplicação de parsing.
+  Future<Result<List<GitHistoryCommit>, GitHistoryError>> loadGitHistory(
+    String root, {
+    int limit = 100,
+  }) async {
+    if (_activeRemoteHost() == null)
+      return _gitHistory.read(root, limit: limit);
+    try {
+      final r = await (await _activeRemoteGit()).run(root, [
+        'log',
+        '-n',
+        '$limit',
+        '--decorate=short',
+        '--date=iso-strict',
+        '--format=%H%x1f%P%x1f%D%x1f%an%x1f%aI%x1f%s%x1e',
+      ]);
+      if (r.code != 0) {
+        return Failure(
+          GitHistoryError(GitHistoryErrorKind.commandFailed, detail: r.stderr),
+        );
+      }
+      return Success(GitHistoryParser.parse(r.stdout));
+    } catch (e) {
+      return Failure(
+        GitHistoryError(GitHistoryErrorKind.commandFailed, detail: '$e'),
+      );
+    }
+  }
+
+  Future<Result<List<GitHistoryFileChange>, GitHistoryError>>
+  loadGitHistoryFiles(String root, String commitHash) async {
+    if (_activeRemoteHost() == null) {
+      return _gitHistory.readFiles(root, commitHash);
+    }
+    try {
+      final r = await (await _activeRemoteGit()).run(root, [
+        'show',
+        '--format=',
+        '--name-status',
+        '-z',
+        '--find-renames',
+        '--first-parent',
+        commitHash,
+        '--',
+      ]);
+      if (r.code != 0) {
+        return Failure(
+          GitHistoryError(GitHistoryErrorKind.commandFailed, detail: r.stderr),
+        );
+      }
+      return Success(GitHistoryFileChangeParser.parse(r.stdout));
+    } catch (e) {
+      return Failure(
+        GitHistoryError(GitHistoryErrorKind.commandFailed, detail: '$e'),
+      );
+    }
+  }
+
+  /// Atualiza o estado git (e o token do historico) depois de uma operacao
+  /// concluida pelo painel de processo.
+  Future<void> refreshGitProject(String projectId) async {
+    await git.refresh(projectId);
+    git.markHistoryStale();
+  }
+
   /// Comita todas as entradas staged da única root do workspace selecionado.
   /// Multi-root exige que o usuário comite por arquivo/seção para não criar
   /// commits implícitos em repositórios diferentes.
   Future<List<GitCommit>> recentCommits() async {
     final pid = _selectedProjectId;
     if (pid == null) return const [];
-    final roots = rootsOf(pid);
-    if (roots.length != 1) return const [];
-    final result = await git.output(roots.single, [
-      'log',
-      '-n',
-      '20',
-      '--format=%H%x1f%s%x1e',
-    ]);
-    if (result.$1 != 0) return const [];
-    return result.$2
-        .split('\u001e')
-        .where((entry) => entry.trim().isNotEmpty)
-        .map((entry) {
-          final parts = entry.trim().split('\u001f');
-          final hash = parts.first;
-          return GitCommit(
-            hash: hash,
-            subject: parts.length > 1 ? parts[1] : hash.substring(0, 7),
-            message: '',
-          );
-        })
-        .toList();
+    final String logOut;
+    if (_activeRemoteHost() != null) {
+      // Multirepo não tem "o" histórico do workspace (idem local, abaixo).
+      final roots = rootsOf(pid);
+      if (roots.length != 1 || roots.single.isEmpty) return const [];
+      final root = roots.single;
+      try {
+        final r = await (await _activeRemoteGit()).run(root, [
+          'log',
+          '-n',
+          '20',
+          '--format=%H%x1f%s%x1e',
+        ]);
+        if (r.code != 0) return const [];
+        logOut = r.stdout;
+      } catch (_) {
+        return const [];
+      }
+    } else {
+      final roots = rootsOf(pid);
+      if (roots.length != 1) return const [];
+      final result = await git.output(roots.single, [
+        'log',
+        '-n',
+        '20',
+        '--format=%H%x1f%s%x1e',
+      ]);
+      if (result.$1 != 0) return const [];
+      logOut = result.$2;
+    }
+    return logOut.split('\u001e').where((entry) => entry.trim().isNotEmpty).map(
+      (entry) {
+        final parts = entry.trim().split('\u001f');
+        final hash = parts.first;
+        return GitCommit(
+          hash: hash,
+          subject: parts.length > 1 ? parts[1] : hash.substring(0, 7),
+          message: '',
+        );
+      },
+    ).toList();
   }
 
   Future<String?> commitMessage(String hash) async {
     final pid = _selectedProjectId;
     if (pid == null) return null;
+    if (_activeRemoteHost() != null) {
+      final roots = rootsOf(pid);
+      if (roots.length != 1 || roots.single.isEmpty) return null;
+      try {
+        final r = await (await _activeRemoteGit()).run(roots.single, [
+          'log',
+          '-1',
+          '--format=%B',
+          hash,
+        ]);
+        return r.code == 0 ? r.stdout.trim() : null;
+      } catch (_) {
+        return null;
+      }
+    }
     final roots = rootsOf(pid);
     if (roots.length != 1) return null;
     final result = await git.output(roots.single, [
@@ -2119,6 +3428,38 @@ class CockpitViewModel extends ChangeNotifier {
   Future<String?> commitStaged(String message, {String? amendHash}) async {
     final pid = _selectedProjectId;
     if (pid == null) return 'No workspace selected.';
+    if (_activeRemoteHost() != null) {
+      // Mesma regra do local: commit implícito em dois repositórios diferentes
+      // não acontece — o usuário comita cada um por vez.
+      final staged = rootsOf(
+        pid,
+      ).where((root) => stagedFilesOfRoot(root).isNotEmpty).toList();
+      if (staged.isEmpty) {
+        return 'There are no staged changes to commit.';
+      }
+      if (staged.length > 1) {
+        return 'Stage changes belong to multiple repositories. Commit them separately.';
+      }
+      final root = staged.single;
+      try {
+        final git = await _activeRemoteGit();
+        if (amendHash != null) {
+          // Só o último commit é amendável direto (mesma regra do local).
+          final head = await git.run(root, ['rev-parse', 'HEAD']);
+          if (head.stdout.trim() != amendHash) {
+            return 'Only the last commit can be amended directly.';
+          }
+          final r = await git.run(root, ['commit', '--amend', '-m', message]);
+          if (r.code != 0) return r.stderr;
+        } else {
+          await git.commit(root, message);
+        }
+        await _refreshRemoteGit();
+        return null;
+      } catch (e) {
+        return '$e';
+      }
+    }
     final roots = rootsOf(
       pid,
     ).where((root) => stagedFilesOfRoot(root).isNotEmpty).toList();
@@ -2160,11 +3501,14 @@ class CockpitViewModel extends ChangeNotifier {
   }) async {
     final pid = _selectedProjectId;
     if (pid == null) return 'No workspace selected.';
+    if (_activeRemoteHost() != null) {
+      return _remoteStage(absPaths, staged: staged);
+    }
     final byRoot = <String, List<String>>{};
     for (final path in absPaths) {
       final root = rootContaining(pid, path);
       if (root == null) return 'File is outside the workspace roots: $path';
-      byRoot.putIfAbsent(root, () => []).add(_subOf(path, root));
+      byRoot.putIfAbsent(root, () => []).add(relativeUnder(path, root));
     }
     for (final entry in byRoot.entries) {
       final err = await git.collect(entry.key, [
@@ -2182,11 +3526,57 @@ class CockpitViewModel extends ChangeNotifier {
   Future<String?> stageFile(String absPath) async {
     final pid = _selectedProjectId;
     if (pid == null) return 'No workspace selected.';
+    if (_activeRemoteHost() != null) {
+      return _remoteStage([absPath], staged: true);
+    }
     final root = rootContaining(pid, absPath);
     if (root == null) return 'File is outside the workspace roots.';
-    final err = await git.collect(root, ['add', '--', _subOf(absPath, root)]);
+    final err = await git.collect(root, [
+      'add',
+      '--',
+      relativeUnder(absPath, root),
+    ]);
     unawaited(git.refresh(pid));
     return err;
+  }
+
+  /// Stage/unstage remoto: agrupa os paths **por root** (multirepo), converte
+  /// para relativos à root dona e chama o RemoteGitService uma vez por repo.
+  /// Refresca o cache no fim.
+  Future<String?> _remoteStage(
+    List<String> absPaths, {
+    required bool staged,
+  }) async {
+    final byRoot = <String, List<String>>{};
+    for (final path in absPaths) {
+      final root = _remoteRootFor(path);
+      if (root == null || root.isEmpty) {
+        return 'File is outside the workspace roots: $path';
+      }
+      byRoot.putIfAbsent(root, () => []).add(relativeUnder(path, root));
+    }
+    try {
+      final service = await _activeRemoteGit();
+      for (final entry in byRoot.entries) {
+        if (staged) {
+          await service.stage(entry.key, entry.value);
+        } else {
+          await service.unstage(entry.key, entry.value);
+        }
+      }
+      await _refreshRemoteGit();
+      return null;
+    } catch (e) {
+      return '$e';
+    }
+  }
+
+  /// Root remota dona de [absPath] no workspace ativo. Fallback para a pasta
+  /// do pin (single-root, e caminho solto na pasta-mãe de um multirepo).
+  String? _remoteRootFor(String absPath) {
+    final pid = _selectedProjectId;
+    if (pid == null) return null;
+    return remote.rootContaining(pid, absPath) ?? selectedProject?.remotePath;
   }
 
   /// Unstage (Source Control): `git restore --staged -- <arquivo>` na root
@@ -2201,7 +3591,7 @@ class CockpitViewModel extends ChangeNotifier {
     if (pid == null) return false;
     final root = rootContaining(pid, absPath);
     if (root == null) return false;
-    final rel = _subOf(absPath, root);
+    final rel = relativeUnder(absPath, root);
     final result = await git.output(root, ['cat-file', '-e', 'HEAD:$rel']);
     return result.$1 != 0;
   }
@@ -2209,12 +3599,19 @@ class CockpitViewModel extends ChangeNotifier {
   /// Discard completo de um arquivo. Arquivo novo é removido do index e vai
   /// para a lixeira; arquivo rastreado é restaurado do HEAD tanto no index
   /// quanto no working tree. Assim uma deleção volta a existir no disco.
-  Future<String?> discardFile(String absPath) async {
+  Future<FileOperationError?> discardFile(String absPath) async {
     final pid = _selectedProjectId;
-    if (pid == null) return 'No workspace selected.';
+    if (pid == null) {
+      return const FileOperationError(FileOperationErrorKind.noWorkspace);
+    }
+    if (_activeRemoteHost() != null) {
+      return _discardRemoteFile(pid, absPath);
+    }
     final root = rootContaining(pid, absPath);
-    if (root == null) return 'File is outside the workspace roots.';
-    final rel = _subOf(absPath, root);
+    if (root == null) {
+      return const FileOperationError(FileOperationErrorKind.invalidPath);
+    }
+    final rel = relativeUnder(absPath, root);
     if (await isNewGitFile(absPath)) {
       if (stagedFilesOfRoot(root).containsKey(rel)) {
         final err = await git.collect(root, [
@@ -2224,7 +3621,8 @@ class CockpitViewModel extends ChangeNotifier {
           '--',
           rel,
         ]);
-        if (err != null) return err;
+        // stderr do git é texto de terceiro: não se traduz, vai como detail.
+        if (err != null) return _gitFailure(err);
       }
       final res = await deletePath(absPath);
       unawaited(git.refresh(pid));
@@ -2241,8 +3639,175 @@ class CockpitViewModel extends ChangeNotifier {
     unawaited(git.refresh(pid));
     _fileTreeRevision++;
     notifyListeners();
-    return err;
+    return err == null ? null : _gitFailure(err);
   }
+
+  /// Discard remoto (plano 58): mesma semântica do local, mas 100% via git no
+  /// host (o protocolo não tem fs.delete). Novo staged → `git rm -f` (tira do
+  /// index e apaga o arquivo); novo untracked → `git clean -f`; rastreado →
+  /// `git restore --source=HEAD --staged --worktree`.
+  Future<FileOperationError?> _discardRemoteFile(
+    String pid,
+    String absPath,
+  ) async {
+    final root = _remoteRootFor(absPath) ?? '';
+    if (root.isEmpty) {
+      return const FileOperationError(FileOperationErrorKind.invalidPath);
+    }
+    final rel = relativeUnder(absPath, root);
+    try {
+      final git = await _activeRemoteGit();
+      // "Novo" = HEAD não conhece o caminho (cat-file -e falha).
+      final inHead = await git.run(root, ['cat-file', '-e', 'HEAD:$rel']);
+      final isNew = inHead.code != 0;
+      final GitRunResult r;
+      if (isNew) {
+        final staged = stagedFilesOfRoot(root).containsKey(rel);
+        r = staged
+            ? await git.run(root, ['rm', '-f', '--', rel])
+            : await git.run(root, ['clean', '-f', '--', rel]);
+      } else {
+        r = await git.run(root, [
+          'restore',
+          '--source=HEAD',
+          '--staged',
+          '--worktree',
+          '--',
+          rel,
+        ]);
+      }
+      await _refreshRemoteGit();
+      _fileTreeRevision++;
+      notifyListeners();
+      return r.code == 0 ? null : _gitFailure(r.stderr);
+    } catch (e) {
+      return _gitFailure('$e');
+    }
+  }
+
+  /// Erro de git (stderr cru) embrulhado no tipo que a UI sabe traduzir.
+  FileOperationError _gitFailure(String stderr) =>
+      FileOperationError(FileOperationErrorKind.osFailure, detail: stderr);
+
+  /// Gera uma mensagem para o commit isolado de [absPath]. O contexto enviado
+  /// ao harness contém só o diff desse arquivo (mais os últimos subjects), não
+  /// o restante do working tree.
+  Future<Result<GeneratedCommitMessage, AutomationError>>
+  generateCommitMessageForFile(String absPath) async {
+    final pid = _selectedProjectId;
+    if (pid == null) {
+      return const Failure(AutomationError(AutomationErrorKind.noWorkspace));
+    }
+    final root = rootContaining(pid, absPath);
+    if (root == null) {
+      return const Failure(
+        AutomationError(AutomationErrorKind.fileOutsideWorkspace),
+      );
+    }
+    final rel = relativeUnder(absPath, root);
+    String diff;
+    if (gitStatusForPath(absPath) == GitFileStatus.untracked) {
+      try {
+        final content = await File(absPath).readAsString();
+        diff =
+            'diff --git a/$rel b/$rel\n'
+            'new file mode 100644\n'
+            '--- /dev/null\n'
+            '+++ b/$rel\n'
+            '${content.split('\n').map((line) => '+$line').join('\n')}';
+      } on FileSystemException catch (error) {
+        return Failure(
+          AutomationError(
+            AutomationErrorKind.fileUnreadable,
+            detail: error.message,
+            cause: error,
+          ),
+        );
+      } on FormatException {
+        return const Failure(AutomationError(AutomationErrorKind.binaryFile));
+      }
+    } else {
+      final captured = await git.output(root, ['diff', 'HEAD', '--', rel]);
+      if (captured.$1 != 0) {
+        return Failure(
+          AutomationError(
+            AutomationErrorKind.diffUnavailable,
+            detail: captured.$2,
+          ),
+        );
+      }
+      diff = captured.$2;
+    }
+    if (diff.trim().isEmpty) {
+      return const Failure(AutomationError(AutomationErrorKind.noFileChanges));
+    }
+
+    return _generateCommitMessage(root, diff);
+  }
+
+  /// Gera uma mensagem para o composer principal do Source Control usando
+  /// exatamente o index que [commitStaged] vai comitar.
+  Future<Result<GeneratedCommitMessage, AutomationError>>
+  generateStagedCommitMessage() async {
+    final pid = _selectedProjectId;
+    if (pid == null) {
+      return const Failure(AutomationError(AutomationErrorKind.noWorkspace));
+    }
+    final roots = rootsOf(
+      pid,
+    ).where((root) => stagedFilesOfRoot(root).isNotEmpty).toList();
+    if (roots.isEmpty) {
+      return const Failure(
+        AutomationError(AutomationErrorKind.noStagedChanges),
+      );
+    }
+    if (roots.length > 1) {
+      return const Failure(
+        AutomationError(AutomationErrorKind.multipleRepositories),
+      );
+    }
+    final root = roots.single;
+    final captured = await git.output(root, const ['diff', '--cached']);
+    if (captured.$1 != 0 || captured.$2.trim().isEmpty) {
+      return Failure(
+        AutomationError(
+          AutomationErrorKind.diffUnavailable,
+          detail: captured.$2,
+        ),
+      );
+    }
+    return _generateCommitMessage(root, captured.$2);
+  }
+
+  Future<Result<GeneratedCommitMessage, AutomationError>>
+  _generateCommitMessage(String root, String diff) async {
+    final selection = _automationSelection;
+    if (selection == null) {
+      return const Failure(AutomationError(AutomationErrorKind.notConfigured));
+    }
+    final history = await git.output(root, const [
+      'log',
+      '-8',
+      '--pretty=format:%s',
+    ]);
+    final subjects = history.$1 == 0
+        ? history.$2
+              .split('\n')
+              .where((line) => line.trim().isNotEmpty)
+              .toList()
+        : const <String>[];
+    final generated = await _automation.generate(
+      selection: selection,
+      request: AutomationRequest(
+        repositoryPath: root,
+        prompt: CommitMessagePrompt.build(diff, subjects),
+      ),
+    );
+    return generated;
+  }
+
+  Future<void> cancelCommitMessageGeneration() =>
+      _automation.cancelGeneration();
 
   /// Commit (Source Control): comita **só** [absPath] com [message], na root
   /// dona do caminho. Untracked precisa de `git add` antes (pathspec de commit
@@ -2254,7 +3819,7 @@ class CockpitViewModel extends ChangeNotifier {
     if (pid == null) return 'No workspace selected.';
     final root = rootContaining(pid, absPath);
     if (root == null) return 'File is outside the workspace roots.';
-    final rel = _subOf(absPath, root);
+    final rel = relativeUnder(absPath, root);
     if (gitStatusForPath(absPath) == GitFileStatus.untracked) {
       final err = await git.collect(root, ['add', '--', rel]);
       if (err != null) return err;
@@ -2267,9 +3832,15 @@ class CockpitViewModel extends ChangeNotifier {
   Future<String?> _restoreFile(String absPath, {required bool staged}) async {
     final pid = _selectedProjectId;
     if (pid == null) return 'No workspace selected.';
+    if (_activeRemoteHost() != null) {
+      // Remoto só suporta unstage (restore --staged); restore do working tree
+      // (discard) fica pra depois.
+      if (staged) return _remoteStage([absPath], staged: false);
+      return 'Discard is not supported on remote workspaces yet.';
+    }
     final root = rootContaining(pid, absPath);
     if (root == null) return 'File is outside the workspace roots.';
-    final rel = _subOf(absPath, root);
+    final rel = relativeUnder(absPath, root);
     final err = await git.collect(root, [
       'restore',
       if (staged) '--staged',
@@ -2355,10 +3926,18 @@ class CockpitViewModel extends ChangeNotifier {
           ? target
           : _projectById(target.parentId!);
       if (root != null && root.realmId != realmCtrl.activeId) {
+        // Troca de realm por fora do [switchRealm]: guarda a seleção exata do
+        // realm que está saindo antes de virar a chave.
+        final leaving = _selectedProjectId;
+        if (leaving != null) {
+          _sessionSelectionByRealm[realmCtrl.activeId] = leaving;
+        }
         realmCtrl.setActive(root.realmId);
       }
     }
     _selectedProjectId = id;
+    _sessionSelectionByRealm[realmCtrl.activeId] = id;
+    _requestPaneKeyboard();
     // Persiste o workspace (raiz) pra pré-selecionar na próxima abertura —
     // por realm: cada realm lembra a própria última seleção.
     unawaited(_projects.saveLastSelected(realmCtrl.activeId, _rootOf(id)));
@@ -2367,8 +3946,16 @@ class CockpitViewModel extends ChangeNotifier {
     git.watchProject(id); // segue o working tree do novo projeto ao vivo
     unawaited(git.refresh(id)); // pode ter mudado desde a última vez
     unawaited(_refreshWorktrees(_rootOf(id))); // reflete worktrees externas
+    // Workspace remoto: carrega o git status do host (source control remoto).
+    if (_projectById(id)?.isRemoteTerminal ?? false) {
+      unawaited(_refreshRemoteGit());
+    }
     notifyListeners();
   }
+
+  /// Recarrega o source control do workspace remoto ativo (botão refresh /
+  /// pull-to-refresh do painel). No-op se o ativo é local.
+  Future<void> refreshRemoteGit() => _refreshRemoteGit();
 
   /// Subpastas do projeto selecionado em [relativePath] (vazio = raiz), para o
   /// seletor navegável de "onde o agente atua". [relativePath] usa `/` e fica
@@ -2440,11 +4027,21 @@ class CockpitViewModel extends ChangeNotifier {
   int get tabFocusGen => _tabFocusGen;
   int _tabFocusGen = 0;
 
+  /// Sinaliza "o teclado deve ir para o pane ativo agora".
+  ///
+  /// **Todo** caminho que muda qual pane está ativo passa por aqui: clique no
+  /// pane, seleção de aba, troca de workspace e troca de realm. Quando isso
+  /// ficava espalhado, cada caminho novo nascia sem o sinal e reproduzia o
+  /// mesmo bug: a aba aparecia selecionada e o teclado ficava para trás, porque
+  /// o `_PaneBody` só re-pede o `FocusNode` quando `focused` transiciona ou
+  /// quando esta geração avança. Foi o que aconteceu com a troca de realm.
+  void _requestPaneKeyboard() => _tabFocusGen++;
+
   void focus(String paneId) {
     final id = _selectedProjectId;
     if (id == null || _focused[id] == paneId) return;
     _focused[id] = paneId;
-    _tabFocusGen++;
+    _requestPaneKeyboard();
     _clearFocusedNotification();
     notifyListeners();
   }
@@ -2457,7 +4054,7 @@ class CockpitViewModel extends ChangeNotifier {
       updateLeaf(tree, paneId, (p) => p.copyWith(active: agentId)),
     );
     _focused[_selectedProjectId!] = paneId;
-    _tabFocusGen++;
+    _requestPaneKeyboard();
     _clearFocusedNotification();
     // Selecionar uma tab de FileView revela o arquivo na árvore: destaca +
     // expande a root e os pais (uma vez, via a geração). Só quando o arquivo é
@@ -2781,6 +4378,17 @@ class CockpitViewModel extends ChangeNotifier {
     final leaf = findLeaf(tree, paneId);
     final active = leaf == null ? null : _sessions[leaf.active];
     return active is TerminalSession;
+  }
+
+  /// `true` se a aba ativa da pane é um AGENTE de verdade (não placeholder). Só
+  /// nesse caso o split pergunta a subpasta — as demais abas (terminal, browser,
+  /// viewer, db) abrem direto na raiz do workspace, sem modal.
+  bool paneActiveIsAgent(String paneId) {
+    final tree = _activeTree;
+    if (tree == null) return false;
+    final leaf = findLeaf(tree, paneId);
+    final active = leaf == null ? null : _sessions[leaf.active];
+    return active is AgentSession && active.status != AgentStatus.empty;
   }
 
   /// `true` se a aba ativa da pane [paneId] é um placeholder "Novo" (ainda não
@@ -3109,8 +4717,15 @@ class CockpitViewModel extends ChangeNotifier {
   // ---- helpers --------------------------------------------------------------
 
   /// Raiz (path) do workspace [projectId] — usada pela tab `.dbq` pra
-  /// resolver conexões/paths relativos (plano 51).
-  String? projectRootOf(String projectId) => _projectById(projectId)?.path;
+  /// resolver conexões/paths relativos (plano 51). No workspace remoto (plano
+  /// 58) o `path` é vazio; a root efetiva é a pasta do pin (`remotePath`), a
+  /// mesma que o painel de DB usa via `treeRootPath` — sem isso o `.dbq`
+  /// resolveria conexões num root errado e listaria "(none)".
+  String? projectRootOf(String projectId) {
+    final p = _projectById(projectId);
+    if (p == null) return null;
+    return p.isRemoteTerminal ? (p.remotePath ?? '') : p.path;
+  }
 
   Project? _projectById(String? id) {
     for (final project in _projectList) {
@@ -3138,12 +4753,38 @@ class CockpitViewModel extends ChangeNotifier {
     _focused[projectId] = leaf.id;
   }
 
+  /// Gateway de terminal do workspace: remoto (SSH, via RemoteHostsController)
+  /// para hosts remotos; a factory padrão (sidecar loopback) para o resto.
+  TerminalGateway _gatewayForProject(String projectId) {
+    final project = _projectById(projectId);
+    final hostId = project?.remoteHostId;
+    if (project != null && project.isRemoteTerminal && hostId != null) {
+      final host = _remoteHosts.hosts
+          .where((h) => h.id == hostId)
+          .cast<RemoteHost?>()
+          .firstWhere((h) => true, orElse: () => null);
+      if (host != null) return _remoteHosts.terminalGateway(host);
+    }
+    return _terminalFactory.create();
+  }
+
   PaneItem _spawn(
     String subRelative, {
     required bool terminal,
     TerminalProfile? profile,
   }) {
     final project = selectedProject!;
+    // Workspace remoto (via SSH): PTY no cockpit-server do host, na PASTA do
+    // pin (vazio = HOME remota). Gateway roteado pro connector daquele host.
+    if (project.isRemoteTerminal) {
+      return _buildTerminal(
+        _nid('t'),
+        project.id,
+        project.remotePath ?? '',
+        title: 'Terminal',
+        profile: profile,
+      );
+    }
     // Cockpit (terminal-only, sem pasta): shell sempre no HOME do usuário,
     // ignorando `subRelative`. Nunca spawna agente aqui (a UI força terminal).
     if (project.isSystemTerminal) {
@@ -3189,8 +4830,15 @@ class CockpitViewModel extends ChangeNotifier {
       id: id,
       projectId: projectId,
       workingDirectory: cwd,
-      gateway: _terminalFactory.create(),
-      profile: profile ?? defaultTerminalProfile,
+      gateway: _gatewayForProject(projectId),
+      // Workspace REMOTO sem escolha explícita: quem decide o shell é o host.
+      // O padrão local não vale do outro lado — um cliente Windows pedia
+      // `powershell.exe` num host macOS e a aba abria vazia, sem erro.
+      profile:
+          profile ??
+          (_isRemoteWorkspace(projectId)
+              ? TerminalProfile.hostLoginShell
+              : defaultTerminalProfile),
       engine: engine ?? _defaultTerminalEngine,
       title: title,
       // Persistência do scrollback: grava a saída pra replay no próximo boot.
@@ -3200,6 +4848,8 @@ class CockpitViewModel extends ChangeNotifier {
       replay: replay,
       // Restauração: comando a digitar no shell novo (ex.: `claude --resume`).
       startupCommand: startupCommand,
+      // Detecção do harness interativo ativo (ícone da aba).
+      monitor: _harnessMonitor,
       // Injeta no env da PTY: roteamento (id da tab) + transporte (socket/porta).
       // O `cockpit-hook` do claude herda e reporta status de turno de volta.
       // `COCKPIT_TAB_ID` é o nome correto (o que a CLI endereça é uma tab);
@@ -3209,12 +4859,16 @@ class CockpitViewModel extends ChangeNotifier {
         'COCKPIT_PANE_ID': id,
         ..._statusServer.hookEnv,
         // PATH escopado → o binário `cockpit` (CLI interna) resolve só nas abas.
-        ..._cliPathEnv(),
+        // SÓ no local: esse caminho é desta máquina e não existe no host. Pior,
+        // ele leva junto o PATH INTEIRO do cliente — mandar um
+        // `C:\...;C:\Windows\system32` pra uma PTY de macOS destrói o PATH do
+        // shell de lá, e nem `ls` resolve.
+        if (!_isRemoteWorkspace(projectId)) ..._cliPathEnv(),
       },
     );
     // claude rodando na aba reporta fim de turno via socket → mesma notificação
     // do agente (badge se não for a aba ativa; OS notification se desfocado).
-    t.onTurnFinished = () => unawaited(_notifyIfNeeded(t));
+    t.onTurnFinished = () => unawaited(notifications.turnFinished(t));
     // cwd vivo (OSC 7) mudou → persiste o layout pra restaurar o shell ali.
     t.onCwdChanged = () => _scheduleSave(projectId);
     // Restauração: re-arma a trava de nome sem notificar (aba ainda não montada).
@@ -3250,6 +4904,7 @@ class CockpitViewModel extends ChangeNotifier {
           ..preferredModelId = preferredModelId
           ..preferredThinking = preferredThinking;
     s.onTurnEnd = () => _onAgentTurnEnd(s);
+    s.onCrashed = () => unawaited(notifications.agentCrashed(s));
     s.onPreferenceChanged = () => _scheduleSave(project.id);
     _sessions[s.id] = s;
     unawaited(_bootAgent(s, cwd, project, restoreSessionPath));
@@ -3305,6 +4960,12 @@ class CockpitViewModel extends ChangeNotifier {
   void _onClaudeStatus(ClaudeStatusUpdate u) {
     final s = _sessions[u.paneId];
     if (s is! TerminalSession) return;
+    if (kDebugMode) {
+      debugPrint(
+        '[status] ${DateTime.now().toIso8601String().substring(11, 23)} '
+        'pane=${u.paneId} ev=${u.event} st=${u.status}',
+      );
+    }
     final hadSid = s.claudeSessionId;
     s.applyClaudeStatus(
       status: switch (u.status) {
@@ -3319,10 +4980,11 @@ class CockpitViewModel extends ChangeNotifier {
       isTurnStart: u.event == 'UserPromptSubmit',
       sessionId: u.sessionId,
       transcriptPath: u.transcriptPath,
+      harness: AgentHarness.fromWire(u.harness),
     );
-    // O session-id do claude chega assíncrono pelo hook (não numa mutação de
+    // O session-id do agente chega assíncrono pelo hook (não numa mutação de
     // layout), então persiste o layout quando ele MUDA — senão `claude_sid`
-    // nunca chega ao disco e o restore não consegue dar `claude --resume`.
+    // nunca chega ao disco e o restore não consegue retomar a sessão.
     if (s.claudeSessionId != hadSid && s.claudeSessionId != null) {
       _scheduleSave(s.projectId);
     }
@@ -3334,6 +4996,13 @@ class CockpitViewModel extends ChangeNotifier {
   ///
   /// O diretório é por flavor (`bin` / `bin-debug`), então uma aba da build de
   /// dev enxerga a CLI da build de dev — nunca a da instalada.
+  /// O workspace é servido por um host remoto (SSH)? Decide o que NÃO pode ser
+  /// imposto de cá: shell padrão e PATH da CLI local.
+  bool _isRemoteWorkspace(String projectId) {
+    final project = _projectById(projectId);
+    return project != null && project.isRemoteTerminal;
+  }
+
   Map<String, String> _cliPathEnv() {
     final binDir = cockpitCliDir();
     if (binDir == null) return const <String, String>{};
@@ -3348,33 +5017,7 @@ class CockpitViewModel extends ChangeNotifier {
     if (s.sessionPath == null) unawaited(_captureSessionPath(s));
     unawaited(git.refresh(s.projectId));
     unawaited(_refreshWorktrees(_rootOf(s.projectId)));
-    unawaited(_notifyIfNeeded(s));
-  }
-
-  /// Badge (ponto na aba) → só se o agente NÃO for a aba ativa.
-  /// OS notification → só se a janela não estiver focada.
-  /// Separar as duas responsabilidades evita badge preso: se o usuário já está
-  /// na aba, não há nada a marcar — ele verá a resposta ao olhar para a janela.
-  Future<void> _notifyIfNeeded(PaneItem s) async {
-    final isActiveTab = s.id == _focusedAgentId;
-
-    if (!isActiveTab) {
-      s.markUnseen();
-      notifyListeners();
-    }
-
-    final windowFocused = await windowManager.isFocused();
-    if (!windowFocused) {
-      // Janela em outro app → notificação do SO (tem som próprio).
-      if (_notificationsEnabled) {
-        final workspace = _projectById(s.projectId)?.name ?? '';
-        await _notifier.agentFinished(agentName: s.title, workspace: workspace);
-      }
-    } else if (_soundEnabled) {
-      // Janela focada → chime curto pra chamar atenção (inclusive na aba ativa).
-      // Nunca junto da notificação → não se confunde com o som dela.
-      await _notifier.playTurnChime();
-    }
+    unawaited(notifications.turnFinished(s));
   }
 
   /// Limpa a notificação do agente que acabou de virar o focado.
@@ -3400,14 +5043,13 @@ class CockpitViewModel extends ChangeNotifier {
   }
 
   /// Chaves de scrollback a preservar no GC do boot: o `id` de cada sessão
-  /// `terminal` e o `taskId` de cada `task_output` presentes em QUALQUER layout
-  /// salvo. (O store de scrollback é compartilhado — logs de terminal sob o
-  /// `projectId` real, logs de task sob `__tasks__/<taskId>` —, mas o prune casa
-  /// por nome de arquivo, então o keep-set é a união das duas chaves.) Lê os
-  /// descritores `sessions` dos docs já carregados em [_savedLayouts].
-  Set<String> _persistedTerminalIds() {
+  /// `terminal` e o `taskId` de cada `task_output` citados por [docs]. O store
+  /// de scrollback é compartilhado — logs de terminal sob o `projectId` real,
+  /// logs de task sob `__tasks__/<taskId>` —, mas o prune casa por nome de
+  /// arquivo, então o keep-set é a união das duas chaves.
+  Set<String> _terminalIdsIn(Iterable<Map<String, dynamic>?> docs) {
     final ids = <String>{};
-    for (final doc in _savedLayouts.values) {
+    for (final doc in docs) {
       if (doc == null) continue;
       final sessions = doc['sessions'];
       if (sessions is! Map) continue;
@@ -3474,9 +5116,33 @@ class CockpitViewModel extends ChangeNotifier {
   /// árvore + sessões; senão, abre uma pane vazia. Idempotente: já-ativo é no-op.
   Future<void> _activateProject(String id) async {
     if (_trees.containsKey(id)) return;
+    // Projeto que entrou na lista DEPOIS do boot — todo fork de worktree é
+    // assim, local ou remoto: eles são derivados do `git worktree list`, que
+    // só responde depois das duas passagens de carga do `init`. Sem esta
+    // busca no disco, `_savedLayouts[fork]` vinha ausente e o fork abria numa
+    // pane vazia: as abas salvas não voltavam e o `claude --resume` sumia,
+    // enquanto o workspace pai (carregado no boot) restaurava normalmente.
+    //
+    // A chave AUSENTE é diferente de valor `null`: `null` significa "já
+    // procurei, não há layout" e não repete a leitura.
+    if (!_savedLayouts.containsKey(id)) {
+      _savedLayouts[id] = await _layoutStore.load(id);
+    }
     final doc = _savedLayouts[id];
     if (doc == null) {
       _initTree(id); // síncrono — pane vazia padrão
+      // NOTIFICAR É OBRIGATÓRIO AQUI, e não só no caminho de restore abaixo.
+      // `_initTree` muta `_trees`/`_focused` em silêncio, e no boot este método
+      // roda dentro de um `addPostFrameCallback` — ou seja, DEPOIS do frame que
+      // renderizou com `tree == null`. Sem o notify, o `_multiplexer` fica
+      // preso naquele frame (devolve `SizedBox.shrink()`) e o workspace inteiro
+      // aparece em branco abaixo da topbar, indefinidamente.
+      //
+      // O bug parecia intermitente porque qualquer notify assíncrono posterior
+      // (git.refresh, worktrees, probe de IDEs, sidecar) mascarava a falta
+      // deste — uma corrida. Quando nenhum chegava, a tela ficava cinza até o
+      // usuário clicar em algo, e era isso que "consertava" ao abrir o rail.
+      notifyListeners();
       return;
     }
     _restoring = true;
@@ -3503,8 +5169,17 @@ class CockpitViewModel extends ChangeNotifier {
     final created = <String>{};
     for (final entry in sessionsJson.entries) {
       final desc = (entry.value as Map).cast<String, dynamic>();
-      if (await _restoreSession(entry.key, desc, project)) {
-        created.add(entry.key);
+      // Uma aba que não restaura **não pode derrubar o boot**: antes, qualquer
+      // exceção aqui subia até o `init()`, que morria antes de `_ready = true`
+      // e deixava o app no loading pra sempre. O caso real foi apagar a pasta
+      // do workspace: o PTY falhava no spawn e não havia mais volta sem editar
+      // o `projects.json` na mão. Falhou, a aba é descartada no sanitize.
+      try {
+        if (await _restoreSession(entry.key, desc, project)) {
+          created.add(entry.key);
+        }
+      } catch (error, stack) {
+        debugPrint('[restore] sessão ${entry.key} falhou: $error\n$stack');
       }
     }
 
@@ -3540,14 +5215,25 @@ class CockpitViewModel extends ChangeNotifier {
         // `\x1bc` (RIS) prepended limpa qualquer modo residual (alt-screen) em
         // que o processo morreu; o `\r\n` final põe o prompt novo numa linha
         // fresca abaixo do histórico.
+        //
+        // `\x1b[<9u` (pop do kitty keyboard protocol) DEPOIS do histórico: o
+        // RIS reseta no início, mas o replay reaplica o PUSH do kitty gravado no
+        // scrollback (claude/pi ligam o protocolo). Como o processo foi morto ao
+        // fechar o app, o POP nunca veio — o emulador ficava preso em modo
+        // kitty e toda tecla do shell novo virava `CSI…u` (incl. eventos de
+        // release). O pop no fim zera a pilha (clamp: 9 cobre qualquer
+        // profundidade real), devolvendo o teclado legado pro shell.
         final raw = await _scrollback.load(
           projectId: project.id,
           sessionId: id,
         );
-        // Se a aba rodava um `claude`, re-executa `claude --resume <sid>` no
+        // Se a aba rodava um agente, re-executa o comando de resume dele no
         // shell novo (reanexa a conversa). O replay mostra o histórico até o
-        // claude redesenhar; nas demais abas (shell puro) só há o replay.
+        // agente redesenhar; nas demais abas (shell puro) só há o replay.
+        // `harness` ausente = layout salvo antes desta distinção, quando só o
+        // Claude tinha hooks.
         final claudeSid = desc['claude_sid'] as String?;
+        final harness = AgentHarness.fromWire(desc['harness'] as String?);
         // cwd vivo salvo (OSC 7, absoluto) vence o `sub` — restaura onde o
         // usuário parou, mesmo fora do projeto.
         final termCwd = desc['cwd'] as String? ?? cwdOf();
@@ -3556,10 +5242,10 @@ class CockpitViewModel extends ChangeNotifier {
           project.id,
           termCwd,
           title: desc['title'] as String?,
-          replay: raw == null ? null : 'c$raw\r\n',
+          replay: raw == null ? null : 'c$raw\x1b[<9u\r\n',
           startupCommand: claudeSid == null || claudeSid.isEmpty
               ? null
-              : 'claude --resume $claudeSid',
+              : harness.resumeCommand(claudeSid),
           // Re-arma a trava ANTES de o shell subir e re-emitir OSC-title: o nome
           // manual continua vencendo o título dinâmico após o reinício.
           manualLabel: desc['label'] as String?,
@@ -3573,24 +5259,49 @@ class CockpitViewModel extends ChangeNotifier {
       case 'viewer':
         final path = desc['path'] as String?;
         if (path == null) return false;
-        final view = await _fileReader.read(path);
+        // `_readFile` roteia pro host quando o workspace ativo é remoto (o
+        // restore no boot roda só pro projeto selecionado); local usa o
+        // `_fileReader`. Sem isto, aba de arquivo de workspace remoto tentava
+        // ler no disco do cliente e caía fora (não restaurava).
+        final view = await _readFile(path);
         if (view is FileViewUnsupported) return false;
-        _sessions[id] = FileViewerSession(
+        final viewer = FileViewerSession(
           id: id,
           projectId: project.id,
           path: path,
           view: view,
         );
+        // Same pipeline as openFile: SCM coordinator + live-reload.
+        // Without this, restored tabs have no diff gutter until reopen.
+        _ensureScmCoordinator(viewer);
+        _sessions[id] = viewer;
+        _watchFileViewer(viewer);
         return true;
       case 'diff':
         final path = desc['path'] as String?;
         if (path == null) return false;
-        final diff = await _gitDiff.read(project.path, path);
+        final commitHash = desc['commitHash'] as String?;
+        final repoRoot = desc['repoRoot'] as String?;
+        final previousRelativePath = desc['previousPath'] as String?;
+        if (commitHash != null && (repoRoot == null || repoRoot.isEmpty)) {
+          return false;
+        }
+        final diff = commitHash == null
+            ? await _gitDiff.read(project.path, path)
+            : await _gitDiff.readCommit(
+                repoRoot!,
+                commitHash,
+                _relativePath(repoRoot, path),
+                previousRelativePath: previousRelativePath,
+              );
         _sessions[id] = DiffViewerSession(
           id: id,
           projectId: project.id,
           path: path,
           diff: diff,
+          commitHash: commitHash,
+          repoRoot: repoRoot,
+          previousRelativePath: previousRelativePath,
         );
         return true;
       case 'redis':
@@ -3615,6 +5326,14 @@ class CockpitViewModel extends ChangeNotifier {
           connName: mConn,
           collection: mColl,
           workingDirectory: project.path,
+        );
+        return true;
+      case 'browser':
+        _sessions[id] = BrowserSession(
+          id: id,
+          projectId: project.id,
+          workingDirectory: project.path,
+          url: desc['url'] as String? ?? '',
         );
         return true;
       case 'empty':
@@ -3665,10 +5384,23 @@ class CockpitViewModel extends ChangeNotifier {
 
   /// Limpa a árvore restaurada: filtra abas cuja sessão não foi recriada e, se
   /// uma folha ficar vazia, põe um placeholder (preserva o layout).
-  PaneNode _sanitizeTree(PaneNode node, Set<String> present, String projectId) {
+  PaneNode _sanitizeTree(
+    PaneNode node,
+    Set<String> present,
+    String projectId, [
+    Set<String>? used,
+  ]) {
+    // `used`: ids de sessão já colocados num leaf ANTERIOR. Uma sessão só pode
+    // aparecer em UM leaf — senão dois panes renderizam o MESMO terminal
+    // (controller/buffer compartilhado → espelho: digitar/rolar num aparece no
+    // outro). Layouts salvos com essa duplicata (bug histórico) são saneados
+    // aqui na restauração.
+    used ??= <String>{};
     switch (node) {
       case LeafPane():
-        final tabs = node.tabs.where(present.contains).toList();
+        final tabs = node.tabs
+            .where((t) => present.contains(t) && used!.add(t))
+            .toList();
         if (tabs.isEmpty) {
           final e = _makeEmpty(projectId);
           return LeafPane(id: node.id, tabs: [e.id], active: e.id);
@@ -3677,8 +5409,8 @@ class CockpitViewModel extends ChangeNotifier {
         return LeafPane(id: node.id, tabs: tabs, active: active);
       case SplitPane():
         return node.copyWith(
-          a: _sanitizeTree(node.a, present, projectId),
-          b: _sanitizeTree(node.b, present, projectId),
+          a: _sanitizeTree(node.a, present, projectId, used),
+          b: _sanitizeTree(node.b, present, projectId, used),
         );
     }
   }
@@ -3737,6 +5469,9 @@ class CockpitViewModel extends ChangeNotifier {
       'focused': _focused[projectId],
       'tree': paneNodeToJson(tree),
       'sessions': sessions,
+      // Toggle de worktrees do rail (V37) — mora no mesmo doc do layout, então
+      // sobrevive à sessão sem inventar outro store.
+      kWorktreesExpandedKey: worktreesExpanded(projectId),
     };
   }
 
@@ -3770,6 +5505,7 @@ class CockpitViewModel extends ChangeNotifier {
       desc
         ..remove('sessionPath')
         ..remove('claude_sid')
+        ..remove('harness') // só faz sentido junto do claude_sid
         ..remove('cwd');
       final newId = _nid(desc['type'] == 'terminal' ? 't' : 'a');
       tabIdMap[entry.key as String] = newId;
@@ -3826,7 +5562,7 @@ class CockpitViewModel extends ChangeNotifier {
     if (s is TerminalSession) {
       return <String, dynamic>{
         'type': 'terminal',
-        'sub': _subOf(s.workingDirectory, project.path),
+        'sub': relativeUnder(s.workingDirectory, project.path),
         'title': s.title,
         'engine': s.terminal.engine.name,
         // Rótulo manual travado (se houver): persiste com o descritor da aba,
@@ -3837,19 +5573,32 @@ class CockpitViewModel extends ChangeNotifier {
         // usuário pode ter dado `cd` pra fora do projeto). `sub` segue como
         // fallback pra abas que nunca emitiram OSC 7.
         if (s.currentDirectory != null) 'cwd': s.currentDirectory,
-        // Se um `claude` rodava nesta aba, guarda o session-id (capturado pelo
-        // hook) pra re-executar `claude --resume <sid>` no restore.
+        // Se um agente rodava nesta aba, guarda o session-id (capturado pelo
+        // hook) pra reatar a sessão no restore. `harness` diz de quem é o id —
+        // sem ele o restore assumiria Claude e o `codex` daria "No conversation
+        // found". Chave `claude_sid` mantida por compat com layouts antigos.
         if (s.claudeSessionId != null) 'claude_sid': s.claudeSessionId,
+        if (s.claudeSessionId != null) 'harness': s.agentHarness.wire,
       };
     }
     if (s is FileViewerSession) {
       return <String, dynamic>{'type': 'viewer', 'path': s.path};
     }
     if (s is DiffViewerSession) {
-      return <String, dynamic>{'type': 'diff', 'path': s.path};
+      return <String, dynamic>{
+        'type': 'diff',
+        'path': s.path,
+        if (s.commitHash != null) 'commitHash': s.commitHash,
+        if (s.repoRoot != null) 'repoRoot': s.repoRoot,
+        if (s.previousRelativePath != null)
+          'previousPath': s.previousRelativePath,
+      };
     }
     if (s is RedisBrowserSession) {
       return <String, dynamic>{'type': 'redis', 'conn': s.connName};
+    }
+    if (s is BrowserSession) {
+      return <String, dynamic>{'type': 'browser', 'url': s.url};
     }
     if (s is MongoBrowserSession) {
       return <String, dynamic>{
@@ -3875,7 +5624,7 @@ class CockpitViewModel extends ChangeNotifier {
     }
     return <String, dynamic>{
       'type': 'agent',
-      'sub': _subOf(a.workingDirectory, project.path),
+      'sub': relativeUnder(a.workingDirectory, project.path),
       'title': a.title,
       if (a.sessionPath != null) 'sessionPath': a.sessionPath,
       if (a.autoStartRelay) 'auto_start_relay': true,
@@ -3893,14 +5642,6 @@ class CockpitViewModel extends ChangeNotifier {
   /// internos são montados com `/`). Sem isso o prefixo não casaria e o `sub`
   /// sairia vazio — quebrando o posicionamento por subpasta (e a clonagem de
   /// layout pro worktree).
-  String _subOf(String cwd, String root) {
-    final c = cwd.replaceAll('\\', '/');
-    final r = root.replaceAll('\\', '/');
-    if (c == r) return '';
-    final prefix = r.endsWith('/') ? r : '$r/';
-    return c.startsWith(prefix) ? c.substring(prefix.length) : '';
-  }
-
   void _scheduleSave(String projectId) {
     // O Cockpit é efêmero (sessão só enquanto o app vive) — nunca persiste
     // layout. Chokepoint único: cobre resize, cwd, criação/fechamento de aba.
@@ -3909,7 +5650,15 @@ class CockpitViewModel extends ChangeNotifier {
     _saveTimers[projectId] = Timer(const Duration(milliseconds: 500), () {
       _saveTimers.remove(projectId);
       final doc = _serializeLayout(projectId);
-      if (doc.isNotEmpty) unawaited(_layoutStore.save(projectId, doc));
+      if (doc.isNotEmpty) {
+        unawaited(_layoutStore.save(projectId, doc));
+      } else {
+        // A rail toggle can happen while an unselected workspace is still
+        // activating and has no pane tree yet. Persist its rail-only document
+        // instead of dropping the user's choice.
+        final saved = _savedLayouts[projectId];
+        if (saved != null) unawaited(_layoutStore.save(projectId, saved));
+      }
     });
   }
 
@@ -3934,9 +5683,25 @@ class CockpitViewModel extends ChangeNotifier {
   /// 17, 20). Forks novos entram em [_projectList]; forks sumidos (por fora ou
   /// via remove) têm o runtime encerrado (mata `pi` + fecha panes — decisão 9) e,
   /// se selecionados, a seleção volta pro pai. Só notifica quando a lista muda.
-  Future<void> _refreshWorktrees(String rootId) async {
+  Future<void> _refreshWorktrees(String rootId) => _worktreeReconciler.run(
+    rootId,
+    (manager) => _refreshWorktreesOnce(rootId, manager),
+  );
+
+  Future<void> _refreshWorktreesOnce(
+    String rootId,
+    WorktreeManager worktreeManager,
+  ) async {
     final root = _projectById(rootId);
-    if (root == null || root.parentId != null || root.isSystemTerminal) return;
+    // Remoto tem gestão de worktrees PRÓPRIA (_refreshRemoteWorktrees): sem
+    // este guard, o refresh local acharia zero worktrees no disco e limparia
+    // _worktrees[wsId], apagando os forks remotos ~2s após criados.
+    if (root == null ||
+        root.parentId != null ||
+        root.isSystemTerminal ||
+        root.isRemoteTerminal) {
+      return;
+    }
 
     // Multi-root: worktrees são **por root** — varre cada repo filho e anota a
     // origem (as ops de remove/merge/namespace rodam contra ela). Single-root
@@ -3944,7 +5709,7 @@ class CockpitViewModel extends ChangeNotifier {
     final forks = <Project>[];
     final seenForkIds = <String>{};
     for (final rootPath in rootsOf(rootId)) {
-      final wts = await _worktreeMgr.list(rootPath);
+      final wts = await worktreeManager.list(rootPath);
       for (final Worktree w in wts) {
         // Id namespaced pela raiz: o mesmo repo pode ser workspace em 2+
         // realms (paths iguais), e cada cópia reconcilia os próprios forks —
@@ -3977,15 +5742,25 @@ class CockpitViewModel extends ChangeNotifier {
     final newIds = forks.map((f) => f.id).toSet();
     final oldIds = old.map((f) => f.id).toSet();
 
-    // Forks que sumiram → encerra runtime e tira de _projectList.
+    // Forks que sumiram → tira de _projectList, espera o frame que desmonta os
+    // panes e SÓ ENTÃO encerra o runtime. Mesma ordem de [removeProject]:
+    // liberar o terminal nativo com a `TerminalView` ainda montada é SIGSEGV
+    // dentro do libghostty.
     var switched = false;
-    for (final gone in old.where((f) => !newIds.contains(f.id))) {
-      _disposeProjectRuntime(gone.id);
-      _forkOrigin.remove(gone.id);
-      _projectList.removeWhere((p) => p.id == gone.id);
-      if (_selectedProjectId == gone.id) {
-        _selectedProjectId = rootId; // pai assume
-        switched = true;
+    final vanished = old.where((f) => !newIds.contains(f.id)).toList();
+    if (vanished.isNotEmpty) {
+      for (final gone in vanished) {
+        _forkOrigin.remove(gone.id);
+        _projectList.removeWhere((p) => p.id == gone.id);
+        if (_selectedProjectId == gone.id) {
+          _selectedProjectId = rootId; // pai assume
+          switched = true;
+        }
+      }
+      notifyListeners();
+      await _endOfFrame();
+      for (final gone in vanished) {
+        _disposeProjectRuntime(gone.id);
       }
     }
     // Forks novos → entram em _projectList + carregam layout salvo (decisão 18).
@@ -4051,12 +5826,28 @@ class CockpitViewModel extends ChangeNotifier {
     if (id != null && _trees.containsKey(id)) _scheduleSave(id);
   }
 
+  /// Re-sincroniza os workspaces remotos quando o [RemoteHostsController] muda
+  /// por fora (aba "Remote hosts" das Configurações). Idempotente.
+  void _onRemoteHostsChanged() {
+    if (!_ready) return;
+    _syncRemoteWorkspaces();
+    notifyListeners();
+  }
+
   @override
   void dispose() {
+    _remoteHosts.removeListener(_onRemoteHostsChanged);
     unawaited(_statusServer.stop());
+    unawaited(_previewSub?.cancel());
+    unawaited(_remoteTurnSub?.cancel());
+    unawaited(_remoteCliSub?.cancel());
+    unawaited(_sidecarTurnSub?.cancel());
     // O GitController é dono dos próprios timers/watchers; o módulo o
     // descarta junto com a rota. Aqui só desligamos o repasse de notify.
-    git.removeListener(notifyListeners);
+    git.removeListener(_onGitNotify);
+    remote.removeListener(notifyListeners);
+    files.removeListener(notifyListeners);
+    notifications.removeListener(notifyListeners);
     realmCtrl.removeListener(notifyListeners);
     for (final t in _saveTimers.values) {
       t.cancel();
@@ -4077,6 +5868,7 @@ class CockpitViewModel extends ChangeNotifier {
       s.dispose();
     }
     _sessions.clear();
+    _harnessMonitor.dispose();
     super.dispose();
   }
 }

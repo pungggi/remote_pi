@@ -6,6 +6,7 @@ import 'package:cockpit/app/core/ui/menu/workspace_menu_bridge.dart';
 import 'package:cockpit/app/core/ui/settings_controller.dart';
 import 'package:cockpit/app/core/ui/widgets/window_controls.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:cockpit/app/core/ui/widgets/app_tooltip.dart';
@@ -50,6 +51,7 @@ class CockpitTopbar extends StatelessWidget {
         if (!Platform.isMacOS) ...[
           WindowMenuBar(
             menus: buildAppMenus(
+              context.t,
               context.watch<SettingsController>(),
               context.watch<EditorMenuBridge>(),
               context.watch<WorkspaceMenuBridge>(),
@@ -59,7 +61,7 @@ class CockpitTopbar extends StatelessWidget {
         ],
         _IconBtn(
           icon: Icons.view_sidebar_outlined,
-          tooltip: 'Collapse sidebar',
+          tooltip: context.t.cockpit.topbar.collapseSidebar,
           active: !railVisible,
           onTap: onToggleRail,
         ),
@@ -72,8 +74,8 @@ class CockpitTopbar extends StatelessWidget {
         _IconBtn(
           icon: Icons.view_sidebar_outlined,
           tooltip: filesEnabled
-              ? 'Show/hide files'
-              : 'Files unavailable in Cockpit',
+              ? context.t.cockpit.topbar.toggleFiles
+              : context.t.cockpit.topbar.filesUnavailable,
           active: !treeVisible && filesEnabled,
           enabled: filesEnabled,
           onTap: onToggleTree,

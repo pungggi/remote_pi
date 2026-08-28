@@ -29,24 +29,30 @@ void main() {
       { "scripts": { "dev": "vite", "build": "tsc", "test": "vitest" } }
     ''');
     final tasks = await const NpmAdapter().tasksFor(tmp.path);
-    expect(tasks.map((t) => t.id), containsAll(['npm:dev', 'npm:build', 'npm:test']));
+    expect(
+      tasks.map((t) => t.id),
+      containsAll(['npm:dev', 'npm:build', 'npm:test']),
+    );
     final dev = tasks.firstWhere((t) => t.id == 'npm:dev');
     expect(dev.command, 'npm');
     expect(dev.args, ['run', 'dev']);
     expect(dev.cwd, tmp.path);
   });
 
-  test('watch heuristic: dev/start/serve/watch are watch, rest oneShot', () async {
-    await writePackageJson('''
+  test(
+    'watch heuristic: dev/start/serve/watch are watch, rest oneShot',
+    () async {
+      await writePackageJson('''
       { "scripts": { "dev": "vite", "build": "tsc", "watch:css": "x", "lint": "y" } }
     ''');
-    final tasks = await const NpmAdapter().tasksFor(tmp.path);
-    TaskKind kindOf(String id) => tasks.firstWhere((t) => t.id == id).kind;
-    expect(kindOf('npm:dev'), TaskKind.watch);
-    expect(kindOf('npm:watch:css'), TaskKind.watch);
-    expect(kindOf('npm:build'), TaskKind.oneShot);
-    expect(kindOf('npm:lint'), TaskKind.oneShot);
-  });
+      final tasks = await const NpmAdapter().tasksFor(tmp.path);
+      TaskKind kindOf(String id) => tasks.firstWhere((t) => t.id == id).kind;
+      expect(kindOf('npm:dev'), TaskKind.watch);
+      expect(kindOf('npm:watch:css'), TaskKind.watch);
+      expect(kindOf('npm:build'), TaskKind.oneShot);
+      expect(kindOf('npm:lint'), TaskKind.oneShot);
+    },
+  );
 
   test('invalid json yields no tasks', () async {
     await writePackageJson('{ not json');

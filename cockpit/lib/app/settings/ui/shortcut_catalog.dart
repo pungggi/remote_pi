@@ -45,11 +45,11 @@ List<ShortcutSection> buildShortcutCatalog() {
       AppShortcut('Toggle Files', [cmd, shift, 'B']),
       AppShortcut('Split Pane Right', [cmd, 'D']),
       AppShortcut('Split Pane Down', [cmd, shift, 'D']),
-      AppShortcut(
-        'Focus Pane',
-        [cmd, alt, '← → ↑ ↓'],
-        note: 'Moves focus to the pane in that direction.',
-      ),
+      AppShortcut('Focus Pane', [
+        cmd,
+        alt,
+        '← → ↑ ↓',
+      ], note: 'Moves focus to the pane in that direction.'),
       AppShortcut('Select Tab 1–8', [cmd, '1–8']),
       AppShortcut('Select Last Tab', [cmd, '9']),
       AppShortcut('Next Realm', [cmd, '`']),
@@ -57,20 +57,20 @@ List<ShortcutSection> buildShortcutCatalog() {
     ]),
     ShortcutSection('Navigation & Search', <AppShortcut>[
       AppShortcut('Go to File', [cmd, 'P']),
-      AppShortcut(
-        'Search in Files',
-        [cmd, shift, 'F'],
-        note: 'When no file editor is focused.',
-      ),
+      AppShortcut('Search in Files', [
+        cmd,
+        shift,
+        'F',
+      ], note: 'When no file editor is focused.'),
       AppShortcut('Focus Composer', [cmd, 'L']),
     ]),
     ShortcutSection('Editor', <AppShortcut>[
       AppShortcut('Save File', [cmd, 'S']),
-      AppShortcut(
-        'Format File',
-        [cmd, shift, 'F'],
-        note: 'When a file editor is focused.',
-      ),
+      AppShortcut('Format File', [
+        cmd,
+        shift,
+        'F',
+      ], note: 'When a file editor is focused.'),
     ]),
     ShortcutSection('View', <AppShortcut>[
       AppShortcut('Zoom In', [cmd, '=']),

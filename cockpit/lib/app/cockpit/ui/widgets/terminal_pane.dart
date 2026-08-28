@@ -25,6 +25,7 @@ class TerminalPane extends StatefulWidget {
   const TerminalPane({
     super.key,
     required this.terminal,
+    required this.active,
     required this.focusNode,
     required this.textStyle,
     required this.theme,
@@ -34,6 +35,7 @@ class TerminalPane extends StatefulWidget {
   });
 
   final Terminal terminal;
+  final bool active;
   final FocusNode focusNode;
   final TerminalStyle textStyle;
   final TerminalTheme theme;
@@ -417,7 +419,8 @@ class _TerminalPaneState extends State<TerminalPane>
   void _onPointerCancel(PointerCancelEvent e) {
     if (_forwardingMouse) {
       final r = _render;
-      final cell = r?.getCellOffset(r.globalToLocal(e.position)) ?? _tuiLastCell;
+      final cell =
+          r?.getCellOffset(r.globalToLocal(e.position)) ?? _tuiLastCell;
       if (cell != null) {
         widget.terminal.mouseInput(
           TerminalMouseButton.left,
@@ -525,7 +528,13 @@ class _TerminalPaneState extends State<TerminalPane>
 
   @override
   Widget build(BuildContext context) {
-    return MouseRegion(
+    // Mantém este State (ScrollController, seleção e viewport) no IndexedStack,
+    // mas desanexa o RenderTerminal enquanto a tab/workspace está invisível.
+    // Assim writes continuam atualizando o modelo sem agendar layout/paint de
+    // uma superfície que não pode aparecer.
+    if (!widget.active) return const SizedBox.expand();
+
+    final terminal = MouseRegion(
       cursor: _cursor,
       onHover: (e) {
         _lastHoverGlobal = e.position;
@@ -561,6 +570,10 @@ class _TerminalPaneState extends State<TerminalPane>
         ),
       ),
     );
+
+    // O botão de baixar o teclado vive na top bar (sempre visível, fora da área
+    // do teclado) — ver CockpitTopbar. Aqui a pane é só o terminal.
+    return terminal;
   }
 }
 

@@ -230,10 +230,18 @@ class DatabaseViewModel extends ChangeNotifier {
     return reload();
   }
 
+  /// Loader remoto de conexões (plano 58, Wave 4): quando setado e devolve
+  /// não-nulo pro workspace ativo, substitui a leitura local — o
+  /// `.cockpit/databases.json` de um workspace remoto vive no host. O app o
+  /// seta; workspaces locais devolvem `null`.
+  Future<List<DbConnection>>? Function(String workspaceId, String root)?
+  remoteConnectionsFor;
+
   Future<void> reload() async {
     final root = _workspaceRoot;
     if (root == null) return;
-    final loaded = await _store.load(root);
+    final remote = remoteConnectionsFor?.call(_workspaceId ?? '', root);
+    final loaded = await (remote ?? _store.load(root));
     if (_disposed || root != _workspaceRoot) return;
     _connections = loaded;
     _tablesCache.clear();
@@ -284,6 +292,10 @@ class DatabaseViewModel extends ChangeNotifier {
       // Só sobrescreve quando o usuário digitou algo; vazio = mantém a atual.
       await _secrets.write(newKey, password);
     }
+    // A senha mudou/migrou de chave: invalida o cache de sessão pra próxima
+    // query reler o valor atual (evita usar a senha antiga após uma edição).
+    if (previousName != null) service.forgetPassword(wsId, previousName);
+    service.forgetPassword(wsId, conn.name);
     await _syncSshPassphrase(
       conn,
       wsId,
@@ -305,6 +317,7 @@ class DatabaseViewModel extends ChangeNotifier {
     await _secrets.delete(DbQueryService.secretKey(wsId, conn.name));
     await _secrets.delete(DbQueryService.sshSecretKey(wsId, conn.name));
     service.forgetSshPassphrase(wsId, conn.name);
+    service.forgetPassword(wsId, conn.name);
     // A host key confiada some junto: manter o fingerprint de um bastion que
     // ninguém mais usa só acumula lixo com aparência de decisão de segurança.
     final endpoint = conn.ssh?.endpoint;

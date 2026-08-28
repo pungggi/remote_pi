@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:cockpit/app/cockpit/domain/entities/content_search.dart';
 import 'package:cockpit/app/core/ui/file_icons/file_icons.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -121,35 +122,33 @@ class _ContentSearchPanelState extends State<ContentSearchPanel> {
     });
     if (term.trim().isEmpty) return;
 
-    _sub =
-        widget
-            .search(
-              term,
-              caseSensitive: _caseSensitive,
-              wholeWord: _wholeWord,
-              regex: _regex,
-            )
-            .listen(
-              (file) {
-                if (!mounted) return;
-                setState(() => _results.add(file));
-              },
-              onError: (_) {
-                if (!mounted) return;
-                setState(() {
-                  _invalidRegex = _regex;
-                  _searching = false;
-                });
-              },
-              onDone: () {
-                if (!mounted) return;
-                setState(() => _searching = false);
-              },
-            );
+    _sub = widget
+        .search(
+          term,
+          caseSensitive: _caseSensitive,
+          wholeWord: _wholeWord,
+          regex: _regex,
+        )
+        .listen(
+          (file) {
+            if (!mounted) return;
+            setState(() => _results.add(file));
+          },
+          onError: (_) {
+            if (!mounted) return;
+            setState(() {
+              _invalidRegex = _regex;
+              _searching = false;
+            });
+          },
+          onDone: () {
+            if (!mounted) return;
+            setState(() => _searching = false);
+          },
+        );
   }
 
-  int get _totalMatches =>
-      _results.fold(0, (sum, f) => sum + f.matchCount);
+  int get _totalMatches => _results.fold(0, (sum, f) => sum + f.matchCount);
 
   @override
   Widget build(BuildContext context) {
@@ -177,10 +176,7 @@ class _ContentSearchPanelState extends State<ContentSearchPanel> {
           _resizeHandle(context),
           _header(context),
           _field(context),
-          SizedBox(
-            height: widget.resultsHeight,
-            child: _resultsList(context),
-          ),
+          SizedBox(height: widget.resultsHeight, child: _resultsList(context)),
         ],
       ),
     );
@@ -222,7 +218,7 @@ class _ContentSearchPanelState extends State<ContentSearchPanel> {
       child: Row(
         children: [
           Text(
-            'SEARCH',
+            context.t.cockpit.contentSearch.sectionSearch,
             style: typo.label.copyWith(
               fontSize: 10,
               letterSpacing: 1.1,
@@ -272,7 +268,7 @@ class _ContentSearchPanelState extends State<ContentSearchPanel> {
                 controller: _ctrl,
                 focusNode: _focus,
                 placeholder: Text(
-                  'Search in files',
+                  context.t.cockpit.contentSearch.searchInFiles,
                   style: context.typo.body.copyWith(
                     fontSize: 13,
                     color: colors.text4,
@@ -286,10 +282,7 @@ class _ContentSearchPanelState extends State<ContentSearchPanel> {
                   color: _invalidRegex ? colors.error : colors.border,
                 ),
                 borderRadius: BorderRadius.circular(6),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 6,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                 onChanged: (_) => _onQueryChanged(),
               ),
             ),
@@ -297,20 +290,20 @@ class _ContentSearchPanelState extends State<ContentSearchPanel> {
           const SizedBox(width: 6),
           _OptionToggle(
             label: 'Aa',
-            tooltip: 'Match case',
+            tooltip: context.t.cockpit.contentSearch.matchCase,
             active: _caseSensitive,
             onTap: () => _toggle(() => _caseSensitive = !_caseSensitive),
           ),
           _OptionToggle(
             label: 'ab',
-            tooltip: 'Whole word',
+            tooltip: context.t.cockpit.contentSearch.wholeWord,
             active: _wholeWord,
             underline: true,
             onTap: () => _toggle(() => _wholeWord = !_wholeWord),
           ),
           _OptionToggle(
             label: '.*',
-            tooltip: 'Use regular expression',
+            tooltip: context.t.cockpit.contentSearch.useRegex,
             active: _regex,
             onTap: () => _toggle(() => _regex = !_regex),
           ),
@@ -325,13 +318,13 @@ class _ContentSearchPanelState extends State<ContentSearchPanel> {
       final hasQuery = _ctrl.text.trim().isNotEmpty;
       final String message;
       if (_invalidRegex) {
-        message = 'Invalid regular expression.';
+        message = context.t.cockpit.contentSearch.invalidRegex;
       } else if (!hasQuery) {
-        message = 'Type to search across files.';
+        message = context.t.cockpit.contentSearch.typeToSearch;
       } else if (_searching) {
-        message = 'Searching…';
+        message = context.t.cockpit.contentSearch.searching;
       } else {
-        message = 'No results.';
+        message = context.t.cockpit.contentSearch.noResults;
       }
       return Padding(
         padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
@@ -400,7 +393,10 @@ class _ContentSearchPanelState extends State<ContentSearchPanel> {
                   child: Text(
                     dir,
                     overflow: TextOverflow.ellipsis,
-                    style: typo.label.copyWith(fontSize: 11, color: colors.text4),
+                    style: typo.label.copyWith(
+                      fontSize: 11,
+                      color: colors.text4,
+                    ),
                   ),
                 ),
               ],
@@ -429,10 +425,7 @@ class _ContentSearchPanelState extends State<ContentSearchPanel> {
   Widget _matchRow(BuildContext context, String relativePath, LineMatch line) {
     final colors = context.colors;
     final typo = context.typo;
-    final numStyle = typo.mono.copyWith(
-      fontSize: 11.5,
-      color: colors.text4,
-    );
+    final numStyle = typo.mono.copyWith(fontSize: 11.5, color: colors.text4);
     final baseStyle = typo.mono.copyWith(fontSize: 11.5, color: colors.text2);
 
     return HoverTap(
@@ -464,11 +457,7 @@ class _ContentSearchPanelState extends State<ContentSearchPanel> {
   }
 
   /// Constrói os spans da linha, destacando os intervalos casados.
-  TextSpan _highlightSpan(
-    LineMatch line,
-    TextStyle base,
-    AppColors colors,
-  ) {
+  TextSpan _highlightSpan(LineMatch line, TextStyle base, AppColors colors) {
     final text = line.text;
     final spans = <TextSpan>[];
     var cursor = 0;

@@ -1,5 +1,6 @@
 import 'package:cockpit/app/cockpit/ui/viewmodels/update_viewmodel.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:cockpit/app/core/ui/widgets/app_tooltip.dart';
@@ -66,7 +67,7 @@ class UpdateCard extends StatelessWidget {
               ),
             ),
             AppTooltip(
-              message: 'Dismiss',
+              message: context.t.common.dismiss,
               child: HoverTap(
                 onTap: () => context.read<UpdateViewModel>().dismiss(),
                 borderRadius: BorderRadius.circular(5),

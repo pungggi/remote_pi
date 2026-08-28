@@ -1,23 +1,24 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:cockpit/app/cockpit/domain/contracts/claude_hook_installer.dart';
-import 'package:cockpit/app/core/data/setup/remote_pi_resolver.dart';
-import 'package:cockpit/app/core/domain/result.dart';
+import 'package:cockpit/app/cockpit/data/hooks/hook_installer_base.dart';
 import 'package:flutter/foundation.dart';
 
-/// Implementação do [ClaudeHookInstaller].
+/// Instalador dos hooks no **Claude Code** (`~/.claude/settings.json`).
 ///
-/// 1. Copia o helper `cockpit-hook` empacotado no app (compilado pelo
-///    `macos/build_hook.sh` / passo de build do Windows) para um caminho estável
-///    (`~/.cockpit/bin/cockpit-hook[.exe]`) — o `settings.json` aponta pra cópia,
-///    não pro bundle (sobrevive a update/move). Recopia quando o **conteúdo**
-///    difere (tamanho igual não significa binário igual — ver [_sameContent]).
-/// 2. Faz **append idempotente** de um entry marcado (`_cockpit`) em cada evento
-///    de hook, sem nunca reescrever a lista (preserva hooks do usuário/iTerm2/
-///    plugins). Re-rodar remove o entry antigo nosso e re-adiciona — não duplica.
-class ClaudeHookInstallerImpl implements ClaudeHookInstaller {
-  ClaudeHookInstallerImpl();
+/// A materialização da CLI e a resolução do comando ficam na
+/// [HookInstallerBase]; aqui mora só o formato do `settings.json`:
+///
+/// - Faz **append idempotente** de um entry marcado (`_cockpit`) em cada evento,
+///   sem nunca reescrever a lista (preserva hooks do usuário/iTerm2/plugins).
+///   Re-rodar remove o entry antigo nosso e re-adiciona — não duplica. É por
+///   aqui que a migração acontece: o entry velho apontando pro `cockpit-hook` é
+///   removido e substituído no boot seguinte ao update.
+class ClaudeHookInstallerImpl extends HookInstallerBase {
+  const ClaudeHookInstallerImpl();
+
+  @override
+  String get harnessName => 'claude';
 
   /// Marcador que identifica entries de nossa autoria (para idempotência/cleanup).
   static const String _marker = '_cockpit';
@@ -27,7 +28,7 @@ class ClaudeHookInstallerImpl implements ClaudeHookInstaller {
   /// PreToolUse/PostToolUse (exceto PreToolUse de ferramenta interativa —
   /// AskUserQuestion/ExitPlanMode — que vira waiting); waiting/idle:
   /// Notification; idle: Stop/SessionStart/SessionEnd. (Mapeamento real mora
-  /// no `cockpit-hook`.)
+  /// no `cockpit hook`.)
   static const List<String> _events = <String>[
     'UserPromptSubmit',
     'PreToolUse',
@@ -39,152 +40,9 @@ class ClaudeHookInstallerImpl implements ClaudeHookInstaller {
   ];
 
   @override
-  Future<Result<void, String>> ensureInstalled() async {
-    final home = remotePiHome();
-    if (home == null) {
-      return const Failure<void, String>('HOME não resolvido');
-    }
-    try {
-      final helperPath = await _ensureHelper();
-      if (helperPath == null) {
-        return const Failure<void, String>(
-          'helper cockpit-hook não encontrado',
-        );
-      }
-      await _installHooks(home: home, helperPath: helperPath);
-      // CLI interna `cockpit`: materializa o binário e, se veio, instala a skill
-      // que ensina o agente a usá-lo. Best-effort — não é fatal pro boot.
-      await _ensureCli();
-      return const Success<void, String>(null);
-    } catch (e) {
-      return Failure<void, String>('$e');
-    }
-  }
-
-  /// Copia o helper empacotado para `~/.cockpit/bin/cockpit-hook[.exe]` —
-  /// diretório compartilhado entre builds de propósito (ver [cockpitHookDir]).
-  /// Devolve o caminho, ou `null` se o binário não está no bundle (ex.: dev sem
-  /// o passo de build) e não há cópia prévia.
-  Future<String?> _ensureHelper() async {
-    final name = Platform.isWindows ? 'cockpit-hook.exe' : 'cockpit-hook';
-    final dir = cockpitHookDir();
-    if (dir == null) return null;
-    return _materialize(dir, bundledName: name, destName: name);
-  }
-
-  /// Materializa a CLI interna `cockpit` em `~/.cockpit/bin[-debug]/cockpit[.exe]`
-  /// (o fonte é empacotado como `cockpit-cli` pra não colidir com `cockpit.app`) e,
-  /// se materializou, roda `cockpit install-skill` (idempotente) pra a skill
-  /// nascer instalada. Silencioso: falha aqui não pode derrubar o boot.
-  Future<void> _ensureCli() async {
-    final bundledName = Platform.isWindows ? 'cockpit-cli.exe' : 'cockpit-cli';
-    final destName = Platform.isWindows ? 'cockpit.exe' : 'cockpit';
-    final dir = cockpitCliDir();
-    if (dir == null) return;
-    final path = await _materialize(
-      dir,
-      bundledName: bundledName,
-      destName: destName,
-    );
-    if (path == null) return;
-    try {
-      await Process.run(path, <String>['install-skill']);
-    } catch (_) {
-      /* best-effort */
-    }
-  }
-
-  /// Copia um binário empacotado ([bundledName]) para `[destDirPath]/[destName]`.
-  /// Devolve o caminho, ou `null` se não está no bundle (ex.: dev sem o passo de
-  /// build) e não há cópia prévia.
-  ///
-  /// **Tamanho não decide se está atualizado.** Dois exe AOT do Dart compilados
-  /// de fontes diferentes saem com frequência com o byte count idêntico (o
-  /// snapshot é padded), então a checagem antiga por `length()` deixava a cópia
-  /// velha pra trás em silêncio — o app novo rodando com a CLI de semanas atrás.
-  /// Comparamos o conteúdo e só recopiamos quando difere de verdade.
-  Future<String?> _materialize(
-    String destDirPath, {
-    required String bundledName,
-    required String destName,
-  }) async {
-    final destDir = Directory(destDirPath);
-    final dest = File('${destDir.path}/$destName');
-
-    final bundled = _bundledHelper(bundledName);
-    if (bundled != null && await bundled.exists()) {
-      if (!await _sameContent(bundled, dest)) {
-        await destDir.create(recursive: true);
-        await bundled.copy(dest.path);
-        await _chmodExec(dest.path);
-      }
-      return _hookPath(dest.path);
-    }
-
-    // Dev / sem bundle: usa cópia pré-existente (colocada manualmente).
-    if (await dest.exists()) return _hookPath(dest.path);
-    return null;
-  }
-
-  /// `true` quando [dest] já é byte-a-byte igual a [src]. O tamanho é só o
-  /// descarte barato; quem decide é a comparação de conteúdo.
-  Future<bool> _sameContent(File src, File dest) async {
-    if (!await dest.exists()) return false;
-    if (await src.length() != await dest.length()) return false;
-    try {
-      final a = await src.readAsBytes();
-      final b = await dest.readAsBytes();
-      for (var i = 0; i < a.length; i++) {
-        if (a[i] != b[i]) return false;
-      }
-      return true;
-    } catch (_) {
-      // Ilegível por qualquer motivo: trata como desatualizado e recopia — o
-      // custo é uma cópia extra, o risco oposto é ficar com binário velho.
-      return false;
-    }
-  }
-
-  /// Normaliza o caminho para o `command` do hook usando **forward slashes**.
-  ///
-  /// O Claude Code executa os hooks via `bash` (git-bash/MSYS) mesmo no Windows.
-  /// O `bash` trata `\` como escape, então um caminho com `\` (ex.:
-  /// `C:\Users\x\.cockpit\bin\cockpit-hook.exe`) vira `C:Usersx.cockpit...` e dá
-  /// `command not found`. Como `$home` (`USERPROFILE`) vem com `\` no Windows, o
-  /// caminho montado ficava misto/quebrado. Convertendo tudo para `/`
-  /// (`C:/Users/x/.cockpit/bin/cockpit-hook.exe`) o bash executa normalmente. Em
-  /// POSIX é no-op.
-  String _hookPath(String path) =>
-      Platform.isWindows ? path.replaceAll(r'\', '/') : path;
-
-  /// Caminho do helper empacotado no app, por plataforma:
-  /// - macOS: `…/Contents/MacOS/<app>` → `…/Contents/Resources/cockpit-hook`
-  /// - Windows/Linux: ao lado do executável (`<dir>/cockpit-hook[.exe]`)
-  File? _bundledHelper(String name) {
-    try {
-      final exe = File(Platform.resolvedExecutable);
-      if (Platform.isMacOS) {
-        final contents = exe.parent.parent; // Contents/MacOS → Contents
-        return File('${contents.path}/Resources/$name');
-      }
-      return File('${exe.parent.path}/$name');
-    } catch (_) {
-      return null;
-    }
-  }
-
-  Future<void> _chmodExec(String path) async {
-    if (Platform.isWindows) return;
-    try {
-      await Process.run('chmod', ['+x', path]);
-    } catch (_) {
-      /* best-effort */
-    }
-  }
-
-  Future<void> _installHooks({
+  Future<void> writeConfig({
     required String home,
-    required String helperPath,
+    required String command,
   }) async {
     final file = File('$home/.claude/settings.json');
     Map<String, dynamic> root = <String, dynamic>{};
@@ -200,15 +58,16 @@ class ClaudeHookInstallerImpl implements ClaudeHookInstaller {
         ? Map<String, dynamic>.from(hooksRaw)
         : <String, dynamic>{};
 
-    // `helperPath` já vem normalizado com forward slashes por `_hookPath`
-    // (crítico no Windows: o Claude Code roda hooks via Git Bash, que trata
-    // `\` como escape e quebraria o caminho).
+    // `command` já vem com o caminho normalizado em forward slashes por
+    // `hookPath` (crítico no Windows: o Claude Code roda hooks via Git Bash,
+    // que trata `\` como escape e quebraria o caminho) e citado quando tem
+    // espaço.
     final ourGroup = <String, dynamic>{
       'matcher': '',
       'hooks': <Map<String, dynamic>>[
         <String, dynamic>{
           'type': 'command',
-          'command': helperPath,
+          'command': command,
           _marker: _markerValue,
         },
       ],
@@ -239,9 +98,12 @@ class ClaudeHookInstallerImpl implements ClaudeHookInstaller {
   }
 
   /// Um matcher-group é nosso se algum hook interno carrega o marcador **ou**
-  /// aponta pro helper `cockpit-hook`. O segundo critério limpa entries legados
-  /// (escritos por versões antigas do instalador, sem marcador, e/ou com caminho
-  /// em barra invertida que o Git Bash não resolvia) — senão acumulam a cada boot.
+  /// aponta pro helper (`cockpit-hook` legado ou `<cli> hook`). O segundo
+  /// critério limpa entries legados (escritos por versões antigas do
+  /// instalador, sem marcador, e/ou com caminho em barra invertida que o Git
+  /// Bash não resolvia) — senão acumulam a cada boot. É também o que **migra**
+  /// quem estava no binário separado: o entry velho sai aqui e o novo entra no
+  /// lugar, no primeiro boot depois do update.
   bool _isOurs(dynamic group) {
     if (group is! Map) return false;
     final inner = group['hooks'];
@@ -250,7 +112,10 @@ class ClaudeHookInstallerImpl implements ClaudeHookInstaller {
       if (h is! Map) return false;
       if (h[_marker] == _markerValue) return true;
       final cmd = h['command'];
-      return cmd is String && cmd.contains('cockpit-hook');
+      if (cmd is! String) return false;
+      return cmd.contains('cockpit-hook') ||
+          cmd.contains('cockpit" hook') ||
+          cmd.endsWith('cockpit hook');
     });
   }
 }

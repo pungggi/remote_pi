@@ -1,11 +1,10 @@
 import 'package:cockpit/app/core/data/diagnostics/diagnostics_log.dart';
 import 'package:cockpit/app/core/data/diagnostics/issue_report.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:flutter/services.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
-
-const Color _barrier = Color(0x99000000);
 
 /// Mostra um erro de forma legível, com saída para o usuário reportar.
 ///
@@ -33,7 +32,7 @@ Future<void> showErrorReportDialog(
 
   await showDialog<void>(
     context: context,
-    barrierColor: _barrier,
+    barrierColor: context.colors.scrim,
     builder: (context) {
       final colors = context.colors;
       return AlertDialog(
@@ -49,8 +48,7 @@ Future<void> showErrorReportDialog(
             children: [
               Text(
                 description ??
-                    'Something went wrong. The details below were saved to the '
-                        'log — you can report them so it gets fixed.',
+                    context.t.core.errorReportDialog.defaultDescription,
                 style: context.typo.body.copyWith(
                   fontSize: 13.5,
                   color: colors.text2,
@@ -83,13 +81,13 @@ Future<void> showErrorReportDialog(
         actions: [
           OutlineButton(
             onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Close'),
+            child: Text(context.t.common.close),
           ),
           OutlineButton(
             onPressed: () async {
               await Clipboard.setData(ClipboardData(text: report.toMarkdown()));
             },
-            child: const Text('Copy details'),
+            child: Text(context.t.core.errorReportDialog.copyDetails),
           ),
           PrimaryButton(
             onPressed: () async {
@@ -100,7 +98,7 @@ Future<void> showErrorReportDialog(
               );
               navigator.pop();
             },
-            child: const Text('Report issue'),
+            child: Text(context.t.core.errorReportDialog.reportIssue),
           ),
         ],
       );

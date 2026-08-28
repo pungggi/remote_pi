@@ -52,7 +52,10 @@ Future<SocksConn> socksConnect(
 
   s.add([
     5, 1, 0, atyp, //
-    if (atyp == 0x03) ...[host.length, ...host.codeUnits] else
+    if (atyp == 0x03) ...[
+      host.length,
+      ...host.codeUnits,
+    ] else
       ...host.split('.').map(int.parse),
     port >> 8, port & 0xff,
   ]);

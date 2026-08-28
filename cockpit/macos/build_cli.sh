@@ -1,47 +1,58 @@
 #!/bin/bash
-# Compila a CLI interna `cockpit` (tool/cockpit_cli.dart) e a empacota como
+# Compila a CLI interna `cockpit` (crate Rust em `cli/`) e a empacota como
 # `cockpit-cli` (nome distinto de `cockpit.app`/PRODUCT_NAME) em Resources,
-# assinada. Espelha o build_hook.sh. Dois modos:
+# assinada. Dois modos:
 #
 #   ./macos/build_cli.sh dev
-#     Compila para ~/.cockpit/bin-debug/cockpit (para `flutter run` / testes
-#     E2E) — o diretório da CLI é namespaceado por flavor, como o status.sock,
-#     pra build de dev e instalada não sobrescreverem a CLI uma da outra.
+#     Compila só a arquitetura do host para ~/.cockpit/bin-debug/cockpit (para
+#     `flutter run` / testes E2E) — o diretório da CLI é namespaceado por
+#     flavor, como o status.sock, pra build de dev e instalada não
+#     sobrescreverem a CLI uma da outra.
 #
 #   (sem args / rodado pelo Xcode como Run Script phase)
-#     Compila e copia para
+#     Compila **universal** (arm64 + x86_64), copia para
 #       ${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources/cockpit-cli
 #     e code-signa com ${EXPANDED_CODE_SIGN_IDENTITY} (a mesma da app). O app,
 #     no boot, materializa essa cópia como ~/.cockpit/bin[-debug]/cockpit.
+#
+# Por que Rust e não mais `dart compile exe`: o AOT do Dart sai de UMA
+# arquitetura por vez, não cross-compila pra macOS x64 e **não sobrevive ao
+# lipo** (o binário fat perde o snapshot e vira um `dartvm` sem programa). Com
+# Rust as duas fatias saem do mesmo host e o `lipo` é válido, então a release
+# feita em Apple Silicon roda em Intel. A CLI também absorveu o `cockpit-hook`
+# como subcomando (`cockpit hook`).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"   # cockpit/
-SRC="$ROOT/tool/cockpit_cli.dart"
+CRATE="$ROOT/cli"
 
-# Resolve o `dart`: 1) Flutter (FLUTTER_ROOT setado pelo Xcode), 2) PATH.
-resolve_dart() {
-  if [ -n "${FLUTTER_ROOT:-}" ] && [ -x "$FLUTTER_ROOT/bin/dart" ]; then
-    echo "$FLUTTER_ROOT/bin/dart"; return
-  fi
-  if command -v dart >/dev/null 2>&1; then command -v dart; return; fi
-  if command -v flutter >/dev/null 2>&1; then
-    echo "$(dirname "$(command -v flutter)")/dart"; return
-  fi
-  echo "[build_cli] erro: 'dart' não encontrado (defina FLUTTER_ROOT)" >&2
+resolve_cargo() {
+  if command -v cargo >/dev/null 2>&1; then command -v cargo; return; fi
+  if [ -x "$HOME/.cargo/bin/cargo" ]; then echo "$HOME/.cargo/bin/cargo"; return; fi
+  echo "[build_cli] erro: 'cargo' não encontrado (instale Rust: https://rustup.rs)" >&2
   exit 1
 }
+CARGO="$(resolve_cargo)"
 
-compile() {
-  local out="$1"
-  mkdir -p "$(dirname "$out")"
-  echo "[build_cli] compilando $SRC -> $out"
-  "$(resolve_dart)" compile exe "$SRC" -o "$out"
-  chmod +x "$out"
-}
+# Flavor assado no binário (ver cli/build.rs): decide qual socket a CLI procura
+# PRIMEIRO quando roda fora de um terminal do Cockpit. Sem isso, a CLI do build
+# de dev era atendida pelo app instalado quando os dois estavam abertos.
+# `CONFIGURATION` vem do Xcode; o modo `dev` é sempre debug.
+if [ "${1:-bundle}" = "dev" ] || [ "${CONFIGURATION:-Release}" = "Debug" ]; then
+  export COCKPIT_FLAVOR=debug
+else
+  export COCKPIT_FLAVOR=release
+fi
+echo "[build_cli] flavor=$COCKPIT_FLAVOR"
 
 mode="${1:-bundle}"
 if [ "$mode" = "dev" ]; then
-  compile "$HOME/.cockpit/bin-debug/cockpit"
+  DEST="$HOME/.cockpit/bin-debug/cockpit"
+  echo "[build_cli] dev: compilando para a arquitetura do host -> $DEST"
+  "$CARGO" build --release --manifest-path "$CRATE/Cargo.toml"
+  mkdir -p "$(dirname "$DEST")"
+  cp "$CRATE/target/release/cockpit" "$DEST"
+  chmod +x "$DEST"
   echo "[build_cli] dev OK"
   exit 0
 fi
@@ -50,10 +61,45 @@ fi
 : "${BUILT_PRODUCTS_DIR:?precisa rodar pelo Xcode (BUILT_PRODUCTS_DIR ausente)}"
 : "${PRODUCT_NAME:?PRODUCT_NAME ausente}"
 DEST="$BUILT_PRODUCTS_DIR/$PRODUCT_NAME.app/Contents/Resources/cockpit-cli"
-compile "$DEST"
+mkdir -p "$(dirname "$DEST")"
 
-# Assinatura: mesma lógica do build_hook.sh (exe AOT do Dart precisa de
-# entitlements allow-jit/allow-unsigned-executable-memory sob hardened runtime).
+# Fatias: por padrão as duas (o app é distribuído universal). `ARCHS` do Xcode
+# manda quando presente — build local de dev com uma arch só não paga o dobro.
+TARGETS=()
+case "${ARCHS:-arm64 x86_64}" in
+  *arm64*) TARGETS+=("aarch64-apple-darwin") ;;
+esac
+case "${ARCHS:-arm64 x86_64}" in
+  *x86_64*) TARGETS+=("x86_64-apple-darwin") ;;
+esac
+if [ ${#TARGETS[@]} -eq 0 ]; then TARGETS=("aarch64-apple-darwin"); fi
+
+SLICES=()
+for target in "${TARGETS[@]}"; do
+  echo "[build_cli] compilando $target"
+  # `rustup target add` é idempotente; falha (ex.: rust sem rustup) não é fatal
+  # — se o target realmente faltar, o cargo abaixo falha alto com a razão.
+  rustup target add "$target" >/dev/null 2>&1 || true
+  "$CARGO" build --release --manifest-path "$CRATE/Cargo.toml" --target "$target"
+  SLICES+=("$CRATE/target/$target/release/cockpit")
+done
+
+if [ ${#SLICES[@]} -eq 1 ]; then
+  cp "${SLICES[0]}" "$DEST"
+else
+  /usr/bin/lipo -create "${SLICES[@]}" -output "$DEST"
+fi
+chmod +x "$DEST"
+
+# Verificação executável, não só estrutural: `lipo -verify_arch` passa em
+# binário quebrado (foi assim que o PR #96 achou que tinha funcionado). Rodar a
+# fatia nativa é o que prova que ela funciona.
+"$DEST" --version >/dev/null || {
+  echo "[build_cli] erro: o binário gerado não executa" >&2
+  exit 1
+}
+echo "[build_cli] $(/usr/bin/lipo -archs "$DEST") · $("$DEST" --version)"
+
 IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-}"
 if [ -z "$IDENTITY" ] || [ "$IDENTITY" = "-" ]; then
   echo "[build_cli] codesign ad-hoc (dev) $DEST"

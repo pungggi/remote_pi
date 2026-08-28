@@ -32,7 +32,12 @@ void main() {
     });
 
     test('regex válida casa grupos', () {
-      final r = computeFileMatches(text, r'F\w+', regex: true, caseSensitive: true);
+      final r = computeFileMatches(
+        text,
+        r'F\w+',
+        regex: true,
+        caseSensitive: true,
+      );
       // "Foo" e "FOO"
       expect(r.matches.length, 2);
     });

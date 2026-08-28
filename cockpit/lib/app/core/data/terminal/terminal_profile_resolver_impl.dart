@@ -100,9 +100,7 @@ class TerminalProfileResolverImpl implements TerminalProfileResolver {
           ? TerminalProfile.cmdId
           : TerminalProfile.powershellId;
       return profileById(wanted) ??
-          (_isWindowsArm
-              ? _cmdProfile()
-              : _powershellProfile());
+          (_isWindowsArm ? _cmdProfile() : _powershellProfile());
     }
     // POSIX: `loginShellOrFallback()` é síncrono e lê o cache do login_shell
     // (aquecido no boot); se ainda não resolveu, degrada pro $SHELL/fallback.

@@ -49,26 +49,30 @@ void main() {
     );
   });
 
-  test('falhar não deixa a abertura registrada: a 2ª tentativa também responde',
-      () async {
-    for (var i = 0; i < 2; i++) {
-      await expectLater(
-        tunnel.ensureSocks(_config).timeout(const Duration(seconds: 10)),
-        throwsA(isA<SshTunnelException>()),
-        reason: 'tentativa $i',
-      );
-    }
-  });
+  test(
+    'falhar não deixa a abertura registrada: a 2ª tentativa também responde',
+    () async {
+      for (var i = 0; i < 2; i++) {
+        await expectLater(
+          tunnel.ensureSocks(_config).timeout(const Duration(seconds: 10)),
+          throwsA(isA<SshTunnelException>()),
+          reason: 'tentativa $i',
+        );
+      }
+    },
+  );
 
-  test('chamadas simultâneas compartilham a abertura e todas respondem',
-      () async {
-    final results = await Future.wait([
-      for (var i = 0; i < 3; i++)
-        tunnel
-            .ensureSocks(_config)
-            .timeout(const Duration(seconds: 10))
-            .then<Object?>((v) => v, onError: (Object e) => e),
-    ]);
-    expect(results, everyElement(isA<SshTunnelException>()));
-  });
+  test(
+    'chamadas simultâneas compartilham a abertura e todas respondem',
+    () async {
+      final results = await Future.wait([
+        for (var i = 0; i < 3; i++)
+          tunnel
+              .ensureSocks(_config)
+              .timeout(const Duration(seconds: 10))
+              .then<Object?>((v) => v, onError: (Object e) => e),
+      ]);
+      expect(results, everyElement(isA<SshTunnelException>()));
+    },
+  );
 }

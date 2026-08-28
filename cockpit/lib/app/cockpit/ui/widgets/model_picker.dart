@@ -1,6 +1,7 @@
 import 'package:cockpit/app/cockpit/domain/entities/pi_model.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 /// Seletor de modelo com busca (o catálogo tem centenas). Devolve o [PiModel]
@@ -12,7 +13,7 @@ Future<PiModel?> showModelPicker(
 }) {
   return showDialog<PiModel>(
     context: context,
-    barrierColor: const Color(0x99000000),
+    barrierColor: context.colors.scrim,
     builder: (context) => _ModelPicker(models: models, current: current),
   );
 }
@@ -53,7 +54,11 @@ class _ModelPickerState extends State<_ModelPicker> {
               autofocus: true,
               style: context.typo.body.copyWith(color: colors.text),
               onChanged: (v) => setState(() => _query = v),
-              placeholder: Text('Search model (${widget.models.length})'),
+              placeholder: Text(
+                context.t.cockpit.modelPicker.search(
+                  count: widget.models.length,
+                ),
+              ),
               borderRadius: BorderRadius.circular(7),
               features: const [InputFeature.leading(Icon(Icons.search))],
             ),

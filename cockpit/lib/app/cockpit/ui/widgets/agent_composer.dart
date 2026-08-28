@@ -10,11 +10,14 @@ import 'package:cockpit/app/cockpit/domain/entities/rpc_event.dart'
 import 'package:cockpit/app/cockpit/domain/entities/thinking_level.dart';
 import 'package:cockpit/app/cockpit/ui/session/agent_session.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/cockpit_viewmodel.dart';
+import 'package:cockpit/app/core/ui/activity_periodic_timer.dart';
+import 'package:cockpit/app/core/ui/window_activity_controller.dart';
 import 'package:cockpit/app/core/ui/widgets/app_menu.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/model_picker.dart';
 import 'package:cockpit/app/core/ui/file_icons/file_icons.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
@@ -83,7 +86,7 @@ class _AgentComposerState extends State<AgentComposer> {
     final result = await FilePicker.platform.pickFiles(
       allowMultiple: true,
       withData: true,
-      dialogTitle: 'Attach file',
+      dialogTitle: context.t.cockpit.agentComposer.attachFile,
     );
     if (result == null) return;
     for (final file in result.files) {
@@ -191,10 +194,12 @@ class _AgentComposerState extends State<AgentComposer> {
     showToast(
       context: context,
       location: ToastLocation.bottomRight,
-      builder: (context, overlay) => const SurfaceCard(
+      builder: (context, overlay) => SurfaceCard(
         child: Padding(
-          padding: EdgeInsets.all(12),
-          child: Text('Maximum of $_maxImages images.'),
+          padding: const EdgeInsets.all(12),
+          child: Text(
+            context.t.cockpit.agentComposer.maxImages(max: _maxImages),
+          ),
         ),
       ),
     );
@@ -292,13 +297,13 @@ class _AgentComposerState extends State<AgentComposer> {
   }
 
   // --- slash command data ---
-  static const List<PiCommand> _builtins = <PiCommand>[
-    PiCommand(
-      name: 'new',
-      description: 'New session — clears the conversation',
-    ),
-    PiCommand(name: 'compact', description: 'Compacts the agent context'),
-  ];
+  List<PiCommand> get _builtins {
+    final tr = context.t.cockpit.agentComposer;
+    return <PiCommand>[
+      PiCommand(name: 'new', description: tr.cmdNewDescription),
+      PiCommand(name: 'compact', description: tr.cmdCompactDescription),
+    ];
+  }
 
   /// Embutidos + comandos das extensions, **suprimindo os `/remote-pi`**.
   List<PiCommand> get _allCommands => <PiCommand>[
@@ -646,7 +651,7 @@ class _AgentComposerState extends State<AgentComposer> {
                         decoration: const BoxDecoration(),
                         padding: EdgeInsets.zero,
                         placeholder: Text(
-                          'Message to the agent, use @files or /commands',
+                          context.t.cockpit.agentComposer.placeholder,
                           style: context.typo.body.copyWith(
                             fontSize: 13.5,
                             color: colors.text3,
@@ -662,7 +667,7 @@ class _AgentComposerState extends State<AgentComposer> {
                     children: [
                       _BarIcon(
                         icon: Icons.add,
-                        tooltip: 'Attach file',
+                        tooltip: context.t.cockpit.agentComposer.attachFile,
                         onTap: _pickAttachment,
                       ),
                       _ModelChip(session: session, enabled: controlsEnabled),
@@ -871,7 +876,7 @@ class _ModelChip extends StatelessWidget {
     return _Chip(
       icon: Icons.auto_awesome,
       iconColor: context.colors.accentText,
-      label: model?.name ?? 'model',
+      label: model?.name ?? context.t.cockpit.agentComposer.modelFallback,
       enabled: enabled && session.models.isNotEmpty,
       onTap: () async {
         final picked = await showModelPicker(
@@ -934,19 +939,40 @@ class _TurnIndicator extends StatefulWidget {
 }
 
 class _TurnIndicatorState extends State<_TurnIndicator> {
-  Timer? _ticker;
+  ActivityPeriodicTimer? _ticker;
+  WindowActivityController? _activity;
+  WindowActivityController? _fallbackActivity;
 
   @override
   void initState() {
     super.initState();
     widget.session.addListener(_onSession);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final activity =
+        WindowActivityScope.maybeOf(context) ??
+        (_fallbackActivity ??= WindowActivityController());
+    if (identical(activity, _activity)) return;
+    _ticker?.dispose();
+    _activity = activity;
+    _ticker = ActivityPeriodicTimer(
+      activity: activity,
+      interval: const Duration(seconds: 1),
+      onTick: () {
+        if (mounted) setState(() {});
+      },
+    );
     _sync();
   }
 
   @override
   void dispose() {
     widget.session.removeListener(_onSession);
-    _ticker?.cancel();
+    _ticker?.dispose();
+    _fallbackActivity?.dispose();
     super.dispose();
   }
 
@@ -959,13 +985,10 @@ class _TurnIndicatorState extends State<_TurnIndicator> {
   void _sync() {
     final active =
         widget.session.isStreaming && widget.session.turnStartedAt != null;
-    if (active && _ticker == null) {
-      _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() {});
-      });
-    } else if (!active && _ticker != null) {
-      _ticker!.cancel();
-      _ticker = null;
+    if (active) {
+      _ticker?.start();
+    } else {
+      _ticker?.stop();
     }
   }
 
@@ -1008,6 +1031,106 @@ class _TurnIndicatorState extends State<_TurnIndicator> {
       ),
     );
   }
+}
+
+/// Bolinha de uso do contexto: um disco que enche conforme a janela de contexto
+/// se aproxima do limite (verde→âmbar→vermelho). Tooltip mostra a porcentagem.
+/// `percent` vem na escala 0–100 (ver [ContextUsage]).
+class _ContextGauge extends StatelessWidget {
+  const _ContextGauge({required this.session});
+  final AgentSession session;
+
+  @override
+  Widget build(BuildContext context) {
+    final percent = session.contextUsage?.percent;
+    if (percent == null) return const SizedBox.shrink();
+    final colors = context.colors;
+    final fraction = (percent / 100).clamp(0.0, 1.0);
+    final fill = fraction >= 0.9
+        ? colors.error
+        : (fraction >= 0.75 ? colors.warn : colors.accentText);
+    final pct = percent.toStringAsFixed(percent < 10 ? 1 : 0);
+    return AppTooltip(
+      message: context.t.cockpit.agentComposer.contextTooltip(pct: pct),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        child: SizedBox(
+          width: 14,
+          height: 14,
+          child: CustomPaint(
+            painter: _GaugePainter(
+              fraction: fraction,
+              fill: fill,
+              track: colors.border2,
+              ring: colors.text3,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _GaugePainter extends CustomPainter {
+  _GaugePainter({
+    required this.fraction,
+    required this.fill,
+    required this.track,
+    required this.ring,
+  });
+
+  final double fraction;
+  final Color fill;
+  final Color track;
+  final Color ring;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = size.center(Offset.zero);
+    final radius = size.width / 2;
+
+    // Fundo (vazio).
+    canvas.drawCircle(
+      center,
+      radius,
+      Paint()
+        ..color = track
+        ..style = PaintingStyle.fill,
+    );
+
+    // Preenchimento: fatia de pizza crescendo do topo no sentido horário.
+    if (fraction > 0) {
+      final path = Path()
+        ..moveTo(center.dx, center.dy)
+        ..arcTo(
+          Rect.fromCircle(center: center, radius: radius),
+          -math.pi / 2,
+          fraction * 2 * math.pi,
+          false,
+        )
+        ..close();
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = fill
+          ..style = PaintingStyle.fill,
+      );
+    }
+
+    // Contorno (mais visível).
+    canvas.drawCircle(
+      center,
+      radius - 0.6,
+      Paint()
+        ..color = ring
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.3,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_GaugePainter old) =>
+      old.fraction != fraction || old.fill != fill;
 }
 
 class _BarIcon extends StatelessWidget {
@@ -1060,7 +1183,7 @@ class _SendButton extends StatelessWidget {
       icon = Icons.stop;
     } else if (ready) {
       bg = colors.accent;
-      fg = Colors.white;
+      fg = onColor(colors.accent);
       icon = Icons.arrow_upward;
     } else {
       bg = Colors.transparent;
@@ -1068,7 +1191,9 @@ class _SendButton extends StatelessWidget {
       icon = Icons.arrow_upward;
     }
     return AppTooltip(
-      message: streaming ? 'Stop' : 'Send',
+      message: streaming
+          ? context.t.cockpit.agentComposer.stop
+          : context.t.cockpit.agentComposer.send,
       // borderRadius 15 num quadrado 30×30 = círculo (substitui o CircleBorder
       // do Material; HoverTap só aceita BorderRadius).
       child: HoverTap(
@@ -1099,21 +1224,22 @@ class _RelayButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final status = session.relayStatus;
+    final tr = context.t.cockpit.agentComposer;
     final (icon, color, tooltip) = switch (status) {
       RelayStatus.connected => (
         Icons.cell_tower,
         colors.online,
-        'Relay online',
+        tr.relayOnline,
       ),
       RelayStatus.reconnecting => (
         Icons.cell_tower,
         colors.warn,
-        'Relay reconnecting...',
+        tr.relayReconnecting,
       ),
       RelayStatus.disconnected => (
         Icons.cell_tower_outlined,
         colors.text3,
-        'Relay offline',
+        tr.relayOffline,
       ),
     };
     return AppTooltip(
@@ -1190,7 +1316,7 @@ class _ImageModelWarning extends StatelessWidget {
             const SizedBox(width: 7),
             Flexible(
               child: Text(
-                'The current model cannot see images — switch to one with vision.',
+                context.t.cockpit.agentComposer.visionWarning,
                 style: context.typo.label.copyWith(color: colors.warn),
               ),
             ),

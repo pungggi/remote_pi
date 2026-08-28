@@ -56,6 +56,17 @@ bool isUnderPath(String path, String root) {
   return p == base || p.startsWith('$base/');
 }
 
+/// Caminho de [path] **relativo** a [root] (`''` se forem o mesmo, ou se [path]
+/// estiver fora de [root]). Normaliza os dois lados, então serve tanto pra path
+/// local quanto pra path de host remoto.
+String relativeUnder(String path, String root) {
+  final p = normalizePath(path);
+  final r = normalizePath(root);
+  if (p == r) return '';
+  final prefix = r.endsWith('/') ? r : '$r/';
+  return p.startsWith(prefix) ? p.substring(prefix.length) : '';
+}
+
 /// Junta diretório + nome na forma canônica, sem duplicar separador.
 String joinPath(String dir, String name) {
   final base = normalizePath(dir);

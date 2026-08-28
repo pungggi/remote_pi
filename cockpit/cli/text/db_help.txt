@@ -1,0 +1,33 @@
+cockpit db — query the workspace's databases (agent-friendly JSON)
+
+Connections are registered per workspace in .cockpit/databases.json (Database
+panel in the app); SQLite files found in the repo are auto-detected. The app
+executes every statement — credentials never reach this CLI.
+
+USAGE:
+  cockpit db list                                  registered + detected connections
+  cockpit db schema  --db <name> [<table>]         tables, or a table's columns
+  cockpit db query   --db <name> --sql "<SELECT…>" [--limit N]   run a query
+  cockpit db execute --db <name> --sql "<DML…>"    run DML, returns affectedRows
+  cockpit db run <file.dbq>                        run a .dbq file (frontmatter picks the db)
+
+ACCESS:
+  Connections are read-only for agents by default: execute (and any write) is
+  rejected with kind "read_only_connection" until a human enables Read & write
+  on the connection in the Database panel. `db list` shows each connection's
+  "access" field.
+
+FLAGS:
+  --workspace <id|path>   target workspace when not inside a Cockpit pane
+  --limit N               row cap for query (default 200; "truncated" flags the cut)
+
+OUTPUT (single JSON line; exit 1 on error):
+  {"ok":{"columns":[{"name","type"}],"rows":[[…]],"rowCount":N,"truncated":false,"elapsedMs":12}}
+  {"error":{"kind":"unknown_connection","message":"…"}}
+
+.dbq FILES:
+  SQL with comment frontmatter — agents write them, the app renders them as a
+  query tab (editor + result grid) and re-runs on save:
+    -- db: dev-local
+    -- limit: 100
+    SELECT * FROM orders ORDER BY created_at DESC;

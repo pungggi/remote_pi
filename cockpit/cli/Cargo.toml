@@ -1,0 +1,27 @@
+[package]
+name = "cockpit-cli"
+version = "0.7.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Cockpit's internal CLI (and the Claude Code hook helper)"
+license = "MIT"
+publish = false
+
+# O binário chama `cockpit` — é o nome que o app materializa em
+# ~/.cockpit/bin/cockpit e que aparece no PATH das abas.
+[[bin]]
+name = "cockpit"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+base64 = "0.22"
+
+# Binário pequeno: ele é empacotado DUAS vezes no macOS (arm64 + x86_64, unidos
+# com lipo) e uma vez em cada outra plataforma.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

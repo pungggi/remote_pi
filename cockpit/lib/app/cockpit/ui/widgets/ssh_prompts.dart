@@ -1,5 +1,6 @@
 import 'package:cockpit/app/cockpit/domain/contracts/ssh_tunnel.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 /// Confirmação TOFU de host key nova (plano 54, decisão G).
@@ -15,6 +16,7 @@ Future<HostKeyVerdict> showSshHostKeyDialog(
 }) async {
   final colors = context.colors;
   final typo = context.typo;
+  final tr = context.t.cockpit.sshPrompts;
   final verdict = await showDialog<HostKeyVerdict>(
     context: context,
     builder: (context) => Center(
@@ -26,7 +28,7 @@ Future<HostKeyVerdict> showSshHostKeyDialog(
               Icon(Icons.gpp_maybe_outlined, size: 18, color: colors.text2),
               const SizedBox(width: 8),
               Text(
-                'Unknown SSH host',
+                tr.unknownSshHostTitle,
                 style: typo.title.copyWith(fontSize: 15, color: colors.text),
               ),
             ],
@@ -36,7 +38,7 @@ Future<HostKeyVerdict> showSshHostKeyDialog(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Cockpit has never connected to $endpoint before.',
+                tr.neverConnected(endpoint: endpoint),
                 style: typo.label.copyWith(fontSize: 12, color: colors.text2),
               ),
               const SizedBox(height: 10),
@@ -57,8 +59,7 @@ Future<HostKeyVerdict> showSshHostKeyDialog(
               ),
               const SizedBox(height: 10),
               Text(
-                'Trust it only if this fingerprint matches the server. You can '
-                'check it on the server with:',
+                tr.trustHint,
                 style: typo.label.copyWith(fontSize: 11, color: colors.text3),
               ),
               const SizedBox(height: 4),
@@ -71,11 +72,11 @@ Future<HostKeyVerdict> showSshHostKeyDialog(
           actions: [
             GhostButton(
               onPressed: () => Navigator.of(context).pop(HostKeyVerdict.reject),
-              child: const Text('Cancel'),
+              child: Text(context.t.common.cancel),
             ),
             PrimaryButton(
               onPressed: () => Navigator.of(context).pop(HostKeyVerdict.trust),
-              child: const Text('Trust'),
+              child: Text(tr.trust),
             ),
           ],
         ),
@@ -96,6 +97,7 @@ Future<String?> showSshPassphraseDialog(
 }) async {
   final colors = context.colors;
   final typo = context.typo;
+  final tr = context.t.cockpit.sshPrompts;
   final controller = TextEditingController();
   try {
     return await showDialog<String>(
@@ -105,7 +107,7 @@ Future<String?> showSshPassphraseDialog(
           constraints: const BoxConstraints(maxWidth: 420),
           child: AlertDialog(
             title: Text(
-              'SSH key passphrase',
+              tr.sshKeyPassphraseTitle,
               style: typo.title.copyWith(fontSize: 15, color: colors.text),
             ),
             content: Column(
@@ -113,7 +115,10 @@ Future<String?> showSshPassphraseDialog(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Unlock $keyPath to connect "$connectionName".',
+                  tr.unlockMessage(
+                    keyPath: keyPath,
+                    connectionName: connectionName,
+                  ),
                   style: typo.label.copyWith(fontSize: 12, color: colors.text2),
                 ),
                 const SizedBox(height: 10),
@@ -132,8 +137,7 @@ Future<String?> showSshPassphraseDialog(
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Kept in memory until Cockpit quits. To let agents use this '
-                  'connection, enable "Save passphrase" in the connection.',
+                  tr.keptInMemoryHint,
                   style: typo.label.copyWith(
                     fontSize: 10.5,
                     color: colors.text4,
@@ -144,11 +148,11 @@ Future<String?> showSshPassphraseDialog(
             actions: [
               GhostButton(
                 onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Cancel'),
+                child: Text(context.t.common.cancel),
               ),
               PrimaryButton(
                 onPressed: () => Navigator.of(context).pop(controller.text),
-                child: const Text('Unlock'),
+                child: Text(tr.unlock),
               ),
             ],
           ),

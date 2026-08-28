@@ -4,6 +4,17 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<!-- Idiomas que o bundle declara suportar. É o que faz o macOS localizar os
+	     itens que ELE desenha no menu do app (About/Services/Hide/Show All/Quit)
+	     e nos diálogos do sistema — esses não passam pelo slang. Sem esta chave o
+	     SO trata o app como inglês-apenas e ignora o idioma do usuário.
+	     Manter em sincronia com lib/i18n/*.i18n.json. -->
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>pt_BR</string>
+		<string>es</string>
+	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIconFile</key>

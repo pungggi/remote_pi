@@ -47,7 +47,7 @@ void main() {
 
         if (terminal case final GhosttyTerminalController ghostty) {
           expect(terminal.plainLines().join('\n'), isNot(contains('restored')));
-          ghostty.controller.onResize?.call(120, 40);
+          ghostty.handleResize(120, 40);
         }
 
         expect(terminal.plainLines().join('\n'), contains('restored'));
@@ -77,25 +77,27 @@ void main() {
   });
 
   group('Ghostty replay não vaza resposta de query pro PTY', () {
-    test('restore (scrollback) com Primary DA não emite resposta no onOutput',
-        () {
-      final terminal = GhosttyTerminalController();
-      addTearDown(terminal.dispose);
-      final out = <int>[];
-      terminal.onOutput = out.addAll;
-      // Query embutida no histórico restaurado (Primary DA `ESC[c`).
-      terminal.restore('\x1b[c');
-      // Dispara o flush do replay (o restore fica na fila até o 1º resize).
-      terminal.controller.onResize?.call(120, 40);
-      // A resposta (`ESC[?...c`) foi suprimida — não vaza pro PTY.
-      expect(out, isEmpty);
-    });
+    test(
+      'restore (scrollback) com Primary DA não emite resposta no onOutput',
+      () {
+        final terminal = GhosttyTerminalController();
+        addTearDown(terminal.dispose);
+        final out = <int>[];
+        terminal.onOutput = out.addAll;
+        // Query embutida no histórico restaurado (Primary DA `ESC[c`).
+        terminal.restore('\x1b[c');
+        // Dispara o flush do replay (o restore fica na fila até o 1º resize).
+        terminal.handleResize(120, 40);
+        // A resposta (`ESC[?...c`) foi suprimida — não vaza pro PTY.
+        expect(out, isEmpty);
+      },
+    );
 
     test('write ao vivo com Primary DA responde normalmente', () {
       final terminal = GhosttyTerminalController();
       addTearDown(terminal.dispose);
       // Marca o resize inicial (sem defer) pra `write` não cair na fila.
-      terminal.controller.onResize?.call(120, 40);
+      terminal.handleResize(120, 40);
       final out = <int>[];
       terminal.onOutput = out.addAll;
       terminal.write('\x1b[c');

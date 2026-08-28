@@ -199,7 +199,12 @@ class AppPopoverOverlayHandler extends OverlayHandler {
                       onCloseWithResult: (value) {
                         if (isClosed.value) return Future.value();
                         isClosed.value = true;
-                        completer.complete(value as T);
+                        // `as T?` (não `as T`): em menus ANINHADOS, o `closeAll`
+                        // do shadcn fecha a raiz com `value == null` enquanto o
+                        // submenu leva o valor escolhido. Com um T não-nulável
+                        // (ex.: VoidCallback do menubar) o `null as T` estourava
+                        // "Null is not a subtype of () => void" e travava o menu.
+                        completer.complete(value as T?);
                         return animationCompleter.future;
                       },
                     );

@@ -1,6 +1,8 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:cockpit/app/cockpit/data/filesystem/git_binary.dart';
+import 'package:cockpit/app/cockpit/data/filesystem/unified_diff_parser.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/git_diff_reader.dart';
 import 'package:cockpit/app/cockpit/domain/entities/file_diff.dart';
 
@@ -10,10 +12,6 @@ class GitDiffReaderImpl implements GitDiffReader {
   GitDiffReaderImpl(this._gitBinary);
 
   final GitBinary _gitBinary;
-
-  static final RegExp _hunkHeader = RegExp(
-    r'^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@',
-  );
 
   @override
   Future<FileDiff> read(String repoPath, String absPath) async {
@@ -30,7 +28,7 @@ class GitDiffReaderImpl implements GitDiffReader {
         '--porcelain',
         '--',
         rel,
-      ]);
+      ], stdoutEncoding: utf8);
       final statusOut = status.exitCode == 0 ? (status.stdout as String) : '';
       if (statusOut.startsWith('??')) {
         return _untrackedDiff(absPath);
@@ -43,15 +41,95 @@ class GitDiffReaderImpl implements GitDiffReader {
         'HEAD',
         '--',
         rel,
-      ]);
+      ], stdoutEncoding: utf8);
       if (diff.exitCode != 0) return FileDiff.unchanged(absPath);
       final out = diff.stdout as String;
       if (out.trim().isEmpty) return FileDiff.unchanged(absPath);
-      if (_isBinary(out)) return FileDiff.binary(absPath);
+      if (unifiedDiffLooksBinary(out)) return FileDiff.binary(absPath);
 
-      final (hunks, kind) = _parse(out);
+      final (hunks, kind) = parseUnifiedDiff(out);
       if (hunks.isEmpty) return FileDiff.unchanged(absPath);
       return FileDiff(path: absPath, kind: kind, hunks: hunks);
+    } catch (_) {
+      return FileDiff.unchanged(absPath);
+    }
+  }
+
+  @override
+  Future<FileDiff> readCommit(
+    String repoPath,
+    String commitHash,
+    String relativePath, {
+    String? previousRelativePath,
+  }) async {
+    final absPath =
+        '${repoPath.endsWith('/') ? repoPath.substring(0, repoPath.length - 1) : repoPath}/$relativePath';
+    try {
+      final git = await _gitBinary.resolve();
+      final parentResult = await Process.run(git, [
+        '-C',
+        repoPath,
+        'show',
+        '--format=%P',
+        '--no-patch',
+        commitHash,
+      ], stdoutEncoding: utf8);
+      if (parentResult.exitCode != 0) return FileDiff.unchanged(absPath);
+      final parentLine = (parentResult.stdout as String).trim();
+      final beforeRevision = parentLine.isEmpty
+          ? null
+          : parentLine.split(RegExp(r'\s+')).first;
+      final renameOrCopy =
+          previousRelativePath != null && previousRelativePath != relativePath;
+      final result = renameOrCopy && beforeRevision != null
+          // `git show <commit> -- old new` separa rename com mudancas em
+          // delete + add. Comparar os blobs diretamente preserva o conteudo
+          // original e modificado como um unico diff.
+          ? await Process.run(git, [
+              '-C',
+              repoPath,
+              'diff',
+              '$beforeRevision:$previousRelativePath',
+              '$commitHash:$relativePath',
+            ], stdoutEncoding: utf8)
+          : await Process.run(git, [
+              '-C',
+              repoPath,
+              'show',
+              '--format=',
+              '--first-parent',
+              '--find-renames',
+              commitHash,
+              '--',
+              relativePath,
+            ], stdoutEncoding: utf8);
+      if (result.exitCode != 0) return FileDiff.unchanged(absPath);
+      final out = result.stdout as String;
+      if (unifiedDiffLooksBinary(out)) {
+        return FileDiff(
+          path: absPath,
+          kind: FileDiffKind.binary,
+          beforeRevision: beforeRevision,
+          afterRevision: commitHash,
+        );
+      }
+
+      final (hunks, kind) = parseUnifiedDiff(out);
+      if (hunks.isEmpty) {
+        return FileDiff(
+          path: absPath,
+          kind: FileDiffKind.unchanged,
+          beforeRevision: beforeRevision,
+          afterRevision: commitHash,
+        );
+      }
+      return FileDiff(
+        path: absPath,
+        kind: kind,
+        hunks: hunks,
+        beforeRevision: beforeRevision,
+        afterRevision: commitHash,
+      );
     } catch (_) {
       return FileDiff.unchanged(absPath);
     }
@@ -63,7 +141,7 @@ class GitDiffReaderImpl implements GitDiffReader {
       final file = File(absPath);
       final bytes = await file.readAsBytes();
       if (_looksBinary(bytes)) return FileDiff.binary(absPath);
-      final content = String.fromCharCodes(bytes);
+      final content = utf8.decode(bytes, allowMalformed: true);
       final lines = content.split('\n');
       // split deixa uma string vazia no fim quando o arquivo termina em '\n'.
       if (lines.isNotEmpty && lines.last.isEmpty) lines.removeLast();
@@ -83,9 +161,6 @@ class GitDiffReaderImpl implements GitDiffReader {
     }
   }
 
-  bool _isBinary(String diffOut) =>
-      RegExp(r'^Binary files .* differ$', multiLine: true).hasMatch(diffOut);
-
   /// Heurística: NUL nos primeiros 8000 bytes → binário.
   bool _looksBinary(List<int> bytes) {
     final n = bytes.length < 8000 ? bytes.length : 8000;
@@ -93,80 +168,6 @@ class GitDiffReaderImpl implements GitDiffReader {
       if (bytes[i] == 0) return true;
     }
     return false;
-  }
-
-  /// Parseia o unified diff em hunks, inferindo se é novo/deletado pelos
-  /// marcadores `--- /dev/null` / `+++ /dev/null`.
-  (List<DiffHunk>, FileDiffKind) _parse(String out) {
-    final hunks = <DiffHunk>[];
-    var kind = FileDiffKind.modified;
-    DiffHunk? current;
-    var oldNo = 0;
-    var newNo = 0;
-    List<DiffLine> lines = [];
-
-    void flush() {
-      final c = current;
-      if (c != null) hunks.add(DiffHunk(header: c.header, lines: lines));
-    }
-
-    for (final line in out.split('\n')) {
-      if (line.startsWith('--- ')) {
-        if (line.startsWith('--- /dev/null')) kind = FileDiffKind.added;
-        continue;
-      }
-      if (line.startsWith('+++ ')) {
-        if (line.startsWith('+++ /dev/null')) kind = FileDiffKind.deleted;
-        continue;
-      }
-      if (line.startsWith('diff --git') ||
-          line.startsWith('index ') ||
-          line.startsWith('new file') ||
-          line.startsWith('deleted file') ||
-          line.startsWith('similarity ') ||
-          line.startsWith('rename ')) {
-        continue;
-      }
-      final m = _hunkHeader.firstMatch(line);
-      if (m != null) {
-        flush();
-        oldNo = int.parse(m.group(1)!);
-        newNo = int.parse(m.group(2)!);
-        lines = [];
-        current = DiffHunk(header: line, lines: lines);
-        continue;
-      }
-      if (current == null) continue;
-      if (line.startsWith(r'\')) continue; // "\ No newline at end of file"
-      if (line.startsWith('+')) {
-        lines.add(
-          DiffLine(
-            kind: DiffLineKind.added,
-            text: line.substring(1),
-            newLine: newNo++,
-          ),
-        );
-      } else if (line.startsWith('-')) {
-        lines.add(
-          DiffLine(
-            kind: DiffLineKind.removed,
-            text: line.substring(1),
-            oldLine: oldNo++,
-          ),
-        );
-      } else if (line.startsWith(' ')) {
-        lines.add(
-          DiffLine(
-            kind: DiffLineKind.context,
-            text: line.substring(1),
-            oldLine: oldNo++,
-            newLine: newNo++,
-          ),
-        );
-      }
-    }
-    flush();
-    return (hunks, kind);
   }
 
   /// Caminho de [absPath] relativo a [repoPath] (com `/`). Fora do repo → devolve

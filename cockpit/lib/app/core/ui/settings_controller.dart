@@ -1,14 +1,27 @@
+import 'dart:io';
+
+import 'package:cockpit/app/core/data/setup/launch_at_startup_service.dart';
+import 'package:cockpit/app/core/data/setup/sound_library.dart';
+import 'package:cockpit/app/core/data/theme_store.dart';
 import 'package:cockpit/app/core/domain/contracts/settings_store.dart';
+import 'package:cockpit/app/core/domain/result.dart';
 import 'package:cockpit/app/core/domain/entities/app_settings.dart';
+import 'package:cockpit/app/core/domain/entities/automation.dart';
+import 'package:cockpit/app/core/domain/entities/sound_event.dart';
+import 'package:cockpit/app/core/ui/themes/theme_registry.dart';
+import 'package:cockpit/app/core/ui/themes/theme_spec.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:flutter/foundation.dart';
 
 /// Estado global das preferências do app. Vive **acima do `ShadcnApp`** pra
 /// trocar tema/fonte em runtime, e é lido pela tela de Configurações. Cada
 /// mudança aplica na hora (notify) e persiste (Hive).
 class SettingsController extends ChangeNotifier {
-  SettingsController(this._store);
+  SettingsController(this._store, [this._themeStore = const ThemeStore()]);
 
   final SettingsStore _store;
+  final ThemeStore _themeStore;
+  final LaunchAtStartupService _launchAtStartup = LaunchAtStartupService();
   AppSettings _settings = const AppSettings();
 
   AppSettings get settings => _settings;
@@ -16,6 +29,13 @@ class SettingsController extends ChangeNotifier {
   /// Carrega o que está salvo (chamado no boot, antes do primeiro frame).
   Future<void> load() async {
     _settings = await _store.load();
+    // `main.dart` já chamou `useDeviceLocale()` como fallback; só agimos aqui
+    // se há preferência explícita salva. Evita depender do
+    // `WidgetsBinding` (via `useDeviceLocale`) em testes que chamam `load()`
+    // sem `runApp`/`testWidgets` — `setLocaleRaw` não precisa dele.
+    final locale = _settings.locale;
+    if (locale != null) await LocaleSettings.setLocaleRaw(locale);
+    _customThemes = await _themeStore.loadAll();
     notifyListeners();
   }
 
@@ -42,8 +62,43 @@ class SettingsController extends ChangeNotifier {
     _apply(_settings.copyWith(terminalFont: font, clearTerminalFont: empty));
   }
 
+  /// `null` volta a herdar o tamanho do código.
+  void setTerminalSize(double? size) => _apply(
+    _settings.copyWith(terminalSize: size, clearTerminalSize: size == null),
+  );
+
+  void setTerminalFontWeight(TerminalFontWeight weight) =>
+      _apply(_settings.copyWith(terminalFontWeight: weight));
+
   void setTerminalEngine(TerminalEngine engine) =>
       _apply(_settings.copyWith(terminalEngine: engine));
+
+  void setSourceControlViewMode(SourceControlViewMode mode) =>
+      _apply(_settings.copyWith(sourceControlViewMode: mode));
+
+  void setAutomationHarness(HarnessKind? id) {
+    _apply(
+      _settings.copyWith(
+        automationHarnessId: id,
+        clearAutomationHarnessId: id == null,
+        clearAutomationModelId: id == null,
+        // Trocar de harness volta para o padrão dele (`auto` quando existe,
+        // senão o modelo que o CLI já traz): id de modelo não atravessa
+        // harness, e congelar um aqui envelheceria junto com o catálogo.
+        useDefaultAutomationModel: id != null,
+      ),
+    );
+  }
+
+  void setAutomationModel(String? id) {
+    final value = id?.trim();
+    _apply(
+      _settings.copyWith(
+        automationModelId: value,
+        useDefaultAutomationModel: value == null || value.isEmpty,
+      ),
+    );
+  }
 
   /// Define (ou limpa, se `null`/vazio) o perfil de terminal padrão do `+`
   /// (plano 50). Limpar = voltar ao fallback de plataforma.
@@ -57,8 +112,73 @@ class SettingsController extends ChangeNotifier {
     );
   }
 
-  void setSyntaxTheme(SyntaxThemeId id) =>
-      _apply(_settings.copyWith(syntaxTheme: id));
+  /// Temas importados pelo usuário. Somam-se aos built-in no [availableThemes]
+  /// e são preenchidos no [load] a partir do disco.
+  List<CockpitThemeSpec> _customThemes = const [];
+
+  /// Catálogo completo: built-in primeiro, importados depois.
+  List<CockpitThemeSpec> get availableThemes => [
+    ...builtInThemes,
+    ..._customThemes,
+  ];
+
+  /// O tema ativo. Id desconhecido (tema importado que foi removido do disco,
+  /// ou arquivo de preferências vindo de outra máquina) cai no default em vez
+  /// de deixar o app sem paleta.
+  CockpitThemeSpec get activeTheme {
+    for (final theme in availableThemes) {
+      if (theme.id == _settings.themeId) return theme;
+    }
+    return cockpitDefaultTheme;
+  }
+
+  void setThemeId(String id) => _apply(_settings.copyWith(themeId: id));
+
+  /// Importa um tema de [file] e já o **ativa** — quem acabou de escolher um
+  /// arquivo quer ver o resultado, não ir procurar no dropdown depois.
+  Future<Result<CockpitThemeSpec, ThemeStoreError>> importTheme(
+    File file,
+  ) async {
+    final result = await _themeStore.import(file);
+    if (result case Success(:final value)) {
+      _customThemes = await _themeStore.loadAll();
+      _apply(_settings.copyWith(themeId: value.id));
+    }
+    return result;
+  }
+
+  /// Exporta o tema ativo para [path]. Sempre gera arquivo completo (sem
+  /// `extends`), então serve de ponto de partida para editar à mão.
+  Future<Result<void, ThemeStoreError>> exportActiveTheme(String path) =>
+      _themeStore.export(activeTheme, path);
+
+  /// Remove um tema importado. Se era o ativo, volta pro default — o app nunca
+  /// fica apontando para um tema que não existe mais.
+  Future<Result<void, ThemeStoreError>> deleteTheme(String id) async {
+    final result = await _themeStore.delete(id);
+    if (result.isSuccess) {
+      _customThemes = await _themeStore.loadAll();
+      if (_settings.themeId == id) {
+        _apply(_settings.copyWith(themeId: kDefaultThemeId));
+      } else {
+        notifyListeners();
+      }
+    }
+    return result;
+  }
+
+  /// `true` quando [id] é de um tema importado (built-in não é removível).
+  bool isCustomTheme(String id) => _customThemes.any((t) => t.id == id);
+
+  /// Define (ou limpa, se `null` = "System") o idioma da interface.
+  void setLocale(String? code) {
+    _apply(_settings.copyWith(locale: code, clearLocale: code == null));
+    _applyLocale(code);
+  }
+
+  Future<void> _applyLocale(String? code) => code == null
+      ? LocaleSettings.useDeviceLocale()
+      : LocaleSettings.setLocaleRaw(code);
 
   void setPinUserMessage(bool value) =>
       _apply(_settings.copyWith(pinUserMessage: value));
@@ -96,8 +216,45 @@ class SettingsController extends ChangeNotifier {
   void setNotificationsEnabled(bool value) =>
       _apply(_settings.copyWith(notificationsEnabled: value));
 
-  void setSoundEnabled(bool value) =>
-      _apply(_settings.copyWith(soundEnabled: value));
+  void setSoundVolume(double value) =>
+      _apply(_settings.copyWith(soundVolume: value.clamp(0, 100)));
+
+  void setSoundEventEnabled(SoundEvent event, bool value) {
+    final next = Map<SoundEvent, bool>.from(_settings.soundEvents);
+    next[event] = value;
+    _apply(_settings.copyWith(soundEvents: next));
+  }
+
+  void setSoundOnActiveTab(SoundEvent event, bool value) {
+    final next = Map<SoundEvent, bool>.from(_settings.soundOnActiveTab);
+    next[event] = value;
+    _apply(_settings.copyWith(soundOnActiveTab: next));
+  }
+
+  /// Importa [sourcePath] como o áudio custom de [event]: copia pro storage do
+  /// app (o original pode sumir) e persiste o caminho da cópia.
+  Future<void> importSoundOverride(SoundEvent event, String sourcePath) async {
+    final copy = await SoundLibrary.import(event, sourcePath);
+    setSoundOverride(event, copy);
+  }
+
+  /// Volta [event] ao som embarcado: apaga a cópia custom e limpa o override.
+  Future<void> clearSoundOverride(SoundEvent event) async {
+    await SoundLibrary.clear(event);
+    setSoundOverride(event, null);
+  }
+
+  /// Define (ou limpa, com `null`) o áudio custom de um evento. O chamador é
+  /// responsável por já ter copiado o arquivo pro storage do app.
+  void setSoundOverride(SoundEvent event, String? path) {
+    final next = Map<SoundEvent, String>.from(_settings.soundOverrides);
+    if (path == null || path.trim().isEmpty) {
+      next.remove(event);
+    } else {
+      next[event] = path;
+    }
+    _apply(_settings.copyWith(soundOverrides: next));
+  }
 
   void setSearchPanelHeight(double value) =>
       _apply(_settings.copyWith(searchPanelHeight: value));
@@ -110,6 +267,22 @@ class SettingsController extends ChangeNotifier {
 
   void setShowCockpit(bool value) =>
       _apply(_settings.copyWith(showCockpit: value));
+
+  /// Inverte o lado dos painéis laterais (workspaces à direita).
+  void setSwapSidePanels(bool value) =>
+      _apply(_settings.copyWith(swapSidePanels: value));
+
+  /// Liga/desliga "iniciar com o sistema": grava a preferência na hora (UI
+  /// reflete imediato) e aplica no SO em background; se o SO recusar, reconcilia
+  /// a preferência com o estado efetivo lido de volta.
+  void setLaunchAtStartup(bool value) {
+    _apply(_settings.copyWith(launchAtStartup: value));
+    _launchAtStartup.apply(value).then((effective) {
+      if (effective != _settings.launchAtStartup) {
+        _apply(_settings.copyWith(launchAtStartup: effective));
+      }
+    });
+  }
 
   void setUpdateCheckFrequency(UpdateCheckFrequency frequency) =>
       _apply(_settings.copyWith(updateCheckFrequency: frequency));

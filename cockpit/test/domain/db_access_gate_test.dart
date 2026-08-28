@@ -13,14 +13,8 @@ void main() {
       expect(sqlReadViolation('SHOW CREATE TABLE users'), isNull);
       expect(sqlReadViolation('DESCRIBE users'), isNull);
       expect(sqlReadViolation('PRAGMA table_info(users)'), isNull);
-      expect(
-        sqlReadViolation('WITH x AS (SELECT 1) SELECT * FROM x'),
-        isNull,
-      );
-      expect(
-        sqlReadViolation('SELECT updated_at, created_by FROM t'),
-        isNull,
-      );
+      expect(sqlReadViolation('WITH x AS (SELECT 1) SELECT * FROM x'), isNull);
+      expect(sqlReadViolation('SELECT updated_at, created_by FROM t'), isNull);
     });
 
     test('escrita é recusada', () {
@@ -33,26 +27,17 @@ void main() {
     });
 
     test('escrita escondida em script ou CTE é recusada', () {
-      expect(
-        sqlReadViolation('SELECT 1; DELETE FROM users'),
-        isNotNull,
-      );
+      expect(sqlReadViolation('SELECT 1; DELETE FROM users'), isNotNull);
       expect(
         sqlReadViolation('WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x'),
         isNotNull,
       );
-      expect(
-        sqlReadViolation('EXPLAIN ANALYZE DELETE FROM t'),
-        isNotNull,
-      );
+      expect(sqlReadViolation('EXPLAIN ANALYZE DELETE FROM t'), isNotNull);
     });
 
     test('pragma com atribuição é recusado; comentários não enganam', () {
       expect(sqlReadViolation('PRAGMA journal_mode = WAL'), isNotNull);
-      expect(
-        sqlReadViolation('-- DELETE FROM t\nSELECT 1'),
-        isNull,
-      );
+      expect(sqlReadViolation('-- DELETE FROM t\nSELECT 1'), isNull);
     });
   });
 

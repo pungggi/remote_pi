@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 
 /// Ponte **reativa** entre o shell e o menu **File** (New Agent / New Terminal).
 /// O `CockpitPage` publica se há um workspace ativo + os callbacks que abrem uma
@@ -88,6 +89,16 @@ class WorkspaceMenuBridge extends ChangeNotifier {
     _hasWorkspace = hasWorkspace;
     _agentTabsInUse = agentTabsInUse;
     _agentsAllowed = agentsAllowed;
-    notifyListeners();
+    // CockpitPage clears this bridge from dispose(), which runs while Flutter
+    // finalizes the route subtree. Notifying synchronously there asks AppRoot
+    // (an ancestor) to rebuild while the element tree is locked and produces
+    // the misleading _InactiveElements._unmount cascade. Match the editor
+    // bridge: publish state immediately, but defer the rebuild notification
+    // whenever Flutter is not idle.
+    if (SchedulerBinding.instance.schedulerPhase == SchedulerPhase.idle) {
+      notifyListeners();
+    } else {
+      SchedulerBinding.instance.addPostFrameCallback((_) => notifyListeners());
+    }
   }
 }

@@ -85,11 +85,8 @@ void main() {
     );
   }
 
-  DbConnection atlas() => const DbConnection(
-    name: 'atlas',
-    engine: DbEngine.mongo,
-    url: _atlasUrl,
-  );
+  DbConnection atlas() =>
+      const DbConnection(name: 'atlas', engine: DbEngine.mongo, url: _atlasUrl);
 
   DbConnection withPath() => const DbConnection(
     name: 'atlas',

@@ -64,10 +64,7 @@ void main() {
 
     test('lista vazia pra data vazio', () {
       const text = 'abc';
-      final legend = SemanticTokensLegend(
-        tokenTypes: [],
-        tokenModifiers: [],
-      );
+      final legend = SemanticTokensLegend(tokenTypes: [], tokenModifiers: []);
 
       final tokens = decodeSemanticTokens(text, [], legend);
 

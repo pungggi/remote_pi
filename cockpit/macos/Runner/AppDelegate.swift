@@ -4,9 +4,43 @@ import ObjectiveC
 
 @main
 class AppDelegate: FlutterAppDelegate {
+  /// Token da atividade que mantém o App Nap desligado. Guardado pra encerrar
+  /// no fim — atividade viva além do processo seria vazamento de energia.
+  private var appNapActivity: NSObjectProtocol?
+
   override func applicationDidFinishLaunching(_ notification: Notification) {
     super.applicationDidFinishLaunching(notification)
     enableClickThrough()
+    disableAppNap()
+  }
+
+  /// Impede o App Nap de suspender o Cockpit quando ele perde o foco.
+  ///
+  /// O App Nap coalesce timers e rebaixa I/O de apps em background — e a
+  /// política vale pros processos FILHOS, que é onde mora o trabalho real:
+  /// cada aba roda um agente (Claude Code, Codex, pi) num PTY nosso. Com a
+  /// janela em background, esses processos travavam no meio de uma requisição
+  /// e o agente acusava erro de API; só voltavam a andar quando a janela era
+  /// focada de novo. Um terminal não pode parar de trabalhar por não estar
+  /// sendo olhado — é o mesmo motivo pelo qual iTerm2 e afins desligam isso.
+  ///
+  /// `userInitiatedAllowingIdleSystemSleep`: o trabalho é do usuário e não pode
+  /// ser adiado, mas NÃO impede o sistema de dormir por ociosidade (não somos
+  /// um `caffeinate`; máquina fechada/dormindo segue dormindo).
+  private func disableAppNap() {
+    guard appNapActivity == nil else { return }
+    appNapActivity = ProcessInfo.processInfo.beginActivity(
+      options: .userInitiatedAllowingIdleSystemSleep,
+      reason: "Agentes e terminais seguem rodando com a janela em background"
+    )
+  }
+
+  override func applicationWillTerminate(_ notification: Notification) {
+    if let activity = appNapActivity {
+      ProcessInfo.processInfo.endActivity(activity)
+      appNapActivity = nil
+    }
+    super.applicationWillTerminate(notification)
   }
 
   /// "Click-through": quando a janela do cockpit está sem foco, o primeiro

@@ -1,53 +1,67 @@
 /**
- * Plan/28 — ModelRegistry instance shared by the action handlers.
+ * Plan/28 — ModelRegistry access for the action handlers.
  *
- * pi-extension builds its **own** `ModelRegistry` alongside the one
- * `AgentSession` instantiates internally. Both read the same on-disk sources
- * (`~/.pi/auth/*`, `~/.pi/models.json`), so they stay in sync — we just call
- * `refresh()` before each `list_models` request to capture changes the user
- * makes via `/login` or `/scoped-models` in the TUI.
+ * The host hands every extension a ready `ModelRegistry` on
+ * `ExtensionContext.modelRegistry` — the same instance `AgentSession` uses
+ * internally. That is the ONLY source we read.
  *
- * Why a fresh instance instead of accessing Pi's: the `ExtensionAPI` surface
- * does not expose `AgentSession`'s registry. This disk-backed registry is the
- * FALLBACK for paths that have no extension ctx; prefer `ctx.modelRegistry`
- * (the LIVE session registry) wherever a ctx is available — it reflects
- * providers registered dynamically by other extensions via
- * `pi.registerProvider(...)`, which this fallback does not.
+ * History (issue #112): this module used to build its own registry via
+ * `ModelRegistry.create(AuthStorage.create())`. Both factories were removed
+ * from `@earendil-works/pi-coding-agent` in pi 0.83, so the import crashed the
+ * whole pi process on the first `model_set`/`list_models` from the app
+ * (`undefined is not an object (evaluating 'AuthStorage.create')`, thrown from
+ * the WebSocket line handler). Reading the registry off the live ctx drops the
+ * dependency on that package's factory surface entirely, so a future breaking
+ * change there cannot crash the extension the same way again.
  *
- * pi 0.83 reworked construction: the old sync
- * `ModelRegistry.create(AuthStorage.create())` pair became an async
- * `ModelRuntime.create()` + `new ModelRegistry(runtime)` (`AuthStorage` was
- * removed; credentials now default to the file at the auth path). We cache the
- * PROMISE so concurrent callers share one build and the async cost is paid
- * exactly once for the process. Callers MUST `await` this.
+ * Two hazards this handles:
+ *
+ * 1. A ctx captured before a session replacement/reload is **stale**, and even
+ *    *reading* `.modelRegistry` on it throws (`assertActive`). Every read is
+ *    wrapped.
+ * 2. There may be no live ctx at all (daemon boot, control channel). Rather
+ *    than throw from a WS callback — an uncaught exception that exits pi — we
+ *    fall back to the last registry that worked, then to a stub whose methods
+ *    never throw and report an empty catalog.
  */
 
-import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { ActionModelRegistry } from "./handlers.js";
 
-let _registryPromise: Promise<ModelRegistry> | null = null;
+/** Anything carrying the host registry — `ExtensionContext` and friends. */
+interface RegistryBearingCtx {
+  modelRegistry?: ActionModelRegistry;
+}
+
+let _lastGoodRegistry: ActionModelRegistry | null = null;
 
 /**
- * Lazily build + cache the shared `ModelRegistry`. Subsequent calls return the
- * same cached promise — the `ModelRuntime.create()` + models.json parse happen
- * exactly once and are amortized across every later `list_models`/`model_set`.
+ * Never-throwing empty catalog. Used only when no ctx has ever been seen —
+ * callers get an empty model list instead of a crashed agent.
  */
-export function ensureModelRegistry(): Promise<ModelRegistry> {
-  if (!_registryPromise) {
-    _registryPromise = ModelRuntime.create()
-      .then((runtime) => new ModelRegistry(runtime))
-      // Don't cache a rejection: a transient construction failure (malformed
-      // models.json, auth read error, …) would otherwise wedge every later
-      // caller onto the same rejected promise until process restart. Drop the
-      // cached promise on failure so the next call retries from scratch.
-      .catch((err) => {
-        _registryPromise = null;
-        throw err;
-      });
+const _stubRegistry: ActionModelRegistry = {
+  refresh() {},
+  getAvailable() { return []; },
+  find() { return undefined; },
+};
+
+/**
+ * Resolve the live host `ModelRegistry` from the most recent extension ctx.
+ * Falls back to the last one that worked, then to an inert stub.
+ */
+export function ensureModelRegistry(ctx?: RegistryBearingCtx | null): ActionModelRegistry {
+  try {
+    const live = ctx?.modelRegistry;
+    if (live) {
+      _lastGoodRegistry = live;
+      return live;
+    }
+  } catch {
+    // stale ctx after session replacement — reading the property throws.
   }
-  return _registryPromise;
+  return _lastGoodRegistry ?? _stubRegistry;
 }
 
 /** Test seam — drop the cached promise so tests can rebuild with fakes. */
 export function _resetModelRegistryForTests(): void {
-  _registryPromise = null;
+  _lastGoodRegistry = null;
 }

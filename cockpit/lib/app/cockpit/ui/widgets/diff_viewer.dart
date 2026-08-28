@@ -1,7 +1,9 @@
 import 'package:cockpit/app/cockpit/domain/entities/file_diff.dart';
 import 'package:cockpit/app/cockpit/ui/session/diff_viewer_session.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/file_path_breadcrumb.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/code_highlight.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:flutter/material.dart' show SelectionArea;
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
@@ -21,19 +23,53 @@ String? _languageOf(String path) {
 /// contexto nos dois lados. Sem ações — só leitura. O conteúdo vem parseado na
 /// [DiffViewerSession].
 class DiffViewer extends StatelessWidget {
-  const DiffViewer({super.key, required this.session});
+  const DiffViewer({super.key, required this.session, this.displayPath});
 
   final DiffViewerSession session;
+
+  /// Caminho relativo ao workspace, resolvido pelo dono da pane.
+  final String? displayPath;
 
   @override
   Widget build(BuildContext context) {
     // Reconstrói quando o diff da sessão muda (preview reuse).
     return ListenableBuilder(
       listenable: session,
-      builder: (context, _) =>
-          _DiffBody(diff: session.diff, language: _languageOf(session.path)),
+      builder: (context, _) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: _DiffBody(
+              diff: session.diff,
+              language: _languageOf(session.path),
+            ),
+          ),
+          _DiffFooter(
+            path: displayPath ?? session.path,
+            fileName: session.title,
+          ),
+        ],
+      ),
     );
   }
+}
+
+class _DiffFooter extends StatelessWidget {
+  const _DiffFooter({required this.path, required this.fileName});
+
+  final String path;
+  final String fileName;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    height: 34,
+    padding: const EdgeInsets.symmetric(horizontal: 8),
+    decoration: BoxDecoration(
+      color: context.colors.bg,
+      border: Border(top: BorderSide(color: context.colors.border)),
+    ),
+    child: FilePathBreadcrumb(path: path, fileName: fileName),
+  );
 }
 
 /// Largura mínima de cada coluna do split — abaixo disso, rola na horizontal.
@@ -47,38 +83,129 @@ class _Row {
   final DiffLine? right;
 }
 
-class _DiffBody extends StatelessWidget {
+// ---------------------------------------------------------------------------
+// Item list — union selada de hunk-header e diff-row para o ListView.builder
+// ---------------------------------------------------------------------------
+
+sealed class _Item {}
+
+final class _HunkHeaderItem extends _Item {
+  _HunkHeaderItem(this.header);
+  final String header;
+}
+
+final class _RowItem extends _Item {
+  _RowItem(this.row);
+  final _Row row;
+}
+
+/// Converte hunks em uma lista plana de [_Item]s (header + linhas pares).
+/// Separado do widget para poder ser computado uma única vez por diff,
+/// não a cada `build()`.
+List<_Item> _buildDiffItems(List<DiffHunk> hunks) {
+  final items = <_Item>[];
+  for (final hunk in hunks) {
+    items.add(_HunkHeaderItem(hunk.header));
+    for (final row in _rowsOf(hunk)) {
+      items.add(_RowItem(row));
+    }
+  }
+  return items;
+}
+
+/// Alinha as linhas de um hunk em pares esquerda/direita. Runs de removed são
+/// zipados com os added seguintes (removed→left, added→right); sobras viram
+/// linhas de um lado só; contexto aparece nos dois lados.
+List<_Row> _rowsOf(DiffHunk hunk) {
+  final rows = <_Row>[];
+  final removed = <DiffLine>[];
+  final added = <DiffLine>[];
+
+  void flush() {
+    final n = removed.length > added.length ? removed.length : added.length;
+    for (var i = 0; i < n; i++) {
+      rows.add(
+        _Row(
+          left: i < removed.length ? removed[i] : null,
+          right: i < added.length ? added[i] : null,
+        ),
+      );
+    }
+    removed.clear();
+    added.clear();
+  }
+
+  for (final line in hunk.lines) {
+    switch (line.kind) {
+      case DiffLineKind.removed:
+        removed.add(line);
+      case DiffLineKind.added:
+        added.add(line);
+      case DiffLineKind.context:
+        flush();
+        rows.add(_Row(left: line, right: line));
+    }
+  }
+  flush();
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
+// _DiffBody — StatefulWidget para cachear _items entre rebuilds
+// ---------------------------------------------------------------------------
+
+class _DiffBody extends StatefulWidget {
   const _DiffBody({required this.diff, required this.language});
 
   final FileDiff diff;
   final String? language;
 
   @override
+  State<_DiffBody> createState() => _DiffBodyState();
+}
+
+class _DiffBodyState extends State<_DiffBody> {
+  /// Lista plana de itens (hunk headers + rows). Recalculada só quando o diff
+  /// muda, não a cada `build()`.
+  late List<_Item> _items;
+
+  @override
+  void initState() {
+    super.initState();
+    _items = _buildDiffItems(widget.diff.hunks);
+  }
+
+  @override
+  void didUpdateWidget(_DiffBody old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.diff, widget.diff)) {
+      _items = _buildDiffItems(widget.diff.hunks);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final diff = widget.diff;
+    final language = widget.language;
     final colors = context.colors;
+
     if (diff.kind == FileDiffKind.binary) {
-      return _centered(context, 'Binary file — no text diff.');
+      return _messageBody(
+        context,
+        diff,
+        context.t.cockpit.fileTreePanel.diffBinaryFile,
+      );
     }
     if (diff.kind == FileDiffKind.unchanged || diff.hunks.isEmpty) {
-      return _centered(context, 'No changes.');
-    }
-
-    final rows = <_Row>[];
-    final headers = <int>{}; // índices onde começa um hunk (pra pintar header)
-    final headerText = <int, String>{};
-    for (final hunk in diff.hunks) {
-      headers.add(rows.length);
-      headerText[rows.length] = hunk.header;
-      rows.addAll(_rowsOf(hunk));
+      return _messageBody(
+        context,
+        diff,
+        context.t.cockpit.fileTreePanel.diffNoChanges,
+      );
     }
 
     return ColoredBox(
       color: colors.bg,
-      // Seleção contínua entre linhas (copiar blocos de código do diff). Os
-      // números de linha ficam fora da seleção (SelectionContainer.disabled).
-      // A SelectionArea fica DENTRO dos dois scrolls de propósito: em volta
-      // deles a seleção escorrega ao rolar com Interface size != 14 — ver
-      // [SelectableScroll].
       child: LayoutBuilder(
         builder: (context, constraints) {
           // Cada coluna preenche metade da largura disponível, respeitando um
@@ -87,29 +214,38 @@ class _DiffBody extends StatelessWidget {
           final side = ((avail - 1) / 2).clamp(_minSideWidth, double.infinity);
           final total = side * 2 + 1;
 
-          final children = <Widget>[];
-          for (var i = 0; i < rows.length; i++) {
-            final hdr = headerText[i];
-            if (hdr != null) {
-              children.add(_HunkHeader(text: hdr, width: total));
-            }
-            children.add(
-              _DiffRow(row: rows[i], sideWidth: side, language: language),
-            );
-          }
-
+          // Seleção contínua entre linhas (copiar blocos de código do diff).
+          // Os números de linha ficam fora da seleção (SelectionContainer.disabled
+          // em _Side). A SelectionArea fica DENTRO do scroll horizontal de
+          // propósito: em volta dele a seleção escorrega ao rolar com Interface
+          // size != 14 — ver [SelectableScroll].
+          //
+          // O scroll vertical é feito pelo ListView.builder, que virtualiza:
+          // só os widgets visíveis (~30) são construídos, em vez de todos os N
+          // do diff. Isso elimina a lentidão na abertura de diffs grandes.
           return SingleChildScrollView(
-            scrollDirection: Axis.vertical,
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
+            scrollDirection: Axis.horizontal,
+            child: SizedBox(
+              width: total,
               child: SelectionArea(
-                child: SizedBox(
-                  width: total,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    mainAxisSize: MainAxisSize.min,
-                    children: children,
-                  ),
+                child: ListView.builder(
+                  // item 0 = revision header; restantes = _items
+                  itemCount: _items.length + 1,
+                  itemBuilder: (context, i) {
+                    if (i == 0) return _revisionHeader(context, diff, side);
+                    final item = _items[i - 1];
+                    return switch (item) {
+                      _HunkHeaderItem(:final header) => _HunkHeader(
+                        text: header,
+                        width: total,
+                      ),
+                      _RowItem(:final row) => _DiffRow(
+                        row: row,
+                        sideWidth: side,
+                        language: language,
+                      ),
+                    };
+                  },
                 ),
               ),
             ),
@@ -119,48 +255,111 @@ class _DiffBody extends StatelessWidget {
     );
   }
 
-  Widget _centered(BuildContext context, String text) => Center(
+  Widget _messageBody(BuildContext context, FileDiff diff, String text) {
+    if (diff.afterRevision == null) return _centered(context, text);
+    return ColoredBox(
+      color: context.colors.bg,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final side = ((constraints.maxWidth - 1) / 2).clamp(
+            _minSideWidth,
+            double.infinity,
+          );
+          return Column(
+            children: [
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: SizedBox(
+                  width: side * 2 + 1,
+                  child: _revisionHeader(context, diff, side),
+                ),
+              ),
+              Expanded(child: _centered(context, text)),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  static Widget _revisionHeader(
+    BuildContext context,
+    FileDiff diff,
+    double sideWidth,
+  ) {
+    final tr = context.t.cockpit.fileTreePanel;
+    final historical = diff.afterRevision != null;
+    return _RevisionHeader(
+      beforeRef: historical
+          ? diff.beforeRevision == null
+                ? tr.diffEmptyTree
+                : tr.diffOriginal(ref: _shortRef(diff.beforeRevision!))
+          : 'HEAD',
+      afterRef: historical
+          ? tr.diffModified(ref: _shortRef(diff.afterRevision!))
+          : tr.diffWorkingTree,
+      sideWidth: sideWidth,
+    );
+  }
+
+  static Widget _centered(BuildContext context, String text) => Center(
     child: Text(
       text,
       style: context.typo.label.copyWith(color: context.colors.text3),
     ),
   );
+}
 
-  /// Alinha as linhas de um hunk em pares esquerda/direita. Runs de removed são
-  /// zipados com os added seguintes (removed→left, added→right); sobras viram
-  /// linhas de um lado só; contexto aparece nos dois lados.
-  List<_Row> _rowsOf(DiffHunk hunk) {
-    final rows = <_Row>[];
-    final removed = <DiffLine>[];
-    final added = <DiffLine>[];
+String _shortRef(String ref) => ref.length <= 8 ? ref : ref.substring(0, 8);
 
-    void flush() {
-      final n = removed.length > added.length ? removed.length : added.length;
-      for (var i = 0; i < n; i++) {
-        rows.add(
-          _Row(
-            left: i < removed.length ? removed[i] : null,
-            right: i < added.length ? added[i] : null,
+class _RevisionHeader extends StatelessWidget {
+  const _RevisionHeader({
+    required this.beforeRef,
+    required this.afterRef,
+    required this.sideWidth,
+  });
+
+  final String beforeRef;
+  final String afterRef;
+  final double sideWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = context.typo.mono.copyWith(
+      fontSize: 10.5,
+      color: context.colors.text2,
+    );
+    return Container(
+      color: context.colors.panel,
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          SizedBox(
+            width: sideWidth,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Text(
+                beforeRef,
+                overflow: TextOverflow.ellipsis,
+                style: style,
+              ),
+            ),
           ),
-        );
-      }
-      removed.clear();
-      added.clear();
-    }
-
-    for (final line in hunk.lines) {
-      switch (line.kind) {
-        case DiffLineKind.removed:
-          removed.add(line);
-        case DiffLineKind.added:
-          added.add(line);
-        case DiffLineKind.context:
-          flush();
-          rows.add(_Row(left: line, right: line));
-      }
-    }
-    flush();
-    return rows;
+          Container(width: 1, height: 18, color: context.colors.border),
+          SizedBox(
+            width: sideWidth,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Text(
+                afterRef,
+                overflow: TextOverflow.ellipsis,
+                style: style,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

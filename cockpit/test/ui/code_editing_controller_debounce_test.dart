@@ -57,7 +57,10 @@ void main() {
 
     // Rajada de digitação: 5 teclas, cada uma com texto novo.
     for (var k = 1; k <= 5; k++) {
-      ctrl.text = source.replaceFirst('class Sample0', 'class Sample0${'x' * k}');
+      ctrl.text = source.replaceFirst(
+        'class Sample0',
+        'class Sample0${'x' * k}',
+      );
       final span = build();
       // Cobertura tem que continuar exata mesmo no caminho aproximado.
       expect(render(span), ctrl.text, reason: 'cobertura quebrou na tecla $k');

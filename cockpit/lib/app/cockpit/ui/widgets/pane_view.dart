@@ -1,7 +1,10 @@
 import 'dart:io';
 import 'dart:math';
 
+import 'package:cockpit/app/cockpit/domain/entities/browser_capability.dart';
+import 'package:cockpit/app/cockpit/ui/actions/tab_actions.dart';
 import 'package:cockpit/app/cockpit/ui/session/agent_session.dart';
+import 'package:cockpit/app/cockpit/ui/session/browser_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/diff_viewer_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/file_viewer_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/pane_item.dart';
@@ -11,10 +14,14 @@ import 'package:cockpit/app/cockpit/ui/session/task_output_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/terminal_session.dart';
 import 'package:cockpit/app/cockpit/ui/states/pane_node.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/cockpit_viewmodel.dart';
+import 'package:cockpit/app/core/utils/platform_kind.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/setup_viewmodel.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/http_request_view.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/agent_composer.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/agent_setup_checklist.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/agent_transcript.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/browser_pane.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/active_listenable_builder.dart';
 import 'package:cockpit/app/core/domain/entities/terminal_profile.dart';
 import 'package:cockpit/app/core/ui/widgets/app_menu.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/confirm_dialog.dart';
@@ -27,16 +34,18 @@ import 'package:cockpit/app/cockpit/ui/widgets/db_mongo_view.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/db_redis_table.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/file_viewer.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/adaptive_terminal_pane.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/pane_tab_leading.dart';
 import 'package:cockpit/app/core/ui/file_icons/file_icons.dart';
-import 'package:cockpit/app/core/ui/themes/terminal_theme.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
 import 'package:cockpit/app/core/ui/settings_controller.dart';
 import 'package:desktop_drop/desktop_drop.dart';
-import 'package:flutter/gestures.dart' show HitTestResult;
+import 'package:flutter/gestures.dart'
+    show HitTestResult, PointerScrollEvent, PointerDeviceKind;
 import 'package:flutter/services.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:cockpit/app/core/ui/widgets/app_tooltip.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:cockpit/app/core/terminal/xterm/xterm.dart';
 import 'package:cockpit/app/core/utils/path_utils.dart';
@@ -49,6 +58,7 @@ class PaneView extends StatelessWidget {
     required this.pane,
     required this.vm,
     required this.focused,
+    required this.active,
     required this.onCreateTab,
     required this.onSplit,
     required this.onFillEmpty,
@@ -60,6 +70,7 @@ class PaneView extends StatelessWidget {
   final LeafPane pane;
   final CockpitViewModel vm;
   final bool focused;
+  final bool active;
 
   /// Abre uma aba "Novo" (placeholder vazio) — o tipo é escolhido dentro dela.
   final VoidCallback onCreateTab;
@@ -110,6 +121,7 @@ class PaneView extends StatelessWidget {
               pane: pane,
               vm: vm,
               focused: focused,
+              visible: active,
               onCreateTab: onCreateTab,
               onSplit: onSplit,
               onHistoryAgent: onHistoryAgent,
@@ -147,8 +159,8 @@ class PaneView extends StatelessWidget {
       key: ValueKey('body-$tabId'),
       item: session,
       paneId: pane.id,
-      focused: focused && tabId == pane.active,
-      active: tabId == pane.active,
+      focused: active && focused && tabId == pane.active,
+      active: active && tabId == pane.active,
       focusGen: vm.tabFocusGen,
       onFillEmpty: (terminal) => onFillEmpty(tabId, terminal),
     );
@@ -177,6 +189,7 @@ class _TabStrip extends StatefulWidget {
     required this.pane,
     required this.vm,
     required this.focused,
+    required this.visible,
     required this.onCreateTab,
     required this.onSplit,
     required this.onHistoryAgent,
@@ -187,6 +200,7 @@ class _TabStrip extends StatefulWidget {
   final LeafPane pane;
   final CockpitViewModel vm;
   final bool focused;
+  final bool visible;
   final VoidCallback onCreateTab;
   final ValueChanged<SplitDir> onSplit;
   final ValueChanged<String> onHistoryAgent;
@@ -267,13 +281,12 @@ class _TabStripState extends State<_TabStrip> {
 
   Future<void> _confirmClosePane(BuildContext context) async {
     final count = widget.pane.tabs.length;
+    final tr = context.t.cockpit.paneView;
     final ok = await showConfirmDialog(
       context,
-      title: 'Close pane?',
-      message:
-          'This closes all $count tab(s) in this pane and ends the agents/'
-          'terminals in it.',
-      confirmLabel: 'Close',
+      title: tr.closePaneTitle,
+      message: tr.closePaneMessage(count: count),
+      confirmLabel: tr.close,
       danger: true,
     );
     if (ok) widget.vm.closePane(widget.pane.id);
@@ -282,17 +295,34 @@ class _TabStripState extends State<_TabStrip> {
   /// Dropdown com todas as abas (pular direto pra uma) — aparece no overflow.
   Future<void> _showTabList(BuildContext anchor) async {
     final pane = widget.pane;
+    final colors = context.colors;
     final picked = await showAppMenu<String>(
       anchor,
       minWidth: 220,
       items: [
         for (final id in pane.tabs)
-          AppMenuItem(
-            value: id,
-            label: widget.vm.session(id)?.displayTitle ?? '—',
-            icon: _tabIcon(widget.vm.session(id)),
-            selected: id == pane.active,
-          ),
+          () {
+            final s = widget.vm.session(id);
+            return AppMenuItem(
+              value: id,
+              label: s?.displayTitle ?? '—',
+              leading: s is TerminalSession
+                  ? ListenableBuilder(
+                      listenable: s,
+                      builder: (context, _) => PaneTabLeading(
+                        item: s,
+                        defaultIcon: _tabIcon(s),
+                        iconColor: colors.text2,
+                      ),
+                    )
+                  : PaneTabLeading(
+                      item: s,
+                      defaultIcon: _tabIcon(s),
+                      iconColor: colors.text2,
+                    ),
+              selected: id == pane.active,
+            );
+          }(),
       ],
     );
     if (picked != null) widget.vm.selectTab(pane.id, picked);
@@ -324,63 +354,91 @@ class _TabStripState extends State<_TabStrip> {
               child: MouseRegion(
                 onEnter: (_) => _setHover(true),
                 onExit: (_) => _setHover(false),
-                child: Scrollbar(
-                  controller: _scroll,
-                  // Só aparece com o mouse em cima (e quando há overflow).
-                  thumbVisibility: _hovering && _overflowing,
-                  thickness: 3,
-                  radius: const Radius.circular(3),
-                  child: ScrollConfiguration(
-                    behavior: ScrollConfiguration.of(
-                      context,
-                    ).copyWith(scrollbars: false),
-                    child: SingleChildScrollView(
-                      controller: _scroll,
-                      scrollDirection: Axis.horizontal,
-                      child: Row(
-                        children: [
-                          for (var i = 0; i < pane.tabs.length; i++)
-                            _TabDropSlot(
-                              index: i,
-                              onInsert: (data, index) =>
-                                  widget.vm.moveTabToIndex(
-                                    data.paneId,
-                                    data.tabId,
+                child: Listener(
+                  onPointerSignal: (pointerSignal) {
+                    if (pointerSignal is PointerScrollEvent &&
+                        _scroll.hasClients) {
+                      final dy = pointerSignal.scrollDelta.dy;
+                      final dx = pointerSignal.scrollDelta.dx;
+                      final delta = (dx != 0) ? dx : dy;
+                      if (delta != 0) {
+                        final newOffset = (_scroll.offset + delta).clamp(
+                          0.0,
+                          _scroll.position.maxScrollExtent,
+                        );
+                        _scroll.jumpTo(newOffset);
+                      }
+                    }
+                  },
+                  child: Scrollbar(
+                    controller: _scroll,
+                    // Só aparece com o mouse em cima (e quando há overflow).
+                    thumbVisibility: _hovering && _overflowing,
+                    thickness: 3,
+                    radius: const Radius.circular(3),
+                    child: ScrollConfiguration(
+                      behavior: ScrollConfiguration.of(context).copyWith(
+                        scrollbars: false,
+                        dragDevices: {
+                          PointerDeviceKind.touch,
+                          PointerDeviceKind.mouse,
+                          PointerDeviceKind.trackpad,
+                          PointerDeviceKind.stylus,
+                        },
+                      ),
+                      child: SingleChildScrollView(
+                        controller: _scroll,
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            for (var i = 0; i < pane.tabs.length; i++)
+                              _TabDropSlot(
+                                index: i,
+                                onInsert: (data, index) =>
+                                    widget.vm.moveTabToIndex(
+                                      data.paneId,
+                                      data.tabId,
+                                      pane.id,
+                                      index,
+                                    ),
+                                child: _Tab(
+                                  item: widget.vm.session(pane.tabs[i]),
+                                  paneId: pane.id,
+                                  visible: widget.visible,
+                                  active: pane.tabs[i] == pane.active,
+                                  focused: widget.focused,
+                                  onSelect: () => widget.vm.selectTab(
                                     pane.id,
-                                    index,
+                                    pane.tabs[i],
                                   ),
-                              child: _Tab(
-                                item: widget.vm.session(pane.tabs[i]),
-                                paneId: pane.id,
-                                active: pane.tabs[i] == pane.active,
-                                focused: widget.focused,
-                                onSelect: () =>
-                                    widget.vm.selectTab(pane.id, pane.tabs[i]),
-                                onClose: () =>
-                                    widget.vm.closeTab(pane.id, pane.tabs[i]),
-                                onRename: (name) =>
-                                    widget.onRenameAgent(pane.tabs[i], name),
-                                onSetLabel: (label) =>
-                                    widget.vm.setPaneLabel(pane.tabs[i], label),
-                                onResetLabel: () =>
-                                    widget.vm.resetPaneLabel(pane.tabs[i]),
-                                onToggleRelay: () =>
-                                    widget.onToggleRelayAgent(pane.tabs[i]),
-                                onHistory: () =>
-                                    widget.onHistoryAgent(pane.tabs[i]),
+                                  onClose: () =>
+                                      widget.vm.closeTab(pane.id, pane.tabs[i]),
+                                  onRename: (name) =>
+                                      widget.onRenameAgent(pane.tabs[i], name),
+                                  onSetLabel: (label) => widget.vm.setPaneLabel(
+                                    pane.tabs[i],
+                                    label,
+                                  ),
+                                  onResetLabel: () =>
+                                      widget.vm.resetPaneLabel(pane.tabs[i]),
+                                  onToggleRelay: () =>
+                                      widget.onToggleRelayAgent(pane.tabs[i]),
+                                  onHistory: () =>
+                                      widget.onHistoryAgent(pane.tabs[i]),
+                                ),
                               ),
+                            // Windows: "+" e a seta formam um grupo — a divisória
+                            // fica só no fim dele. Ausente no POSIX (lá só existe
+                            // o login shell, sem escolha a fazer).
+                            _TabAdd(
+                              onTap: widget.onCreateTab,
+                              trailingBorder:
+                                  !widget.vm.showTerminalProfilePicker,
                             ),
-                          // Windows: "+" e a seta formam um grupo — a divisória
-                          // fica só no fim dele. Ausente no POSIX (lá só existe
-                          // o login shell, sem escolha a fazer).
-                          _TabAdd(
-                            onTap: widget.onCreateTab,
-                            trailingBorder:
-                                !widget.vm.showTerminalProfilePicker,
-                          ),
-                          if (widget.vm.showTerminalProfilePicker)
-                            _TabProfilePicker(vm: widget.vm),
-                        ],
+                            if (widget.vm.showTerminalProfilePicker)
+                              _TabProfilePicker(vm: widget.vm),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -392,13 +450,23 @@ class _TabStripState extends State<_TabStrip> {
               Builder(
                 builder: (ctx) => _StripButton(
                   icon: Icons.keyboard_arrow_down,
-                  tooltip: 'All tabs',
+                  tooltip: context.t.cockpit.paneView.allTabs,
                   onTap: () => _showTabList(ctx),
                 ),
               ),
             _PaneTools(
               onSplitRight: () => widget.onSplit(SplitDir.vertical),
               onSplitDown: () => widget.onSplit(SplitDir.horizontal),
+              // Terminal na raiz do workspace, nesta pane (kebab mobile).
+              onOpenTerminal: () => widget.vm.newTerminalTab(
+                cwd: widget.vm.treeRootPath,
+                inPane: widget.pane.id,
+              ),
+              // Sem webview na plataforma (Linux) o botão nem aparece — regra
+              // de "zero UI órfã" do plano 58.
+              onOpenBrowser: BrowserCapability.resolve().isInline
+                  ? () => widget.vm.openWebBrowser('', inPane: widget.pane.id)
+                  : null,
               onClosePane: () => _confirmClosePane(context),
             ),
           ],
@@ -440,6 +508,7 @@ class _Tab extends StatefulWidget {
   const _Tab({
     required this.item,
     required this.paneId,
+    required this.visible,
     required this.active,
     required this.focused,
     required this.onSelect,
@@ -453,6 +522,7 @@ class _Tab extends StatefulWidget {
 
   final PaneItem? item;
   final String paneId;
+  final bool visible;
   final bool active;
   final bool focused;
   final VoidCallback onSelect;
@@ -578,26 +648,10 @@ class _TabState extends State<_Tab> {
 
   /// Fecha a aba pedindo confirmação se for um arquivo com edição não salva:
   /// descartar, cancelar ou salvar-e-fechar. Demais abas fecham direto.
-  Future<void> _requestClose() async {
-    final s = widget.item;
-    if (s is! FileViewerSession || !s.dirty) {
-      widget.onClose();
-      return;
-    }
-    final choice = await showCloseDirtyDialog(context, fileName: s.title);
-    if (!mounted) return;
-    switch (choice) {
-      case CloseDirtyChoice.cancel:
-        return;
-      case CloseDirtyChoice.dontSave:
-        widget.onClose();
-      case CloseDirtyChoice.save:
-        // Salva o buffer atual; só fecha se gravou (erro de IO mantém aberto).
-        final ok = await s.saveDraft?.call() ?? false;
-        if (!mounted) return;
-        if (ok) widget.onClose();
-    }
-  }
+  /// Regra compartilhada com o ⌘W (ver `actions/tab_actions.dart`): o X e o
+  /// atalho não podem divergir sobre o que fazer com edição não salva.
+  Future<void> _requestClose() =>
+      requestCloseTab(context, widget.item, widget.onClose);
 
   Future<void> _showTabMenu(BuildContext menuCtx) async {
     final s = widget.item;
@@ -608,56 +662,53 @@ class _TabState extends State<_Tab> {
     final isPreview = viewer?.isPreview ?? false;
     final terminal = s is TerminalSession ? s : null;
 
+    final tr = context.t.cockpit.paneView;
     final value = await showAppMenu<String>(
       menuCtx,
       minWidth: 150,
       items: [
         if (viewer != null && isPreview)
-          const AppMenuItem(
+          AppMenuItem(
             value: 'pin',
-            label: 'Pin tab',
+            label: tr.pinTab,
             icon: Icons.push_pin_outlined,
           ),
         // Só em abas de terminal: o id (pane id) copiável pra usar na CLI
         // `cockpit` (`--tab-id`).
         if (terminal != null) ...[
-          const AppMenuItem(
+          AppMenuItem(
             value: 'rename',
-            label: 'Rename',
+            label: tr.rename,
             icon: Icons.edit_outlined,
           ),
           // Só oferecido quando há rótulo manual travado.
           if (terminal.titleLocked)
-            const AppMenuItem(
+            AppMenuItem(
               value: 'reset-label',
-              label: 'Reset Title',
+              label: tr.resetTitle,
               icon: Icons.restart_alt,
             ),
-          const AppMenuItem(
+          AppMenuItem(
             value: 'copy-id',
-            label: 'Copy Id',
+            label: tr.copyId,
             icon: Icons.content_copy,
           ),
         ],
         if (agent != null && !isEmpty) ...[
-          const AppMenuItem(
+          AppMenuItem(
             value: 'rename',
-            label: 'Rename',
+            label: tr.rename,
             icon: Icons.edit_outlined,
           ),
           AppMenuItem(
             value: 'relay',
-            label: 'Auto-relay',
+            label: tr.autoRelay,
             icon: Icons.cell_tower_outlined,
             selected: agent.autoStartRelay,
           ),
-          const AppMenuItem(
-            value: 'history',
-            label: 'History',
-            icon: Icons.history,
-          ),
+          AppMenuItem(value: 'history', label: tr.history, icon: Icons.history),
         ],
-        const AppMenuItem(value: 'close', label: 'Close', icon: Icons.close),
+        AppMenuItem(value: 'close', label: tr.close, icon: Icons.close),
       ],
     );
     if (!mounted) return;
@@ -685,8 +736,9 @@ class _TabState extends State<_Tab> {
   Widget build(BuildContext context) {
     final s = widget.item;
     if (s == null) return const SizedBox.shrink();
-    return ListenableBuilder(
+    return ActiveListenableBuilder(
       listenable: s,
+      active: widget.visible,
       builder: (_, _) {
         final colors = context.colors;
         final isFocusedActive = widget.active && widget.focused;
@@ -723,14 +775,17 @@ class _TabState extends State<_Tab> {
                   ],
                 ),
               )
-            : Text(
-                s.displayTitle,
-                overflow: TextOverflow.ellipsis,
-                style: context.typo.tab.copyWith(
-                  color: isFocusedActive || widget.active
-                      ? colors.text
-                      : colors.text3,
-                  fontStyle: isPreview ? FontStyle.italic : FontStyle.normal,
+            : AppTooltip(
+                message: s.displayTitle,
+                child: Text(
+                  s.displayTitle,
+                  overflow: TextOverflow.ellipsis,
+                  style: context.typo.tab.copyWith(
+                    color: isFocusedActive || widget.active
+                        ? colors.text
+                        : colors.text3,
+                    fontStyle: isPreview ? FontStyle.italic : FontStyle.normal,
+                  ),
                 ),
               );
 
@@ -760,10 +815,11 @@ class _TabState extends State<_Tab> {
               else if (s is MongoBrowserSession)
                 const DbEngineIcon(DbEngine.mongo, size: 14)
               else
-                Icon(
-                  icon,
+                PaneTabLeading(
+                  item: s,
+                  defaultIcon: icon,
                   size: 13,
-                  color: isFocusedActive
+                  iconColor: isFocusedActive
                       ? colors.accentText
                       : (widget.active ? colors.text2 : colors.text3),
                 ),
@@ -804,20 +860,43 @@ class _TabState extends State<_Tab> {
         // Builder garante um BuildContext com RenderBox para showAppMenu.
         final interactive = Builder(
           builder: (menuCtx) => GestureDetector(
-            onTapUp: (d) => _handleTap(),
-            onSecondaryTapUp: isEmpty ? null : (d) => _showTabMenu(menuCtx),
+            onTapUp: (_) => _handleTap(),
+            onSecondaryTapUp: isEmpty ? null : (_) => _showTabMenu(menuCtx),
+            onTertiaryTapUp: (_) => _requestClose(),
+            // Mobile: duplo-toque abre o menu da aba (equivalente ao clique
+            // direito do desktop, que não existe no touch).
+            onDoubleTap: (isMobilePlatform && !isEmpty)
+                ? () => _showTabMenu(menuCtx)
+                : null,
             child: tabBody,
           ),
         );
 
+        final data = TabDragData(paneId: widget.paneId, tabId: s.id);
+        final feedback = Transform.translate(
+          offset: const Offset(12, 8),
+          child: _DragFeedback(icon: icon, title: s.displayTitle),
+        );
+        final childWhenDragging = Opacity(opacity: 0.3, child: tabBody);
+
+        // Mobile: o Draggable imediato brigava com o scroll horizontal da strip
+        // — um swipe pra rolar entrava direto no arraste/multiplexação. Com o
+        // LongPressDraggable, swipe ROLA (o Scrollable ganha a arena) e SEGURAR
+        // inicia o drag (reordenar/mover entre panes). Desktop segue imediato.
+        if (isMobilePlatform) {
+          return LongPressDraggable<TabDragData>(
+            data: data,
+            dragAnchorStrategy: pointerDragAnchorStrategy,
+            feedback: feedback,
+            childWhenDragging: childWhenDragging,
+            child: interactive,
+          );
+        }
         return Draggable<TabDragData>(
-          data: TabDragData(paneId: widget.paneId, tabId: s.id),
+          data: data,
           dragAnchorStrategy: pointerDragAnchorStrategy,
-          feedback: Transform.translate(
-            offset: const Offset(12, 8),
-            child: _DragFeedback(icon: icon, title: s.displayTitle),
-          ),
-          childWhenDragging: Opacity(opacity: 0.3, child: tabBody),
+          feedback: feedback,
+          childWhenDragging: childWhenDragging,
           child: interactive,
         );
       },
@@ -953,7 +1032,7 @@ class _TabAdd extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     return AppTooltip(
-      message: 'New tab',
+      message: context.t.cockpit.paneView.newTab,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: onTap,
@@ -1028,7 +1107,7 @@ class _TabProfilePicker extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     return AppTooltip(
-      message: 'New terminal…',
+      message: context.t.cockpit.paneView.newTerminal,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: () => _open(context),
@@ -1052,16 +1131,66 @@ class _PaneTools extends StatelessWidget {
   const _PaneTools({
     required this.onSplitRight,
     required this.onSplitDown,
+    required this.onOpenTerminal,
+    required this.onOpenBrowser,
     required this.onClosePane,
   });
 
   final VoidCallback onSplitRight;
   final VoidCallback onSplitDown;
+
+  /// Abre um terminal na pane (item do kebab mobile).
+  final VoidCallback onOpenTerminal;
+
+  /// `null` = plataforma sem webview inline (Linux) — botão oculto.
+  final VoidCallback? onOpenBrowser;
   final VoidCallback onClosePane;
+
+  /// Popup do kebab (mobile): as mesmas ações dos 4 ícones do desktop. Cada
+  /// item carrega sua ação como `value` (VoidCallback), invocada na escolha.
+  Future<void> _openMenu(BuildContext ctx) async {
+    final tr = ctx.t.cockpit.paneView;
+    final action = await showAppMenu<VoidCallback>(
+      ctx,
+      minWidth: 180,
+      items: <AppMenuItem<VoidCallback>>[
+        AppMenuItem(
+          value: onOpenTerminal,
+          label: tr.openTerminal,
+          icon: Icons.terminal,
+        ),
+        if (onOpenBrowser != null)
+          AppMenuItem(
+            value: onOpenBrowser!,
+            label: tr.openBrowser,
+            icon: Icons.public,
+          ),
+        AppMenuItem(
+          value: onSplitRight,
+          label: tr.splitRight,
+          icon: Icons.vertical_split_outlined,
+        ),
+        AppMenuItem(
+          value: onSplitDown,
+          label: tr.splitDown,
+          icon: Icons.horizontal_split_outlined,
+        ),
+        const AppMenuItem<VoidCallback>.divider(),
+        AppMenuItem(
+          value: onClosePane,
+          label: tr.closePane,
+          icon: Icons.close,
+          danger: true,
+        ),
+      ],
+    );
+    action?.call();
+  }
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final tr = context.t.cockpit.paneView;
     final iconColor = colors.text3;
     const spacing = 13.0;
     Widget btn(Widget icon, String tip, VoidCallback onTap) => AppTooltip(
@@ -1072,6 +1201,25 @@ class _PaneTools extends StatelessWidget {
         child: SizedBox(width: spacing, height: spacing, child: icon),
       ),
     );
+    // Mobile: os 4 ícones não cabem/são pequenos demais pro toque → viram um
+    // kebab (3 pontos) que abre o popup com as mesmas opções.
+    if (isMobilePlatform) {
+      return Padding(
+        padding: const EdgeInsets.only(right: spacing),
+        child: Builder(
+          builder: (menuCtx) => HoverTap(
+            borderRadius: BorderRadius.circular(5),
+            onTap: () => _openMenu(menuCtx),
+            child: SizedBox(
+              width: 24,
+              height: 24,
+              child: Icon(Icons.more_vert, size: 18, color: iconColor),
+            ),
+          ),
+        ),
+      );
+    }
+
     // Mesma base (splitscreen = dois painéis), pra ler "horizontal vs vertical"
     // num relance: empilhado = dividir abaixo; girado 90° (colunas lado-a-lado)
     // = dividir à direita. (Mockup.)
@@ -1081,12 +1229,18 @@ class _PaneTools extends StatelessWidget {
       child: Row(
         spacing: 12,
         children: [
+          if (onOpenBrowser != null)
+            btn(
+              Icon(Icons.public, size: spacing, color: iconColor),
+              tr.openBrowser,
+              onOpenBrowser!,
+            ),
           btn(
             _SplitterScreenIcon(
               type: _SplitterScreenIconType.horizontal,
               color: iconColor,
             ),
-            'Split right',
+            tr.splitRight,
             onSplitRight,
           ),
           btn(
@@ -1094,7 +1248,7 @@ class _PaneTools extends StatelessWidget {
               type: _SplitterScreenIconType.vertical,
               color: iconColor,
             ),
-            'Split down',
+            tr.splitDown,
             onSplitDown,
           ),
           btn(
@@ -1102,7 +1256,7 @@ class _PaneTools extends StatelessWidget {
               type: _SplitterScreenIconType.close,
               color: iconColor,
             ),
-            'Close pane',
+            tr.closePane,
             onClosePane,
           ),
         ],
@@ -1224,6 +1378,34 @@ class _PaneBodyState extends State<_PaneBody> {
     });
   }
 
+  /// Envolve o terminal num [Listener] que **devolve o teclado ao próprio
+  /// node** no pointer-down.
+  ///
+  /// Por que isso não é redundante com o `Listener` do pane (que chama
+  /// `vm.focus`): `vm.focus` é *estado* ("qual pane é o focado") e sai cedo
+  /// quando o pane já é o focado, então não avança `tabFocusGen` e o
+  /// [didUpdateWidget] daqui nunca roda. Se o `FocusNode` tiver perdido o
+  /// teclado enquanto a VM continua achando que este pane está focado, clicar
+  /// no corpo do terminal não trazia o foco de volta por caminho nenhum do app
+  /// — só clicar no cabeçalho da aba, porque `selectTab` sempre bumpa a
+  /// geração. Era esse o sintoma: "tenho que clicar na aba pra voltar a
+  /// digitar".
+  ///
+  /// Quem sabe se o node tem o teclado é quem é dono dele, e é aqui. Sem passar
+  /// pela VM também não há `notifyListeners` por clique (nenhum rebuild da
+  /// árvore de panes só pra reconquistar foco que já era nosso).
+  Widget _grantsKeyboardOnPointerDown(Widget child) => Listener(
+    behavior: HitTestBehavior.translucent,
+    onPointerDown: (_) {
+      // `widget.focused` false = o pane ainda vai ser focado pela VM neste
+      // frame; o caminho da geração cobre esse caso.
+      if (!_wantsTerminalFocus || !widget.focused) return;
+      if (_terminalFocus.hasFocus) return;
+      _requestTerminalFocusSoon();
+    },
+    child: child,
+  );
+
   @override
   void dispose() {
     _scroll.dispose();
@@ -1275,7 +1457,11 @@ class _PaneBodyState extends State<_PaneBody> {
 
     // Viewer de diff (read-only, split): comparação com o HEAD do git.
     if (item is DiffViewerSession) {
-      return DiffViewer(session: item);
+      final vm = context.read<CockpitViewModel>();
+      return DiffViewer(
+        session: item,
+        displayPath: vm.displayPath(item.projectId, item.path),
+      );
     }
 
     // Tabela Redis (plano 52): a tabela editável é a interface única da tab.
@@ -1297,6 +1483,25 @@ class _PaneBodyState extends State<_PaneBody> {
         active: widget.active,
         focused: widget.focused,
         workspaceRoot: vm.projectRootOf(item.projectId) ?? '',
+      );
+    }
+
+    // Navegador embutido (plano 58): toolbar compacta + webview inline.
+    if (item is BrowserSession) {
+      return BrowserPane(session: item, active: widget.active);
+    }
+
+    // Tab de request `.http`: editor + resposta. Reusa a FileViewerSession
+    // pelo mesmo motivo da `.dbq` (preview/dirty/watch de graça).
+    if (item is FileViewerSession &&
+        (item.path.toLowerCase().endsWith('.http') ||
+            item.path.toLowerCase().endsWith('.rest'))) {
+      final vm = context.read<CockpitViewModel>();
+      return HttpRequestView(
+        session: item,
+        active: widget.active,
+        focused: widget.focused,
+        onSave: (content) => vm.saveFile(item.id, content),
       );
     }
 
@@ -1332,20 +1537,36 @@ class _PaneBodyState extends State<_PaneBody> {
       // ligar teclado/onOutput. Fechar a aba não toca no buffer nem na task.
       final settings = context.watch<SettingsController>().settings;
       final termFont = settings.terminalFont;
+      // Tamanho próprio do terminal; ausente = herda o do código.
+      final termSize = settings.terminalSize ?? settings.codeSize;
       final termStyle = (termFont == null || termFont.isEmpty)
-          ? TerminalStyle(fontSize: settings.codeSize)
-          : TerminalStyle(fontSize: settings.codeSize, fontFamily: termFont);
-      return ColoredBox(
-        color: context.colors.panel,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(10, 8, 0, 8),
-          child: AdaptiveTerminalPane(
-            terminal: item.terminal,
-            focusNode: _terminalFocus,
-            onKeyEvent: (_) => KeyEventResult.ignored,
-            readOnly: true,
-            theme: cockpitTerminalThemeFor(Theme.of(context).brightness),
-            textStyle: termStyle,
+          ? TerminalStyle(fontSize: termSize)
+          : TerminalStyle(fontSize: termSize, fontFamily: termFont);
+      return _grantsKeyboardOnPointerDown(
+        ColoredBox(
+          color: context.colors.panel,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(10, 8, 0, 8),
+            child: AdaptiveTerminalPane(
+              terminal: item.terminal,
+              active: widget.active,
+              focusNode: _terminalFocus,
+              onKeyEvent: (_) => KeyEventResult.ignored,
+              readOnly: true,
+              // Read-only não quer dizer sem link: a saída de uma task é
+              // justamente onde `dart analyze` e `flutter test` imprimem
+              // `lib/x.dart:12:3`. Sem isto, clicar num erro aqui não fazia
+              // nada. A task não tem shell (logo, não tem OSC 7), então o cwd é
+              // sempre o de execução dela.
+              onOpenFile: (path, {line}) =>
+                  context.read<CockpitViewModel>().openTerminalPath(
+                    path,
+                    cwd: item.workingDirectory,
+                    line: line,
+                  ),
+              theme: context.terminalTheme,
+              textStyle: termStyle,
+            ),
           ),
         ),
       );
@@ -1355,34 +1576,53 @@ class _PaneBodyState extends State<_PaneBody> {
       final settings = context.watch<SettingsController>().settings;
       final termFont = settings.terminalFont;
       // Fonte exclusiva do terminal (vazia = mono padrão do xterm); tamanho =
-      // "tamanho do código". O zoom da interface é global (Transform em
-      // `_AppZoom`), então não precisa escalar aqui.
+      // "tamanho do código". O zoom da interface NÃO entra aqui de propósito:
+      // o pane do terminal desfaz o zoom geométrico e o reaplica como tamanho
+      // de fonte (ver `_UnzoomBox` em adaptive_terminal_pane.dart), senão o
+      // atlas de glifos do flterm seria ampliado como bitmap.
+      final termSize = settings.terminalSize ?? settings.codeSize;
       final termStyle = (termFont == null || termFont.isEmpty)
-          ? TerminalStyle(fontSize: settings.codeSize)
-          : TerminalStyle(fontSize: settings.codeSize, fontFamily: termFont);
-      return _TerminalDropTarget(
-        session: item,
-        child: ColoredBox(
-          color: context.colors.panel,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(10, 8, 0, 8),
-            child: AdaptiveTerminalPane(
-              terminal: item.terminal,
-              focusNode: _terminalFocus,
-              // Intercepta o atalho de colar pra suportar IMAGEM do clipboard
-              // (o paste padrão do xterm só cola texto). Ver `_onTerminalKey`.
-              onKeyEvent: (event) => _onTerminalKey(event, item),
-              onPaste: item.pasteFromClipboard,
-              // Cmd+clique num caminho de arquivo do buffer → abre no FileViewer,
-              // resolvido contra o cwd vivo do shell (OSC 7).
-              onOpenFile: (path, {line}) =>
-                  context.read<CockpitViewModel>().openTerminalPath(
-                    path,
-                    cwd: item.currentDirectory,
-                    line: line,
-                  ),
-              theme: cockpitTerminalThemeFor(Theme.of(context).brightness),
-              textStyle: termStyle,
+          ? TerminalStyle(fontSize: termSize)
+          : TerminalStyle(fontSize: termSize, fontFamily: termFont);
+      return _grantsKeyboardOnPointerDown(
+        _TerminalDropTarget(
+          session: item,
+          child: ColoredBox(
+            color: context.colors.panel,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(10, 8, 0, 8),
+              child: AdaptiveTerminalPane(
+                terminal: item.terminal,
+                active: widget.active,
+                focusNode: _terminalFocus,
+                // Intercepta o atalho de colar pra suportar IMAGEM do clipboard
+                // (o paste padrão do xterm só cola texto). Ver `_onTerminalKey`.
+                onKeyEvent: (event) => _onTerminalKey(event, item),
+                onPaste: item.pasteFromClipboard,
+                // Cmd+clique num caminho de arquivo do buffer → abre no
+                // FileViewer, resolvido contra o cwd vivo do shell (OSC 7).
+                //
+                // O fallback pro cwd de spawn não é zelo: **OSC 7 é opcional**.
+                // O zsh do macOS só o emite quando `$TERM_PROGRAM` é
+                // `Apple_Terminal`, então numa aba do Cockpit ele não vem, e
+                // `currentDirectory` fica `null` até nunca. Com `null`, o
+                // resolver desiste de todo caminho **relativo** e o clique não
+                // faz nada — sem erro, sem aviso. Absoluto abria, relativo não,
+                // e relativo é justamente o que `dart analyze` e `flutter test`
+                // imprimem.
+                //
+                // O cwd de spawn erra depois de um `cd` sem OSC 7, mas acerta o
+                // caso comum (rodar o comando na raiz da aba). Errar às vezes é
+                // melhor que não abrir nunca.
+                onOpenFile: (path, {line}) =>
+                    context.read<CockpitViewModel>().openTerminalPath(
+                      path,
+                      cwd: item.currentDirectory ?? item.workingDirectory,
+                      line: line,
+                    ),
+                theme: context.terminalTheme,
+                textStyle: termStyle,
+              ),
             ),
           ),
         ),
@@ -1390,8 +1630,9 @@ class _PaneBodyState extends State<_PaneBody> {
     }
 
     final agent = item as AgentSession;
-    return ListenableBuilder(
+    return ActiveListenableBuilder(
       listenable: agent,
+      active: widget.active,
       builder: (context, _) {
         if (agent.status == AgentStatus.empty) {
           // No workspace de sistema "Cockpit" agentes são desligados **sempre**
@@ -1690,12 +1931,8 @@ class _DragFeedback extends StatelessWidget {
         color: colors.panel2,
         borderRadius: BorderRadius.circular(7),
         border: Border.all(color: colors.accent),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x55000000),
-            blurRadius: 12,
-            offset: Offset(0, 4),
-          ),
+        boxShadow: [
+          BoxShadow(color: colors.shadow, blurRadius: 12, offset: Offset(0, 4)),
         ],
       ),
       child: Row(
@@ -1908,6 +2145,7 @@ class _ZonePreview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final tr = context.t.cockpit.paneView;
 
     if (zone == _DropZone.strip) {
       return Align(
@@ -1921,7 +2159,7 @@ class _ZonePreview extends StatelessWidget {
             border: Border(bottom: BorderSide(color: colors.accent, width: 2)),
           ),
           child: Text(
-            'Drop here to move the tab',
+            tr.dropHereToMove,
             style: context.typo.tab.copyWith(color: colors.accentText),
           ),
         ),
@@ -1929,7 +2167,7 @@ class _ZonePreview extends StatelessWidget {
     }
 
     final (align, wf, hf, label) = switch (zone) {
-      _DropZone.center => (Alignment.center, 1.0, 1.0, 'Dock as tab'),
+      _DropZone.center => (Alignment.center, 1.0, 1.0, tr.dockAsTab),
       _DropZone.left => (Alignment.centerLeft, 0.5, 1.0, null),
       _DropZone.right => (Alignment.centerRight, 0.5, 1.0, null),
       _DropZone.top => (Alignment.topCenter, 1.0, 0.5, null),

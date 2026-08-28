@@ -79,7 +79,8 @@ String _stripTrailingCommas(String s) {
     if (c == ',') {
       // Olha o próximo token significativo: se for `}` ou `]`, a vírgula é final.
       var j = i + 1;
-      while (j < s.length && (s[j] == ' ' || s[j] == '\t' || s[j] == '\r' || s[j] == '\n')) {
+      while (j < s.length &&
+          (s[j] == ' ' || s[j] == '\t' || s[j] == '\r' || s[j] == '\n')) {
         j++;
       }
       if (j < s.length && (s[j] == '}' || s[j] == ']')) {

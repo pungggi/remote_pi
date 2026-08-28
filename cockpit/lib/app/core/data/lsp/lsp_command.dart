@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:cockpit/app/core/data/setup/remote_pi_resolver.dart';
+import 'package:cockpit/app/core/domain/exceptions/file_operation_error.dart';
 import 'package:cockpit/app/core/domain/result.dart';
 import 'package:cockpit/app/core/utils/executable_resolver.dart';
 
@@ -79,15 +80,19 @@ Future<bool> probeLspCommand(String command) async {
 /// arquivo em [filePath]. O token `%FILE%` é substituído pelo caminho em cada
 /// argumento. File-based: o formatador reescreve o arquivo no disco. Sucesso se
 /// exit code 0; senão devolve o stderr (ou exit code) como mensagem.
-Future<Result<void, String>> runFormatterCommand(
+Future<Result<void, FileOperationError>> runFormatterCommand(
   String command,
   String filePath,
 ) async {
   final parts = splitLspCommand(command.trim());
-  if (parts.isEmpty) return const Failure('Empty formatter command.');
+  if (parts.isEmpty) {
+    return const Failure(
+      FileOperationError(FileOperationErrorKind.formatterEmptyCommand),
+    );
+  }
   if (!command.contains('%FILE%')) {
     return const Failure(
-      'Formatter command must include the %FILE% placeholder.',
+      FileOperationError(FileOperationErrorKind.formatterMissingPlaceholder),
     );
   }
   final substituted = parts
@@ -103,10 +108,28 @@ Future<Result<void, String>> runFormatterCommand(
     ).timeout(const Duration(seconds: 30));
     if (r.exitCode == 0) return const Success(null);
     final err = (r.stderr as String? ?? '').trim();
-    return Failure(err.isEmpty ? 'Formatter exited with ${r.exitCode}.' : err);
+    return Failure(
+      err.isEmpty
+          ? FileOperationError(
+              FileOperationErrorKind.formatterExitCode,
+              exitCode: r.exitCode,
+            )
+          : FileOperationError(
+              FileOperationErrorKind.formatterFailed,
+              detail: err,
+            ),
+    );
   } on TimeoutException {
-    return const Failure('Formatter timed out.');
+    return const Failure(
+      FileOperationError(FileOperationErrorKind.formatterTimeout),
+    );
   } catch (e) {
-    return Failure('$e');
+    return Failure(
+      FileOperationError(
+        FileOperationErrorKind.formatterFailed,
+        detail: '$e',
+        cause: e,
+      ),
+    );
   }
 }

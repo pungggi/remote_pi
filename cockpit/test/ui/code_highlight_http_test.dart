@@ -1,0 +1,123 @@
+import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:cockpit/app/core/ui/widgets/code_highlight.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:shadcn_flutter/shadcn_flutter.dart';
+
+/// Coleta (texto completo, trechos coloridos) do span produzido para [source].
+Future<(String, List<String>)> _paint(
+  WidgetTester tester,
+  String source,
+  String language,
+) async {
+  TextSpan? span;
+  await tester.pumpWidget(
+    ShadcnApp(
+      theme: buildTheme(brightness: Brightness.dark),
+      home: Builder(
+        builder: (context) {
+          span = buildCodeSpan(
+            context,
+            source: source,
+            language: language,
+            baseStyle: const TextStyle(),
+          );
+          return const SizedBox();
+        },
+      ),
+    ),
+  );
+  final colored = <String>[];
+  final full = StringBuffer();
+  span!.visitChildren((v) {
+    final s = v as TextSpan;
+    full.write(s.text);
+    if (s.style?.color != null) colored.add(s.text!);
+    return true;
+  });
+  return (full.toString(), colored);
+}
+
+const _source = '''
+@baseUrl = https://api.example.com
+@token = abc123
+
+### Listar usuários
+# comentário solto
+GET {{baseUrl}}/users?page=1
+Accept: application/json
+Authorization: Bearer {{token}}
+
+### Criar usuário
+POST {{baseUrl}}/users
+Content-Type: application/json
+
+{
+  "name": "Jacob"
+}
+
+### Body de arquivo
+PUT {{baseUrl}}/users/1
+< ./body.json
+''';
+
+void main() {
+  testWidgets(
+    'gramática httpfile pinta separador, variáveis, verbo e headers',
+    (tester) async {
+      final (full, colored) = await _paint(tester, _source, 'http');
+
+      expect(full, _source); // parse não perde nem duplica texto
+      final joined = colored.join('\n');
+
+      expect(colored, contains('### Listar usuários')); // section
+      expect(colored, contains('### Criar usuário'));
+      expect(colored, contains('@baseUrl')); // attr da variável
+      expect(colored, contains('@token'));
+      expect(colored, contains('# comentário solto')); // comment
+      expect(colored, contains('GET')); // verbo
+      expect(colored, contains('POST'));
+      expect(colored, contains('PUT'));
+      expect(colored, contains('{{baseUrl}}')); // interpolação na URL
+      expect(colored, contains('{{token}}')); // interpolação no header
+      expect(joined, contains('Accept')); // header name
+      expect(joined, contains('Content-Type'));
+      expect(joined, contains('< ./body.json')); // import de body
+    },
+  );
+
+  testWidgets(
+    'body JSON é pintado como sub-idioma sem vazar para o próximo request',
+    (tester) async {
+      final (_, colored) = await _paint(tester, _source, 'http');
+      // A chave do JSON vem do sub-idioma json...
+      expect(colored.join(), contains('"name"'));
+      // ...e o request seguinte ao body continua sendo reconhecido (o body não
+      // engoliu o resto do arquivo).
+      expect(colored, contains('### Body de arquivo'));
+      expect(colored, contains('PUT'));
+    },
+  );
+
+  testWidgets('lista de headers solta (painel de resposta) também pinta', (
+    tester,
+  ) async {
+    // O painel Headers da aba .http renderiza só `Nome: valor` por linha —
+    // sem request-line nenhuma antes.
+    const headers =
+        'content-type: application/json\n'
+        'content-length: 42\n';
+    final (full, colored) = await _paint(tester, headers, 'http');
+    expect(full, headers);
+    expect(colored.join(), contains('content-type'));
+    expect(colored.join(), contains('content-length'));
+  });
+
+  testWidgets('arquivo com sintaxe exótica degrada em realce parcial', (
+    tester,
+  ) async {
+    const weird = '### x\n> {%\n  client.log("oi")\n%}\nGET https://a.b\n';
+    final (full, colored) = await _paint(tester, weird, 'http');
+    expect(full, weird);
+    expect(colored, contains('GET')); // não abortou o parse inteiro
+  });
+}

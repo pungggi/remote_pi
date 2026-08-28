@@ -18,14 +18,41 @@ import 'package:flutter/foundation.dart';
 /// resposta (índices na `semanticTokensProvider.legend`), então esta lista só
 /// precisa declarar que o client entende o vocabulário padrão.
 const List<String> _kSemanticTokenTypes = <String>[
-  'namespace', 'type', 'class', 'enum', 'interface', 'struct', 'typeParameter',
-  'parameter', 'variable', 'property', 'enumMember', 'event', 'function',
-  'method', 'macro', 'keyword', 'modifier', 'comment', 'string', 'number',
-  'regexp', 'operator', 'decorator',
+  'namespace',
+  'type',
+  'class',
+  'enum',
+  'interface',
+  'struct',
+  'typeParameter',
+  'parameter',
+  'variable',
+  'property',
+  'enumMember',
+  'event',
+  'function',
+  'method',
+  'macro',
+  'keyword',
+  'modifier',
+  'comment',
+  'string',
+  'number',
+  'regexp',
+  'operator',
+  'decorator',
 ];
 const List<String> _kSemanticTokenModifiers = <String>[
-  'declaration', 'definition', 'readonly', 'static', 'deprecated', 'abstract',
-  'async', 'modification', 'documentation', 'defaultLibrary',
+  'declaration',
+  'definition',
+  'readonly',
+  'static',
+  'deprecated',
+  'abstract',
+  'async',
+  'modification',
+  'documentation',
+  'defaultLibrary',
 ];
 
 /// Implementação de [LspClient] sobre `dart:io` `Process`. Dona do ciclo de vida
@@ -102,7 +129,13 @@ class LspClientImpl implements LspClient {
       await _handshake();
       return const Success(null);
     } catch (error, stackTrace) {
+      final failed = _process;
       _process = null;
+      _initialized = false;
+      if (failed != null) {
+        failed.kill(ProcessSignal.sigterm);
+        unawaited(LspProcessRegistry.unregister(failed.pid));
+      }
       return Failure(
         LspError(
           'Failed to start "${spec.executable}": $error',
@@ -401,7 +434,10 @@ class LspClientImpl implements LspClient {
 
   void _onStderrLine(String line) {
     if (line.trim().isEmpty) return;
-    debugPrint('[lsp:${spec.languageId}][err] $line');
+    // Alguns language servers escrevem telemetria verbosa no stderr. Em
+    // produção isso não pode alimentar a fila throttled do debugPrint junto
+    // com terminais, builds e agentes.
+    if (kDebugMode) debugPrint('[lsp:${spec.languageId}][err] $line');
   }
 
   void _onStreamError(Object error, StackTrace stackTrace) {

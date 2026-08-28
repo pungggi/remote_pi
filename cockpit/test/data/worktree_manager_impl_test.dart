@@ -23,6 +23,17 @@ void main() {
     }
   }
 
+  /// Aguarda o [WorktreeAddRun] e devolve o resultado (descarta o stream).
+  Future<Result<Worktree, WorktreeOpError>> addResult(
+    String name, {
+    String? baseRef,
+  }) {
+    final run = manager.add(repo.path, name, baseRef: baseRef);
+    // Drena o stream pra não vazar o controller.
+    run.output.drain<void>();
+    return run.result;
+  }
+
   setUp(() async {
     repo = await Directory.systemTemp.createTemp('cockpit_wt_test_');
     await git(['init']);
@@ -49,7 +60,7 @@ void main() {
     }
 
     // add: cria worktree aninhada + branch nova a partir do HEAD.
-    final added = await manager.add(repo.path, 'feat/sso');
+    final added = await addResult('feat/sso');
     expect(
       added.isSuccess,
       isTrue,
@@ -102,7 +113,7 @@ void main() {
       markTestSkipped('git não disponível no ambiente');
       return;
     }
-    final dup = await manager.add(repo.path, mainBranch);
+    final dup = await addResult(mainBranch);
     expect(dup.isFailure, isTrue);
     expect(
       (dup as Failure<Worktree, WorktreeOpError>).error.message,
@@ -120,13 +131,25 @@ void main() {
   });
 
   test(
+    'namespace fallback to current active branch when no remotes exist',
+    () async {
+      if (!await gitAvailable()) {
+        markTestSkipped('git não disponível no ambiente');
+        return;
+      }
+      final ns = await manager.namespace(repo.path);
+      expect(ns.defaultBranch, mainBranch);
+    },
+  );
+
+  test(
     'isBranchMerged: true sem commits novos, false após commit no fork',
     () async {
       if (!await gitAvailable()) {
         markTestSkipped('git não disponível no ambiente');
         return;
       }
-      final added = await manager.add(repo.path, 'feat/x');
+      final added = await addResult('feat/x');
       final wt = (added as Success<Worktree, WorktreeOpError>).value;
 
       // Recém-criada do HEAD, sem commits → mergeada (tip alcançável do HEAD).
@@ -141,6 +164,149 @@ void main() {
       // Branch vazia / inexistente → false (mostra o aviso por segurança).
       expect(await manager.isBranchMerged(repo.path, ''), isFalse);
       expect(await manager.isBranchMerged(repo.path, 'nao/existe'), isFalse);
+    },
+  );
+
+  test('hasPostCheckoutHook: false sem hook, true com arquivo', () async {
+    if (!await gitAvailable()) {
+      markTestSkipped('git não disponível no ambiente');
+      return;
+    }
+    expect(await manager.hasPostCheckoutHook(repo.path), isFalse);
+
+    final hooksDir = (await git([
+      'rev-parse',
+      '--git-path',
+      'hooks',
+    ])).stdout.toString().trim();
+    final hookPath = hooksDir.startsWith('/')
+        ? '$hooksDir/post-checkout'
+        : '${repo.path}/$hooksDir/post-checkout';
+    await File(hookPath).writeAsString('#!/bin/sh\necho hook-ok\n');
+    // Não precisa ser executável pra detecção — só existência do arquivo.
+    expect(await manager.hasPostCheckoutHook(repo.path), isTrue);
+  });
+
+  test('add com post-checkout: stream contém saída do hook', () async {
+    if (!await gitAvailable()) {
+      markTestSkipped('git não disponível no ambiente');
+      return;
+    }
+    final hooksDir = (await git([
+      'rev-parse',
+      '--git-path',
+      'hooks',
+    ])).stdout.toString().trim();
+    final hookPath = hooksDir.startsWith('/')
+        ? '$hooksDir/post-checkout'
+        : '${repo.path}/$hooksDir/post-checkout';
+    await File(
+      hookPath,
+    ).writeAsString('#!/bin/sh\necho post-checkout-marker\n');
+    await Process.run('chmod', ['+x', hookPath]);
+
+    final run = manager.add(repo.path, 'feat/hooked');
+    final lines = <String>[];
+    final sub = run.output.listen(lines.add);
+    final added = await run.result;
+    await sub.cancel();
+
+    expect(added.isSuccess, isTrue, reason: lines.join('\n'));
+    expect(
+      lines.any((l) => l.contains('post-checkout-marker')),
+      isTrue,
+      reason: 'stream should include hook stdout; got:\n${lines.join('\n')}',
+    );
+  });
+
+  test(
+    'add com copyIgnored e copyUntracked copia os arquivos corretos e preserva alterações locais em rastreados',
+    () async {
+      if (!await gitAvailable()) {
+        markTestSkipped('git não disponível no ambiente');
+        return;
+      }
+
+      // 1. Cria um arquivo ignorado
+      await File('${repo.path}/.gitignore').writeAsString('.env\n');
+      await git(['add', '.gitignore']);
+      await git(['commit', '-m', 'ignore env']);
+      final ignoredFile = File('${repo.path}/.env');
+      await ignoredFile.writeAsString('SECRET=123');
+
+      // 2. Cria um arquivo não rastreado
+      final untrackedFile = File('${repo.path}/untracked.txt');
+      await untrackedFile.writeAsString('untracked content');
+
+      // 3. Modifica um arquivo já rastreado no git (alteração local não commitada)
+      await File(
+        '${repo.path}/README.md',
+      ).writeAsString('hello modified locally');
+
+      // 4. Cria outro arquivo rastreado e adiciona ao stage (staged)
+      await File('${repo.path}/staged.txt').writeAsString('initial staged');
+      await git(['add', 'staged.txt']);
+      await git(['commit', '-m', 'add staged.txt']);
+      await File('${repo.path}/staged.txt').writeAsString('staged change');
+      await git(['add', 'staged.txt']);
+
+      // 5. Cria worktree com cópia ativada
+      final run = manager.add(
+        repo.path,
+        'feat/copy-enabled',
+        copyIgnored: true,
+        copyUntracked: true,
+      );
+      final lines = <String>[];
+      final sub = run.output.listen(lines.add);
+      final added = await run.result;
+      await sub.cancel();
+
+      expect(added.isSuccess, isTrue);
+      final wt = (added as Success<Worktree, WorktreeOpError>).value;
+
+      expect(File('${wt.path}/.env').existsSync(), isTrue);
+      expect(File('${wt.path}/.env').readAsStringSync(), 'SECRET=123');
+      expect(File('${wt.path}/untracked.txt').existsSync(), isTrue);
+      expect(
+        File('${wt.path}/untracked.txt').readAsStringSync(),
+        'untracked content',
+      );
+      // Verifica que a alteração local do arquivo rastreado foi copiada para o novo worktree
+      expect(File('${wt.path}/README.md').existsSync(), isTrue);
+      expect(
+        File('${wt.path}/README.md').readAsStringSync(),
+        'hello modified locally',
+      );
+      // Verifica que a alteração staged também foi copiada
+      expect(File('${wt.path}/staged.txt').existsSync(), isTrue);
+      expect(File('${wt.path}/staged.txt').readAsStringSync(), 'staged change');
+
+      // 6. Cria outra worktree com cópias desativadas
+      final runDisabled = manager.add(
+        repo.path,
+        'feat/copy-disabled',
+        copyIgnored: false,
+        copyUntracked: false,
+      );
+      final lines2 = <String>[];
+      final sub2 = runDisabled.output.listen(lines2.add);
+      final addedDisabled = await runDisabled.result;
+      await sub2.cancel();
+
+      expect(addedDisabled.isSuccess, isTrue);
+      final wtDisabled =
+          (addedDisabled as Success<Worktree, WorktreeOpError>).value;
+
+      expect(File('${wtDisabled.path}/.env').existsSync(), isFalse);
+      expect(File('${wtDisabled.path}/untracked.txt').existsSync(), isFalse);
+      // Com cópia desativada, o arquivo rastreado mantém o conteúdo do commit base
+      expect(File('${wtDisabled.path}/README.md').existsSync(), isTrue);
+      expect(File('${wtDisabled.path}/README.md').readAsStringSync(), 'hello');
+      expect(
+        File('${wtDisabled.path}/staged.txt').readAsStringSync(),
+        'initial staged',
+      );
     },
   );
 }

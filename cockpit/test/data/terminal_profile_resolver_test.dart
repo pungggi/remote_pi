@@ -60,22 +60,27 @@ void main() {
       expect(wslUbuntu.executable, 'wsl.exe');
       expect(wslUbuntu.args, ['-d', 'Ubuntu']);
       expect(wslUbuntu.label, 'Ubuntu (WSL)');
-      expect(resolver.profileById(TerminalProfile.cmdId)!.executable,
-          r'C:\Windows\System32\cmd.exe');
-    });
-
-    test('sem wsl.exe (runner lança) → só PowerShell + cmd, sem erro', () async {
-      final runner = _FakeRunner(const {}); // wsl.exe não casa → lança 127
-      final resolver = TerminalProfileResolverImpl(
-        operatingSystem: 'windows',
-        isWindowsArm: false,
-        runProcess: runner.call,
-        executableExists: (exe) async => exe == 'powershell.exe',
+      expect(
+        resolver.profileById(TerminalProfile.cmdId)!.executable,
+        r'C:\Windows\System32\cmd.exe',
       );
-
-      final ids = (await resolver.discover()).map((p) => p.id).toList();
-      expect(ids, [TerminalProfile.powershellId, TerminalProfile.cmdId]);
     });
+
+    test(
+      'sem wsl.exe (runner lança) → só PowerShell + cmd, sem erro',
+      () async {
+        final runner = _FakeRunner(const {}); // wsl.exe não casa → lança 127
+        final resolver = TerminalProfileResolverImpl(
+          operatingSystem: 'windows',
+          isWindowsArm: false,
+          runProcess: runner.call,
+          executableExists: (exe) async => exe == 'powershell.exe',
+        );
+
+        final ids = (await resolver.discover()).map((p) => p.id).toList();
+        expect(ids, [TerminalProfile.powershellId, TerminalProfile.cmdId]);
+      },
+    );
 
     test('wsl.exe com exitCode != 0 → nenhum perfil WSL', () async {
       final runner = _FakeRunner({
@@ -113,35 +118,50 @@ void main() {
         TerminalProfile.powershellId,
         TerminalProfile.cmdId,
       ]);
-      expect(resolver.profileById(TerminalProfile.pwshId)!.executable,
-          'pwsh.exe');
-      expect(resolver.profileById(TerminalProfile.powershellId)!.executable,
-          'powershell.exe');
-      // Rótulos precisam desambiguar: "PowerShell" solto não diria qual é qual.
-      expect(resolver.profileById(TerminalProfile.pwshId)!.label,
-          'PowerShell 7');
-      expect(resolver.profileById(TerminalProfile.powershellId)!.label,
-          'Windows PowerShell');
-    });
-
-    test('padrão de quem nunca escolheu segue o 5.1, mesmo com o 7 instalado',
-        () async {
-      final runner = _FakeRunner(const {});
-      final resolver = TerminalProfileResolverImpl(
-        operatingSystem: 'windows',
-        isWindowsArm: false,
-        runProcess: runner.call,
-        executableExists: (exe) async =>
-            exe == 'powershell.exe' || exe == 'pwsh.exe',
+      expect(
+        resolver.profileById(TerminalProfile.pwshId)!.executable,
+        'pwsh.exe',
       );
-      await resolver.discover();
-
-      // Listar o 7 primeiro NÃO pode trocar o shell de quem já usa o app.
-      expect(resolver.effectiveDefault(null).id, TerminalProfile.powershellId);
-      // Mas escolher o 7 é respeitado.
-      expect(resolver.effectiveDefault(TerminalProfile.pwshId).id,
-          TerminalProfile.pwshId);
+      expect(
+        resolver.profileById(TerminalProfile.powershellId)!.executable,
+        'powershell.exe',
+      );
+      // Rótulos precisam desambiguar: "PowerShell" solto não diria qual é qual.
+      expect(
+        resolver.profileById(TerminalProfile.pwshId)!.label,
+        'PowerShell 7',
+      );
+      expect(
+        resolver.profileById(TerminalProfile.powershellId)!.label,
+        'Windows PowerShell',
+      );
     });
+
+    test(
+      'padrão de quem nunca escolheu segue o 5.1, mesmo com o 7 instalado',
+      () async {
+        final runner = _FakeRunner(const {});
+        final resolver = TerminalProfileResolverImpl(
+          operatingSystem: 'windows',
+          isWindowsArm: false,
+          runProcess: runner.call,
+          executableExists: (exe) async =>
+              exe == 'powershell.exe' || exe == 'pwsh.exe',
+        );
+        await resolver.discover();
+
+        // Listar o 7 primeiro NÃO pode trocar o shell de quem já usa o app.
+        expect(
+          resolver.effectiveDefault(null).id,
+          TerminalProfile.powershellId,
+        );
+        // Mas escolher o 7 é respeitado.
+        expect(
+          resolver.effectiveDefault(TerminalProfile.pwshId).id,
+          TerminalProfile.pwshId,
+        );
+      },
+    );
 
     test('só o pwsh instalado → perfil do 7, sem inventar o 5.1', () async {
       final runner = _FakeRunner(const {});
@@ -157,27 +177,32 @@ void main() {
 
       expect(ids, [TerminalProfile.pwshId, TerminalProfile.cmdId]);
       expect(resolver.profileById(TerminalProfile.powershellId), isNull);
-      expect(resolver.profileById(TerminalProfile.pwshId)!.executable,
-          'pwsh.exe');
+      expect(
+        resolver.profileById(TerminalProfile.pwshId)!.executable,
+        'pwsh.exe',
+      );
     });
   });
 
   group('TerminalProfileResolverImpl · POSIX', () {
-    test('descobre um único perfil login-shell via resolveLoginShell', () async {
-      final resolver = TerminalProfileResolverImpl(
-        operatingSystem: 'macos',
-        runProcess: _FakeRunner(const {}).call,
-        loginShell: () async => '/opt/homebrew/bin/fish',
-      );
+    test(
+      'descobre um único perfil login-shell via resolveLoginShell',
+      () async {
+        final resolver = TerminalProfileResolverImpl(
+          operatingSystem: 'macos',
+          runProcess: _FakeRunner(const {}).call,
+          loginShell: () async => '/opt/homebrew/bin/fish',
+        );
 
-      final profiles = await resolver.discover();
-      expect(profiles, hasLength(1));
-      final p = profiles.single;
-      expect(p.id, TerminalProfile.loginShellId);
-      expect(p.executable, '/opt/homebrew/bin/fish');
-      expect(p.args, ['-l']);
-      expect(p.label, 'fish (login)');
-    });
+        final profiles = await resolver.discover();
+        expect(profiles, hasLength(1));
+        final p = profiles.single;
+        expect(p.id, TerminalProfile.loginShellId);
+        expect(p.executable, '/opt/homebrew/bin/fish');
+        expect(p.args, ['-l']);
+        expect(p.label, 'fish (login)');
+      },
+    );
   });
 
   group('TerminalProfileResolverImpl · effectiveDefault', () {
@@ -204,16 +229,21 @@ void main() {
       expect(r.effectiveDefault('wsl:Fedora').id, TerminalProfile.powershellId);
     });
 
-    test('id nulo → fallback de plataforma (PowerShell no Windows x64)', () async {
-      final r = await windows();
-      expect(r.effectiveDefault(null).id, TerminalProfile.powershellId);
-    });
+    test(
+      'id nulo → fallback de plataforma (PowerShell no Windows x64)',
+      () async {
+        final r = await windows();
+        expect(r.effectiveDefault(null).id, TerminalProfile.powershellId);
+      },
+    );
 
-    test('Windows ARM → fallback é cmd (PTY do powershell instável no ARM)',
-        () async {
-      final r = await windows(arm: true);
-      expect(r.effectiveDefault(null).id, TerminalProfile.cmdId);
-    });
+    test(
+      'Windows ARM → fallback é cmd (PTY do powershell instável no ARM)',
+      () async {
+        final r = await windows(arm: true);
+        expect(r.effectiveDefault(null).id, TerminalProfile.cmdId);
+      },
+    );
 
     test('POSIX id nulo → fallback login-shell', () async {
       final r = TerminalProfileResolverImpl(

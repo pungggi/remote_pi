@@ -110,6 +110,34 @@ jobs:
         run: |
           flutter pub get
           flutter build windows --release
+          # Gate do sidecar: sem o bundle do cockpit-server o app cai no
+          # fallback in-process e o Windows roda uma arquitetura diferente do
+          # macOS — silenciosamente, porque o fallback só escreve no log.
+          SRV="build/windows/x64/runner/Release/cockpit-server-bundle/bin"
+          test -x "$SRV/cockpit-server.exe" || {
+            echo "::error::cockpit-server.exe ausente do bundle Windows"; exit 1; }
+          test -f "$SRV/cockpit_pty.dll" || {
+            echo "::error::cockpit_pty.dll ausente do bundle do servidor"; exit 1; }
+          # Smoke test: sobe o servidor e exige o anúncio do endpoint. No
+          # Windows o transporte é TCP de loopback + token num arquivo de
+          # rendezvous (dart:io não tem socket UNIX lá) — era exatamente esse
+          # bind que estourava, deixando TODO terminal do Windows no fallback
+          # in-process depois de esperar o backoff do conector. O
+          # --exit-on-idle encerra o processo sozinho, então o job não trava.
+          ENDPOINT="$RUNNER_TEMP/cockpit-server-smoke.sock"
+          "$SRV/cockpit-server.exe" --socket "$ENDPOINT" --exit-on-idle 1 \
+            >"$RUNNER_TEMP/smoke.log" 2>&1 &
+          for i in $(seq 1 20); do [ -f "$ENDPOINT" ] && break; sleep 0.5; done
+          test -f "$ENDPOINT" || {
+            echo "::error::cockpit-server não subiu no Windows"
+            cat "$RUNNER_TEMP/smoke.log" || true
+            exit 1
+          }
+          grep -q '"port"' "$ENDPOINT" || {
+            echo "::error::anúncio do endpoint sem porta: $(cat "$ENDPOINT")"
+            exit 1
+          }
+          echo "[smoke] cockpit-server anunciou o endpoint: $(cat "$ENDPOINT")"
           dart pub global run fastforge:main package --platform windows --targets exe
           EXE=$(find dist -name "*.exe" | head -1)
           test -n "$EXE"
@@ -136,6 +164,12 @@ jobs:
             deb_arch: arm64
             rpm_arch: aarch64
     runs-on: ${{ matrix.runner }}
+    # Rede de segurança: sem teto o default do GitHub é SEIS HORAS. Na 1.28.1
+    # um `apt-get` pendurado segurou o job por 47min (o normal é ~1min) sem
+    # nada acusar; a release só andou porque alguém foi olhar. Os tetos abaixo
+    # transformam "pendurado indefinidamente" em "falha alto, com log, e
+    # `gh run rerun --failed` refaz só este job".
+    timeout-minutes: 45
     defaults: { run: { working-directory: cockpit } }
     env:
       VERSION: ${{ needs.meta.outputs.version }}
@@ -171,20 +205,67 @@ jobs:
           version: 0.16.0
 
       - name: Deps de sistema (GTK, ninja, rpmbuild, libmpv)
+        # Medido: 55s no amd64, 1m08s no arm64. Passar de 10min aqui não é
+        # lentidão, é pendura — lista de pacotes fixa, nada a compilar.
+        timeout-minutes: 10
+        env:
+          # `needrestart` do ubuntu-24.04 abre prompt interativo no install e
+          # é uma das formas clássicas de pendurar o passo.
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
+          # Stall de mirror costuma passar na segunda tentativa; três, com
+          # teto por tentativa, custam nada perto de um rerun manual. Falha nas
+          # três aborta AQUI: seguir pro install com o índice velho troca um
+          # erro claro por um "pacote não encontrado" mais adiante.
+          updated=0
+          for attempt in 1 2 3; do
+            if timeout 120 sudo -E apt-get update; then updated=1; break; fi
+            echo "apt-get update falhou/expirou (tentativa $attempt)"
+            sleep 5
+          done
+          [ "$updated" = 1 ] || {
+            echo "::error::apt-get update falhou nas 3 tentativas (mirror?)"
+            exit 1
+          }
           # libmpv-dev: media_kit linka contra libmpv no Linux (plano 46).
           # Runtime declarado nos pacotes: deb libmpv2 / rpm mpv-libs.
           # libsecret-1-dev: flutter_secure_storage no Linux (senha de banco,
           # plano 51). Runtime: libsecret-1-0.
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev rpm libmpv-dev libsecret-1-dev
+          sudo -E apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev rpm libmpv-dev libsecret-1-dev
           flutter --version
           dart pub global activate fastforge
 
       - name: Build + empacota
+        # Medido: 7m19s. Teto folgado de propósito — aqui se compila Flutter,
+        # o `dart build cli`, o Rust da CLI e o Zig do libghostty, e cache frio
+        # infla isso legitimamente.
+        timeout-minutes: 30
         run: |
           flutter pub get
           flutter build linux --release
+          # Gate do sidecar (mesma razão do Windows): sem o bundle do
+          # cockpit-server o app cai no fallback in-process, em silêncio.
+          SRV="build/linux/${{ matrix.deb_arch == 'amd64' && 'x64' || 'arm64' }}/release/bundle/cockpit-server-bundle/bin"
+          test -x "$SRV/cockpit-server" || {
+            echo "::error::cockpit-server ausente do bundle Linux ($SRV)"; exit 1; }
+          test -f "$SRV/libcockpit_pty.so" || {
+            echo "::error::libcockpit_pty.so ausente do bundle do servidor"; exit 1; }
+          # Smoke test: sobe o servidor e exige o socket. Existir e ser
+          # executável não prova que roda — no macOS um bundle que passava em
+          # toda checagem estática não subia em arquitetura nenhuma, e o app
+          # caía no PTY in-process em silêncio. O --exit-on-idle encerra
+          # sozinho, então o job não trava.
+          SOCK="$RUNNER_TEMP/cockpit-server-smoke.sock"
+          COCKPIT_PTY_DYLIB="$SRV/libcockpit_pty.so" \
+            "$SRV/cockpit-server" --socket "$SOCK" --exit-on-idle 1 \
+            >"$RUNNER_TEMP/smoke.log" 2>&1 &
+          for i in $(seq 1 20); do [ -S "$SOCK" ] && break; sleep 0.5; done
+          [ -S "$SOCK" ] || {
+            echo "::error::cockpit-server não subiu no Linux"
+            cat "$RUNNER_TEMP/smoke.log" || true
+            exit 1
+          }
+          echo "[smoke] cockpit-server subiu e escutou em $SOCK"
           dart pub global run fastforge:main package --platform linux --targets deb
           dart pub global run fastforge:main package --platform linux --targets rpm
           DEB=$(find dist -name "*.deb" | head -1); test -n "$DEB"
@@ -194,13 +275,38 @@ jobs:
           mv "$RPM" "out/remote-pi-cockpit-${VERSION}.${{ matrix.rpm_arch }}.rpm"
 
       - name: Smoke test .deb (instala no próprio runner)
+        # Medido: 6s. O smoke sobe o servidor e espera o socket com laço
+        # próprio, então um teto curto aqui é seguro.
+        timeout-minutes: 5
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get install -y "./out/remote-pi-cockpit_${VERSION}_${{ matrix.deb_arch }}.deb"
+          sudo -E apt-get install -y "./out/remote-pi-cockpit_${VERSION}_${{ matrix.deb_arch }}.deb"
           # Nome INTERNO do pacote = package_name do make_config.yaml do deb
           # (piper-cockpit desde o rebrand 2026-07) — NÃO o nome do arquivo.
           dpkg -L piper-cockpit | grep -m1 "\.desktop$"
+          # O bundle do servidor chegou ao PACOTE (o gate anterior só provou que
+          # saiu do build). Sem ele o app instalado roda no fallback.
+          dpkg -L piper-cockpit | grep -q "cockpit-server-bundle/bin/cockpit-server$" || {
+            echo "::error::.deb sem o bundle do cockpit-server"; exit 1; }
+          # E o binário INSTALADO sobe de fato: é a única checagem que exercita
+          # o caminho real (prefixo de instalação, permissões, rpath das libs
+          # ao lado). O gate anterior só provou que o arquivo está no pacote.
+          INSTALLED=$(dpkg -L piper-cockpit | grep -m1 "cockpit-server-bundle/bin/cockpit-server$")
+          SOCK="$RUNNER_TEMP/cockpit-server-deb.sock"
+          "$INSTALLED" --socket "$SOCK" --exit-on-idle 1 \
+            >"$RUNNER_TEMP/deb-smoke.log" 2>&1 &
+          for i in $(seq 1 20); do [ -S "$SOCK" ] && break; sleep 0.5; done
+          [ -S "$SOCK" ] || {
+            echo "::error::cockpit-server instalado pelo .deb não sobe"
+            cat "$RUNNER_TEMP/deb-smoke.log" || true
+            exit 1
+          }
+          echo "[smoke] cockpit-server do .deb subiu em $SOCK"
 
       - name: Smoke test .rpm (container fedora:40)
+        # Medido: 37s. A folga cobre o pull da imagem num dia ruim de rede.
+        timeout-minutes: 10
         run: |
           # rpm -qpl consulta o ARQUIVO — imune ao nome interno do pacote
           # (que é o package_name do make_config.yaml, não o nome do arquivo).
@@ -230,13 +336,30 @@ jobs:
           path: release
           merge-multiple: true
 
+      # O download traz TODOS os artefatos do run, inclusive o
+      # `cockpit-server-x64` — que é INSUMO do job macos (a fatia Intel pro
+      # lipo), não entregável, e chega como os diretórios bin/ e lib/. Cada
+      # passo seguinte tropeçava neles por conta própria: `sha256sum` com "Is a
+      # directory" e o `gh release upload` tentando subir um diretório como
+      # asset. Some com eles aqui, uma vez, em vez de remendar passo a passo.
+      - name: Descarta insumos (só entregáveis viram asset)
+        run: |
+          find release -mindepth 1 -maxdepth 1 -type d -print -exec rm -rf {} +
+          ls -la release
+
       - name: Gera SHA256SUMS e latest.json
         run: |
           cd release
-          sha256sum * > SHA256SUMS
+          # Só ARQUIVOS: o artefato `cockpit-server-x64` (insumo do job macos, não
+          # entregável) vem como os diretórios bin/ e lib/, e `sha256sum *`
+          # falhava com "Is a directory" — derrubando o job inteiro sob `bash -e`
+          # depois de todo o build já ter passado.
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+            | xargs -0 sha256sum > SHA256SUMS
           BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
           : > artifacts.ndjson
           for f in *; do
+            [ -f "$f" ] || continue   # pula bin/ e lib/ do artefato do servidor
             case "$f" in
               *windows-x64.exe)     p=windows a=x64       fmt=exe ;;
               *_amd64.deb)          p=linux   a=x64       fmt=deb ;;
@@ -332,8 +455,19 @@ jobs:
             gh release create "$RELEASE_TAG" release/* \
               --title "Piper Cockpit ${VERSION}" \
               --notes-file "$NOTES_FILE" \
-              --latest=false
+              --latest
           fi
+          # O badge "Latest" também no re-run (ali em cima só o create passa a
+          # flag). Idempotente.
+          #
+          # O repositório publica DUAS linhas de release (cockpit-v* e app-v*) e
+          # o GitHub só tem um "Latest" — a flag era `false` nas duas, herdada
+          # do workflow do app, e sobrava marcar na mão a cada release. O
+          # Cockpit fica com o badge por ser a linha ativa; o app mobile, raro,
+          # segue sem. Nada no projeto depende da URL /releases/latest (os
+          # downloads vão pelo latest.json do rp-s3 e pelos appcasts), então
+          # isto é cosmético — e o cosmético estava dando trabalho manual.
+          gh release edit "$RELEASE_TAG" --latest
 
       - name: Resumo
         run: |

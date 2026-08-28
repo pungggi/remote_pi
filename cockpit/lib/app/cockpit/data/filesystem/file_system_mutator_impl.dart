@@ -1,12 +1,14 @@
 import 'dart:io';
 
 import 'package:cockpit/app/cockpit/domain/contracts/file_system_mutator.dart';
+import 'package:cockpit/app/core/domain/exceptions/file_operation_error.dart';
 import 'package:cockpit/app/core/domain/result.dart';
 import 'package:cockpit/app/core/utils/path_utils.dart';
 
 /// Mutação via `dart:io`; a lixeira no macOS é delegada ao Finder por
-/// `osascript` (move pra Trash, reversível). Erros de IO viram `Failure` com
-/// mensagem amigável — sem `catch` genérico solto na UI.
+/// `osascript` (move pra Trash, reversível). Erros de IO viram
+/// [FileOperationError] **tipado** — a frase é montada na UI
+/// (`fileOperationErrorMessage`), porque `data/` não tem `BuildContext`.
 class FileSystemMutatorImpl implements FileSystemMutator {
   const FileSystemMutatorImpl({this.useSystemTrash = true});
 
@@ -16,38 +18,62 @@ class FileSystemMutatorImpl implements FileSystemMutator {
   final bool useSystemTrash;
 
   @override
-  Future<Result<void, String>> createFile(String path) async {
+  Future<Result<void, FileOperationError>> createFile(String path) async {
     final name = _basename(path);
     if (await _exists(path)) {
-      return Failure('Already exists: “$name”.');
+      return Failure(
+        FileOperationError(FileOperationErrorKind.alreadyExists, name: name),
+      );
     }
     try {
       await File(path).create();
       return const Success(null);
     } on FileSystemException catch (e) {
-      return Failure(e.message);
+      return Failure(
+        FileOperationError(
+          FileOperationErrorKind.osFailure,
+          detail: e.message,
+          cause: e,
+        ),
+      );
     }
   }
 
   @override
-  Future<Result<void, String>> createDirectory(String path) async {
+  Future<Result<void, FileOperationError>> createDirectory(String path) async {
     final name = _basename(path);
     if (await _exists(path)) {
-      return Failure('Already exists: “$name”.');
+      return Failure(
+        FileOperationError(FileOperationErrorKind.alreadyExists, name: name),
+      );
     }
     try {
       await Directory(path).create();
       return const Success(null);
     } on FileSystemException catch (e) {
-      return Failure(e.message);
+      return Failure(
+        FileOperationError(
+          FileOperationErrorKind.osFailure,
+          detail: e.message,
+          cause: e,
+        ),
+      );
     }
   }
 
   @override
-  Future<Result<void, String>> rename(String from, String to) async {
+  Future<Result<void, FileOperationError>> rename(
+    String from,
+    String to,
+  ) async {
     if (from == to) return const Success(null);
     if (await _exists(to)) {
-      return Failure('Already exists: “${_basename(to)}”.');
+      return Failure(
+        FileOperationError(
+          FileOperationErrorKind.alreadyExists,
+          name: _basename(to),
+        ),
+      );
     }
     try {
       final type = await FileSystemEntity.type(from, followLinks: false);
@@ -55,21 +81,37 @@ class FileSystemMutatorImpl implements FileSystemMutator {
         case FileSystemEntityType.directory:
           await Directory(from).rename(to);
         case FileSystemEntityType.notFound:
-          return Failure('Not found: “${_basename(from)}”.');
+          return Failure(
+            FileOperationError(
+              FileOperationErrorKind.notFound,
+              name: _basename(from),
+            ),
+          );
         default:
           await File(from).rename(to);
       }
       return const Success(null);
     } on FileSystemException catch (e) {
-      return Failure(e.message);
+      return Failure(
+        FileOperationError(
+          FileOperationErrorKind.osFailure,
+          detail: e.message,
+          cause: e,
+        ),
+      );
     }
   }
 
   @override
-  Future<Result<void, String>> copy(String from, String to) async {
+  Future<Result<void, FileOperationError>> copy(String from, String to) async {
     if (from == to) return const Success(null);
     if (await _exists(to)) {
-      return Failure('Already exists: “${_basename(to)}”.');
+      return Failure(
+        FileOperationError(
+          FileOperationErrorKind.alreadyExists,
+          name: _basename(to),
+        ),
+      );
     }
     try {
       final type = await FileSystemEntity.type(from, followLinks: false);
@@ -77,13 +119,24 @@ class FileSystemMutatorImpl implements FileSystemMutator {
         case FileSystemEntityType.directory:
           await _copyDirectory(Directory(from), Directory(to));
         case FileSystemEntityType.notFound:
-          return Failure('Not found: “${_basename(from)}”.');
+          return Failure(
+            FileOperationError(
+              FileOperationErrorKind.notFound,
+              name: _basename(from),
+            ),
+          );
         default:
           await File(from).copy(to);
       }
       return const Success(null);
     } on FileSystemException catch (e) {
-      return Failure(e.message);
+      return Failure(
+        FileOperationError(
+          FileOperationErrorKind.osFailure,
+          detail: e.message,
+          cause: e,
+        ),
+      );
     }
   }
 
@@ -102,28 +155,36 @@ class FileSystemMutatorImpl implements FileSystemMutator {
   }
 
   @override
-  Future<Result<void, String>> moveToTrash(String path) async {
+  Future<Result<void, FileOperationError>> moveToTrash(String path) async {
     if (!await _exists(path)) return const Success(null); // idempotente
     if (Platform.isMacOS && useSystemTrash) return _macTrash(path);
     return _permanentDelete(path);
   }
 
   /// macOS: pede ao Finder pra mover pra lixeira (reversível pelo usuário).
-  Future<Result<void, String>> _macTrash(String path) async {
+  Future<Result<void, FileOperationError>> _macTrash(String path) async {
     final script =
         'tell application "Finder" to delete POSIX file "${_osaEscape(path)}"';
     try {
       final r = await Process.run('osascript', ['-e', script]);
       if (r.exitCode == 0) return const Success(null);
       final err = (r.stderr as String).trim();
-      return Failure(err.isEmpty ? 'Could not move to Trash.' : err);
+      return Failure(
+        FileOperationError(FileOperationErrorKind.osFailure, detail: err),
+      );
     } on ProcessException catch (e) {
-      return Failure(e.message);
+      return Failure(
+        FileOperationError(
+          FileOperationErrorKind.osFailure,
+          detail: e.message,
+          cause: e,
+        ),
+      );
     }
   }
 
   /// Fallback (Windows/Linux): deleção permanente. A confirmação é da UI.
-  Future<Result<void, String>> _permanentDelete(String path) async {
+  Future<Result<void, FileOperationError>> _permanentDelete(String path) async {
     try {
       final type = await FileSystemEntity.type(path, followLinks: false);
       if (type == FileSystemEntityType.directory) {
@@ -133,7 +194,13 @@ class FileSystemMutatorImpl implements FileSystemMutator {
       }
       return const Success(null);
     } on FileSystemException catch (e) {
-      return Failure(e.message);
+      return Failure(
+        FileOperationError(
+          FileOperationErrorKind.osFailure,
+          detail: e.message,
+          cause: e,
+        ),
+      );
     }
   }
 

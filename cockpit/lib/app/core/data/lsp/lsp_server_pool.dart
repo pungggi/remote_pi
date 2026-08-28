@@ -363,18 +363,15 @@ class LspServerPool {
     // convertidos em offsets sobre outro texto → tokens deslocados.
     final requestedText = doc.lastText;
     final result = await entry.client.semanticTokensFull(path);
-    return result.fold(
-      (response) {
-        if (response is! Map<String, dynamic>) {
-          return SemanticTokens(tokens: const <SemanticToken>[]);
-        }
-        final data = response['data'];
-        if (data is! List) return SemanticTokens(tokens: const <SemanticToken>[]);
-        final ints = data.cast<int>();
-        return decodeSemanticTokens(requestedText, ints, legendObj);
-      },
-      (_) => SemanticTokens(tokens: const <SemanticToken>[]),
-    );
+    return result.fold((response) {
+      if (response is! Map<String, dynamic>) {
+        return SemanticTokens(tokens: const <SemanticToken>[]);
+      }
+      final data = response['data'];
+      if (data is! List) return SemanticTokens(tokens: const <SemanticToken>[]);
+      final ints = data.cast<int>();
+      return decodeSemanticTokens(requestedText, ints, legendObj);
+    }, (_) => SemanticTokens(tokens: const <SemanticToken>[]));
   }
 
   /// Desliga tudo (shutdown do app).

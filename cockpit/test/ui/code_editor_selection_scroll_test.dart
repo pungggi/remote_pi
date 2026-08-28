@@ -4,7 +4,9 @@ import 'package:cockpit/app/core/ui/widgets/code_editing_controller.dart';
 import 'package:flutter/foundation.dart'
     show debugDefaultTargetPlatformOverride;
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
-import 'package:flutter/material.dart' as m show TextField;
+import 'package:flutter/material.dart'
+    as m
+    show Scrollbar, ScrollbarOrientation, TextField;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
@@ -28,6 +30,36 @@ void main() {
     );
   }
 
+  testWidgets('exibe só a barra vertical do painel', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    final ctrl = CodeEditingController(text: text, language: 'txt');
+
+    await tester.pumpWidget(harness(ctrl));
+    await tester.pumpAndSettle();
+
+    // O comportamento desktop do shadcn não deve criar barras próprias para o
+    // gutter e o TextField. Restam apenas as barras Material explícitas do
+    // painel: uma vertical e uma horizontal.
+    final automaticBars = find.descendant(
+      of: find.byType(CodeEditor),
+      matching: find.byType(Scrollbar),
+    );
+    expect(automaticBars, findsNothing);
+    final panelBars = tester
+        .widgetList<m.Scrollbar>(find.byType(m.Scrollbar))
+        .toList();
+    expect(panelBars, hasLength(2));
+    expect(
+      panelBars
+          .where(
+            (bar) => bar.scrollbarOrientation != m.ScrollbarOrientation.bottom,
+          )
+          .length,
+      1,
+    );
+    debugDefaultTargetPlatformOverride = null;
+  });
+
   testWidgets(
     'drag-select com auto-scroll não faz a âncora inicial escorregar',
     (tester) async {
@@ -41,8 +73,10 @@ void main() {
 
       // Começa a seleção perto do TOPO do campo (âncora nas primeiras linhas).
       final start = Offset(rect.left + 40, rect.top + 10);
-      final gesture =
-          await tester.startGesture(start, kind: PointerDeviceKind.mouse);
+      final gesture = await tester.startGesture(
+        start,
+        kind: PointerDeviceKind.mouse,
+      );
       await tester.pump(const Duration(milliseconds: 50));
 
       // Passos intermediários pra o gesto ser reconhecido como pan de seleção,
@@ -59,14 +93,21 @@ void main() {
 
       final sel = ctrl.selection;
       expect(sel.isValid, isTrue);
-      expect(sel.isCollapsed, isFalse, reason: 'esperava um intervalo selecionado');
+      expect(
+        sel.isCollapsed,
+        isFalse,
+        reason: 'esperava um intervalo selecionado',
+      );
 
       // A âncora (base) foi fixada perto do topo do texto. Se ela escorregasse
       // com o scroll, o base cairia numa linha bem mais funda. Toleramos as
       // primeiras linhas visíveis no início (o clique não é exatamente no 0).
-      final baseLine = '\n'.allMatches(text.substring(0, sel.baseOffset)).length;
-      final extentLine =
-          '\n'.allMatches(text.substring(0, sel.extentOffset)).length;
+      final baseLine = '\n'
+          .allMatches(text.substring(0, sel.baseOffset))
+          .length;
+      final extentLine = '\n'
+          .allMatches(text.substring(0, sel.extentOffset))
+          .length;
       // A âncora (base) foi fixada no topo do texto. O campo é o dono do scroll
       // vertical (scroll interno), então ele fica parado no espaço global e a
       // âncora — recalculada de global→local a cada update do drag — NÃO

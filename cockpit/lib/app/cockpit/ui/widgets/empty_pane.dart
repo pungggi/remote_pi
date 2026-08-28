@@ -1,4 +1,5 @@
 import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 /// Pane vazio ("Novo"): dois cards — "Novo agente" / "Novo terminal" — que
@@ -41,15 +42,16 @@ class EmptyPane extends StatelessWidget {
                 _ActionCard(
                   icon: Icons.auto_awesome,
                   iconColor: colors.accentText,
-                  title: 'New agent',
-                  description: 'Runs a pi in the folder you choose',
+                  title: context.t.cockpit.emptyPane.newAgent,
+                  description: context.t.cockpit.emptyPane.newAgentDescription,
                   onTap: onNewAgent,
                 ),
                 _ActionCard(
                   icon: Icons.terminal_outlined,
                   iconColor: colors.text2,
-                  title: 'New terminal',
-                  description: 'Opens a shell in the folder you choose',
+                  title: context.t.cockpit.emptyPane.newTerminal,
+                  description:
+                      context.t.cockpit.emptyPane.newTerminalDescription,
                   onTap: onNewTerminal,
                 ),
               ],

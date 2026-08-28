@@ -49,3 +49,10 @@ app.*.map.json
 
 # Plano 51 — dylibs do anakiORM copiados pro cwd em dev/teste (staging: ~/.cockpit/anaki)
 libanaki_*.dylib
+
+# CLI interna (crate Rust em cli/)
+cli/target/
+
+# Saída de golden test que falhou (isolatedDiff/maskedDiff/masterImage/testImage).
+# São artefatos locais de depuração; foram commitados por engano no PR #108.
+**/failures/

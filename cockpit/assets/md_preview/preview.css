@@ -1,0 +1,113 @@
+/* Preview de markdown (plano 58). Só consome variáveis de tema injetadas pelo
+   app (--ckp-*) — troca de tema re-injeta as variáveis, sem re-render. */
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+  /* Scroll CLAMP, a regra do app (ver ClampingScrollBehavior no Flutter): sem
+     isto o WKWebView faz o rubber-band do macOS e o preview destoa de todo o
+     resto da UI. `overscroll-behavior` é a propriedade de especificação para
+     isso — no WebKit ela vale a partir do Safari 16 / macOS 13, e nas versões
+     anteriores o efeito continua sendo o do sistema. Não há caminho nativo:
+     `alwaysBounceVertical` do flutter_inappwebview é iOS-only (UIScrollView),
+     e o WKWebView do macOS não expõe equivalente. */
+  overscroll-behavior: none;
+  background: var(--ckp-bg, #1e1e1e);
+  color: var(--ckp-text, #d4d4d4);
+  font-family: var(--ckp-font, -apple-system, "Segoe UI", sans-serif);
+  font-size: var(--ckp-font-size, 14px);
+  line-height: 1.6;
+}
+#content {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 16px 24px 40px;
+}
+h1,
+h2 {
+  border-bottom: 1px solid var(--ckp-border, #333);
+  padding-bottom: 0.3em;
+}
+a {
+  color: var(--ckp-link, #4da3ff);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+code {
+  background: var(--ckp-code-bg, #2a2a2a);
+  border-radius: 4px;
+  padding: 0.15em 0.35em;
+  font-family: var(--ckp-mono, ui-monospace, monospace);
+  font-size: 0.9em;
+}
+pre {
+  background: var(--ckp-code-bg, #2a2a2a);
+  border: 1px solid var(--ckp-border, #333);
+  border-radius: 6px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  /* Rolagem interna não encadeia na página: chegar ao fim de um bloco de
+     código largo não pode empurrar o documento (e voltar quicando). */
+  overscroll-behavior: contain;
+}
+pre code {
+  background: none;
+  padding: 0;
+}
+blockquote {
+  margin: 0;
+  padding: 0 1em;
+  border-left: 3px solid var(--ckp-border, #333);
+  color: var(--ckp-text-muted, #9a9a9a);
+}
+table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+  overscroll-behavior: contain; /* mesmo motivo do `pre` */
+}
+th,
+td {
+  border: 1px solid var(--ckp-border, #333);
+  padding: 5px 12px;
+}
+th {
+  background: var(--ckp-code-bg, #2a2a2a);
+}
+/* Frontmatter (cabeçalho de SKILL.md/agent.md): tabela chave/valor, o mesmo
+   formato do MarkdownFrontmatterTable no Flutter. Chave alinhada à esquerda e
+   estreita — sem isso o <th> herda o centralizado e o negrito de cabeçalho de
+   tabela, que aqui não é o papel dele. */
+table.ckp-frontmatter {
+  /* `display: table` sobrescreve o `display: block` da regra genérica (que
+     existe pra dar rolagem horizontal em tabelas largas do documento): aqui o
+     que se quer é o contrário — chave estreita, valor ocupando o resto e
+     quebrando linha em vez de rolar. */
+  display: table;
+  table-layout: auto;
+  margin: 0 0 16px;
+  width: 100%;
+}
+table.ckp-frontmatter th {
+  text-align: left;
+  white-space: nowrap;
+  width: 1%;
+}
+table.ckp-frontmatter td {
+  width: 100%;
+}
+img {
+  max-width: 100%;
+}
+hr {
+  border: none;
+  border-top: 1px solid var(--ckp-border, #333);
+}
+input[type="checkbox"] {
+  accent-color: var(--ckp-link, #4da3ff);
+}

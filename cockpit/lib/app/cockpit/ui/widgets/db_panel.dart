@@ -9,6 +9,7 @@ import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/app_menu.dart';
 import 'package:cockpit/app/core/ui/widgets/app_tooltip.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
@@ -95,31 +96,32 @@ class _DbPanelState extends State<DbPanel> {
   /// Menu de contexto de uma conexão: Edit · Copy name · New .dbq · Delete
   /// (confirmado).
   Future<void> _contextMenu(BuildContext anchor, DbConnection conn) async {
+    final tr = context.t.cockpit.dbPanel;
     final action = await showAppMenu<String>(
       anchor,
       items: [
-        const AppMenuItem(value: 'edit', label: 'Edit…', icon: Icons.edit),
+        AppMenuItem(value: 'edit', label: tr.edit, icon: Icons.edit),
         // O nome é o identificador que a CLI usa (`--db <nome>`): copiar daqui
         // evita transcrever à mão pro prompt do agente.
-        const AppMenuItem(
+        AppMenuItem(
           value: 'copy-name',
-          label: 'Copy name',
+          label: tr.copyName,
           icon: Icons.content_copy,
         ),
         // "New query" só faz sentido pros SQL (abre tab `.dbq`). Redis abre a
         // tabela de chaves (plano 52); Mongo segue CLI-only.
         if (conn.engine.isSql)
-          const AppMenuItem(value: 'dbq', label: 'New query', icon: Icons.add),
+          AppMenuItem(value: 'dbq', label: tr.newQuery, icon: Icons.add),
         if (conn.engine == DbEngine.redis)
-          const AppMenuItem(
+          AppMenuItem(
             value: 'redis',
-            label: 'Browse keys',
+            label: tr.browseKeys,
             icon: Icons.grid_on_outlined,
           ),
         const AppMenuItem.divider(),
-        const AppMenuItem(
+        AppMenuItem(
           value: 'delete',
-          label: 'Delete',
+          label: context.t.common.delete,
           icon: Icons.delete_outline,
           danger: true,
         ),
@@ -183,12 +185,11 @@ class _DbPanelState extends State<DbPanel> {
     }
     final ok = await showConfirmDialog(
       context,
-      title: 'Delete connection',
-      message:
-          'Remove "${conn.name}" from this workspace? '
-          'Any saved password is discarded. .dbq files that reference it '
-          'are not touched.',
-      confirmLabel: 'Delete',
+      title: context.t.cockpit.dbPanel.deleteConnectionTitle,
+      message: context.t.cockpit.dbPanel.deleteConnectionMessage(
+        name: conn.name,
+      ),
+      confirmLabel: context.t.common.delete,
       danger: true,
     );
     if (!ok || !mounted) return;
@@ -209,7 +210,7 @@ class _DbPanelState extends State<DbPanel> {
           child: Row(
             children: [
               Text(
-                'DATABASE',
+                context.t.cockpit.dbPanel.sectionDatabase,
                 style: typo.label.copyWith(
                   fontSize: 10,
                   letterSpacing: 1.1,
@@ -238,7 +239,7 @@ class _DbPanelState extends State<DbPanel> {
               ? Padding(
                   padding: const EdgeInsets.all(16),
                   child: Text(
-                    'No connections yet.',
+                    context.t.cockpit.dbPanel.noConnections,
                     style: typo.label.copyWith(
                       fontSize: 11.5,
                       color: colors.text3,
@@ -265,8 +266,11 @@ class _DbPanelState extends State<DbPanel> {
             border: Border(top: BorderSide(color: colors.border)),
           ),
           child: Text(
-            '.cockpit/databases.json · ${conns.length} '
-            'connection${conns.length == 1 ? '' : 's'}',
+            // Singular/plural em chaves separadas: em pt/es a palavra muda,
+            // não só o sufixo.
+            conns.length == 1
+                ? context.t.cockpit.dbPanel.footerOne
+                : context.t.cockpit.dbPanel.footer(n: conns.length),
             style: typo.label.copyWith(fontSize: 10.5, color: colors.text4),
           ),
         ),
@@ -555,7 +559,7 @@ class _SchemaTreeState extends State<_SchemaTree> {
               ),
               const SizedBox(width: 4),
               AppTooltip(
-                message: 'New query',
+                message: context.t.cockpit.dbPanel.newQuery,
                 child: HoverTap(
                   onTap: () => widget.onNewQuery(t),
                   padding: const EdgeInsets.all(2),

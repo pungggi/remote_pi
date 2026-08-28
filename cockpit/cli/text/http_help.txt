@@ -1,0 +1,46 @@
+cockpit http — run requests from a .http file (agent-friendly JSON)
+
+.http files use the REST Client / JetBrains HTTP Client syntax: `###` separates
+requests, `@name = value` declares a file variable, `{{name}}` interpolates it.
+The app runs the request (same engine as the HTTP tab) and prints the response
+as one JSON line.
+
+USAGE:
+  cockpit http list <file.http>                    requests in the file (index, name, method, url)
+  cockpit http run  <file.http> [--request <name|index>]   run one (default: the first)
+
+FLAGS:
+  --request <name|index>  which request to run — the ### label or its 0-based index
+  --timeout <seconds>     give up after N seconds (default 30)
+  --workspace <id|path>   target workspace when not inside a Cockpit pane
+
+OUTPUT (single JSON line; exit 1 on error):
+  {"ok":{"status":200,"reason":"OK","headers":{…},"elapsedMs":12,"sizeBytes":34,
+         "truncated":false,"request":"Listar usuários","json":{…}}}
+  {"error":{"kind":"connection_failed","message":"…"}}
+
+  The body comes back as "json" when it parses as JSON, otherwise as "body"
+  (text). A 4xx/5xx is a normal response, not an error — check "status".
+
+ERROR KINDS:
+  no_request · invalid_url · unresolved_variable · body_file_unreadable ·
+  connection_failed · timeout · response_too_large
+
+FILE EXAMPLE:
+  @baseUrl = https://api.example.com
+  @token = abc123
+
+  ### List users
+  GET {{baseUrl}}/users?page=1
+  Accept: application/json
+  Authorization: Bearer {{token}}
+
+  ### Create user
+  POST {{baseUrl}}/users
+  Content-Type: application/json
+
+  {"name": "Jacob"}
+
+  ### Body from a file
+  PUT {{baseUrl}}/users/1
+  < ./body.json

@@ -29,11 +29,18 @@ class TasksJsonLoader {
     if (workspaceCwd.isEmpty) return const [];
     final file = File(pathFor(workspaceCwd));
     if (!await file.exists()) return const [];
+    return parseContent(await file.readAsString(), workspaceCwd);
+  }
 
+  /// Parseia o conteúdo JSONC de um `tasks.json` (sem tocar no filesystem) —
+  /// reusado pela descoberta REMOTA (plano 58), que lê o arquivo do host via
+  /// `fs.read`. [workspaceCwd] é a raiz onde os `cwd` relativos das tasks
+  /// resolvem (no remoto, a pasta do host).
+  List<TaskDefinition> parseContent(String content, String workspaceCwd) {
     final Object? decoded;
     try {
       // JSONC: aceita comentários (// e /* */) e vírgulas finais.
-      decoded = jsonDecode(stripJsonc(await file.readAsString()));
+      decoded = jsonDecode(stripJsonc(content));
     } catch (_) {
       return const []; // JSON malformado → ignora silenciosamente
     }
@@ -76,6 +83,10 @@ class TasksJsonLoader {
       interactiveKeys: _keys(m['interactiveKeys']),
       watch: _watch(m['watch']),
       progressPatterns: _patterns(m['progressPatterns']),
+      // `preview`: false desliga o auto-open do navegador; string = URL fixa.
+      previewEnabled: m['preview'] != false,
+      previewUrl: m['preview'] is String ? m['preview'] as String : null,
+      previewOpen: _previewOpen(m['previewOpen']),
     );
   }
 
@@ -100,6 +111,14 @@ class TasksJsonLoader {
       v is List ? v.map((e) => e.toString()).toList() : const [];
 
   TaskKind _kind(Object? v) => v == 'watch' ? TaskKind.watch : TaskKind.oneShot;
+
+  /// `previewOpen`: `always` (default) | `start` | `never`. Ausente, tipo errado
+  /// ou valor desconhecido → `always`, o comportamento histórico.
+  TaskPreviewOpen _previewOpen(Object? v) => switch (v) {
+    'start' => TaskPreviewOpen.start,
+    'never' => TaskPreviewOpen.never,
+    _ => TaskPreviewOpen.always,
+  };
 
   List<TaskProfile> _profiles(Object? v) {
     if (v is! List) return const [];

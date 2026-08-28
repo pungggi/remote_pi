@@ -39,8 +39,10 @@ void main() {
     test('só grava a chave quando true (JSON enxuto)', () {
       expect(const AppSettings().toJson().containsKey('railVisible'), isFalse);
       expect(const AppSettings().toJson().containsKey('treeVisible'), isFalse);
-      final open = const AppSettings(railVisible: true, treeVisible: true)
-          .toJson();
+      final open = const AppSettings(
+        railVisible: true,
+        treeVisible: true,
+      ).toJson();
       expect(open['railVisible'], true);
       expect(open['treeVisible'], true);
     });

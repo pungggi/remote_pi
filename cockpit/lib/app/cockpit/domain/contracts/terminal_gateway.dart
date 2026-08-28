@@ -1,4 +1,5 @@
 import 'package:cockpit/app/core/domain/entities/terminal_profile.dart';
+import 'package:cockpit/app/core/utils/spawn_directory.dart';
 
 /// Pseudo-terminal nativo (PTY) rodando um shell. Contrato no domínio; a impl
 /// (`data/terminal/`) usa `flutter_pty` (forkpty no macOS/Linux, ConPTY no
@@ -19,6 +20,16 @@ abstract class TerminalGateway {
     Map<String, String> extraEnv = const <String, String>{},
   });
 
+  /// Pasta em que o shell de fato nasceu, disponível depois de [start].
+  /// `fellBack == true` quando o [workingDirectory] pedido não existia; a `ui/`
+  /// usa pra avisar em vez de o usuário achar que abriu no lugar certo.
+  /// `null` = gateway que não spawna processo (fakes de teste).
+  SpawnDirectory? get spawnDirectory => null;
+
+  /// PID do processo raiz do PTY (geralmente o shell), disponível após [start].
+  /// `null` em gateways que não iniciam processo real ou antes de [start].
+  int? get rootProcessId => null;
+
   /// Bytes do stdout/stderr do shell.
   Stream<List<int>> get output;
 
@@ -30,4 +41,8 @@ abstract class TerminalGateway {
 
   /// Mata o shell limpo (sem órfão).
   Future<void> kill();
+
+  /// Libera o próximo chunk do PTY quando o spawn usa backpressure (`ackRead`).
+  /// Fakes / gateways sem flow control devem implementar como no-op.
+  void acknowledgeOutput();
 }

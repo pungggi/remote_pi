@@ -89,6 +89,18 @@ PaneNode paneNodeFromJson(Map<String, dynamic> json) {
   );
 }
 
+/// Chave do documento de layout que guarda se a lista de worktrees do workspace
+/// está expandida no rail (V37 — toggle no card).
+const String kWorktreesExpandedKey = 'worktreesExpanded';
+
+/// Lê [kWorktreesExpandedKey] de um documento de layout. Ausente ou de tipo
+/// errado (layout antigo, workspace nunca salvo, doc corrompido) = **expandida**
+/// — é o comportamento que o rail sempre teve.
+bool worktreesExpandedOf(Map<String, dynamic>? doc) {
+  final value = doc?[kWorktreesExpandedKey];
+  return value is bool ? value : true;
+}
+
 // ---- helpers puros (espelham os do design) ----------------------------------
 
 List<LeafPane> leaves(PaneNode node, [List<LeafPane>? acc]) {
@@ -115,9 +127,8 @@ LeafPane? findLeaf(PaneNode node, String id) {
 SplitPane? findSplit(PaneNode node, String id) {
   return switch (node) {
     LeafPane() => null,
-    SplitPane() => node.id == id
-        ? node
-        : (findSplit(node.a, id) ?? findSplit(node.b, id)),
+    SplitPane() =>
+      node.id == id ? node : (findSplit(node.a, id) ?? findSplit(node.b, id)),
   };
 }
 

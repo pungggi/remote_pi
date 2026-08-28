@@ -97,12 +97,31 @@ class CustomTextEditState extends State<CustomTextEdit> with TextInputClient {
 
   bool get hasInputConnection => _connection != null && _connection!.attached;
 
+  /// No mobile o teclado virtual segue a **intenção explícita** do usuário, não
+  /// o foco: um menu/overlay ao fechar restaura o foco e, sem este gate,
+  /// reabriria o teclado sozinho. `true` só depois de um tap no terminal
+  /// ([requestKeyboard]); zera ao perder foco ou dispensar ([dismissKeyboard]).
+  bool _keyboardRequested = false;
+
+  static bool get _isMobile =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.iOS ||
+          defaultTargetPlatform == TargetPlatform.android);
+
   void requestKeyboard() {
+    _keyboardRequested = true;
     if (widget.focusNode.hasFocus) {
       _openInputConnection();
     } else {
       widget.focusNode.requestFocus();
     }
+  }
+
+  /// Baixa o teclado por ação explícita (botão) sem reabrir no próximo evento de
+  /// foco. Mantém o foco (teclado de hardware segue funcionando).
+  void dismissKeyboard() {
+    _keyboardRequested = false;
+    closeKeyboard();
   }
 
   void closeKeyboard() {
@@ -149,9 +168,16 @@ class CustomTextEditState extends State<CustomTextEdit> with TextInputClient {
   }
 
   void _openOrCloseInputConnectionIfNeeded() {
-    if (widget.focusNode.hasFocus && widget.focusNode.consumeKeyboardToken()) {
+    if (widget.focusNode.hasFocus) {
+      if (!widget.focusNode.consumeKeyboardToken()) return;
+      // No mobile, só abre o teclado se foi pedido explicitamente (tap). Assim
+      // a restauração de foco ao fechar um menu NÃO reabre o teclado sozinho.
+      if (_isMobile && !_keyboardRequested) return;
       _openInputConnection();
-    } else if (!widget.focusNode.hasFocus) {
+    } else {
+      // Perdeu o foco (menu/overlay, dispensa, outra aba): no mobile encerra a
+      // intenção, então nada reabre o teclado até o próximo tap.
+      if (_isMobile) _keyboardRequested = false;
       _closeInputConnectionIfNeeded();
     }
   }

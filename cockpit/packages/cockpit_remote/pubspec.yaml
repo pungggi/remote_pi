@@ -1,0 +1,16 @@
+name: cockpit_remote
+description: Proxies remotos dos contratos do Cockpit (plano 58) — o cliente fala com o cockpit-server pelo protocolo.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  cockpit_core:
+    path: ../cockpit_core
+  cockpit_protocol:
+    path: ../cockpit_protocol
+
+dev_dependencies:
+  test: ^1.25.0

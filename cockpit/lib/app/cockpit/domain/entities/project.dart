@@ -6,7 +6,11 @@ import 'realm.dart';
 /// - [systemTerminal]: o workspace sintético "Cockpit" — sem pasta, terminal-only,
 ///   injetado em runtime (nunca persistido). Serviços de path (git, árvore, tasks,
 ///   worktrees) não sobem para ele; o terminal abre no `$HOME` do usuário.
-enum WorkspaceKind { project, systemTerminal }
+/// - [remoteTerminal]: um host remoto (plano 58, Wave 2) — sintético, injetado
+///   em runtime a partir do `RemoteHostsStore`; terminal-only por enquanto (o PTY
+///   roda no `cockpit-server` do host via SSH). Serviços de path LOCAIS não sobem
+///   (fs/git remotos são fiação futura); [remoteHostId] aponta o host.
+enum WorkspaceKind { project, systemTerminal, remoteTerminal }
 
 /// Uma pasta que o usuário salvou como projeto (workspace). Os workspaces raiz
 /// são persistidos via Hive; as **worktrees** (forks) são `Project`s de runtime
@@ -26,6 +30,8 @@ class Project {
     this.imagePath,
     this.pinned = false,
     this.kind = WorkspaceKind.project,
+    this.remoteHostId,
+    this.remotePath,
   });
 
   /// Id sentinela do workspace de sistema "Cockpit". Não é um UUID, então nunca
@@ -41,6 +47,28 @@ class Project {
     colorValue: 0xFF6B7280,
     createdAt: DateTime.fromMillisecondsSinceEpoch(0),
     kind: WorkspaceKind.systemTerminal,
+  );
+
+  /// Prefixo do id de um workspace remoto sintético.
+  static const String remotePrefix = '__remote__';
+
+  /// Constrói o workspace sintético de um pin remoto (plano 58): uma PASTA
+  /// ([remotePath]) de um host. O id vem do pin (estável por (host, pasta)).
+  factory Project.remoteHost({
+    required String pinId,
+    required String hostId,
+    required String name,
+    required String remotePath,
+    required int colorValue,
+  }) => Project(
+    id: '$remotePrefix$pinId',
+    name: name,
+    path: '',
+    colorValue: colorValue,
+    createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+    kind: WorkspaceKind.remoteTerminal,
+    remoteHostId: hostId,
+    remotePath: remotePath,
   );
 
   /// Sentinela do [copyWith] para distinguir "não mexer em [imagePath]" de
@@ -88,11 +116,27 @@ class Project {
   /// projetos carregados do Hive caem no default [WorkspaceKind.project].
   final WorkspaceKind kind;
 
+  /// Id do host remoto quando [kind] == [WorkspaceKind.remoteTerminal]; senão
+  /// `null`. O registro do host vive no `RemoteHostsStore`.
+  final String? remoteHostId;
+
+  /// Pasta no filesystem do host quando [kind] == [WorkspaceKind.remoteTerminal].
+  /// É o "path" do workspace remoto (o terminal abre aqui; a árvore/git remotos
+  /// operam sobre ela). `null`/vazio = HOME do host.
+  final String? remotePath;
+
   /// `true` quando este `Project` é uma worktree de outro workspace.
   bool get isWorktree => parentId != null;
 
   /// `true` quando este é o workspace sintético "Cockpit" (terminal-only).
   bool get isSystemTerminal => kind == WorkspaceKind.systemTerminal;
+
+  /// `true` quando este é um workspace de host remoto (terminal-only via SSH).
+  bool get isRemoteTerminal => kind == WorkspaceKind.remoteTerminal;
+
+  /// `true` para qualquer workspace sem pasta local (Cockpit ou remoto): os
+  /// serviços de path locais (git/árvore/tasks/worktrees) não sobem.
+  bool get isPathless => isSystemTerminal || isRemoteTerminal;
 
   /// Inicial pro avatar da rail.
   String get initial => name.isNotEmpty ? name[0].toUpperCase() : '?';
@@ -116,6 +160,8 @@ class Project {
     imagePath: imagePath == unchanged ? this.imagePath : imagePath as String?,
     pinned: pinned ?? this.pinned,
     kind: kind,
+    remoteHostId: remoteHostId,
+    remotePath: remotePath,
   );
 
   @override

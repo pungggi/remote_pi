@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:cockpit/app/core/ui/widgets/app_tooltip.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
@@ -263,17 +264,17 @@ class WindowControlsTrailing extends StatelessWidget {
       children: [
         _WinButton(
           icon: Icons.remove,
-          tooltip: 'Minimize',
+          tooltip: context.t.core.windowControls.minimize,
           onTap: windowManager.minimize,
         ),
         _WinButton(
           icon: Icons.crop_square,
-          tooltip: 'Maximize',
+          tooltip: context.t.core.windowControls.maximize,
           onTap: _toggleMaximize,
         ),
         _WinButton(
           icon: Icons.close,
-          tooltip: 'Close',
+          tooltip: context.t.core.windowControls.close,
           onTap: windowManager.close,
           danger: true,
         ),

@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:cockpit/app/cockpit/data/tasks/task_process_registry.dart';
 import 'package:cockpit/app/core/data/setup/remote_pi_resolver.dart';
+import 'package:cockpit/app/core/terminal/pty_output_scheduler.dart';
 import 'package:cockpit/app/core/utils/login_shell.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/task_runner_gateway.dart';
 import 'package:cockpit/app/cockpit/domain/entities/task_definition.dart';
@@ -17,7 +18,11 @@ import 'package:cockpit_pty/cockpit_pty.dart';
 /// isso o app GUI não acharia `flutter`/`npm`/`go` (PATH mínimo do Finder).
 /// Mesma razão e mesmas vars (`TERM`/`COLORTERM`) do terminal embutido.
 class PtyTaskRunner implements TaskRunnerGateway {
-  final _runs = StreamController<TaskRun>.broadcast();
+  // Síncrono para o TaskTerminalStore assinar o stream de output antes que o
+  // primeiro byte do processo possa chegar. Evita perder o prólogo de builds
+  // muito rápidas e inclui o parse do terminal no orçamento do scheduler.
+  final _runs = StreamController<TaskRun>.broadcast(sync: true);
+  final _previews = StreamController<TaskPreviewUrl>.broadcast();
   final _running = <String, _RunningTask>{};
   final _starting = <String>{};
   final _lastState = <String, TaskRun>{};
@@ -28,18 +33,31 @@ class PtyTaskRunner implements TaskRunnerGateway {
   Stream<TaskRun> runs() => _runs.stream;
 
   @override
+  Stream<TaskPreviewUrl> previewUrls() => _previews.stream;
+
+  @override
   TaskRun runOf(String taskId) =>
       _running[taskId]?.state ?? _lastState[taskId] ?? TaskRun.idleFor(taskId);
 
   @override
-  Stream<List<int>> output(String taskId) =>
-      _running[taskId]?.out.stream ?? const Stream<List<int>>.empty();
+  Stream<String> output(String taskId) =>
+      _running[taskId]?.out.stream ?? const Stream<String>.empty();
 
   @override
   Future<void> start(
     TaskDefinition def, {
     String? profileName,
     List<String> adHocArgs = const [],
+  }) => _launch(def, profileName: profileName, adHocArgs: adHocArgs);
+
+  /// O spawn de verdade. [restarting] distingue o start inicial do re-spawn do
+  /// [restart] — é isso que faz `previewOpen: "start"` não reabrir o navegador
+  /// a cada restart. Interno de propósito: o contrato do gateway não muda.
+  Future<void> _launch(
+    TaskDefinition def, {
+    String? profileName,
+    List<String> adHocArgs = const [],
+    bool restarting = false,
   }) async {
     if (_running.containsKey(def.id)) return; // idempotente
     if (!_starting.add(def.id)) return; // spawn já em preparação
@@ -79,6 +97,8 @@ class PtyTaskRunner implements TaskRunnerGateway {
         environment: env,
         rows: 24,
         columns: 80,
+        // Mesmo backpressure dos terminais interativos (plan/57).
+        ackRead: true,
       );
     } catch (_) {
       _starting.remove(def.id);
@@ -100,15 +120,39 @@ class PtyTaskRunner implements TaskRunnerGateway {
       profileName: profileName,
       pid: pty.pid,
     );
-    final task = _RunningTask(pty, def, initial);
+    late final _RunningTask task;
+    task = _RunningTask(
+      pty,
+      def,
+      initial,
+      isRestart: restarting,
+      onOutput: (data) {
+        if (!task.out.isClosed) task.out.add(data);
+        _detectProgress(task, data);
+        _detectPreviewUrl(task, data);
+      },
+    );
     _running[def.id] = task;
     _emit(initial);
 
-    // Fan-out do output: alimenta o terminal e o detector de progresso.
-    task.outSub = pty.output.listen((bytes) {
-      task.out.add(bytes);
-      _detectProgress(task, bytes);
-    });
+    // `preview` fixo no tasks.json: abre já no start, sem esperar output. A URL
+    // fixa marca `previewNotified` mesmo com o auto-open suprimido — ela
+    // substitui a detecção por output, não convive com ela.
+    final forced = def.previewUrl;
+    if (def.previewEnabled && forced != null && forced.isNotEmpty) {
+      task.previewNotified = true;
+      if (def.shouldOpenPreview(isRestart: restarting) && !_previews.isClosed) {
+        _previews.add(TaskPreviewUrl(def.id, forced));
+      }
+    }
+
+    // Decoder incremental + scheduler GLOBAL. O callback de flush alimenta um
+    // stream síncrono: parse VT e progressPatterns contam dentro do budget de
+    // CPU antes que o scheduler reconheça o chunk e libere mais output nativo.
+    task.outSub = pty.output
+        .cast<List<int>>()
+        .transform(const Utf8Decoder(allowMalformed: true))
+        .listen(task.coalescer.add);
 
     unawaited(pty.exitCode.then((code) => _onExit(def.id, code)));
   }
@@ -148,7 +192,7 @@ class PtyTaskRunner implements TaskRunnerGateway {
     for (var i = 0; i < 35 && _running.containsKey(taskId); i++) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
-    await start(def, profileName: profileName);
+    await _launch(def, profileName: profileName, restarting: true);
   }
 
   @override
@@ -236,10 +280,12 @@ class PtyTaskRunner implements TaskRunnerGateway {
       } catch (_) {}
       await TaskProcessRegistry.unregister(task.pty.pid);
       await task.outSub?.cancel();
+      task.coalescer.dispose();
       await task.out.close();
     }
     _running.clear();
     await _runs.close();
+    await _previews.close();
   }
 
   // --- internals ---------------------------------------------------------
@@ -247,6 +293,7 @@ class PtyTaskRunner implements TaskRunnerGateway {
   void _onExit(String taskId, int code) {
     final task = _running.remove(taskId);
     if (task == null) return;
+    task.ended = true;
     stopWatch(taskId); // o processo morreu → nada pra recarregar
     unawaited(TaskProcessRegistry.unregister(task.pty.pid));
     final TaskRunStatus status;
@@ -269,23 +316,25 @@ class PtyTaskRunner implements TaskRunnerGateway {
       profileName: task.state.profileName,
       exitCode: code,
     );
-    unawaited(task.outSub?.cancel());
-    // Banner visual de fim no terminal do debug tab: pula uma linha e escreve
-    // "finished" pra sinalizar ao usuário que o processo encerrou (o PTY não
-    // emite mais nada depois do exit). Vai antes do close pra ser entregue ao
-    // terminal e persistido no scrollback junto do resto do output.
-    if (!task.out.isClosed) {
-      task.out.add(utf8.encode('\r\n\r\nfinished\r\n'));
-    }
-    unawaited(task.out.close());
+    unawaited(_finishOutput(task));
     _emit(ended);
   }
 
+  Future<void> _finishOutput(_RunningTask task) async {
+    await task.outSub?.cancel();
+    // Entra na mesma fila limitada do restante: encerrar uma task ruidosa não
+    // pode produzir um flush síncrono gigante no isolate da UI.
+    task.coalescer.add('\r\n\r\nfinished\r\n');
+    await task.coalescer.drained;
+    task.coalescer.dispose();
+    if (!task.out.isClosed) await task.out.close();
+  }
+
   /// Casa os [ProgressPattern]s da task no output pra oscilar building↔running.
-  void _detectProgress(_RunningTask task, List<int> bytes) {
+  void _detectProgress(_RunningTask task, String text) {
+    if (task.ended) return;
     final patterns = task.def.progressPatterns;
     if (patterns.isEmpty) return;
-    final text = utf8.decode(bytes, allowMalformed: true);
     for (final p in patterns) {
       if (RegExp(p.begin).hasMatch(text)) {
         _transition(task, TaskRunStatus.building);
@@ -293,6 +342,41 @@ class PtyTaskRunner implements TaskRunnerGateway {
       if (RegExp(p.end).hasMatch(text)) {
         _transition(task, TaskRunStatus.running);
       }
+    }
+  }
+
+  /// Sequências ANSI (cores/cursor) — removidas antes de casar a URL.
+  static final _ansiRe = RegExp(r'\x1b\[[0-9;?]*[a-zA-Z]');
+
+  /// URL de dev server no output (`http://localhost:5173/`, `127.0.0.1`,
+  /// `0.0.0.0`). Path sem espaços/aspas/fechamentos.
+  static final _localUrlRe = RegExp(
+    r'''https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?(?:/[^\s"'`)\]]*)?''',
+  );
+
+  /// Primeira URL local do run → emite pro shell abrir o navegador (plano 58).
+  /// Mantém uma cauda curta do texto limpo pra URL partida entre chunks.
+  void _detectPreviewUrl(_RunningTask task, String data) {
+    if (task.previewNotified) return;
+    if (!task.def.shouldOpenPreview(isRestart: task.isRestart)) return;
+    final haystack = task.previewTail + data.replaceAll(_ansiRe, '');
+    final match = _localUrlRe.firstMatch(haystack);
+    if (match == null) {
+      task.previewTail = haystack.length > 256
+          ? haystack.substring(haystack.length - 256)
+          : haystack;
+      return;
+    }
+    // URL no fim do chunk pode estar incompleta (porta/path cortados) — espera
+    // o próximo chunk fechar a fronteira antes de emitir.
+    if (match.end == haystack.length) {
+      task.previewTail = haystack.substring(match.start);
+      return;
+    }
+    task.previewNotified = true;
+    task.previewTail = '';
+    if (!_previews.isClosed) {
+      _previews.add(TaskPreviewUrl(task.def.id, match.group(0)!));
     }
   }
 
@@ -379,12 +463,35 @@ class PtyTaskRunner implements TaskRunnerGateway {
 }
 
 class _RunningTask {
-  _RunningTask(this.pty, this.def, this.state);
+  _RunningTask(
+    this.pty,
+    this.def,
+    this.state, {
+    required void Function(String data) onOutput,
+    this.isRestart = false,
+  }) : coalescer = PtyOutputCoalescer(
+         onFlush: onOutput,
+         onAcknowledge: pty.ackRead,
+       );
 
   final Pty pty;
   final TaskDefinition def;
-  final out = StreamController<List<int>>.broadcast();
-  StreamSubscription<List<int>>? outSub;
+  // Síncrono: o trabalho do consumidor acontece dentro do slice cronometrado
+  // pelo PtyOutputScheduler, não numa fila de eventos sem limite posterior.
+  final out = StreamController<String>.broadcast(sync: true);
+  final PtyOutputCoalescer coalescer;
+  StreamSubscription<String>? outSub;
   TaskRun state;
   bool stopping = false;
+  bool ended = false;
+
+  /// `true` quando o run nasceu de um restart (botão ou watcher) em vez de um
+  /// start. Só o auto-open do preview olha isso (`previewOpen: "start"`).
+  final bool isRestart;
+
+  /// Auto-open do navegador (plano 58): no máximo uma emissão por run.
+  bool previewNotified = false;
+
+  /// Cauda do output decodificado (sem ANSI) — cobre URL partida entre chunks.
+  String previewTail = '';
 }

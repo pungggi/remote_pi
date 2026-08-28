@@ -1,4 +1,5 @@
 import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 /// Corpo exibido pelo [CockpitBootstrapper] quando o bootstrap falha.
@@ -26,7 +27,7 @@ class BootstrapErrorView extends StatelessWidget {
             children: [
               Icon(Icons.error_outline, color: colors.error, size: 48),
               const SizedBox(height: 16),
-              Text('Failed to initialize Cockpit', style: typo.display),
+              Text(context.t.core.bootstrapError.title, style: typo.display),
               const SizedBox(height: 8),
               Text(
                 error.toString(),
@@ -34,7 +35,10 @@ class BootstrapErrorView extends StatelessWidget {
                 style: typo.body.copyWith(color: colors.text2),
               ),
               const SizedBox(height: 24),
-              PrimaryButton(onPressed: onRetry, child: const Text('Retry')),
+              PrimaryButton(
+                onPressed: onRetry,
+                child: Text(context.t.core.bootstrapError.retry),
+              ),
             ],
           ),
         ),

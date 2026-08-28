@@ -19,7 +19,8 @@ class SemanticTokensLegend {
       SemanticTokensLegend(
         tokenTypes:
             (json['tokenTypes'] as List?)?.cast<String>() ?? const <String>[],
-        tokenModifiers: (json['tokenModifiers'] as List?)?.cast<String>() ??
+        tokenModifiers:
+            (json['tokenModifiers'] as List?)?.cast<String>() ??
             const <String>[],
       );
 }
@@ -98,7 +99,8 @@ SemanticTokens decodeSemanticTokens(
     }
 
     // Resolve tipos e modificadores pela legenda.
-    final tokenType = tokenTypeIdx >= 0 && tokenTypeIdx < legend.tokenTypes.length
+    final tokenType =
+        tokenTypeIdx >= 0 && tokenTypeIdx < legend.tokenTypes.length
         ? legend.tokenTypes[tokenTypeIdx]
         : '';
 
@@ -114,12 +116,14 @@ SemanticTokens decodeSemanticTokens(
     final end = (start + length).clamp(0, text.length);
 
     if (end > start) {
-      tokens.add(SemanticToken(
-        start: start,
-        end: end,
-        tokenType: tokenType,
-        tokenModifiers: mods,
-      ));
+      tokens.add(
+        SemanticToken(
+          start: start,
+          end: end,
+          tokenType: tokenType,
+          tokenModifiers: mods,
+        ),
+      );
     }
   }
 

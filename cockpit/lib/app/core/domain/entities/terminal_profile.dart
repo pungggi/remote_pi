@@ -35,6 +35,19 @@ class TerminalProfile {
   /// Opcional — ícone no dropdown do `+` (fatia 3).
   final String? iconKey;
 
+  /// Perfil "o HOST decide": executável vazio = o servidor abre o shell de
+  /// login do usuário DELE.
+  ///
+  /// É o default de workspace remoto. O cliente não tem como saber qual shell
+  /// existe do outro lado, e impor o seu é um erro de categoria — um cliente
+  /// Windows pedia `powershell.exe` num host macOS, o spawn falhava e a aba
+  /// ficava eternamente vazia, sem erro visível.
+  static const TerminalProfile hostLoginShell = TerminalProfile(
+    id: loginShellId,
+    label: 'login shell',
+    executable: '',
+  );
+
   /// Prefixo de [id] dos perfis de distro WSL.
   static const String wslPrefix = 'wsl:';
 
@@ -51,6 +64,10 @@ class TerminalProfile {
 
   /// [id] do perfil cmd (Windows).
   static const String cmdId = 'cmd';
+
+  /// Retorna o nome da distro WSL se este perfil for de uma distro WSL, caso contrário null.
+  String? get wslDistro =>
+      id.startsWith(wslPrefix) ? id.substring(wslPrefix.length) : null;
 
   @override
   String toString() => 'TerminalProfile($id, $executable ${args.join(' ')})';
