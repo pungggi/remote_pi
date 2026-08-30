@@ -109,6 +109,16 @@ same pairing works at home and on mobile data — no port forwarding, no domain,
 no certificate. [WireGuard](https://www.wireguard.com) or your own VPC work the
 same way.
 
+A tailnet dial like that (`http://100.x.y.z:3000`, or the machine's
+`*.ts.net` name) is WireGuard-encrypted in transit, and the app treats it as
+secure. If you want actual `https://` without owning a domain,
+`tailscale serve --bg 3000` publishes the relay at
+`https://<machine>.<tailnet>.ts.net` — TLS terminated with a certificate
+Tailscale provisions for you, reachable only inside the tailnet. Advertise
+that URL the same way; the app then dials `wss://` under the hood. Requires
+"HTTPS certificates" enabled in the tailnet admin console, and Tailscale
+running on the phone whenever the app connects.
+
 Piper runs **no public relay** and does not point at anyone else's. A relay sees
 every envelope in plaintext, so whoever operates it is a single point of trust
 for both routing and content — that role stays yours.
