@@ -117,13 +117,15 @@ bool _isTailnetHost(String host) {
   // MagicDNS name — only a tailnet resolver can answer it.
   if (host.endsWith('.ts.net')) return true;
 
-  // 100.64.0.0/10 — the CGNAT block Tailscale uses for node IPv4s. Strictly
-  // four numeric octets; anything else (hostname, malformed) fails closed.
-  final octets = host.split('.');
-  if (octets.length == 4) {
-    final a = int.tryParse(octets[0]);
-    final b = int.tryParse(octets[1]);
-    if (a == 100 && b != null && b >= 64 && b <= 127) return true;
+  // 100.64.0.0/10 — the CGNAT block Tailscale assigns to node IPv4s. The
+  // host must be a strict IPv4 literal (see [_isDottedQuadV4]); a 4-label
+  // DNS name that merely starts with "100.64" (`100.64.relay.evil`), an
+  // out-of-range tail (`100.64.999.1`), or a pseudo-numeric label
+  // (`100.64.1e2.1`) fails closed (PR #60 review fix — the first cut only
+  // validated the first two octets).
+  if (_isDottedQuadV4(host)) {
+    final octets = [for (final l in host.split('.')) int.parse(l)];
+    if (octets[0] == 100 && octets[1] >= 64 && octets[1] <= 127) return true;
   }
 
   // fd7a:115c:a1e0::/48 — textual prefix check. Dart's Uri.host keeps IPv6
@@ -132,6 +134,22 @@ bool _isTailnetHost(String host) {
   if (host.startsWith('fd7a:115c:a1e0:')) return true;
 
   return false;
+}
+
+/// One decimal IPv4 octet: 0–255, no leading zeros, no signs, no exponent
+/// forms. The grammar is regex-based because `int.tryParse` is looser than
+/// IPv4 — it accepts `1e2` (100), `+5`, and `0100` — and those spellings are
+/// DNS labels here, not octets (PR #60 review fix).
+final RegExp _ipv4Octet = RegExp(r'^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$');
+
+/// Strict IPv4 dotted-quad literal: exactly four labels, each matching
+/// [_ipv4Octet]. Hostnames that only look numeric (`0100.64.0.1`,
+/// `100.64.relay.evil`) return false — a tailnet classification must never
+/// rest on a name a DNS server could point anywhere.
+bool _isDottedQuadV4(String host) {
+  final labels = host.split('.');
+  if (labels.length != 4) return false;
+  return labels.every((l) => _ipv4Octet.hasMatch(l));
 }
 
 /// Validates a candidate relay URL the user typed into Settings or

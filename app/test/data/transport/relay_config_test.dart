@@ -162,6 +162,8 @@ void main() {
         // documented remote setup both point at these dials; WireGuard
         // encrypts them regardless of the plaintext scheme.
         expect(relayTransportIsSecure('http://100.75.161.17:3000'), isTrue);
+        expect(relayTransportIsSecure('http://100.64.0.1:3000'), isTrue,
+            reason: 'strict literal at the range\u2019s low edge');
         expect(relayTransportIsSecure('http://100.100.100.100:3000'), isTrue);
         expect(
             relayTransportIsSecure('http://100.127.255.255:3000'), isTrue);
@@ -187,6 +189,26 @@ void main() {
         expect(relayTransportIsSecure('http://100.64.0.0.1:3000'), isFalse);
         // Non-numeric octets fail closed, not crash.
         expect(relayTransportIsSecure('http://100.abc.0.1:3000'), isFalse);
+      });
+
+      test('four-label DNS names posing as CGNAT are NOT confidential', () {
+        // PR #60 review fix — the first cut validated only the first two
+        // octets, so any 4-label hostname starting "100.64"–"100.127" was
+        // misread as a tailnet IPv4 and the banner was suppressed.
+        expect(relayTransportIsSecure('http://100.64.relay.evil:3000'), isFalse);
+        expect(relayTransportIsSecure('http://100.64.1.attacker:3000'), isFalse);
+        expect(
+            relayTransportIsSecure('http://100.64.1.attacker.example:3000'),
+            isFalse,
+            reason: 'the reviewer\u2019s 5-label example — never reached the '
+                'branch, kept as a regression guard');
+        expect(relayTransportIsSecure('http://100.64.999.1:3000'), isFalse,
+            reason: '999 is not a valid octet');
+        expect(relayTransportIsSecure('http://100.64.1e2.1:3000'), isFalse,
+            reason: 'int.tryParse("1e2") == 100 — exponent form is a DNS '
+                'label here, not an octet');
+        expect(relayTransportIsSecure('http://0100.64.0.1:3000'), isFalse,
+            reason: 'leading-zero label is a hostname, not a strict literal');
       });
 
       test('garbage is classified insecure (fail closed)', () {
