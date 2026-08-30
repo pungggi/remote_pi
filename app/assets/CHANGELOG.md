@@ -22,6 +22,15 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   release (older relays silently drop the marker — everything else keeps
   working).
 
+### Fixed
+
+- **Insecure-connection banner trusts Tailscale overlay dials** — pointing
+  the app at the relay over the tailnet (`http://100.x.y.z:3000`, a
+  `*.ts.net` name, or a `fd7a:115c:a1e0::` address) no longer shows the
+  warning: that traffic is WireGuard-encrypted regardless of the plain
+  `http://` scheme. The banner previously stayed up even when you followed
+  its own advice ("use an overlay (Tailscale) relay").
+
 ## [1.4.0] — 2026-08-24
 
 ### Added

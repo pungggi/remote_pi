@@ -730,6 +730,63 @@ void main() {
       conn.dispose();
     }, timeout: const Timeout(Duration(seconds: 30)));
 
+    test('a SECOND ask_user flow re-arms the recovery timer (PR #59 review #1)',
+        () async {
+      final ch = _FakeChannel();
+      final storage = _FakeStorage();
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      final boxes = LocalBoxes();
+      final msgBox = await boxes.msgsBox(_peer.remoteEpk, 'main');
+      await msgBox.clear();
+      final sync = SyncService(conn, boxes);
+      final read = SessionReadRepository(boxes);
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+      await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
+
+      conn.adopt(ch, _peer);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      final vm = ChatViewModel(read, sync, conn, prefs, storage);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // Flow 1: pending, no sheet → card after the delay; then answered.
+      ch.push(UserInput(id: 'ask-a1', text: 'first question'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      ch.push(ToolRequest(
+        toolCallId: 'tc_a1',
+        tool: 'ask_user',
+        args: null,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 3500));
+      expect((vm.state as ChatReady).askRecovery, isTrue,
+          reason: 'first flow armed and fired its timer');
+      ch.push(ToolResult(toolCallId: 'tc_a1', result: 'answered'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect((vm.state as ChatReady).askRecovery, isFalse);
+
+      // Flow 2 with NO other state change in between: the one-shot timer
+      // must re-arm. Pre-fix the slot stayed non-null after the first fire,
+      // so nothing recomputed and the second card never appeared.
+      ch.push(UserInput(id: 'ask-a2', text: 'second question'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      ch.push(ToolRequest(
+        toolCallId: 'tc_a2',
+        tool: 'ask_user',
+        args: null,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 3500));
+      expect((vm.state as ChatReady).askRecovery, isTrue,
+          reason: 'second flow must arm its own delayed recompute');
+
+      vm.dispose();
+      sync.dispose();
+      conn.dispose();
+    }, timeout: const Timeout(Duration(seconds: 40)));
+
     test('route_error for the active room clears the steering label and '
         'surfaces a warning row', () async {
       final ch = _FakeChannel();

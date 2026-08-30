@@ -75,10 +75,12 @@ String toWsRelayUrl(String url) {
 
 /// Security fix 2026-08 (H2) — classifies a relay URL's transport for the
 /// Home insecure-connection banner. Returns `true` when the link is
-/// confidential: `https://`/`wss://` (TLS), or a loopback host (`ws://` to
-/// localhost can't be sniffed off-path). Any other `http://`/`ws://` host —
-/// the default LAN dial — returns `false`: anyone on the same network can
-/// read the traffic and (with the relay's own key) impersonate the peer.
+/// confidential: `https://`/`wss://` (TLS), a loopback host (`ws://` to
+/// localhost can't be sniffed off-path), or a tailnet dial (see
+/// [_isTailnetHost] — encrypted by the overlay's WireGuard layer). Any other
+/// `http://`/`ws://` host — the default LAN dial — returns `false`: anyone
+/// on the same network can read the traffic and (with the relay's own key)
+/// impersonate the peer.
 bool relayTransportIsSecure(String url) {
   final lower = url.toLowerCase();
   if (lower.startsWith('https://') || lower.startsWith('wss://')) return true;
@@ -89,7 +91,65 @@ bool relayTransportIsSecure(String url) {
     return false;
   }
   final host = uri.host.toLowerCase();
-  return host == 'localhost' || host == '127.0.0.1' || host == '::1';
+  if (host == 'localhost' || host == '127.0.0.1' || host == '::1') return true;
+  return _isTailnetHost(host);
+}
+
+/// Banner/overlay alignment (2026-08-31): the insecure-transport banner's own
+/// advice says "use https:// or an overlay (Tailscale) relay", and the
+/// documented remote setup advertises `http://100.x.y.z:3000` — but the
+/// classifier used to flag those dials, so following the banner's advice
+/// still left the banner up. A tailnet dial IS confidential regardless of the
+/// plaintext scheme: Tailscale encrypts every packet between tailnet nodes
+/// with WireGuard, so an off-path (or same-LAN) sniffer sees only encrypted
+/// UDP. Recognized as tailnet:
+///
+/// - IPv4 CGNAT range `100.64.0.0/10` (100.64.0.0–100.127.255.255), the
+///   address range Tailscale assigns to nodes;
+/// - the Tailscale IPv6 ULA prefix `fd7a:115c:a1e0::/48`;
+/// - `*.ts.net` MagicDNS hostnames — resolvable only inside a tailnet.
+///
+/// Accepted corner case: an ISP handing out 100.64/10 addresses ON THE LAN
+/// itself (CGNAT in front of the Wi-Fi, no tailnet involved) would be
+/// misclassified as secure. Rare in home/office networks, and every doc that
+/// mentions `100.x` in this repo means the tailnet.
+bool _isTailnetHost(String host) {
+  // MagicDNS name — only a tailnet resolver can answer it.
+  if (host.endsWith('.ts.net')) return true;
+
+  // 100.64.0.0/10 — the CGNAT block Tailscale assigns to node IPv4s. The
+  // host must be a strict IPv4 literal (see [_isDottedQuadV4]); a 4-label
+  // DNS name that merely starts with "100.64" (`100.64.relay.evil`), an
+  // out-of-range tail (`100.64.999.1`), or a pseudo-numeric label
+  // (`100.64.1e2.1`) fails closed (PR #60 review fix — the first cut only
+  // validated the first two octets).
+  if (_isDottedQuadV4(host)) {
+    final octets = [for (final l in host.split('.')) int.parse(l)];
+    if (octets[0] == 100 && octets[1] >= 64 && octets[1] <= 127) return true;
+  }
+
+  // fd7a:115c:a1e0::/48 — textual prefix check. Dart's Uri.host keeps IPv6
+  // literals bracket-stripped; the three prefix groups are non-zero, so "::"
+  // elision can never replace them in any spelling of such an address.
+  if (host.startsWith('fd7a:115c:a1e0:')) return true;
+
+  return false;
+}
+
+/// One decimal IPv4 octet: 0–255, no leading zeros, no signs, no exponent
+/// forms. The grammar is regex-based because `int.tryParse` is looser than
+/// IPv4 — it accepts `1e2` (100), `+5`, and `0100` — and those spellings are
+/// DNS labels here, not octets (PR #60 review fix).
+final RegExp _ipv4Octet = RegExp(r'^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])$');
+
+/// Strict IPv4 dotted-quad literal: exactly four labels, each matching
+/// [_ipv4Octet]. Hostnames that only look numeric (`0100.64.0.1`,
+/// `100.64.relay.evil`) return false — a tailnet classification must never
+/// rest on a name a DNS server could point anywhere.
+bool _isDottedQuadV4(String host) {
+  final labels = host.split('.');
+  if (labels.length != 4) return false;
+  return labels.every((l) => _ipv4Octet.hasMatch(l));
 }
 
 /// Validates a candidate relay URL the user typed into Settings or

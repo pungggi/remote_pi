@@ -109,8 +109,9 @@ surfaces at once:
 - `GET /health` — health check (returns `200 OK`)
 - `GET / POST /mesh/<owner_pk_hash>` — signed membership versions
 
-Point your app and `pi-extension` to `ws://<your-server-ip>:3000` (or `wss://`
-if you put it behind a TLS-terminating reverse proxy such as Caddy or nginx).
+Point your app and `pi-extension` to `http://<your-server-ip>:3000` (or
+`https://` if you put it behind a TLS-terminating reverse proxy such as
+Caddy or nginx) — both convert to `ws://`/`wss://` internally.
 
 **`/data` volume**: the relay stores its SQLite database (signed membership
 versions) at `/data/mesh.db` inside the container. Mount a named volume (as in
@@ -230,13 +231,17 @@ Relay-first is safe. The centralized rollout gates are in
 
 For production use, put the relay behind a TLS-terminating proxy. Example Caddy config:
 
-```
+```text
 relay.yourdomain.com {
     reverse_proxy localhost:3000
 }
 ```
 
-Then set your app and `pi-extension` relay URL to `wss://relay.yourdomain.com`.
+Then set your app and `pi-extension` relay URL to `https://relay.yourdomain.com`
+(the `wss://` conversion happens internally). No domain of your own?
+`tailscale serve --bg 3000` on the relay host publishes the same thing at
+`https://<machine>.<tailnet>.ts.net` with a certificate Tailscale provisions
+for you — reachable only inside your tailnet.
 
 ---
 
