@@ -165,6 +165,13 @@ class HomeViewModel extends ViewModel<HomeState> {
   bool isRoomWorking(String epk, String roomId) =>
       _conn.isRoomWorking(epk, roomId);
 
+  /// Plan/134 — `true` when `(epk, roomId)`'s agent is blocked on a
+  /// user-facing ctx.ui prompt (any extension's — pi-ask or foreign).
+  /// Drives the amber "needs input" state on the Home tile; takes display
+  /// priority over `working` (tri-state derivation lives in the tile).
+  bool isRoomWaitingForInput(String epk, String roomId) =>
+      _conn.isRoomWaitingForInput(epk, roomId);
+
   // ---- Plan/132 — completion notifications ---------------------------------
 
   /// Whether this session's completion notification is toggled on.

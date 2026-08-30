@@ -976,6 +976,106 @@ async fn room_announced_and_rooms_check_include_working_from_hello() {
     );
 }
 
+/// Plan 134 (Wave 2): `room_meta.waiting_for_input` from the hello frame
+/// rides `room_announced` (flat, like `working`) and `rooms_check`
+/// snapshots, and a later `room_meta_update` toggles it independently of
+/// `working` (merge-patch absence on both sides).
+#[tokio::test]
+async fn waiting_for_input_rides_hello_announce_and_updates() {
+    let port = start_relay().await;
+    let sk_pi = random_key();
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    use ed25519_dalek::Signer;
+    let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
+
+    // App subscribes first so it catches room_announced.
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
+    ws_app
+        .send(Message::text(
+            json!({"type": "subscribe_rooms", "peers": [&peer_pi]}).to_string(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+    // Pi reconnects mid-prompt: hello carries waiting_for_input=true and
+    // working=true (the turn is still open while the prompt blocks).
+    let url = format!("ws://127.0.0.1:{port}");
+    let (mut ws_pi, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let vk = sk_pi.verifying_key();
+    ws_pi
+        .send(Message::text(
+            json!({
+                "type": "hello",
+                "pubkey": B64.encode(vk.to_bytes()),
+                "room_id": "main",
+                "room_meta": {
+                    "name": "blocked-room",
+                    "working": true,
+                    "waiting_for_input": true,
+                },
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    let challenge_msg = ws_pi.next().await.unwrap().unwrap();
+    let cj: serde_json::Value = serde_json::from_str(challenge_msg.to_text().unwrap()).unwrap();
+    let nonce_arr: [u8; 32] = B64
+        .decode(cj["nonce"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let sig = sk_pi.sign(&nonce_arr);
+    ws_pi
+        .send(Message::text(
+            json!({"type": "auth", "sig": B64.encode(sig.to_bytes())}).to_string(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+
+    let msg = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_app.next())
+        .await
+        .expect("timed out waiting for room_announced")
+        .unwrap()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+    assert_eq!(v["type"], "room_announced", "got: {v}");
+    assert_eq!(
+        v["waiting_for_input"], true,
+        "waiting_for_input flat on room_announced: {v}"
+    );
+
+    // Prompt answered at the terminal: ui_prompt_end publishes
+    // waiting_for_input=false while the turn keeps working — the update must
+    // toggle ONLY the waiting flag.
+    ws_pi
+        .send(Message::text(
+            json!({
+                "type": "room_meta_update",
+                "room_id": "main",
+                "meta": {"waiting_for_input": false},
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    let upd = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_app.next())
+        .await
+        .expect("timed out on room_meta_updated")
+        .unwrap()
+        .unwrap();
+    let u: serde_json::Value = serde_json::from_str(upd.to_text().unwrap()).unwrap();
+    assert_eq!(u["meta"]["waiting_for_input"], false);
+    assert_eq!(
+        u["meta"]["working"], true,
+        "waiting-only patch must not clear working: {u}"
+    );
+}
+
 /// rooms_check after room_meta_update reflects the updated model.
 #[tokio::test]
 async fn rooms_check_reflects_updated_model() {

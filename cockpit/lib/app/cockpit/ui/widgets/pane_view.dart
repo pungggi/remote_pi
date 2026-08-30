@@ -826,7 +826,20 @@ class _TabState extends State<_Tab> {
               const SizedBox(width: 7),
               Expanded(child: titleWidget),
               const SizedBox(width: 10),
-              if (streaming) ...[
+              // Plano 134 — tri-estado na aba: esperando resposta (âmbar)
+              // vence trabalhando (spinner). Um prompt bloqueante não é
+              // progresso — é a vez do humano.
+              if (s.isWaitingForInput) ...[
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: colors.warn,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 7),
+              ] else if (streaming) ...[
                 SizedBox(
                   width: 10,
                   height: 10,

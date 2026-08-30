@@ -7,6 +7,7 @@ import 'package:app/data/local/boxes.dart';
 import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/notifications/local_notifications.dart';
 import 'package:app/data/notifications/session_completion_notifications.dart';
+import 'package:app/data/notifications/waiting_input_notifications.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/share/shared_image_inbox.dart';
 import 'package:app/data/share/shared_text_inbox.dart';
@@ -54,6 +55,25 @@ void main() async {
         roomId,
       );
   completion.attach(injector.get<ConnectionManager>().runDoneStream);
+  // Plan/134 — waiting-for-input notifications. Same title resolver; the
+  // pi-ask sheet-dedupe reads the SyncService's pending interactive request
+  // for the ACTIVE session (a sheet can only be open for the room the user
+  // is viewing — background rooms always notify). The epk is normalized
+  // before comparing: SyncService stores the prefs' url-safe form while the
+  // event carries the relay's standard base64 — a raw == would silently
+  // never match for keys containing +/ vs -_, and the dedupe would leak
+  // banners for open sheets.
+  final waiting = injector.get<WaitingInputNotifications>();
+  waiting.roomTitle = completion.roomTitle;
+  waiting.hasOpenAskSheet = (epk, roomId) {
+    final sync = injector.get<SyncService>();
+    final activeEpk = sync.activeEpk;
+    return activeEpk != null &&
+        toStandardB64(activeEpk) == epk &&
+        sync.activeRoomId == roomId &&
+        sync.currentExtensionUiRequest != null;
+  };
+  waiting.attach(injector.get<ConnectionManager>().waitingForInputStream);
   // Plan/104 — if launched via a Share (ACTION_SEND image), pull it now so it
   // waits in the inbox; the router listener routes to the chat once booted.
   final shared = await injector.get<IImagePickerService>().consumeSharedImage();
@@ -140,6 +160,10 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
     // resumed (foreground, the Home tiles already show working→idle).
     injector
         .get<SessionCompletionNotifications>()
+        .setBackgrounded(state != AppLifecycleState.resumed);
+    // Plan/134 — same lifecycle gate for the waiting-for-input banner.
+    injector
+        .get<WaitingInputNotifications>()
         .setBackgrounded(state != AppLifecycleState.resumed);
     // Plan 125 (Layer 2) — lean keep-alive cadence while backgrounded, active
     // on resume. Slows the protocol Ping (25 → 90 s) and the watchdog (30 → 60 s)

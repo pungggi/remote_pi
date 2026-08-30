@@ -23,8 +23,15 @@ class SessionTile extends StatelessWidget {
   final bool isReconnecting;
 
   /// Plan-18 follow-up — `true` when the agent in this room is
-  /// currently producing a response. Highest-priority colour (blue).
+  /// currently producing a response. Blue dot — second-highest priority
+  /// colour after [isWaitingForInput].
   final bool isWorking;
+
+  /// Plan/134 — `true` when the agent is blocked on a user-facing
+  /// ctx.ui prompt (any extension's). Beats `isWorking` in the tri-state
+  /// derivation: the room isn't computing, it's waiting for the human.
+  /// Renders amber — distinct from the blue working dot.
+  final bool isWaitingForInput;
   final RoomInfo? room;
 
   /// Plan/107b — on-demand git snapshot for this session (when fetched).
@@ -57,6 +64,7 @@ class SessionTile extends StatelessWidget {
     this.git,
     this.isReconnecting = false,
     this.isWorking = false,
+    this.isWaitingForInput = false,
     this.isSelected = false,
     this.onLongPress,
     this.notifyOnDone = false,
@@ -104,6 +112,7 @@ class SessionTile extends StatelessWidget {
                   isLive: isLive,
                   isReconnecting: isReconnecting,
                   isWorking: isWorking,
+                  isWaitingForInput: isWaitingForInput,
                 ),
               ],
             ),
@@ -132,21 +141,31 @@ class _PresenceDot extends StatelessWidget {
   final bool isLive;
   final bool isReconnecting;
   final bool isWorking;
+  final bool isWaitingForInput;
   const _PresenceDot({
     required this.isLive,
     required this.isReconnecting,
     this.isWorking = false,
+    this.isWaitingForInput = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    // Plan-18 follow-up — 4-state dot. Priority high → low:
-    //   working (agent streaming)   → blue
-    //   reconnecting (relay down)   → amber
-    //   live (relay up + announced) → green
-    //   else (cached / offline)     → grey
+    // Plan/134 — 5-state dot. Priority high → low:
+    //   waiting (blocked on a prompt) → amber (distinct from working blue)
+    //   working (agent streaming)     → blue
+    //   reconnecting (relay down)     → amber
+    //   live (relay up + announced)   → green
+    //   else (cached / offline)       → grey
+    //
+    // `waiting` and `reconnecting` share the amber family but can never
+    // mislead: waiting implies a live link, and the two states answer
+    // different questions ("the agent needs you" vs "we lost the relay").
+    // The chat pill disambiguates with a label.
     final colors = context.colors;
-    final Color color = isWorking
+    final Color color = isWaitingForInput
+        ? colors.warning
+        : isWorking
         ? colors.working
         : isReconnecting
         ? colors.warning

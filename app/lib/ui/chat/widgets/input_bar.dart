@@ -45,6 +45,14 @@ class InputBar extends StatefulWidget {
   final bool disabled; // offline or no peer
   final bool streaming; // show cancel instead of send
 
+  /// Plan/134 — the room is blocked on a user-facing ctx.ui prompt. The
+  /// composer hint switches to "Waiting for your answer…" (taking priority
+  /// over the steer hint) so the user understands why the turn stalled.
+  /// The field stays ENABLED: typing queues/steers like any working turn —
+  /// pi-ask sheets are answered in the sheet, foreign prompts at the
+  /// terminal.
+  final bool waitingForInput;
+
   /// Plan/107c — active model name shown as the composer hint when idle
   /// (replaces the generic "Send a message…" so the user always sees which
   /// model a send will use). Null/empty → falls back to "Send a message…".
@@ -120,6 +128,7 @@ class InputBar extends StatefulWidget {
     this.draft,
     this.disabled = false,
     this.streaming = false,
+    this.waitingForInput = false,
     this.model,
     this.onLoadModels,
     this.onSendWithModel,
@@ -546,6 +555,8 @@ class _InputBarState extends State<InputBar> {
                       decoration: InputDecoration(
                         hintText: widget.disabled
                             ? 'Offline…'
+                            : widget.waitingForInput
+                            ? 'Waiting for your answer…'
                             : widget.streaming
                             ? (_steerMode == _SteerMode.followUp
                                 ? 'Queue a follow-up…'

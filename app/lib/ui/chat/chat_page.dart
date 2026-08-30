@@ -148,10 +148,15 @@ class ChatPage extends StatelessWidget {
     // Plan-18 follow-up — when the agent is currently producing a
     // response, show "working…" instead of online/offline.
     final isWorking = vm.isWorking;
+    // Plan/134 — when the agent is blocked on a user-facing prompt, the pill
+    // switches to "Waiting for your answer…" (amber). Priority:
+    // waiting > working > reconnecting > online > offline. The model label
+    // only shows while working (computing), not while waiting.
+    final isWaiting = vm.isWaitingForInput;
     // While the agent is working, show the model running this turn next to
     // the "working…" pill. `room.model` is kept current via room_meta_updated.
     final rawModel = room?.model;
-    final modelLabel = (isWorking && rawModel != null && rawModel.isNotEmpty)
+    final modelLabel = (isWorking && !isWaiting && rawModel != null && rawModel.isNotEmpty)
         ? rawModel
         : null;
     // Plan/115 — live context-window fill (tokens/contextWindow/percent),
@@ -221,15 +226,23 @@ class ChatPage extends StatelessWidget {
                       builder: (_) {
                         // Plan-18 follow-up — 4-state pill:
                         // working / reconnecting / online / offline.
-                        // Priority: working > reconnecting > online > offline.
-                        final color = isWorking
+                        // Plan/134 inserts a 5th, top-priority state:
+                        // waiting (amber) — the agent is blocked on a
+                        // user-facing prompt.
+                        // Priority: waiting > working > reconnecting > online
+                        // > offline.
+                        final color = isWaiting
+                            ? colors.warning
+                            : isWorking
                             ? colors.working
                             : isReconnecting
                             ? colors.warning
                             : isOnline
                             ? colors.success
                             : colors.muted;
-                        final label = isWorking
+                        final label = isWaiting
+                            ? 'Waiting for your answer…'
+                            : isWorking
                             ? 'working…'
                             : isReconnecting
                             ? 'reconnecting…'
@@ -535,6 +548,10 @@ class ChatPage extends StatelessWidget {
     // token-streaming window. Driven by the broad working signal so it matches
     // the AppBar/Home "working" indicator.
     final isWorking = isReady && vm.isWorking;
+    // Plan/134 — the composer hint mirrors the pill: "Waiting for your
+    // answer…" takes priority over the steer hint while a blocking prompt
+    // is open. The field itself stays usable (queue/steer as usual).
+    final isWaiting = isReady && vm.isWaitingForInput;
     final cancelId = vm.cancelTargetId;
     // Quick actions need an open channel to dispatch — only offer the
     // entry point when the chat input itself is enabled. Hiding the
@@ -555,6 +572,7 @@ class ChatPage extends StatelessWidget {
           isPeerOffline ||
           isPresenceOffline,
       streaming: isWorking,
+      waitingForInput: isWaiting,
       model: vm.activeRoom?.model,
       // Plan/109 — second send button: pick a scoped model → send this draft
       // with it as a one-shot override (session default unchanged).

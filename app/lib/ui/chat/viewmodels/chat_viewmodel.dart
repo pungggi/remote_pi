@@ -117,6 +117,18 @@ class ChatViewModel extends ViewModel<ChatState> {
     return roomWorking || _working || _streaming != null;
   }
 
+  /// Plan/134 — `true` while THIS chat's room is blocked on a user-facing
+  /// ctx.ui prompt (relay `meta.waiting_for_input`; pi 0.84.4
+  /// ui_prompt_start/end). Relay-only signal (no local optimistic part —
+  /// prompts originate on the Pi, never on the phone). Takes display
+  /// priority over [isWorking]: the agent isn't computing, it's waiting
+  /// for the human. When the prompt is a pi-ask flow the answer sheet
+  /// already opens (plan/100/101) — the pill annotates, never duplicates.
+  bool get isWaitingForInput {
+    final epk = _activePeer?.remoteEpk;
+    return epk != null && _conn.isRoomWaitingForInput(epk, _activeRoomId);
+  }
+
   /// The id to `cancel` to stop the in-flight reply (the user message the
   /// agent is answering). Null when idle. Prefers the live streaming target,
   /// falls back to the SyncService's tracked turn id.
@@ -325,6 +337,7 @@ class ChatViewModel extends ViewModel<ChatState> {
       peerOfflineReason: _peerOfflineReason,
       peerPresence: peerPresence,
       isWorking: isWorking,
+      isWaitingForInput: isWaitingForInput,
       model: room?.model,
       contextUsage: room?.contextUsage,
       queuedMessages: _queuedMessages,

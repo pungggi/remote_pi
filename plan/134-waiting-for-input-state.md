@@ -89,10 +89,21 @@ status bar), independent of the relay waves — can ship first if desired.
 
 ## DoD
 
-- Phone + cockpit show "waiting for input" for **any** blocking `ctx.ui` prompt, with a
-  transition notification that doesn't double-fire for pi-ask sheets.
-- `working` semantics unchanged (plan/32 regression suite stays green).
-- Extension, relay, app, cockpit suites green (`pnpm test`, `cargo test`, `flutter test`).
+- [x] Phone + cockpit show "waiting for input" for **any** blocking `ctx.ui`
+  prompt, with a transition notification that doesn't double-fire for pi-ask
+  sheets.
+- [x] `working` semantics unchanged (plan/32 regression suite stays green).
+- [x] Extension, relay, app, cockpit suites green (`pnpm test`, `cargo test`,
+  `flutter test`).
+  - Implemented 2026-08-30: extension (SDK bump ^0.84.4 + `_publishWaitingForUser`
+    + defensive clears + 6 tests), relay (field + patch + 3 registry tests + 1
+    wire test, clippy clean), app (parse/propagate/`waitingForInputStream`,
+    amber tri-state on tile + pill + composer hint,
+    `WaitingInputNotifications` facade with sheet-dedupe, 16 new tests — full
+    809 green), cockpit (`RpcUiPromptStart/End` mapping + tab badge, mapper
+    tests). Cockpit full-suite has ~21 pre-existing failures (terminal/codex/db
+    tests, verified failing on `main` without this change). PROTOCOL.md
+    documents `meta.waiting_for_input`.
 
 ## Next plans
 

@@ -122,6 +122,10 @@ export interface ExtensionState {
     model?: string;
     thinking?: ThinkingLevel;
     working?: boolean;
+    /** Plan/134 — true while a blocking user-facing ctx.ui prompt (any
+     *  extension's confirm/select/input/editor/custom) is open. Independent
+     *  of `working`: the turn is still open while the prompt blocks. */
+    waiting_for_input?: boolean;
     git?: WireGitStatus | null;
     context_usage?: WireContextUsage | null;
   } | null;

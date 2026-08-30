@@ -224,6 +224,7 @@ const { _resetInnerSigStateForTest } = indexModule;
 const {
   default: extension,
   _getState,
+  _getRoomMetaForTest,
   _onPeerDisconnect,
   routeClientMessage,
   _mapAgentMessagesToEvents,
@@ -7119,6 +7120,129 @@ describe("model meta", () => {
       .filter((f) => f.type === "room_meta_update");
     expect(updates).toHaveLength(1);
     expect(updates[0]!.meta?.working).toBe(true);
+  });
+
+  test("plan/134: ui_prompt_start publishes waiting_for_input=true (kind/title logged)", async () => {
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx("/tmp/remote-pi-waiting-on"));
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const onPromptStart = captureEventHandler("ui_prompt_start");
+      onPromptStart({ type: "ui_prompt_start", reason: "ui_prompt", kind: "select", title: "Pick one" });
+
+      const updates = relayRef.current!.sendControl.mock.calls
+        .map((c) => c[0] as { type: string; room_id?: string; meta?: { waiting_for_input?: boolean } })
+        .filter((f) => f.type === "room_meta_update" && f.meta?.waiting_for_input !== undefined);
+      expect(updates).toHaveLength(1);
+      expect(updates[0]!.meta?.waiting_for_input).toBe(true);
+      expect(updates[0]!.room_id).toMatch(/^[A-Za-z0-9_-]{12}$/);
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("kind=select"));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Pick one"));
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  test("plan/134: ui_prompt_end publishes waiting_for_input=false", async () => {
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx("/tmp/remote-pi-waiting-off"));
+
+    const onPromptStart = captureEventHandler("ui_prompt_start");
+    const onPromptEnd = captureEventHandler("ui_prompt_end");
+    onPromptStart({ type: "ui_prompt_start", reason: "ui_prompt", kind: "confirm" });
+    onPromptEnd({ type: "ui_prompt_end", reason: "ui_prompt", kind: "confirm" });
+
+    const updates = relayRef.current!.sendControl.mock.calls
+      .map((c) => c[0] as { type: string; meta?: { waiting_for_input?: boolean } })
+      .filter((f) => f.type === "room_meta_update" && f.meta?.waiting_for_input !== undefined);
+    expect(updates).toHaveLength(2);
+    expect(updates[0]!.meta?.waiting_for_input).toBe(true);
+    expect(updates[1]!.meta?.waiting_for_input).toBe(false);
+  });
+
+  test("plan/134: turn_start/turn_end never touch waiting_for_input", async () => {
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx("/tmp/remote-pi-waiting-untouched"));
+
+    const onTurnStart = captureEventHandler("turn_start");
+    const onTurnEnd = captureEventHandler("turn_end");
+    onTurnStart({ type: "turn_start", turnIndex: 0, timestamp: 0 });
+    onTurnEnd({ type: "turn_end", turnIndex: 0 });
+
+    const updates = relayRef.current!.sendControl.mock.calls
+      .map((c) => c[0] as { type: string; meta?: Record<string, unknown> })
+      .filter((f) => f.type === "room_meta_update");
+    expect(updates).toHaveLength(2);
+    for (const u of updates) {
+      expect(u.meta?.["waiting_for_input"]).toBeUndefined();
+      expect(u.meta?.["working"]).toBeDefined();
+    }
+  });
+
+  test("plan/134: agent_end defensively clears a stale waiting_for_input=true", async () => {
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx("/tmp/remote-pi-waiting-agentend"));
+
+    const onPromptStart = captureEventHandler("ui_prompt_start");
+    const onEnd = captureEventHandler("agent_end");
+    onPromptStart({ type: "ui_prompt_start", reason: "ui_prompt", kind: "input" });
+    // No ui_prompt_end — the abort-path case the defensive clear covers.
+    onEnd({} as unknown as Parameters<typeof onEnd>[0]);
+
+    const updates = relayRef.current!.sendControl.mock.calls
+      .map((c) => c[0] as { type: string; meta?: { waiting_for_input?: boolean } })
+      .filter((f) => f.type === "room_meta_update" && f.meta?.waiting_for_input !== undefined);
+    expect(updates).toHaveLength(2);
+    expect(updates[0]!.meta?.waiting_for_input).toBe(true);
+    expect(updates[1]!.meta?.waiting_for_input).toBe(false);
+    await new Promise((r) => setTimeout(r, 80)); // drain window for later tests
+  });
+
+  test("plan/134: remote-pi stop resets a stale waiting_for_input locally", async () => {
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx("/tmp/remote-pi-waiting-stop"));
+
+    const onPromptStart = captureEventHandler("ui_prompt_start");
+    onPromptStart({ type: "ui_prompt_start", reason: "ui_prompt", kind: "editor" });
+
+    const stop = captureHandler("remote-pi stop");
+    await stop("", makeMockCtx("/tmp/remote-pi-waiting-stop"));
+
+    expect(_getState()).toBe("idle");
+    // The local mirror must be false again — no stale true may survive into
+    // the next start's hello room_meta.
+    expect(_getRoomMetaForTest()?.waiting_for_input).toBe(false);
+  });
+
+  test("plan/134: waiting_for_input set during a relay drop is re-published on reconnect", async () => {
+    vi.useFakeTimers();
+    try {
+      captureHandler("remote-pi");
+      await _connectForTest(makeMockCtx("/tmp/remote-pi-waiting-republish"));
+      expect(relayInstances).toHaveLength(1);
+
+      relayInstances[0]!.emit("close");
+      expect(_getState()).toBe("started");
+
+      // Prompt opens during the disconnect window: cached, NOT pushed.
+      const onPromptStart = captureEventHandler("ui_prompt_start");
+      onPromptStart({ type: "ui_prompt_start", reason: "ui_prompt", kind: "confirm" });
+      const metaPushes = relayInstances[0]!.sendControl.mock.calls
+        .map((c) => c[0] as { type: string })
+        .filter((f) => f.type === "room_meta_update");
+      expect(metaPushes).toHaveLength(0);
+
+      // Reconnect fires → the fresh relay must receive the waiting flag.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(relayInstances).toHaveLength(2);
+      const updates = relayInstances[1]!.sendControl.mock.calls
+        .map((c) => c[0] as { type: string; meta?: { waiting_for_input?: boolean } })
+        .filter((f) => f.type === "room_meta_update" && f.meta?.waiting_for_input === true);
+      expect(updates).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("model_select with no model.name falls back to model.id", async () => {

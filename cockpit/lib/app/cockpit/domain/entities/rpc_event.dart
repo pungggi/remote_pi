@@ -18,6 +18,25 @@ final class RpcAgentEnd extends RpcEvent {
   const RpcAgentEnd();
 }
 
+/// `ui_prompt_start` — o pi começou a esperar uma resposta **bloqueante**
+/// de `ctx.ui` (plano 134; pi 0.84.4). Cobre `confirm`/`select`/`input`/
+/// `editor`/`custom` de QUALQUER extensão — pi-ask inclusive. `kind` é um
+/// desses cinco; `title` é opcional (custom não tem).
+final class RpcUiPromptStart extends RpcEvent {
+  const RpcUiPromptStart({required this.kind, this.title});
+
+  final String kind;
+  final String? title;
+}
+
+/// `ui_prompt_end` — a espera terminou (respondida / cancelada / abortada).
+/// Carrega o `kind` do prompt que fechou.
+final class RpcUiPromptEnd extends RpcEvent {
+  const RpcUiPromptEnd(this.kind);
+
+  final String kind;
+}
+
 /// `turn_start` — começou uma rodada (resposta do assistant + tools).
 final class RpcTurnStart extends RpcEvent {
   const RpcTurnStart();

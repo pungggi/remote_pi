@@ -8,6 +8,7 @@ import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/local/boxes.dart';
 import 'package:app/data/notifications/local_notifications.dart';
 import 'package:app/data/notifications/session_completion_notifications.dart';
+import 'package:app/data/notifications/waiting_input_notifications.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/repositories/home_read_repository.dart';
 import 'package:app/data/repositories/session_read_repository.dart';
@@ -149,6 +150,15 @@ Future<void> setupDependencies() async {
       boxes: _injector.get<LocalBoxes>(),
       local: _injector.get<LocalNotifications>(),
     ),
+  );
+
+  // Plan/134 — waiting-for-input notifications ("Pi is waiting for input at
+  // the terminal") for ANY blocking ctx.ui prompt, not just pi-ask. Same
+  // LocalNotifications seam; attached to ConnectionManager + lifecycle in
+  // main(). No per-session opt-in (action-required state — see the facade's
+  // doc) so no HomeViewModel injection either.
+  _injector.addService<WaitingInputNotifications>(
+    () => WaitingInputNotifications(local: _injector.get<LocalNotifications>()),
   );
 
   // Plan 116 — connection reliability: one-tap battery exemption + Tailscale

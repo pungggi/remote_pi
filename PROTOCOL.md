@@ -536,6 +536,53 @@ abrir o app (sync normal).
 
 ---
 
+## Estado "esperando input" (`meta.waiting_for_input`) — 2026-08-30 (plano 134)
+
+Pi 0.84.4 emite `ui_prompt_start`/`ui_prompt_end` sempre que entra/sai de um
+**prompt bloqueante de `ctx.ui`** — `confirm`/`select`/`input`/`editor`/
+`custom` de **qualquer extensão** (pi-ask incluído). Sem esse estado, o
+celular mostra o spinner de "working" enquanto o agente na verdade está
+**bloqueado esperando o humano** — e o único sinal de que caminhar até o
+terminal (ou abrir o app) é a ação destravadora é… nenhum.
+
+### Wire
+
+```jsonc
+// extension → relay (control), no ui_prompt_start / ui_prompt_end
+{ "type": "room_meta_update", "room_id": "<room>",
+  "meta": { "waiting_for_input": true } }
+
+// relay → apps inscritos (broadcast) — sempre serializado, default false
+{ "type": "room_meta_updated", "peer": "<epk>", "room_id": "<room>",
+  "meta": { "working": true, "waiting_for_input": true } }
+```
+
+### Semântica
+
+- **Independente de `working`**: durante o prompt o turno segue "aberto"
+pela ótica do `turn_start` — a extension NÃO toca `working` aqui. O app deriva
+o tri-estado de exibição: `waiting_for_input ? esperando : (working ?
+trabalhando : ocioso)` (âmbar vence azul).
+- **Estado persistido** (como `working`, ao contrário de `run_done`): viaja no
+`hello`/`room_announced`/snapshot `rooms`, merge-patch ausente preserva. Um
+app que abre de novo renderiza o badge sem esperar transição.
+- **Notificação só na transição** working→waiting (nunca em replay de
+app-open: announce/snapshot não emitem evento de transição no app). Texto
+genérico "Pi is waiting for input at the terminal" — o único sinal para
+prompts estranhos (sem sheet). **Dedupe**: quando o prompt é um fluxo pi-ask
+cujo sheet de resposta já está aberto no app, o sheet É o sinal — o banner
+genérico é suprimido.
+- **Defensivo na extension**: `agent_end`, rebind de `session_start` e
+`_goIdle` limpam um `true` órfão (os caminhos de abort são os arriscados
+para um `ui_prompt_end` perdido).
+- Cockpit (RPC, sem relay): os mesmos eventos `ui_prompt_start/end` chegam
+no stream JSONL do `pi --mode rpc` e acendem o badge âmbar na aba
+(tri-estado idêntico).
+- Relay antigo derruba a chave silenciosamente; app antigo ignora —
+degradação graciosa nos dois sentidos.
+
+---
+
 ## Pareamento
 
 QR code mostra Pi-pubkey + room hint + token de uso único.

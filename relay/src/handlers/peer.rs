@@ -135,6 +135,12 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             .and_then(|m| m.get("working"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        // Plan/134 — blocking-prompt flag (same default-false semantics as
+        // `working`).
+        let waiting_for_input = room_meta_val
+            .and_then(|m| m.get("waiting_for_input"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         // Plan/107b — opaque git snapshot (the relay forwards it verbatim;
         // the app parses the shape).
         let git = room_meta_val.and_then(|m| m.get("git")).cloned();
@@ -151,6 +157,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             model,
             thinking,
             working,
+            waiting_for_input,
             git,
             context_usage,
             started_at,
@@ -355,15 +362,17 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     }
                                 }
 
-                                // ── room meta update (plano 18 + 28 + 32) ──
-                                // `meta.model`, `meta.thinking` and
-                                // `meta.working` are patched independently: a
+                                // ── room meta update (plano 18 + 28 + 32 + 134) ──
+                                // `meta.model`, `meta.thinking`,
+                                // `meta.working` and
+                                // `meta.waiting_for_input` are patched
+                                // independently: a
                                 // field absent from `meta` is *left alone* on
                                 // the room (not cleared). For the nullable
                                 // string fields, an explicit `null` clears
-                                // them. `working` is a plain bool, so it only
-                                // ever toggles — a non-bool/absent value leaves
-                                // it untouched. Mirrors the JSON Merge Patch
+                                // them. The bool flags only
+                                // ever toggle — a non-bool/absent value leaves
+                                // them untouched. Mirrors the JSON Merge Patch
                                 // shape clients already produce.
                                 "room_meta_update" => {
                                     let target_room = frame
@@ -388,6 +397,11 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     let working_patch = meta_obj
                                         .and_then(|m| m.get("working"))
                                         .and_then(|v| v.as_bool());
+                                    // Plan/134 — blocking-prompt flag, same
+                                    // toggle-only semantics as `working`.
+                                    let waiting_for_input_patch = meta_obj
+                                        .and_then(|m| m.get("waiting_for_input"))
+                                        .and_then(|v| v.as_bool());
                                     // Plan/107b — opaque git passthrough.
                                     let git_patch = meta_obj
                                         .and_then(|m| m.get("git"))
@@ -405,6 +419,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                         model: model_patch,
                                         thinking: thinking_patch,
                                         working: working_patch,
+                                        waiting_for_input: waiting_for_input_patch,
                                         git: git_patch,
                                         context_usage: context_usage_patch,
                                         run_done: run_done_patch,

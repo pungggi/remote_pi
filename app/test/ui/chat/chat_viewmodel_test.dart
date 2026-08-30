@@ -218,6 +218,77 @@ void main() {
   );
 
   test(
+    'plan/134: a waiting_for_input flip recomposes ChatReady (pill repaint) without touching working',
+    () async {
+      final ch = _FakeChannel();
+      final storage = _FakeStorage();
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      final boxes = LocalBoxes();
+      final sync = SyncService(conn, boxes);
+      final read = SessionReadRepository(boxes);
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+      await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
+
+      conn.adopt(ch, _peer);
+      // Cache the room so the meta patch has a place to land (mirrors the
+      // relay announcing the room before any meta flows).
+      ch.pushControl(const RoomAnnounced(
+        peer: 'epk_chat',
+        roomId: 'main',
+        startedAt: 1,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      final vm = ChatViewModel(read, sync, conn, prefs, storage);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(vm.isWaitingForInput, isFalse, reason: 'idle before the prompt');
+      final before = vm.state;
+
+      // Blocking prompt opens — relay broadcasts waiting_for_input=true.
+      ch.pushControl(const RoomMetaUpdated(
+        peer: 'epk_chat',
+        roomId: 'main',
+        waitingForInput: true,
+        hasModel: false,
+        hasThinking: false,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(vm.isWaitingForInput, isTrue);
+      expect(vm.isWorking, isFalse,
+          reason: 'waiting is independent of working (no turn in flight)');
+      // THE regression guard: the pill/composer read the VM getter, so a
+      // pure waiting flip MUST produce a different ChatReady or
+      // ViewModel.emit skips notifyListeners and the UI never repaints.
+      final during = vm.state;
+      expect(during, isNot(before),
+          reason: 'ChatReady identity must include isWaitingForInput');
+      expect((during as ChatReady).isWaitingForInput, isTrue);
+
+      // Prompt answered — flag clears and the state recomposes again.
+      ch.pushControl(const RoomMetaUpdated(
+        peer: 'epk_chat',
+        roomId: 'main',
+        waitingForInput: false,
+        hasModel: false,
+        hasThinking: false,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(vm.isWaitingForInput, isFalse);
+      expect(vm.state, isNot(during));
+
+      vm.dispose();
+      sync.dispose();
+      conn.dispose();
+    },
+  );
+
+  test(
     'working send uses steer behavior and preserves current target',
     () async {
       final ch = _FakeChannel();

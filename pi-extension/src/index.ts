@@ -37,6 +37,7 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
   ExtensionFactory,
+  UIPromptStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { SettingsManager, convertToPng } from "@earendil-works/pi-coding-agent";
 import { type Ed25519Keypair } from "./pairing/crypto.js";
@@ -148,6 +149,7 @@ import {
   ext,
   type RemoteState,
   type RelayConnectivity,
+  type ExtensionState,
   type WireContextUsage,
   type FullSdkModel,
   type ReceivedImageDetails,
@@ -340,6 +342,35 @@ function _publishWorking(working: boolean): void {
 }
 
 /**
+ * Plan/134: publish the `waiting_for_input` flag as room_meta — true while a
+ * blocking user-facing `ctx.ui` prompt is open (pi 0.84.4 `ui_prompt_start`/
+ * `ui_prompt_end`; covers pi-ask's ask_user AND any foreign extension's
+ * confirm/select/input/editor/custom). Raw, no debounce — the app debounces
+ * (same decision as plan/32 Q4).
+ *
+ * Independent of `working`: during a prompt the turn is still "open" from
+ * `turn_start`'s perspective, so `working` is NOT touched here — the app
+ * derives the tri-state `waiting_for_input ? waiting : (working ? working :
+ * idle)`. `kind`/`title` are for the log only; they never ride the wire (the
+ * relay treats the field as opaque, like `working`).
+ */
+function _publishWaitingForUser(
+  waiting: boolean,
+  kind?: string,
+  title?: string,
+): void {
+  // Log-only enrichment (acceptance: "kind/title logged") — the blocking
+  // dialog is already visible in the host UI, so we never notify there.
+  if (waiting) {
+    console.log(`[remote-pi] ui_prompt_start (kind=${kind ?? "?"}${title ? `, title=${JSON.stringify(title)}` : ""}) — publishing waiting_for_input=true`);
+  }
+  if (ext.myRoomMeta) ext.myRoomMeta = { ...ext.myRoomMeta, waiting_for_input: waiting };
+  if (ext.relay && ext.myRoomId) {
+    ext.relay.sendControl({ type: "room_meta_update", room_id: ext.myRoomId, meta: { waiting_for_input: waiting } });
+  }
+}
+
+/**
  * Publish live context-window usage as `room_meta.context_usage` (opaque blob
  * — the relay forwards it verbatim, the app parses tokens/contextWindow/percent).
  * Same shape as the model/thinking/working/git updates.
@@ -399,7 +430,7 @@ function _publishRunDone(turnId: string | null): void {
  */
 function _republishRoomMeta(): void {
   if (!ext.relay || !ext.myRoomId || !ext.myRoomMeta) return;
-  const meta: Record<string, unknown> = { working: ext.myRoomMeta.working ?? false };
+  const meta: Record<string, unknown> = { working: ext.myRoomMeta.working ?? false, waiting_for_input: ext.myRoomMeta.waiting_for_input ?? false };
   if (ext.myRoomMeta.model) meta.model = ext.myRoomMeta.model;
   if (ext.myRoomMeta.thinking !== undefined) meta.thinking = ext.myRoomMeta.thinking;
   if (ext.myRoomMeta.git !== undefined) meta.git = ext.myRoomMeta.git;
@@ -973,6 +1004,16 @@ export function _getActivePeerCountForTest(): number {
   return ext.activePeers.size;
 }
 
+/**
+ * Test-only (plan/134): the live room-meta mirror — lets tests assert that
+ * teardown paths (`_goIdle`, session rebind) cleared a stale
+ * `waiting_for_input` without needing a relay round-trip. Indexed access
+ * type keeps this in lockstep with `ExtensionState.myRoomMeta`.
+ */
+export function _getRoomMetaForTest(): ExtensionState["myRoomMeta"] {
+  return ext.myRoomMeta;
+}
+
 /** Test-only: true if a specific peer (base64 std) has an attached channel. */
 export function _hasActivePeerForTest(appPeerIdStd: string): boolean {
   return ext.activePeers.has(appPeerIdStd);
@@ -1407,6 +1448,12 @@ function _goIdle(byeReason?: import("./protocol/types.js").ByeReason): void {
   _peerPresenceOnline.clear(); // stale relay's view — resubscribed on next start
   ext.peerShort = "";
   ext.currentTurnId = null;
+  // Plan/134 — a stop/teardown kills any prompt with the run. The relay is
+  // already torn down below, so this is a LOCAL reset only (the next start's
+  // hello must not replay a stale true).
+  if (ext.myRoomMeta?.waiting_for_input === true) {
+    ext.myRoomMeta = { ...ext.myRoomMeta, waiting_for_input: false };
+  }
   ext.pendingReceivedImagePreviews.length = 0;
   ext.pendingSteers = [];
   ext.pendingFollowUps = [];
@@ -2590,6 +2637,13 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // before the agent_done branch: it must not depend on a peer being
     // attached or the run having an app-seeded turn id.
     _publishRunDone(ext.currentTurnId ?? null);
+    // Plan/134 defensive — abort paths are the risky ones for a lost
+    // ui_prompt_end: if the SDK ever fails to pair one with its start, clear
+    // the waiting flag here so it can't outlive the run. No-op when the
+    // flag is already false (no extra broadcast).
+    if (ext.myRoomMeta?.waiting_for_input === true) {
+      _publishWaitingForUser(false);
+    }
     // Reconciliation fallback (2026-08-22): snapshot the cumulative turn
     // text BEFORE clearing it, and ride it on agent_done. Receivers that
     // streamed the turn live compare against what they actually got and
@@ -2667,6 +2721,21 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     void _revertModelOverride();
   });
 
+  // Plan/134: pi 0.84.4 fires ui_prompt_start/end whenever Pi starts/stops
+  // waiting on a BLOCKING user-facing ctx.ui prompt — pi-ask's ask_user or
+  // any other extension's confirm/select/input/editor/custom. Publish the
+  // tri-state input; `working` stays untouched (independent flags — see
+  // _publishWaitingForUser). The runtime `typeof` guards keep the vitest
+  // mocks (which pass plain objects) safe without weakening the types.
+  pi.on("ui_prompt_start", (event: UIPromptStartEvent) => {
+    const kind = typeof event?.kind === "string" ? event.kind : undefined;
+    const title = typeof event?.title === "string" ? event.title : undefined;
+    _publishWaitingForUser(true, kind, title);
+  });
+  pi.on("ui_prompt_end", () => {
+    _publishWaitingForUser(false);
+  });
+
   // Plan/32: compaction feedback. compact() doesn't run a turn, so bracket it
   // with working=true/false here. Returning void = no veto → default
   // compaction proceeds.
@@ -2705,6 +2774,13 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // bound to the current session.
   pi.on("session_start", (_event, ctx) => {
     ext.lastEventCtx = ctx;
+    // Plan/134 — a session replacement/rebind kills any prompt that belonged
+    // to the replaced session: clear a stale waiting_for_input so it can't
+    // survive into the new session's hello/meta snapshot. Published (not just
+    // reset) because the relay link is typically still up here.
+    if (ext.myRoomMeta?.waiting_for_input === true) {
+      _publishWaitingForUser(false);
+    }
     // session_shutdown disposes per-session pi-ask subscriptions. A host that
     // reuses this module instance does NOT re-run the factory, so rebind the
     // bridge here; fresh-module hosts already created theirs in the factory.

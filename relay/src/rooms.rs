@@ -25,6 +25,14 @@ pub struct RoomMeta {
     /// auto-clears. Defaults to `false` until the Pi reports otherwise, and is
     /// always serialized so subscribers can rely on its presence.
     pub working: bool,
+    /// Plan/134 — `true` while this room's Pi is blocked on a user-facing
+    /// `ctx.ui` prompt (pi 0.84.4 `ui_prompt_start`/`ui_prompt_end`; any
+    /// extension's confirm/select/input/editor/custom, not just pi-ask).
+    /// Independent of `working` (the turn stays open while the prompt
+    /// blocks); the app derives the tri-state
+    /// `waiting_for_input ? waiting : (working ? working : idle)`. Same
+    /// always-serialized merge-patch semantics as `working`.
+    pub waiting_for_input: bool,
     /// Plan/107b — git status snapshot of the session cwd, forwarded
     /// OPAQUELY (the relay never inspects the shape — it's an opaque JSON
     /// blob the Pi-extension produces and the app parses). `None` = not a
@@ -58,6 +66,9 @@ pub struct RoomMetaPatch {
     /// `None` = field absent (leave current), `Some(b)` = set to `b`. There is
     /// no "clear to null" — `false` *is* the cleared state.
     pub working: Option<bool>,
+    /// Plan/134 — same single-`Option` semantics as `working` for the
+    /// blocking-prompt flag.
+    pub waiting_for_input: Option<bool>,
     /// Plan/107b — opaque git snapshot (JSON value passthrough). Same
     /// `Option<Option<_>>` semantics as `model`/`thinking`.
     pub git: Option<Option<serde_json::Value>>,
@@ -84,6 +95,7 @@ impl RoomMetaPatch {
         self.model.is_none()
             && self.thinking.is_none()
             && self.working.is_none()
+            && self.waiting_for_input.is_none()
             && self.git.is_none()
             && self.context_usage.is_none()
             && self.run_done.is_none()
