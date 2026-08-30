@@ -75,10 +75,12 @@ String toWsRelayUrl(String url) {
 
 /// Security fix 2026-08 (H2) — classifies a relay URL's transport for the
 /// Home insecure-connection banner. Returns `true` when the link is
-/// confidential: `https://`/`wss://` (TLS), or a loopback host (`ws://` to
-/// localhost can't be sniffed off-path). Any other `http://`/`ws://` host —
-/// the default LAN dial — returns `false`: anyone on the same network can
-/// read the traffic and (with the relay's own key) impersonate the peer.
+/// confidential: `https://`/`wss://` (TLS), a loopback host (`ws://` to
+/// localhost can't be sniffed off-path), or a tailnet dial (see
+/// [_isTailnetHost] — encrypted by the overlay's WireGuard layer). Any other
+/// `http://`/`ws://` host — the default LAN dial — returns `false`: anyone
+/// on the same network can read the traffic and (with the relay's own key)
+/// impersonate the peer.
 bool relayTransportIsSecure(String url) {
   final lower = url.toLowerCase();
   if (lower.startsWith('https://') || lower.startsWith('wss://')) return true;
@@ -89,7 +91,47 @@ bool relayTransportIsSecure(String url) {
     return false;
   }
   final host = uri.host.toLowerCase();
-  return host == 'localhost' || host == '127.0.0.1' || host == '::1';
+  if (host == 'localhost' || host == '127.0.0.1' || host == '::1') return true;
+  return _isTailnetHost(host);
+}
+
+/// Banner/overlay alignment (2026-08-31): the insecure-transport banner's own
+/// advice says "use https:// or an overlay (Tailscale) relay", and the
+/// documented remote setup advertises `http://100.x.y.z:3000` — but the
+/// classifier used to flag those dials, so following the banner's advice
+/// still left the banner up. A tailnet dial IS confidential regardless of the
+/// plaintext scheme: Tailscale encrypts every packet between tailnet nodes
+/// with WireGuard, so an off-path (or same-LAN) sniffer sees only encrypted
+/// UDP. Recognized as tailnet:
+///
+/// - IPv4 CGNAT range `100.64.0.0/10` (100.64.0.0–100.127.255.255), the
+///   address range Tailscale assigns to nodes;
+/// - the Tailscale IPv6 ULA prefix `fd7a:115c:a1e0::/48`;
+/// - `*.ts.net` MagicDNS hostnames — resolvable only inside a tailnet.
+///
+/// Accepted corner case: an ISP handing out 100.64/10 addresses ON THE LAN
+/// itself (CGNAT in front of the Wi-Fi, no tailnet involved) would be
+/// misclassified as secure. Rare in home/office networks, and every doc that
+/// mentions `100.x` in this repo means the tailnet.
+bool _isTailnetHost(String host) {
+  // MagicDNS name — only a tailnet resolver can answer it.
+  if (host.endsWith('.ts.net')) return true;
+
+  // 100.64.0.0/10 — the CGNAT block Tailscale uses for node IPv4s. Strictly
+  // four numeric octets; anything else (hostname, malformed) fails closed.
+  final octets = host.split('.');
+  if (octets.length == 4) {
+    final a = int.tryParse(octets[0]);
+    final b = int.tryParse(octets[1]);
+    if (a == 100 && b != null && b >= 64 && b <= 127) return true;
+  }
+
+  // fd7a:115c:a1e0::/48 — textual prefix check. Dart's Uri.host keeps IPv6
+  // literals bracket-stripped; the three prefix groups are non-zero, so "::"
+  // elision can never replace them in any spelling of such an address.
+  if (host.startsWith('fd7a:115c:a1e0:')) return true;
+
+  return false;
 }
 
 /// Validates a candidate relay URL the user typed into Settings or

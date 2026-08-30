@@ -156,8 +156,37 @@ void main() {
         expect(relayTransportIsSecure('http://172.16.0.2:3000'), isFalse);
       });
 
-      test('overlay addresses (Tailscale CGNAT) are NOT confidential', () {
-        expect(relayTransportIsSecure('http://100.75.161.17:3000'), isFalse);
+      test('tailnet dials (Tailscale CGNAT / MagicDNS / v6 ULA) are confidential', () {
+        // Banner/overlay alignment (2026-08-31): the banner's advice — "use
+        // https:// or an overlay (Tailscale) relay" — and the README's
+        // documented remote setup both point at these dials; WireGuard
+        // encrypts them regardless of the plaintext scheme.
+        expect(relayTransportIsSecure('http://100.75.161.17:3000'), isTrue);
+        expect(relayTransportIsSecure('http://100.100.100.100:3000'), isTrue);
+        expect(
+            relayTransportIsSecure('http://100.127.255.255:3000'), isTrue);
+        expect(relayTransportIsSecure('http://chico.tail5d4821.ts.net'),
+            isTrue);
+        expect(relayTransportIsSecure('ws://[fd7a:115c:a1e0::4f37:a112]:3000'),
+            isTrue);
+      });
+
+      test('CGNAT range boundaries hold (fail closed outside 100.64/10)', () {
+        expect(relayTransportIsSecure('http://100.63.255.255:3000'), isFalse);
+        expect(relayTransportIsSecure('http://100.128.0.0:3000'), isFalse);
+        expect(relayTransportIsSecure('http://101.64.0.1:3000'), isFalse);
+      });
+
+      test('tailnet lookalikes are NOT confidential', () {
+        // Registry apex, not a node name.
+        expect(relayTransportIsSecure('http://ts.net:3000'), isFalse);
+        // ts.net must be the SUFFIX, not a mid-name.
+        expect(relayTransportIsSecure('http://evil.ts.net.example.com:3000'),
+            isFalse);
+        // Five octets is not an IPv4 literal.
+        expect(relayTransportIsSecure('http://100.64.0.0.1:3000'), isFalse);
+        // Non-numeric octets fail closed, not crash.
+        expect(relayTransportIsSecure('http://100.abc.0.1:3000'), isFalse);
       });
 
       test('garbage is classified insecure (fail closed)', () {

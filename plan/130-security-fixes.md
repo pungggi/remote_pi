@@ -37,6 +37,12 @@ secure; anything else (the default `ws://` RFC1918 dial) → insecure. Flows
 → `ConnectionManager.isTransportSecure` → `HomeViewModel` → persistent
 non-dismissable `_InsecureTransportBanner` on Home while Online insecure.
 
+> **Follow-up (2026-08-31):** the banner's advice ("use an overlay (Tailscale)
+> relay") contradicted the classifier, which flagged the documented tailnet
+> dial `http://100.x.y.z:3000` as insecure. Tailnet hosts (`100.64.0.0/10`,
+> `fd7a:115c:a1e0::/48`, `*.ts.net`) are now classified confidential —
+> WireGuard encrypts them regardless of scheme.
+
 ## 3. Relay caps (M2)
 
 - `ws_handler`: `max_message_size`/`max_frame_size` = 5 MiB (was tungstenite
