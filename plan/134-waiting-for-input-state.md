@@ -104,6 +104,15 @@ status bar), independent of the relay waves — can ship first if desired.
     tests). Cockpit full-suite has ~21 pre-existing failures (terminal/codex/db
     tests, verified failing on `main` without this change). PROTOCOL.md
     documents `meta.waiting_for_input`.
+  - PR #58 review fixes (2026-08-30): (1) uncached-room duplicate rising edges
+    killed by a volatile last-seen map (cleared on `room_ended`); (2)
+    `isRoomWaitingForInput` + `isRoomWorking` gate on `_liveRoomIds` so a Pi
+    dying mid-prompt/turn can't keep the badge/dot alive; (3) the RPC stream
+    does NOT forward `ui_prompt_start/end` (ExtensionRunner vs AgentSession
+    events — verified with a live `pi --mode rpc` probe), so the extension
+    mirrors the transition as a `remote-pi:ui-prompt` custom message
+    (relay-state channel) and the cockpit maps that; the direct event mapping
+    stays as forward-compat.
 
 ## Next plans
 

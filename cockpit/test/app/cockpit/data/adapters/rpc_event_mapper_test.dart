@@ -45,6 +45,62 @@ void main() {
       expect((e as RpcUiPromptStart).kind, 'custom');
     });
 
+    test(
+        'PR #58 review — remote-pi:ui-prompt custom message mapeia para start/end',
+        () {
+      // O canal que realmente entrega o bracket hoje: a extensão espelha a
+      // transição como custom message (o RPC não encaminha os eventos crus).
+      final start = mapper.fromJson(const {
+        'type': 'message_start',
+        'message': {
+          'role': 'custom',
+          'customType': 'remote-pi:ui-prompt',
+          'content': 'Waiting for your input (Pick one)',
+          'display': false,
+          'details': {
+            'waiting': true,
+            'kind': 'select',
+            'title': 'Pick one',
+          },
+        },
+      });
+      expect(start, isA<RpcUiPromptStart>());
+      final s = start as RpcUiPromptStart;
+      expect(s.kind, 'select');
+      expect(s.title, 'Pick one');
+
+      final end = mapper.fromJson(const {
+        'type': 'message_start',
+        'message': {
+          'role': 'custom',
+          'customType': 'remote-pi:ui-prompt',
+          'details': {'waiting': false, 'kind': 'select'},
+        },
+      });
+      expect(end, isA<RpcUiPromptEnd>());
+      expect((end as RpcUiPromptEnd).kind, 'select');
+
+      // Degradations: sem details / sem kind → Unknown-start custom ou
+      // kind=custom, nunca exceção.
+      final noDetails = mapper.fromJson(const {
+        'type': 'message_start',
+        'message': {
+          'role': 'custom',
+          'customType': 'remote-pi:ui-prompt',
+        },
+      });
+      expect(noDetails, isA<RpcUnknown>());
+      final noKind = mapper.fromJson(const {
+        'type': 'message_start',
+        'message': {
+          'role': 'custom',
+          'customType': 'remote-pi:ui-prompt',
+          'details': {'waiting': true},
+        },
+      });
+      expect((noKind as RpcUiPromptStart).kind, 'custom');
+    });
+
     test('tipos desconhecidos seguem RpcUnknown', () {
       final e = mapper.fromJson(const {'type': 'something_new'});
       expect(e, isA<RpcUnknown>());

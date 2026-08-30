@@ -187,6 +187,17 @@ class ConnectionManager extends Service {
   final _waitingForInputController =
       StreamController<WaitingForInputEvent>.broadcast();
 
+  /// Plan/134 (PR #58 review) — the last `waiting_for_input` value observed
+  /// on a LIVE `room_meta_updated` frame, per `<stdB64(epk)>:<roomId>`,
+  /// for rooms the announce/snapshot cache hasn't landed yet. Without it,
+  /// an uncached room reads `prevWaiting == false` on EVERY frame, and since
+  /// each relay broadcast carries the full state, an unrelated patch
+  /// (model/thinking change) would re-emit an apparent rising edge and
+  /// re-alert. Volatile by design (event bookkeeping, not UI state);
+  /// cleared on `RoomEnded` so a re-registered room's new prompt is a
+  /// genuine new edge.
+  final Map<String, bool> _waitingForInputSeen = {};
+
   /// Plan/137 — relay route NACKs for unroutable destinations (the app
   /// steered into a room whose Pi has no live relay connection). Events,
   /// not state: SyncService uses them to fail pending steers/sends
@@ -941,6 +952,10 @@ class ConnectionManager extends Service {
         if (_liveRoomIds[key]?.isEmpty ?? false) {
           _liveRoomIds.remove(key);
         }
+        // Plan/134 (PR #58 review) — the room lifecycle ended: forget the
+        // observed waiting value so a re-registered room's new prompt is a
+        // genuine new rising edge (not a no-op against a stale observation).
+        _waitingForInputSeen.remove('$key:$roomId');
         if (removed) roomsDirty = true;
       case RouteError(:final peer, :final room):
         // Plan/137 — the relay NACKed an envelope addressed to (peer,
@@ -991,12 +1006,22 @@ class ConnectionManager extends Service {
         // notifies (unknown previous state reads as `false`). Snapshot /
         // announce paths never emit — app-open replays must not re-fire the
         // notification.
+        //
+        // PR #58 review fix — `_waitingForInputSeen` carries the value for
+        // rooms whose announce/snapshot hasn't cached yet: every relay
+        // broadcast re-carries the full state, so without recording the
+        // first observation, each unrelated patch (model/thinking change)
+        // would masquerade as a new rising edge and re-alert.
+        final seenKey = '$key:$roomId';
         final list = _roomsByPeer[key];
         final cachedRoom = list?.cast<RoomInfo?>().firstWhere(
           (r) => r!.roomId == roomId,
           orElse: () => null,
         );
-        final prevWaiting = cachedRoom?.waitingForInput ?? false;
+        final prevWaiting =
+            _waitingForInputSeen[seenKey] ??
+            cachedRoom?.waitingForInput ??
+            false;
         final nextWaiting = waitingForInput ?? prevWaiting;
         if (nextWaiting != prevWaiting &&
             !_waitingForInputController.isClosed) {
@@ -1007,6 +1032,10 @@ class ConnectionManager extends Service {
               waiting: nextWaiting,
             ),
           );
+        }
+        // Record every explicit observation (null = absent = preserve).
+        if (waitingForInput != null) {
+          _waitingForInputSeen[seenKey] = waitingForInput;
         }
         if (list == null) break;
         final idx = list.indexWhere((r) => r.roomId == roomId);
@@ -1218,9 +1247,19 @@ class ConnectionManager extends Service {
   /// Gated on `StatusOnline` (same as [isRoomLive]): a dropped WS means
   /// we have no fresh signal, so we report not-working and let the tile
   /// fall back to the amber "reconnecting" / grey state.
+  ///
+  /// PR #58 review fix — ALSO gated on the room being LIVE
+  /// ([isRoomLive]'s `_liveRoomIds` check): `RoomEnded` deliberately keeps
+  /// the cached `RoomInfo` for offline display, and a Pi that dies
+  /// mid-turn can't publish `working=false` (its WS is gone). Without the
+  /// liveness gate the blue dot would outlive the room; with it the tile
+  /// falls back to grey, and a re-announced room re-lights from its hello
+  /// meta.
   bool isRoomWorking(String epk, String roomId) {
     if (_status is! StatusOnline) return false;
-    final list = _roomsByPeer[toStandardB64(epk)];
+    final key = toStandardB64(epk);
+    if (!(_liveRoomIds[key]?.contains(roomId) ?? false)) return false;
+    final list = _roomsByPeer[key];
     if (list == null) return false;
     for (final r in list) {
       if (r.roomId == roomId) return r.working;
@@ -1232,11 +1271,15 @@ class ConnectionManager extends Service {
   /// `(epk, roomId)` carried `waiting_for_input: true` (a blocking
   /// user-facing ctx.ui prompt — any extension's, not just pi-ask). Like
   /// [isRoomWorking] it reflects EVERY subscribed room and is gated on
-  /// [StatusOnline] (no fresh signal → not waiting). The UI derives the
-  /// tri-state: waiting beats working beats idle.
+  /// [StatusOnline] AND the room being live (PR #58 review: a Pi that
+  /// exits mid-prompt can't publish the clear — its WS is gone — so the
+  /// retained cache entry must not keep the amber badge alive on a dead
+  /// room). The UI derives the tri-state: waiting beats working beats idle.
   bool isRoomWaitingForInput(String epk, String roomId) {
     if (_status is! StatusOnline) return false;
-    final list = _roomsByPeer[toStandardB64(epk)];
+    final key = toStandardB64(epk);
+    if (!(_liveRoomIds[key]?.contains(roomId) ?? false)) return false;
+    final list = _roomsByPeer[key];
     if (list == null) return false;
     for (final r in list) {
       if (r.roomId == roomId) return r.waitingForInput;
