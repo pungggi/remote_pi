@@ -37,8 +37,15 @@ const PI_ASK_SUBMIT_RESULT = "@eko24ive/pi-ask:submit-result";
 
 /** Drop a flow from `activeFlows` if pi-ask never resolves it (e.g. a flow
  *  disposed on session_shutdown — pi-ask does not emit `completed` for those).
- *  Bounds memory; generous vs. a human answer time. */
-const FLOW_TTL_MS = 10 * 60 * 1000;
+ *  Bounds memory; generous vs. a human answer time.
+ *
+ *  Plan/137: 10 min → 4 h. The TTL's only job is bounding the map against
+ *  abandoned flows; `completed` and bridge `dispose()` still purge promptly.
+ *  10 min was SHORTER than a legitimately-open desktop dialog can wait, which
+ *  stranded the phone: after expiry `session_sync`'s `pendingRequests()`
+ *  replay returned nothing, so the ask_user tool call spun forever with no
+ *  sheet and no answer path. One map entry + timer per open flow is free. */
+const FLOW_TTL_MS = 4 * 60 * 60 * 1000;
 
 /** Minimal view of `pi.events` this bridge needs. */
 type EventBus = ExtensionAPI["events"];
@@ -50,6 +57,15 @@ interface ActiveFlow {
   source: string;
   title: string | null;
   questions: AskQuestionWire[];
+}
+
+/** Optional host hooks for bridge state transitions (plan/137). */
+export interface ExtensionUiBridgeHooks {
+  /** Fired on every empty↔non-empty transition of the active-flow set —
+   *  lets the extension publish `waiting_for_input` for pis that don't emit
+   *  `ui_prompt_start/end` (pre-0.84.4 SDKs), belt-and-suspenders next to
+   *  plan/134's SDK-event path. */
+  onActiveFlowsChanged?: (active: boolean) => void;
 }
 
 export interface ExtensionUiBridge {
@@ -78,6 +94,7 @@ export interface ExtensionUiBridge {
 export function createExtensionUiBridge(
   pi: ExtensionAPI,
   broadcast: (msg: ServerMessage) => void,
+  hooks?: ExtensionUiBridgeHooks,
 ): ExtensionUiBridge | null {
   const eventsRaw = (pi as { events?: EventBus }).events;
   if (
@@ -107,6 +124,22 @@ export function createExtensionUiBridge(
       flowTimers.delete(flowId);
     }
   }
+
+  /** Plan/137 — notify the host on empty↔non-empty transitions only (idempotent
+   *  edges), so a waiting_for_input publisher can OR this with the SDK signal.
+   *  Edge-triggered: repeated opens/closes that don't change emptiness, and a
+   *  dispose of an already-empty set, fire nothing. */
+  let lastFlowsActive: boolean | null = null;
+  function notifyFlowsChanged(): void {
+    const active = activeFlows.size > 0;
+    if (active === lastFlowsActive) return;
+    lastFlowsActive = active;
+    try {
+      hooks?.onActiveFlowsChanged?.(active);
+    } catch {
+      // Host hook errors must never break the bridge.
+    }
+  }
   function armFlowTtl(flowId: string): void {
     clearFlowTtl(flowId);
     flowTimers.set(
@@ -127,6 +160,7 @@ export function createExtensionUiBridge(
             "Clarification expired on the bridge — retry or answer on desktop.",
           notify_type: "warning",
         });
+        notifyFlowsChanged();
       }, FLOW_TTL_MS),
     );
   }
@@ -143,6 +177,7 @@ export function createExtensionUiBridge(
     };
     activeFlows.set(flow.flowId, flow);
     armFlowTtl(flow.flowId);
+    notifyFlowsChanged();
     broadcast(requestForFlow(flow));
   });
 
@@ -152,6 +187,7 @@ export function createExtensionUiBridge(
     const flowId = e.flowId;
     clearFlowTtl(flowId);
     activeFlows.delete(flowId);
+    notifyFlowsChanged();
     // Same id as the originating request (the flowId). The app treats a `notify`
     // whose id matches an open interactive request as "that flow resolved —
     // dismiss it". Covers the non-submitting owner in a multi-owner setup.
@@ -216,9 +252,14 @@ export function createExtensionUiBridge(
       ("cancelled" in msg && msg.cancelled === true) ||
       (ask !== undefined && ask.kind === "cancel")
     ) {
-      const flowId =
-        ask?.flow_id ?? (activeFlows.has(msg.id) ? msg.id : null);
-      if (!flowId) return;
+      const flowId = ask?.flow_id ?? msg.id;
+      // Plan/137 — emit the cancel even when the bridge forgot this flow
+      // (post-TTL). pi-ask NACKs unknown flows with submit-result
+      // { ok:false, error:"flow_not_found" }, which the handler above turns
+      // into a warning notify that closes the app's stale sheet with feedback.
+      // Dropping it silently here left the phone's durable sheet (plan/129)
+      // hanging forever with a dead Submit. msg.id IS the flowId by this
+      // bridge's request contract, so the degraded path needs no lookup.
       emitSubmit(msg.id, flowId, { kind: "cancel" });
       return;
     }
@@ -295,6 +336,7 @@ export function createExtensionUiBridge(
       for (const t of flowTimers.values()) clearTimeout(t);
       flowTimers.clear();
       activeFlows.clear();
+      notifyFlowsChanged();
     },
   };
 }

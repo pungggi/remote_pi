@@ -68,6 +68,15 @@ sealed class ControlInbound {
         roomId: j['room_id'] as String,
         sinceTs: (j['since_ts'] as num).toInt(),
       ),
+      // Plan/137 — relay NACK for an envelope it could not route: the
+      // destination (peer, room) had no live connection. Identifies the
+      // DESTINATION, not the message (the body is encrypted ct); the app
+      // correlates by recency. Rate-limited server-side (one per 5 s per
+      // destination per connection).
+      'route_error' => RouteError(
+        peer: j['peer'] as String,
+        room: (j['room'] as String?) ?? 'main',
+      ),
       'rooms' => RoomsSnapshot(
         peer: j['peer'] as String,
         rooms: (j['rooms'] as List<dynamic>)
@@ -417,6 +426,21 @@ class RoomEnded extends ControlInbound {
   });
 }
 
+/// Plan/137 — the relay could not route an outbound envelope: the
+/// destination `(peer, room)` has no live connection right now. The app
+/// uses it to fail pending steers/sends immediately ("Not delivered — Pi
+/// unreachable") instead of an unbounded `steering…` spinner, and to mark
+/// the room's presence offline.
+class RouteError extends ControlInbound {
+  /// Destination peer id (base64 pubkey) — NOT the sender.
+  final String peer;
+
+  /// Destination room id (the Pi's per-cwd room).
+  final String room;
+
+  const RouteError({required this.peer, required this.room});
+}
+
 class RoomsSnapshot extends ControlInbound {
   final String peer;
   final List<RoomInfo> rooms;
@@ -579,6 +603,27 @@ class WaitingForInputEvent {
 
   @override
   int get hashCode => Object.hash(epk, roomId, waiting);
+}
+
+/// Plan/137 — the relay reported a destination `(peer, room)` unreachable
+/// for an envelope this app sent (rate-limited server-side). Emitted on
+/// [ConnectionManager.routeErrorStream]. Consumers fail pending
+/// steering/sends for that room instead of spinning forever.
+class RouteErrorEvent {
+  /// Destination peer epk, already normalized to standard base64.
+  final String epk;
+
+  /// Destination room id.
+  final String roomId;
+
+  const RouteErrorEvent({required this.epk, required this.roomId});
+
+  @override
+  bool operator ==(Object other) =>
+      other is RouteErrorEvent && other.epk == epk && other.roomId == roomId;
+
+  @override
+  int get hashCode => Object.hash(epk, roomId);
 }
 
 // ---------------------------------------------------------------------------

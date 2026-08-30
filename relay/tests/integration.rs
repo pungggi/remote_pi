@@ -1,10 +1,15 @@
 mod common;
-use common::{connect_and_auth, start_relay};
+use common::{connect_and_auth, connect_and_auth_with_room, start_relay};
 
 use ed25519_dalek::Signer;
+use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio_tungstenite::tungstenite::Message;
+
+fn random_key() -> SigningKey {
+    SigningKey::generate(&mut rand::thread_rng())
+}
 
 /// Security fix 2026-08 — the outer envelope's optional `sig` (sender's
 /// end-to-end Ed25519 signature over `ct`) must be forwarded VERBATIM. The
@@ -126,21 +131,94 @@ async fn two_peers_route_message() {
     assert_eq!(received_json["ct"], ct, "ct must be forwarded unchanged");
 }
 
-/// Sending to an unknown peer ID is silently dropped; the sender's connection stays alive.
+/// Plan/137 — sending to an unknown destination NACKs the sender with a
+/// rate-limited `route_error` control frame (identifies the destination,
+/// since the envelope body is opaque); duplicates within the TTL window are
+/// suppressed. The connection stays alive.
 #[tokio::test]
-async fn dest_offline_drops_silently() {
+async fn dest_offline_nacks_with_route_error_then_rate_limits() {
     let port = start_relay().await;
     let (mut ws_a, _) = connect_and_auth(port).await;
 
-    let envelope = json!({"peer": "bm9uZXhpc3RlbnRwZWVy", "ct": "aGVsbG8="}).to_string();
-    ws_a.send(Message::text(envelope)).await.unwrap();
+    let dest = "bm9uZXhpc3RlbnRwZWVy";
+    ws_a
+        .send(Message::text(
+            json!({"peer": dest, "room": "deadroom", "ct": "aGVsbG8="}).to_string(),
+        ))
+        .await
+        .unwrap();
 
-    // If the relay silently drops it, no message arrives and no close frame is sent.
-    let result = tokio::time::timeout(tokio::time::Duration::from_millis(200), ws_a.next()).await;
+    let nack = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_a.next())
+        .await
+        .expect("timed out waiting for route_error")
+        .unwrap()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(nack.to_text().unwrap()).unwrap();
+    assert_eq!(v["type"], "route_error", "got: {v}");
+    assert_eq!(v["peer"], dest);
+    assert_eq!(v["room"], "deadroom");
 
+    // Same destination again inside the 5 s window → suppressed (silence,
+    // not a duplicate NACK).
+    ws_a
+        .send(Message::text(
+            json!({"peer": dest, "room": "deadroom", "ct": "aGVsbG8="}).to_string(),
+        ))
+        .await
+        .unwrap();
+    let result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(200), ws_a.next()).await;
     assert!(
         result.is_err(),
-        "expected no message (connection alive), got {:?}",
+        "expected no duplicate route_error within the TTL, got {:?}",
+        result
+    );
+
+    // A DIFFERENT dead destination is not suppressed by the first NACK.
+    ws_a
+        .send(Message::text(
+            json!({"peer": dest, "room": "otherroom", "ct": "aGVsbG8="}).to_string(),
+        ))
+        .await
+        .unwrap();
+    let nack2 = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_a.next())
+        .await
+        .expect("timed out waiting for second route_error (different room)")
+        .unwrap()
+        .unwrap();
+    let v2: serde_json::Value = serde_json::from_str(nack2.to_text().unwrap()).unwrap();
+    assert_eq!(v2["type"], "route_error");
+    assert_eq!(v2["room"], "otherroom");
+}
+
+/// A successful forward must NOT produce a route_error for that destination
+/// (the NACK is purely a failure signal, never a delivery receipt).
+#[tokio::test]
+async fn successful_forward_never_nacks() {
+    let port = start_relay().await;
+    let (mut ws_a, _) = connect_and_auth(port).await;
+    let (mut ws_b, peer_b) = connect_and_auth_with_room(port, &random_key(), "alive").await;
+
+    ws_a
+        .send(Message::text(
+            json!({"peer": peer_b, "room": "alive", "ct": "aGVsbG8="}).to_string(),
+        ))
+        .await
+        .unwrap();
+
+    let received = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_b.next())
+        .await
+        .expect("timed out waiting for forwarded message")
+        .unwrap()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(received.to_text().unwrap()).unwrap();
+    assert_eq!(v["ct"], "aGVsbG8=");
+
+    let result =
+        tokio::time::timeout(tokio::time::Duration::from_millis(200), ws_a.next()).await;
+    assert!(
+        result.is_err(),
+        "sender must not receive anything on success, got {:?}",
         result
     );
 }

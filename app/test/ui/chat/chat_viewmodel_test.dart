@@ -663,4 +663,129 @@ void main() {
       conn.dispose();
     },
   );
+
+  group('Plan/137 — ask recovery card + route_error', () {
+    test('pending ask_user without a sheet shows the recovery card (after '
+        'the anti-flash delay), and the arriving sheet hides it', () async {
+      final ch = _FakeChannel();
+      final storage = _FakeStorage();
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      final boxes = LocalBoxes();
+      final msgBox = await boxes.msgsBox(_peer.remoteEpk, 'main');
+      await msgBox.clear();
+      final sync = SyncService(conn, boxes);
+      final read = SessionReadRepository(boxes);
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+      await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
+
+      conn.adopt(ch, _peer);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      final vm = ChatViewModel(read, sync, conn, prefs, storage);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // Turn opens, the agent calls ask_user — but the question frame is
+      // lost (the incident this plan fixes).
+      ch.push(UserInput(id: 'ask-u1', text: 'plan m6'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      ch.push(ToolRequest(
+        toolCallId: 'tc_ask1',
+        tool: 'ask_user',
+        args: null,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // Anti-flash window: not yet.
+      expect((vm.state as ChatReady).askRecovery, isFalse,
+          reason: 'request frame may still be in flight');
+
+      // After the delay the card appears — nothing else fires while the
+      // agent is blocked in the tool.
+      await Future<void>.delayed(const Duration(milliseconds: 3500));
+      expect((vm.state as ChatReady).askRecovery, isTrue);
+
+      // Retry path works: the sheet arriving (bridge replay) hides it.
+      ch.push(const ExtensionUiRequest(
+        id: 'tool:tc_ask1',
+        method: ExtensionUiMethod.select,
+        title: 'Direction',
+        options: ['Alpha', 'Beta'],
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect((vm.state as ChatReady).askRecovery, isFalse,
+          reason: 'open sheet is the answer path, no card needed');
+      expect((vm.state as ChatReady).pendingUiRequest?.id, 'tool:tc_ask1');
+
+      // And once the tool completes, no card even without a sheet.
+      ch.push(ToolResult(toolCallId: 'tc_ask1', result: 'answered'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect((vm.state as ChatReady).askRecovery, isFalse);
+
+      vm.dispose();
+      sync.dispose();
+      conn.dispose();
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('route_error for the active room clears the steering label and '
+        'surfaces a warning row', () async {
+      final ch = _FakeChannel();
+      final storage = _FakeStorage();
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      final boxes = LocalBoxes();
+      final msgBox = await boxes.msgsBox(_peer.remoteEpk, 'main');
+      await msgBox.clear();
+      final sync = SyncService(conn, boxes);
+      final read = SessionReadRepository(boxes);
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+      await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
+
+      conn.adopt(ch, _peer);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      final vm = ChatViewModel(read, sync, conn, prefs, storage);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // A confirmed steer whose consumption never comes (dead destination).
+      ch.push(UserInput(
+        id: 'steer-1',
+        text: 'Re-propose the Ask User tool please',
+        streamingBehavior: UserMessageStreamingBehavior.steer,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      final steerRow = (vm.state as ChatReady)
+          .messages
+          .whereType<UserMsg>()
+          .singleWhere((m) => m.id == 'steer-1');
+      expect(steerRow.steering, isTrue,
+          reason: 'precondition: label spins while unconsumed');
+
+      // The relay NACKs the destination (peer, room).
+      ch.pushControl(const RouteError(peer: 'epk_chat', room: 'main'));
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      final after = (vm.state as ChatReady).messages;
+      final cleared = after.whereType<UserMsg>().singleWhere((m) => m.id == 'steer-1');
+      expect(cleared.steering, isFalse,
+          reason: 'route_error must end the unbounded steering… spinner');
+      expect(
+        after.whereType<AssistantMsg>().map((m) => m.text).any(
+          (t) => t.contains('Not delivered'),
+        ),
+        isTrue,
+        reason: 'the ⚠ row explains why the message went nowhere',
+      );
+
+      vm.dispose();
+      sync.dispose();
+      conn.dispose();
+    });
+  });
 }

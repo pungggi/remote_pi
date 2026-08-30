@@ -83,6 +83,14 @@ class ChatReady extends ChatState {
   /// than returned). The UI shows a "Load more messages" button at the top.
   final bool truncated;
 
+  /// Plan/137 — a pending `ask_user` tool call has been sitting WITHOUT a
+  /// rendered question sheet (the request frame was lost). Drives the
+  /// recovery card above the composer: Retry (re-sync → bridge replay) and
+  /// Cancel question (abort the blocked turn, releasing queued steering).
+  /// Part of the state identity like [isWorking] so the card appearing needs
+  /// no other state change (nothing else fires while the agent is blocked).
+  final bool askRecovery;
+
   String? get queuedText =>
       queuedMessages.isEmpty ? null : queuedMessages.first.text;
 
@@ -101,6 +109,7 @@ class ChatReady extends ChatState {
     this.pendingUiRequest,
     this.pendingUiError,
     this.truncated = false,
+    this.askRecovery = false,
   });
 
   ChatReady copyWith({
@@ -125,6 +134,7 @@ class ChatReady extends ChatState {
     String? pendingUiError,
     bool clearPendingUiError = false,
     bool? truncated,
+    bool? askRecovery,
   }) =>
       ChatReady(
         messages: messages ?? this.messages,
@@ -151,6 +161,7 @@ class ChatReady extends ChatState {
             ? null
             : (pendingUiError ?? this.pendingUiError),
         truncated: truncated ?? this.truncated,
+        askRecovery: askRecovery ?? this.askRecovery,
       );
 
   @override
@@ -169,7 +180,8 @@ class ChatReady extends ChatState {
       other.queuedMessages == queuedMessages &&
       other.pendingUiRequest == pendingUiRequest &&
       other.pendingUiError == pendingUiError &&
-      other.truncated == truncated;
+      other.truncated == truncated &&
+      other.askRecovery == askRecovery;
 
   @override
   int get hashCode => Object.hash(
@@ -187,6 +199,7 @@ class ChatReady extends ChatState {
         pendingUiRequest,
         pendingUiError,
         truncated,
+        askRecovery,
       );
 }
 

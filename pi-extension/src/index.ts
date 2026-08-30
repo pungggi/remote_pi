@@ -354,6 +354,33 @@ function _publishWorking(working: boolean): void {
  * idle)`. `kind`/`title` are for the log only; they never ride the wire (the
  * relay treats the field as opaque, like `working`).
  */
+/**
+ * Plan/137 — the two OR-ed sources behind `waiting_for_input`. The SDK's
+ * `ui_prompt_start/end` (plan/134) covers every blocking ctx.ui prompt on
+ * pi ≥ 0.84.4; the ask bridge's active-flow signal (hook wired at bridge
+ * creation) covers pi-ask flows on older SDKs and doubles as belt-and-
+ * suspenders. Separate booleans so one source's falling edge can't clear a
+ * prompt the other source still holds open.
+ */
+function _setWaitingSdkInput(waiting: boolean, kind?: string, title?: string): void {
+  ext.waitingSdkInput = waiting;
+  _publishWaitingForUser(ext.waitingSdkInput || ext.waitingBridgeFlow, kind, title);
+}
+
+function _setWaitingBridgeFlow(active: boolean): void {
+  ext.waitingBridgeFlow = active;
+  _publishWaitingForUser(ext.waitingSdkInput || ext.waitingBridgeFlow, "ask_flow");
+}
+
+/** Plan/134/137 defensive reset — a session rebind, run end, or teardown kills
+ *  any prompt that belonged to the replaced context. Clears BOTH sources so a
+ *  stale true can't survive into the next hello/meta snapshot. */
+function _resetWaitingForInput(): void {
+  ext.waitingSdkInput = false;
+  ext.waitingBridgeFlow = false;
+  _publishWaitingForUser(false);
+}
+
 function _publishWaitingForUser(
   waiting: boolean,
   kind?: string,
@@ -1450,10 +1477,12 @@ function _goIdle(byeReason?: import("./protocol/types.js").ByeReason): void {
   ext.currentTurnId = null;
   // Plan/134 — a stop/teardown kills any prompt with the run. The relay is
   // already torn down below, so this is a LOCAL reset only (the next start's
-  // hello must not replay a stale true).
+  // hello must not replay a stale true). Plan/137 — reset BOTH sources.
   if (ext.myRoomMeta?.waiting_for_input === true) {
     ext.myRoomMeta = { ...ext.myRoomMeta, waiting_for_input: false };
   }
+  ext.waitingSdkInput = false;
+  ext.waitingBridgeFlow = false;
   ext.pendingReceivedImagePreviews.length = 0;
   ext.pendingSteers = [];
   ext.pendingFollowUps = [];
@@ -1896,6 +1925,15 @@ function _attachOwner(
   // Mid-run attach: make sure the fresh owner sees the in-flight response
   // (hydrates a turn id when none is seeded and replays the text so far).
   _maybeResumeTurnForOwner(channel);
+  // Plan/137 — replay ask_user flows still awaiting an answer to the fresh
+  // channel. The bridge's `started` broadcast fires exactly once; an owner
+  // attaching later (reconnect, app relaunch, zombie-socket replacement)
+  // never saw it, and waiting for their session_sync leaves the ask_user tool
+  // call spinning with no sheet in the gap. Same per-sender rationale as the
+  // session_sync replay: owners attached earlier already got the live frame.
+  for (const req of ext.extensionUiBridge?.pendingRequests() ?? []) {
+    try { channel.send(req); } catch { /* best-effort per frame */ }
+  }
   // New owner attached → widen the presence subscription so we learn when
   // THIS peer goes offline (send path skips dead dests instead of signing
   // frames the relay will drop). Idempotent server-side (list replace).
@@ -2433,7 +2471,14 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // Pi that doesn't use the extension. Dispose any prior bridge first so a
   // factory re-run (new pi session) can't leak subscriptions or double-send.
   ext.extensionUiBridge?.dispose();
-  ext.extensionUiBridge = createExtensionUiBridge(pi, _broadcastToActive);
+  // Plan/137 — the bridge's empty↔non-empty transitions feed the merged
+  // waiting_for_input publisher (fallback for pis without ui_prompt events).
+  // The dispose above fires the hook with `false` for the OLD bridge; reset
+  // first so a factory re-run can't inherit a stale true from its predecessor.
+  ext.waitingBridgeFlow = false;
+  ext.extensionUiBridge = createExtensionUiBridge(pi, _broadcastToActive, {
+    onActiveFlowsChanged: (active) => _setWaitingBridgeFlow(active),
+  });
 
   // Plano 19: ensure ~/.pi/piper/{sessions,skills}/ exist and deploy the
   // agent-network skill on first load. resources_discover lets Pi find it.
@@ -2642,7 +2687,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // the waiting flag here so it can't outlive the run. No-op when the
     // flag is already false (no extra broadcast).
     if (ext.myRoomMeta?.waiting_for_input === true) {
-      _publishWaitingForUser(false);
+      _resetWaitingForInput();
     }
     // Reconciliation fallback (2026-08-22): snapshot the cumulative turn
     // text BEFORE clearing it, and ride it on agent_done. Receivers that
@@ -2730,10 +2775,10 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   pi.on("ui_prompt_start", (event: UIPromptStartEvent) => {
     const kind = typeof event?.kind === "string" ? event.kind : undefined;
     const title = typeof event?.title === "string" ? event.title : undefined;
-    _publishWaitingForUser(true, kind, title);
+    _setWaitingSdkInput(true, kind, title);
   });
   pi.on("ui_prompt_end", () => {
-    _publishWaitingForUser(false);
+    _setWaitingSdkInput(false);
   });
 
   // Plan/32: compaction feedback. compact() doesn't run a turn, so bracket it
@@ -2779,7 +2824,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // survive into the new session's hello/meta snapshot. Published (not just
     // reset) because the relay link is typically still up here.
     if (ext.myRoomMeta?.waiting_for_input === true) {
-      _publishWaitingForUser(false);
+      _resetWaitingForInput();
     }
     // session_shutdown disposes per-session pi-ask subscriptions. A host that
     // reuses this module instance does NOT re-run the factory, so rebind the

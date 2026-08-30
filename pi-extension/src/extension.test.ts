@@ -1714,6 +1714,54 @@ describe("multi-channel broadcast (W2D)", () => {
     await new Promise((r) => setTimeout(r, 80)); // drain window for later tests
   });
 
+  test("plan/137: a re-attaching owner receives pending ask flows (sheet recovery)", async () => {
+    const APP_PEER_ID = OWNER_STANDARD_FIXTURE;
+    await _pairForTest(APP_PEER_ID);
+    // AFTER pairing: install the events-bus pi so the bridge exists — the
+    // factory runs inside _pairForTest bind a bus-less pi (bridge null).
+    const harness = captureEventHarness();
+
+    // Owner drops; the agent asks while nobody is attached.
+    relayRef.current!.emit("message", JSON.stringify({ type: "peer_offline", peer: APP_PEER_ID }));
+    await vi.waitFor(() => expect(_getActivePeerCountForTest()).toBe(0), { timeout: 2000 });
+
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+    harness.emitBus("@eko24ive/pi-ask:started", {
+      version: 1,
+      flowId: "tool:tc_re",
+      toolCallId: "tc_re",
+      source: "tool",
+      title: "Direction",
+      questions: [
+        {
+          id: "goal",
+          label: "Goal",
+          prompt: "What's the goal?",
+          type: "single",
+          required: true,
+          options: [{ value: "a", label: "Alpha" }],
+        },
+      ],
+    });
+    // No owner attached → the one-shot `started` broadcast reaches nobody.
+    const liveReqs = relayRef.current!.send.mock.calls.slice(sendsBefore)
+      .map((c) => c[0] as string).map(decodeSentCt)
+      .filter((d) => d.inner.type === "extension_ui_request");
+    expect(liveReqs).toHaveLength(0);
+
+    // Owner returns → the peer_online pre-attach must replay the pending flow
+    // so the sheet opens without waiting for the app's session_sync.
+    relayRef.current!.emit("message", JSON.stringify({ type: "peer_online", peer: APP_PEER_ID }));
+    await vi.waitFor(() => {
+      const reqs = relayRef.current!.send.mock.calls.slice(sendsBefore)
+        .map((c) => c[0] as string).map(decodeSentCt)
+        .filter((d) => d.peer === APP_PEER_ID && d.inner.type === "extension_ui_request");
+      expect(reqs).toHaveLength(1);
+      expect(reqs[0]!.inner["id"]).toBe("tool:tc_re");
+    }, { timeout: 2000 });
+    await new Promise((r) => setTimeout(r, 80)); // drain window for later tests
+  });
+
   test("attach while idle seeds no turn and sends no catch-up chunk", async () => {
     await _pairForTest("idleOwner__123456");
     const onUpdate = captureEventHandler("message_update");
@@ -7243,6 +7291,76 @@ describe("model meta", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  test("plan/137: an ask flow publishes waiting_for_input with NO ui_prompt events (old-pi fallback)", async () => {
+    // The harness pi exposes an events bus but never fires ui_prompt_* — the
+    // pre-0.84.4 case. The bridge's active-flow edge must flip the flag alone.
+    const harness = captureEventHarness();
+    await _connectForTest(makeMockCtx("/tmp/remote-pi-waiting-bridge"));
+
+    harness.emitBus("@eko24ive/pi-ask:started", {
+      version: 1,
+      flowId: "tool:tc_1",
+      toolCallId: "tc_1",
+      source: "tool",
+      title: "Direction",
+      questions: [
+        {
+          id: "goal",
+          label: "Goal",
+          prompt: "What's the goal?",
+          type: "single",
+          required: true,
+          options: [{ value: "a", label: "Alpha" }],
+        },
+      ],
+    });
+
+    let updates = relayRef.current!.sendControl.mock.calls
+      .map((c) => c[0] as { type: string; meta?: { waiting_for_input?: boolean } })
+      .filter((f) => f.type === "room_meta_update" && f.meta?.waiting_for_input !== undefined);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.meta?.waiting_for_input).toBe(true);
+
+    harness.emitBus("@eko24ive/pi-ask:completed", { version: 1, flowId: "tool:tc_1" });
+    updates = relayRef.current!.sendControl.mock.calls
+      .map((c) => c[0] as { type: string; meta?: { waiting_for_input?: boolean } })
+      .filter((f) => f.type === "room_meta_update" && f.meta?.waiting_for_input !== undefined);
+    expect(updates).toHaveLength(2);
+    expect(updates[1]!.meta?.waiting_for_input).toBe(false);
+  });
+
+  test("plan/137: a bridge flow's falling edge does not clear an open SDK prompt", async () => {
+    // sdk prompt opens, then a bridge flow opens+completes: the merged flag
+    // must stay true until the SDK's own ui_prompt_end.
+    const harness = captureEventHarness();
+    await _connectForTest(makeMockCtx("/tmp/remote-pi-waiting-or"));
+
+    harness.handler("ui_prompt_start")({ type: "ui_prompt_start", reason: "ui_prompt", kind: "confirm" });
+    harness.emitBus("@eko24ive/pi-ask:started", {
+      version: 1,
+      flowId: "tool:tc_or",
+      toolCallId: "tc_or",
+      source: "tool",
+      title: "OR",
+      questions: [
+        { id: "q", label: "Q", prompt: "Q?", type: "single", required: true, options: [{ value: "a", label: "A" }] },
+      ],
+    });
+    harness.emitBus("@eko24ive/pi-ask:completed", { version: 1, flowId: "tool:tc_or" });
+
+    const updates = relayRef.current!.sendControl.mock.calls
+      .map((c) => c[0] as { type: string; meta?: { waiting_for_input?: boolean } })
+      .filter((f) => f.type === "room_meta_update" && f.meta?.waiting_for_input !== undefined);
+    // true (sdk) → true (bridge open) → true (bridge closes, sdk still open)
+    expect(updates.map((u) => u.meta?.waiting_for_input)).toEqual([true, true, true]);
+
+    harness.handler("ui_prompt_end")({ type: "ui_prompt_end", reason: "ui_prompt", kind: "confirm" });
+    const after = relayRef.current!.sendControl.mock.calls
+      .map((c) => c[0] as { type: string; meta?: { waiting_for_input?: boolean } })
+      .filter((f) => f.type === "room_meta_update" && f.meta?.waiting_for_input !== undefined);
+    expect(after.at(-1)!.meta?.waiting_for_input).toBe(false);
   });
 
   test("model_select with no model.name falls back to model.id", async () => {

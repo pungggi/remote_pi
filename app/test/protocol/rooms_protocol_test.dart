@@ -241,5 +241,24 @@ void main() {
         'peers': ['a'],
       });
     });
+
+    test('route_error parses (plan/137) and defaults room to main', () {
+      final c = ControlInbound.tryFromJson({
+        'type': 'route_error',
+        'peer': 'epk_A',
+        'room': 'aB12CD34eF56',
+      });
+      expect(c, isA<RouteError>());
+      final r = c! as RouteError;
+      expect(r.peer, 'epk_A');
+      expect(r.room, 'aB12CD34eF56');
+
+      // A legacy/omitted room means the Pi's default room.
+      final legacy = ControlInbound.tryFromJson({
+        'type': 'route_error',
+        'peer': 'epk_A',
+      });
+      expect((legacy! as RouteError).room, 'main');
+    });
   });
 }

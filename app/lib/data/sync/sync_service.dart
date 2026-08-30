@@ -19,6 +19,7 @@ import 'package:app/data/local/records/session_index_record.dart';
 import 'package:app/data/sync/sync_events.dart';
 import 'package:app/data/transport/channel.dart';
 import 'package:app/data/transport/connection_manager.dart';
+import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/data/transport/stream_probe.dart';
 import 'package:app/domain/contracts/service.dart';
 import 'package:app/domain/session_state.dart';
@@ -34,6 +35,7 @@ class SyncService extends Service {
   StreamSubscription<ServerMessage>? _msgSub;
   StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
   StreamSubscription<Map<String, PresenceState>>? _presenceSub;
+  StreamSubscription<RouteErrorEvent>? _routeErrorSub;
 
   // Active session being written (follows ConnectionManager).
   String? _activeEpk;
@@ -193,6 +195,12 @@ class SyncService extends Service {
       _syncTurnStateFromRoomMeta();
     });
     _presenceSub = _conn.presenceStream.listen((_) => _writeRuntime());
+    // Plan/137 — the relay NACKed a destination we tried to reach: the
+    // Pi behind the active room is gone right now. Fail every pending
+    // steer visually (the ⚠ row explains why) instead of letting
+    // `steering…` spin forever; the no-echo backstop keeps handling the
+    // optimistic bubbles that never got an echo.
+    _routeErrorSub = _conn.routeErrorStream.listen(_onRouteError);
     _onStatus(_conn.status); // replay current
   }
 
@@ -1513,6 +1521,34 @@ class SyncService extends Service {
     });
   }
 
+  /// Plan/137 — relay NACK for the active room: the destination Pi is
+  /// unreachable right now. Fail the pending steers (labels off) and surface
+  /// one ⚠ row so the user knows WHY the message went nowhere — before this,
+  /// a dead/phantom room black-holed the envelope and `steering…` spun
+  /// forever (incident 2026-08-30, room `rcmoto_pi`).
+  void _onRouteError(RouteErrorEvent e) {
+    final epk = _activeEpk;
+    if (epk == null || _activeRoomId != e.roomId) return;
+    // RouteErrorEvent.epk is canonicalized by ConnectionManager; the active
+    // epk may still be in the stored (url-safe) form — compare canonically.
+    if (epk != e.epk && toStandardB64(epk) != e.epk) return;
+    _clearSteeringLabels();
+    // Reuse the provider-error rendering path (same ⚠ bubble).
+    // ignore: discarded_futures
+    _upsert(
+      MsgRole.assistant,
+      'route_err_${DateTime.now().millisecondsSinceEpoch}',
+      (seq, _) => MessageRecord(
+        id: 'route_err_$seq',
+        seq: seq,
+        role: MsgRole.assistant,
+        text: '⚠ Not delivered — Pi is unreachable. It will reconnect '
+            'automatically; resend when it is back online.',
+        ts: DateTime.now(),
+      ),
+    );
+  }
+
   Future<void> _removePendingById(String id) {
     final epk = _activeEpk;
     if (epk == null) return Future<void>.value();
@@ -1791,6 +1827,7 @@ class SyncService extends Service {
     _msgSub?.cancel();
     _roomsSub?.cancel();
     _presenceSub?.cancel();
+    _routeErrorSub?.cancel();
     _streamingController.close();
     _eventController.close();
     _extensionUiController.close();

@@ -186,6 +186,12 @@ class ConnectionManager extends Service {
   /// fanned out before room-cache bookkeeping like [RunDoneEvent].
   final _waitingForInputController =
       StreamController<WaitingForInputEvent>.broadcast();
+
+  /// Plan/137 — relay route NACKs for unroutable destinations (the app
+  /// steered into a room whose Pi has no live relay connection). Events,
+  /// not state: SyncService uses them to fail pending steers/sends
+  /// immediately instead of an unbounded `steering…` spinner.
+  final _routeErrorController = StreamController<RouteErrorEvent>.broadcast();
   bool _roomsRestored = false;
   ConnectionStatus _status = const StatusNoPeer();
   PeerRecord? _activePeer;
@@ -363,6 +369,11 @@ class ConnectionManager extends Service {
   /// so a reconnecting app cannot re-fire the notification.
   Stream<WaitingForInputEvent> get waitingForInputStream =>
       _waitingForInputController.stream;
+
+  /// Plan/137 — route NACKs observed for any `(peer, room)` the app tried
+  /// to reach. Fires as soon as the relay reports the destination gone.
+  Stream<RouteErrorEvent> get routeErrorStream =>
+      _routeErrorController.stream;
 
   Map<String, List<RoomInfo>> get roomsSnapshot => _roomsSnapshot();
 
@@ -714,6 +725,7 @@ class ConnectionManager extends Service {
     // Plan/132 — events-only stream; safe to close on teardown.
     _runDoneController.close();
     _waitingForInputController.close();
+    _routeErrorController.close();
   }
 
   // ---------------------------------------------------------------------------
@@ -930,6 +942,24 @@ class ConnectionManager extends Service {
           _liveRoomIds.remove(key);
         }
         if (removed) roomsDirty = true;
+      case RouteError(:final peer, :final room):
+        // Plan/137 — the relay NACKed an envelope addressed to (peer,
+        // room): no live connection there right now. Fan the event out
+        // FIRST (it's a signal, not state), then flip the cached
+        // presence to offline so the active chat reacts. The rooms
+        // cache stays untouched — the periodic RoomsSnapshot recheck
+        // self-heals a false offline within one interval, and a
+        // reconnecting Pi re-announces.
+        final key = toStandardB64(peer);
+        if (!_routeErrorController.isClosed) {
+          _routeErrorController.add(RouteErrorEvent(epk: key, roomId: room));
+        }
+        final prev = _presence[key];
+        const next = PresenceOffline();
+        if (!_presenceEquals(prev, next)) {
+          _presence[key] = next;
+          presenceDirty = true;
+        }
       case RoomMetaUpdated(
         :final peer,
         :final roomId,

@@ -581,6 +581,44 @@ no stream JSONL do `pi --mode rpc` e acendem o badge âmbar na aba
 - Relay antigo derruba a chave silenciosamente; app antigo ignora —
 degradação graciosa nos dois sentidos.
 
+### Reforço plano/137 (2026-08-30)
+
+O sinal também nasce de uma **segunda fonte**: a extension publica
+`waiting_for_input = true` enquanto o bridge do pi-ask tem **fluxos ativos**
+(aresta vazio↔não-vazio). O flag publicado é o **OU lógico** das duas fontes
+(eventos `ui_prompt_*` do SDK + fluxos do bridge), mantidas como booleans
+separados para que a borda de queda de uma não apague o prompt ainda aberto
+da outra. Isso cobre pis < 0.84.4 (sem eventos) e dobra a robustez do caso
+mais comum (ask_user) — belt-and-suspenders.
+
+---
+
+## NACK de rota (`route_error`) — 2026-08-30 (plano 137)
+
+O relay **dropa silenciosamente** envelopes endereçados a um `(peer, room)`
+sem conexão viva (churn normal de reconexão). Para o remetente APP isso era
+um buraco negro: um steer para um Pi morto/fantasma girava `steering…`
+para sempre, sem erro nenhum. O relay agora **NACKa**:
+
+```jsonc
+// relay → sender (control, sem ct)
+{ "type": "route_error", "peer": "<dest-epk>", "room": "<dest-room>" }
+```
+
+- **Identifica o destino, não a mensagem**: o corpo é `ct` opaco — o relay
+não conhece o id interno. O app correlaciona por recência do `(peer, room)`.
+- **Rate-limit**: no máx. 1 NACK por `(dest, room)` por conexão a cada **5 s**
+  (mesmo padrão do dedup de control-replies) — o churn de broadcasts
+  pi→app durante reconexão do app não vira spam (a extension ignora o tipo
+  desconhecido; só o app age sobre ele).
+- **App**: `route_error` para a sala ativa → limpa os labels `steering…`, escreve
+  um ⚠ "Not delivered — Pi is unreachable" e marca a presence do peer offline
+  (o recheck periódico de snapshots auto-cura um falso offline).
+- Compat: relay antigo não NACKa (comportamento anterior); app antigo
+  dropa o control desconhecido.
+
+---
+
 ---
 
 ## Pareamento

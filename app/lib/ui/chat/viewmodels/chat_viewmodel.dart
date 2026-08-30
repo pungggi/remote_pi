@@ -206,7 +206,57 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   void _onMessages(List<MessageRecord> rows) {
     _messages = [for (final r in rows) r.toChatMessage()];
+    _trackPendingAskTools();
     _recompute();
+  }
+
+  /// Plan/137 — first-seen tracking for pending `ask_user` tool calls. The
+  /// recovery card must not flash while the live extension_ui_request frame
+  /// is still in flight (it lands ~1 s after the tool call appears), so we
+  /// only surface it after [askRecoveryDelay]. Also arms a one-shot timer
+  /// per newly-seen call so the card appears without any further state
+  /// change (nothing else fires while the agent is blocked in the tool).
+  static const Duration askRecoveryDelay = Duration(seconds: 3);
+  final Map<String, DateTime> _askToolFirstSeen = {};
+  Timer? _askRecoveryTimer;
+
+  void _trackPendingAskTools() {
+    final pending = <String>{};
+    for (final m in _messages) {
+      if (m is ToolEvent && m.tool == 'ask_user' && m.status == ToolEventStatus.pending) {
+        pending.add(m.toolCallId);
+        final firstSeen = _askToolFirstSeen.putIfAbsent(
+          m.toolCallId,
+          () => DateTime.now(),
+        );
+        if (DateTime.now().difference(firstSeen) < askRecoveryDelay) {
+          _askRecoveryTimer ??= Timer(askRecoveryDelay, _recompute);
+        }
+      }
+    }
+    _askToolFirstSeen.removeWhere((id, _) => !pending.contains(id));
+  }
+
+  /// Plan/137 — `true` when a pending ask_user has been sitting WITHOUT a
+  /// rendered question sheet for longer than [askRecoveryDelay]: the request
+  /// frame was lost (bridge gap, expired replay, pre-plan/137 extension) and
+  /// the phone has no answer path. The card offers Retry (force a sync so the
+  /// bridge replays the flow) and Cancel (abort the blocked turn, which also
+  /// releases any queued steering).
+  bool get _needsAskRecovery {
+    if (_sync.currentExtensionUiRequest != null) return false;
+    if (_runtime.connection != RuntimeConnection.online) return false;
+    final now = DateTime.now();
+    for (final m in _messages) {
+      if (m is ToolEvent &&
+          m.tool == 'ask_user' &&
+          m.status == ToolEventStatus.pending &&
+          (_askToolFirstSeen[m.toolCallId] == null ||
+              now.difference(_askToolFirstSeen[m.toolCallId]!) >= askRecoveryDelay)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   void _onStreaming(StreamingMessage? s) {
@@ -344,6 +394,7 @@ class ChatViewModel extends ViewModel<ChatState> {
       pendingUiRequest: _sync.currentExtensionUiRequest,
       pendingUiError: _pendingUiError,
       truncated: _truncated,
+      askRecovery: _needsAskRecovery,
     );
   }
 
@@ -367,6 +418,11 @@ class ChatViewModel extends ViewModel<ChatState> {
       );
 
   Future<void> cancel(String targetId) => _sync.cancel(targetId);
+
+  /// Plan/137 — Retry on the ask-recovery card: force a fresh session_sync
+  /// so the Pi-extension bridge replays any pending ask flow (the sheet
+  /// opens if the flow is still active server-side).
+  void retryAskRecovery() => _sync.requestSync();
 
   Future<void> approveTool(String toolCallId, ApproveDecision decision) =>
       _sync.approveTool(toolCallId, decision);
@@ -431,6 +487,8 @@ class ChatViewModel extends ViewModel<ChatState> {
     _truncatedSub?.cancel();
     _roomsSub?.cancel();
     _statusSub?.cancel();
+    _askRecoveryTimer?.cancel();
+    _askToolFirstSeen.clear();
     super.dispose();
   }
 }

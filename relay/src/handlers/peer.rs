@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
@@ -26,6 +26,12 @@ use crate::rooms::{RoomMeta, RoomMetaPatch};
 /// (~64 MiB) applied. 5 MiB covers a max-size `ct` + wrapper with margin
 /// (security fix 2026-08).
 pub const MAX_WS_MESSAGE_BYTES: usize = 5 * 1024 * 1024;
+
+/// Plan/137 — minimum spacing between `route_error` NACKs for the same
+/// `(dest peer, room)` on one connection. Mirrors the control-reply dedup
+/// TTL pattern: churn-y drops (an app mid-reconnect) collapse to one NACK
+/// per window, while a genuinely dead destination still surfaces promptly.
+const ROUTE_ERROR_TTL: Duration = Duration::from_secs(5);
 
 /// Axum route handler: validates the WebSocket upgrade and hands the upgraded
 /// socket to `handle_peer`, which owns the connection for its lifetime.
@@ -185,6 +191,12 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
     // (last sent reply, sent-at) per target peer — see the TTL note at the
     // rooms_check handler; same firehose-vs-poll contract as presence.
     let mut last_rooms_resp: HashMap<String, (String, std::time::Instant)> = HashMap::new();
+    // Plan/137 — route_error NACK rate-limit: last send per (dest peer, room).
+    // Without it, pi→app broadcast churn while an app reconnects would spam
+    // the pi with NACKs for every dropped frame (the historical "~94% of the
+    // log" churn). One per window per destination keeps the signal ("that
+    // room is gone right now") without the noise.
+    let mut last_route_error_sent_at: HashMap<(String, String), Instant> = HashMap::new();
 
     // ── Authorization helper (security fix 2026-08) ─────────────────────────
     // Presence/rooms queries about OTHER peers are metadata disclosure: they
@@ -518,6 +530,33 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                         bytes = ct_len,
                                         "dest (peer, room) not found, dropping",
                                     );
+                                    // Plan/137 — NACK the sender (rate-limited):
+                                    // an app steering into a dead/phantom room
+                                    // otherwise black-holes with an unbounded
+                                    // "steering…" spinner. The frame is opaque
+                                    // (encrypted ct), so the NACK identifies the
+                                    // DESTINATION, not the message id — the app
+                                    // correlates by (peer, room) recency.
+                                    let key = (dest_peer.clone(), dest_room.clone());
+                                    let now = Instant::now();
+                                    let due = last_route_error_sent_at
+                                        .get(&key)
+                                        .is_none_or(|sent_at| {
+                                            now.duration_since(*sent_at) >= ROUTE_ERROR_TTL
+                                        });
+                                    if due {
+                                        last_route_error_sent_at.insert(key, now);
+                                        let nack = serde_json::json!({
+                                            "type": "route_error",
+                                            "peer": dest_peer,
+                                            "room": dest_room,
+                                        });
+                                        if let Ok(line) = serde_json::to_string(&nack)
+                                            && sink.send(Message::Text(line)).await.is_err()
+                                        {
+                                            break 'routing;
+                                        }
+                                    }
                                 }
                             }
                         }
