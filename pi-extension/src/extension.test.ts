@@ -244,6 +244,7 @@ const {
   _getCachedPublicKeyForTest,
   _hasActivePeerForTest,
   _getActivePeerCountForTest,
+  _getWaitingBridgeFlowForTest,
   _checkSelfRevokeForTest,
   _restartSupervisorCommand,
   _setDisposedForTest,
@@ -4799,6 +4800,56 @@ describe("session_shutdown teardown", () => {
     expect(harness.busListenerCount(started)).toBe(1);
     expect(harness.busListenerCount(completed)).toBe(1);
     expect(harness.busListenerCount(submitResult)).toBe(1);
+  });
+
+  test("plan/137 (PR #59 review #2): the session_start rebind keeps the waiting fallback hook", async () => {
+    // A module-reusing host: session_shutdown disposes the bridge, and the
+    // session_start handler rebinds it. The rebind MUST go through the same
+    // construction as the factory (hook wired) — a bare createExtensionUiBridge
+    // dropped onActiveFlowsChanged, so after the FIRST session pis without
+    // ui_prompt events never published waiting_for_input again.
+    const harness = captureEventHarness();
+
+    // Factory-created bridge: the hook flips the merged flag's bridge half.
+    harness.emitBus("@eko24ive/pi-ask:started", {
+      version: 1,
+      flowId: "tool:tc_rebind1",
+      toolCallId: "tc_rebind1",
+      source: "tool",
+      title: "Before shutdown",
+      questions: [
+        { id: "q", label: "Q", prompt: "Q?", type: "single", required: true, options: [{ value: "a", label: "A" }] },
+      ],
+    });
+    expect(_getWaitingBridgeFlowForTest()).toBe(true);
+    harness.emitBus("@eko24ive/pi-ask:completed", { version: 1, flowId: "tool:tc_rebind1" });
+    expect(_getWaitingBridgeFlowForTest()).toBe(false);
+
+    await harness.handler("session_shutdown")({
+      type: "session_shutdown",
+      reason: "resume",
+    });
+    expect(_getWaitingBridgeFlowForTest()).toBe(false);
+
+    // Rebind — then a NEW flow on the rebound bridge must still flip the
+    // flag. Pre-fix this stayed false (no hook on the recreated bridge).
+    harness.handler("session_start")(
+      { type: "session_start" },
+      makeMockCtx(),
+    );
+    harness.emitBus("@eko24ive/pi-ask:started", {
+      version: 1,
+      flowId: "tool:tc_rebind2",
+      toolCallId: "tc_rebind2",
+      source: "tool",
+      title: "After rebind",
+      questions: [
+        { id: "q", label: "Q", prompt: "Q?", type: "single", required: true, options: [{ value: "a", label: "A" }] },
+      ],
+    });
+    expect(_getWaitingBridgeFlowForTest()).toBe(true);
+    harness.emitBus("@eko24ive/pi-ask:completed", { version: 1, flowId: "tool:tc_rebind2" });
+    expect(_getWaitingBridgeFlowForTest()).toBe(false);
   });
 
   test("firing session_shutdown while started tears down mesh + relay → idle", async () => {

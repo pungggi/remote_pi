@@ -230,7 +230,13 @@ class ChatViewModel extends ViewModel<ChatState> {
           () => DateTime.now(),
         );
         if (DateTime.now().difference(firstSeen) < askRecoveryDelay) {
-          _askRecoveryTimer ??= Timer(askRecoveryDelay, _recompute);
+          // PR #59 review #1 — the timer must release its slot when it fires,
+          // or the `??=` above never arms again and a LATER ask_user flow's
+          // card would only appear on some unrelated state change.
+          _askRecoveryTimer ??= Timer(askRecoveryDelay, () {
+            _askRecoveryTimer = null;
+            _recompute();
+          });
         }
       }
     }

@@ -321,9 +321,10 @@ class SyncService extends Service {
   /// (chat re-entry catch-up, plan/100), so the channel's replay LRU cannot
   /// distinguish a pending replay (deliver) from a post-completion duplicate
   /// (drop) — only this layer, which observes the completing `notify`, can.
-  /// Resurrecting a resolved flow would re-open its sheet with no way to
-  /// clear it: answering the stale sheet only produces pi-ask's
-  /// `flow_not_found` warning, which keeps the sheet open (stuck modal).
+  /// Resurrecting a resolved flow would re-open its sheet for a flow that no
+  /// longer exists: answering it only yields pi-ask's `flow_not_found`
+  /// dismissal (plan/137 review #3 turned that NACK from a stuck warning
+  /// into a dismiss) — the sheet itself is already a phantom.
   bool _handleExtensionUiRequest(ExtensionUiRequest req) {
     if (req.method == ExtensionUiMethod.notify) {
       final isWarning =

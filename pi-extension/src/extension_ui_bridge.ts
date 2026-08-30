@@ -200,11 +200,15 @@ export function createExtensionUiBridge(
   });
 
   // submit-result is per-request feedback. On error (invalid answer / flow
-  // gone) surface a warning so the submitting owner can retry. The notify reuses
-  // the flowId as its id (same as the originating request) so the app correlates
-  // it to its open modal; notify_type "warning" distinguishes it from the
-  // `completed` dismiss (same id, absent/other notify_type). Success is covered
-  // by `completed`, so ok is a no-op here.
+  // gone) surface feedback to the submitting owner. PR #59 review #3: a
+  // `flow_not_found` NACK DISMISSES the sheet (info notify, same contract as
+  // `completed`) — the flow no longer exists, so there is nothing to retry
+  // against; a warning would keep the phone's durable sheet (plan/129) open
+  // on a dead Submit forever. Real answer errors (invalid_answer…) keep the
+  // warning + retry hint. The notify reuses the flowId as its id (same as the
+  // originating request) so the app correlates it to its open modal;
+  // notify_type "warning" distinguishes retryable from dismiss. Success
+  // (ok:true) is covered by `completed`, so it is a no-op here.
   const unsubResult = events.on(PI_ASK_SUBMIT_RESULT, (raw: unknown) => {
     const e = raw as {
       version?: number;
@@ -215,12 +219,6 @@ export function createExtensionUiBridge(
       message?: unknown;
     } | null;
     if (!e || e.version !== 1 || e.ok === true) return;
-    const message =
-      typeof e.message === "string"
-        ? e.message
-        : typeof e.error === "string"
-          ? e.error
-          : "Clarification answer was not accepted.";
     const flowId =
       typeof e.flowId === "string"
         ? e.flowId
@@ -233,6 +231,24 @@ export function createExtensionUiBridge(
           ? activeFlows.keys().next().value
           : undefined;
     if (!flowId) return;
+    // Plan/137 cancel-after-TTL: the emitted cancel targets a flow the
+    // bridge forgot; pi-ask NACKs flow_not_found → the dismiss below closes
+    // the stale sheet instead of stranding it.
+    if (e.error === "flow_not_found") {
+      broadcast({
+        type: "extension_ui_request",
+        id: flowId,
+        method: "notify",
+        message: "Clarification is no longer active.",
+      });
+      return;
+    }
+    const message =
+      typeof e.message === "string"
+        ? e.message
+        : typeof e.error === "string"
+          ? e.error
+          : "Clarification answer was not accepted.";
     broadcast({
       type: "extension_ui_request",
       id: flowId,

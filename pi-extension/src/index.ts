@@ -372,6 +372,29 @@ function _setWaitingBridgeFlow(active: boolean): void {
   _publishWaitingForUser(ext.waitingSdkInput || ext.waitingBridgeFlow, "ask_flow");
 }
 
+/**
+ * Plan/100/137 — (re)bind the pi-ask bridge for THIS pi instance, always with
+ * the waiting_for_input fallback hook wired. Two callers: the extension
+ * factory (fresh module) and the `session_start` rebind (module-reusing hosts
+ * whose `session_shutdown` disposed the bridge). PR #59 review #2: the rebind
+ * must go through the SAME construction as the factory — a bare
+ * `createExtensionUiBridge(pi, _broadcastToActive)` there silently dropped
+ * `onActiveFlowsChanged`, so after the first session replacement pis without
+ * `ui_prompt_*` events stopped publishing `waiting_for_input` entirely.
+ *
+ * Disposes any prior bridge first so a rebind can't leak subscriptions or
+ * double-send; the dispose fires the OLD bridge's hook with `false`, so the
+ * flag reset below runs first — a rebind must not inherit a stale true from
+ * its predecessor (nor publish a spurious false after the reset helper did).
+ */
+function _recreateExtensionUiBridge(pi: ExtensionAPI): void {
+  ext.extensionUiBridge?.dispose();
+  ext.waitingBridgeFlow = false;
+  ext.extensionUiBridge = createExtensionUiBridge(pi, _broadcastToActive, {
+    onActiveFlowsChanged: (active) => _setWaitingBridgeFlow(active),
+  });
+}
+
 /** Plan/134/137 defensive reset — a session rebind, run end, or teardown kills
  *  any prompt that belonged to the replaced context. Clears BOTH sources so a
  *  stale true can't survive into the next hello/meta snapshot. */
@@ -1044,6 +1067,16 @@ export function _getRoomMetaForTest(): ExtensionState["myRoomMeta"] {
 /** Test-only: true if a specific peer (base64 std) has an attached channel. */
 export function _hasActivePeerForTest(appPeerIdStd: string): boolean {
   return ext.activePeers.has(appPeerIdStd);
+}
+
+/**
+ * Test-only (plan/137, PR #59 review #2): the bridge-flow half of the merged
+ * `waiting_for_input` flag. Lets tests prove the `session_start` rebind kept
+ * the `onActiveFlowsChanged` hook wired — the flag flipping on a `started`
+ * event is the observable of that wiring, no relay needed.
+ */
+export function _getWaitingBridgeFlowForTest(): boolean {
+  return ext.waitingBridgeFlow;
 }
 
 
@@ -2468,17 +2501,8 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // Plan/100 — bridge @eko24ive/pi-ask clarification flows to the paired app.
   // Inert when pi-ask isn't installed (no events fire) or the SDK exposes no
   // events bus. ask_user without pi-ask doesn't exist, so this never breaks a
-  // Pi that doesn't use the extension. Dispose any prior bridge first so a
-  // factory re-run (new pi session) can't leak subscriptions or double-send.
-  ext.extensionUiBridge?.dispose();
-  // Plan/137 — the bridge's empty↔non-empty transitions feed the merged
-  // waiting_for_input publisher (fallback for pis without ui_prompt events).
-  // The dispose above fires the hook with `false` for the OLD bridge; reset
-  // first so a factory re-run can't inherit a stale true from its predecessor.
-  ext.waitingBridgeFlow = false;
-  ext.extensionUiBridge = createExtensionUiBridge(pi, _broadcastToActive, {
-    onActiveFlowsChanged: (active) => _setWaitingBridgeFlow(active),
-  });
+  // Pi that doesn't use the extension.
+  _recreateExtensionUiBridge(pi);
 
   // Plano 19: ensure ~/.pi/piper/{sessions,skills}/ exist and deploy the
   // agent-network skill on first load. resources_discover lets Pi find it.
@@ -2829,8 +2853,12 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // session_shutdown disposes per-session pi-ask subscriptions. A host that
     // reuses this module instance does NOT re-run the factory, so rebind the
     // bridge here; fresh-module hosts already created theirs in the factory.
+    // PR #59 review #2 — always via the shared helper so the rebind keeps the
+    // waiting_for_input fallback hook (a bare createExtensionUiBridge here
+    // silently dropped it, killing the fallback after the first session on
+    // pis without ui_prompt events).
     if (!ext.extensionUiBridge) {
-      ext.extensionUiBridge = createExtensionUiBridge(pi, _broadcastToActive);
+      _recreateExtensionUiBridge(pi);
     }
     // Rearm a reused-but-disposed instance. The session_shutdown teardown (below)
     // sets ext.disposed=true assuming the host re-evaluates THIS module fresh for the
