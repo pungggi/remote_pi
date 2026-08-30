@@ -575,9 +575,15 @@ genérico é suprimido.
 - **Defensivo na extension**: `agent_end`, rebind de `session_start` e
 `_goIdle` limpam um `true` órfão (os caminhos de abort são os arriscados
 para um `ui_prompt_end` perdido).
-- Cockpit (RPC, sem relay): os mesmos eventos `ui_prompt_start/end` chegam
-no stream JSONL do `pi --mode rpc` e acendem o badge âmbar na aba
-(tri-estado idêntico).
+- Cockpit (RPC, sem relay): o stream JSONL do `pi --mode rpc` **não**
+encaminha os eventos `ui_prompt_start/end` (são eventos do
+ExtensionRunner, não do AgentSession — verificado empiricamente no pi
+0.84.4). A extensão remote-pi espelha a transição como custom message
+`remote-pi:ui-prompt` (`message_start` role=custom,
+`details: {waiting, kind?, title?}`, `display:false` — o mesmo canal do
+`remote-pi:relay-state`), que o Cockpit mapeia para o mesmo tri-estado do
+badge âmbar na aba. O mapeamento direto dos eventos crus fica como
+forward-compat.
 - Relay antigo derruba a chave silenciosamente; app antigo ignora —
 degradação graciosa nos dois sentidos.
 

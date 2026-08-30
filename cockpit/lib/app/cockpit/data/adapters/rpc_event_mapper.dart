@@ -123,6 +123,23 @@ class RpcEventMapper {
           assigned: assigned,
           changed: details['changed'] == true,
         );
+      // Plano 134 (PR #58 review) — a extensão remote-pi espelha o bracket
+      // de prompt bloqueante neste canal: `--mode rpc` NÃO encaminha os
+      // eventos `ui_prompt_start/end` do ExtensionRunner (verificado
+      // empiricamente no pi 0.84.4), mas custom messages chegam — o mesmo
+      // canal do `relay-state`. Os cases diretos `ui_prompt_start/end`
+      // ficam como forward-compat para um pi futuro que os encaminhe.
+      case 'remote-pi:ui-prompt':
+        if (details is! Map<String, dynamic>) {
+          return const RpcUnknown('message_start:ui-prompt:no-details');
+        }
+        final kind = details['kind'] as String?;
+        return details['waiting'] == true
+            ? RpcUiPromptStart(
+                kind: kind ?? 'custom',
+                title: details['title'] as String?,
+              )
+            : RpcUiPromptEnd(kind ?? 'custom');
       default:
         return RpcUnknown('message_start:custom:${customType ?? "?"}');
     }

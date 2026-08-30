@@ -22,6 +22,13 @@ final class RpcAgentEnd extends RpcEvent {
 /// de `ctx.ui` (plano 134; pi 0.84.4). Cobre `confirm`/`select`/`input`/
 /// `editor`/`custom` de QUALQUER extensão — pi-ask inclusive. `kind` é um
 /// desses cinco; `title` é opcional (custom não tem).
+///
+/// **Canal de entrega (PR #58 review):** o stream JSONL do `--mode rpc`
+/// NÃO encaminha os eventos `ui_prompt_start/end` do ExtensionRunner — a
+/// extensão remote-pi os espelha como custom message
+/// `remote-pi:ui-prompt` (`message_start` role=custom, `details.waiting`),
+/// que o mapper traduz para cá. O case direto do tipo cruí fica como
+/// forward-compat para um pi futuro que encaminhe os eventos nativamente.
 final class RpcUiPromptStart extends RpcEvent {
   const RpcUiPromptStart({required this.kind, this.title});
 
@@ -30,7 +37,8 @@ final class RpcUiPromptStart extends RpcEvent {
 }
 
 /// `ui_prompt_end` — a espera terminou (respondida / cancelada / abortada).
-/// Carrega o `kind` do prompt que fechou.
+/// Carrega o `kind` do prompt que fechou. Mesmo canal de entrega do
+/// [RpcUiPromptStart] (`remote-pi:ui-prompt` com `details.waiting == false`).
 final class RpcUiPromptEnd extends RpcEvent {
   const RpcUiPromptEnd(this.kind);
 

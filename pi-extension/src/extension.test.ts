@@ -7298,6 +7298,47 @@ describe("model meta", () => {
     await new Promise((r) => setTimeout(r, 80)); // drain window for later tests
   });
 
+  test("PR #58 review: ui_prompt transitions also emit a remote-pi:ui-prompt custom message for RPC clients", async () => {
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx("/tmp/remote-pi-waiting-rpcmsg"));
+
+    const onPromptStart = captureEventHandler("ui_prompt_start");
+    const onPromptEnd = captureEventHandler("ui_prompt_end");
+    // Swap in a spy pi AFTER the factory bound its dummy (the custom-message
+    // path reads ext.pi at emit time — mirrors the relay-state spy pattern).
+    const sendMessage = vi.fn();
+    _setPiForTest({
+      on: () => undefined, registerCommand: () => undefined,
+      registerTool: () => undefined, registerShortcut: () => undefined,
+      registerFlag: () => undefined, getFlag: () => undefined,
+      registerMessageRenderer: () => undefined,
+      sendMessage, sendUserMessage: () => undefined,
+    } as unknown as ExtensionAPI);
+
+    onPromptStart({ type: "ui_prompt_start", reason: "ui_prompt", kind: "select", title: "Pick one" });
+    onPromptEnd({ type: "ui_prompt_end", reason: "ui_prompt", kind: "select" });
+
+    const msgs = sendMessage.mock.calls
+      .map((c) => c[0] as { customType?: string; content?: string; display?: boolean; details?: Record<string, unknown> })
+      .filter((m) => m?.customType === "remote-pi:ui-prompt");
+    expect(msgs).toHaveLength(2);
+    expect(msgs[0]!.display).toBe(false);
+    expect(msgs[0]!.details).toMatchObject({ waiting: true, kind: "select", title: "Pick one" });
+    expect(msgs[0]!.content).toContain("Pick one");
+    expect(msgs[1]!.details).toMatchObject({ waiting: false });
+
+    // Transition-only: a redundant same-value publish (an unmatched
+    // ui_prompt_end) must NOT persist another transcript entry — while the
+    // relay-side publish still fires (the relay absorbs identical patches).
+    const controlsBefore = relayRef.current!.sendControl.mock.calls.length;
+    onPromptEnd({ type: "ui_prompt_end", reason: "ui_prompt", kind: "select" });
+    expect(
+      sendMessage.mock.calls
+        .map((c) => c[0] as { customType?: string })
+        .filter((m) => m?.customType === "remote-pi:ui-prompt"),
+    ).toHaveLength(2, "no third message for a redundant value");
+    expect(relayRef.current!.sendControl.mock.calls.length).toBeGreaterThan(controlsBefore);
+  });
   test("plan/134: remote-pi stop resets a stale waiting_for_input locally", async () => {
     captureHandler("remote-pi");
     await _connectForTest(makeMockCtx("/tmp/remote-pi-waiting-stop"));

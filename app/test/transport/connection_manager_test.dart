@@ -1154,7 +1154,19 @@ void _registerRoomsTests() {
           startedAt: 1000,
         ),
       );
-      await Future<void>.delayed(const Duration(milliseconds: 5));
+      // PR #58 CI flake hardening — the emit rides a `Timer(Duration.zero)`
+      // (emitDebounce: Duration.zero), which in theory always fires before a
+      // fixed `Future.delayed(5ms)`, but a loaded CI runner starved the
+      // isolate past the deadline once (run 33338770417: Expected non-empty,
+      // Actual []). Poll with a bounded deadline instead of a single fixed
+      // wait — deterministic in ordering, tolerant of scheduler starvation.
+      var drained = false;
+      for (var i = 0; i < 100 && !drained; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        drained = snapshots.isNotEmpty;
+      }
+      expect(drained, isTrue,
+          reason: 'announce must emit on roomsStream (within 500ms)');
 
       expect(cm.roomsFor('epkA'), hasLength(1));
       expect(cm.roomsFor('epkA').single.roomId, 'r1');

@@ -409,6 +409,7 @@ function _publishWaitingForUser(
   kind?: string,
   title?: string,
 ): void {
+  const prev = ext.myRoomMeta?.waiting_for_input ?? false;
   // Log-only enrichment (acceptance: "kind/title logged") — the blocking
   // dialog is already visible in the host UI, so we never notify there.
   if (waiting) {
@@ -417,6 +418,34 @@ function _publishWaitingForUser(
   if (ext.myRoomMeta) ext.myRoomMeta = { ...ext.myRoomMeta, waiting_for_input: waiting };
   if (ext.relay && ext.myRoomId) {
     ext.relay.sendControl({ type: "room_meta_update", room_id: ext.myRoomId, meta: { waiting_for_input: waiting } });
+  }
+  // PR #58 review fix — RPC clients (Cockpit) never see `ui_prompt_start/`
+  // `end`: `--mode rpc` subscribes to AgentSession events, and those are
+  // ExtensionRunner events (verified empirically on pi 0.84.4). Custom
+  // messages DO reach the RPC stream (`message_start` role=custom — the
+  // `remote-pi:relay-state` channel), so mirror the transition there.
+  // Transitions only: entries persist in the session transcript, and the
+  // relay-side publish above already fires on every call (the relay absorbs
+  // identical patches).
+  if (waiting !== prev) {
+    try {
+      ext.pi?.sendMessage({
+        customType: "remote-pi:ui-prompt",
+        content: waiting
+          ? `Waiting for your input${title ? ` (${title})` : ""}`
+          : "Prompt answered",
+        details: {
+          waiting,
+          ...(kind ? { kind } : {}),
+          ...(title ? { title } : {}),
+        },
+        display: false,
+      });
+    } catch {
+      // ext.pi stale (session replaced) or runtime not yet bound — same
+      // discipline as _emitRelayState (upstream #55): swallow, the next
+      // transition re-emits.
+    }
   }
 }
 
@@ -2501,7 +2530,12 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // Plan/100 — bridge @eko24ive/pi-ask clarification flows to the paired app.
   // Inert when pi-ask isn't installed (no events fire) or the SDK exposes no
   // events bus. ask_user without pi-ask doesn't exist, so this never breaks a
-  // Pi that doesn't use the extension.
+  // Plan/100 — bridge @eko24ive/pi-ask clarification flows to the paired app.
+  // Inert when pi-ask isn't installed (no events fire) or the SDK exposes no
+  // events bus. ask_user without pi-ask doesn't exist, so this never breaks a
+  // Pi that doesn't use the extension. Plan/137 (via the helper): dispose any
+  // prior bridge + wire the waiting_for_input fallback hook, same as the
+  // `session_start` rebind.
   _recreateExtensionUiBridge(pi);
 
   // Plano 19: ensure ~/.pi/piper/{sessions,skills}/ exist and deploy the
