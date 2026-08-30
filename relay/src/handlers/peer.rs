@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
@@ -26,6 +26,12 @@ use crate::rooms::{RoomMeta, RoomMetaPatch};
 /// (~64 MiB) applied. 5 MiB covers a max-size `ct` + wrapper with margin
 /// (security fix 2026-08).
 pub const MAX_WS_MESSAGE_BYTES: usize = 5 * 1024 * 1024;
+
+/// Plan/137 — minimum spacing between `route_error` NACKs for the same
+/// `(dest peer, room)` on one connection. Mirrors the control-reply dedup
+/// TTL pattern: churn-y drops (an app mid-reconnect) collapse to one NACK
+/// per window, while a genuinely dead destination still surfaces promptly.
+const ROUTE_ERROR_TTL: Duration = Duration::from_secs(5);
 
 /// Axum route handler: validates the WebSocket upgrade and hands the upgraded
 /// socket to `handle_peer`, which owns the connection for its lifetime.
@@ -135,6 +141,12 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             .and_then(|m| m.get("working"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        // Plan/134 — blocking-prompt flag (same default-false semantics as
+        // `working`).
+        let waiting_for_input = room_meta_val
+            .and_then(|m| m.get("waiting_for_input"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         // Plan/107b — opaque git snapshot (the relay forwards it verbatim;
         // the app parses the shape).
         let git = room_meta_val.and_then(|m| m.get("git")).cloned();
@@ -151,6 +163,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             model,
             thinking,
             working,
+            waiting_for_input,
             git,
             context_usage,
             started_at,
@@ -178,6 +191,12 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
     // (last sent reply, sent-at) per target peer — see the TTL note at the
     // rooms_check handler; same firehose-vs-poll contract as presence.
     let mut last_rooms_resp: HashMap<String, (String, std::time::Instant)> = HashMap::new();
+    // Plan/137 — route_error NACK rate-limit: last send per (dest peer, room).
+    // Without it, pi→app broadcast churn while an app reconnects would spam
+    // the pi with NACKs for every dropped frame (the historical "~94% of the
+    // log" churn). One per window per destination keeps the signal ("that
+    // room is gone right now") without the noise.
+    let mut last_route_error_sent_at: HashMap<(String, String), Instant> = HashMap::new();
 
     // ── Authorization helper (security fix 2026-08) ─────────────────────────
     // Presence/rooms queries about OTHER peers are metadata disclosure: they
@@ -355,15 +374,17 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     }
                                 }
 
-                                // ── room meta update (plano 18 + 28 + 32) ──
-                                // `meta.model`, `meta.thinking` and
-                                // `meta.working` are patched independently: a
+                                // ── room meta update (plano 18 + 28 + 32 + 134) ──
+                                // `meta.model`, `meta.thinking`,
+                                // `meta.working` and
+                                // `meta.waiting_for_input` are patched
+                                // independently: a
                                 // field absent from `meta` is *left alone* on
                                 // the room (not cleared). For the nullable
                                 // string fields, an explicit `null` clears
-                                // them. `working` is a plain bool, so it only
-                                // ever toggles — a non-bool/absent value leaves
-                                // it untouched. Mirrors the JSON Merge Patch
+                                // them. The bool flags only
+                                // ever toggle — a non-bool/absent value leaves
+                                // them untouched. Mirrors the JSON Merge Patch
                                 // shape clients already produce.
                                 "room_meta_update" => {
                                     let target_room = frame
@@ -388,6 +409,11 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     let working_patch = meta_obj
                                         .and_then(|m| m.get("working"))
                                         .and_then(|v| v.as_bool());
+                                    // Plan/134 — blocking-prompt flag, same
+                                    // toggle-only semantics as `working`.
+                                    let waiting_for_input_patch = meta_obj
+                                        .and_then(|m| m.get("waiting_for_input"))
+                                        .and_then(|v| v.as_bool());
                                     // Plan/107b — opaque git passthrough.
                                     let git_patch = meta_obj
                                         .and_then(|m| m.get("git"))
@@ -405,6 +431,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                         model: model_patch,
                                         thinking: thinking_patch,
                                         working: working_patch,
+                                        waiting_for_input: waiting_for_input_patch,
                                         git: git_patch,
                                         context_usage: context_usage_patch,
                                         run_done: run_done_patch,
@@ -503,6 +530,33 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                         bytes = ct_len,
                                         "dest (peer, room) not found, dropping",
                                     );
+                                    // Plan/137 — NACK the sender (rate-limited):
+                                    // an app steering into a dead/phantom room
+                                    // otherwise black-holes with an unbounded
+                                    // "steering…" spinner. The frame is opaque
+                                    // (encrypted ct), so the NACK identifies the
+                                    // DESTINATION, not the message id — the app
+                                    // correlates by (peer, room) recency.
+                                    let key = (dest_peer.clone(), dest_room.clone());
+                                    let now = Instant::now();
+                                    let due = last_route_error_sent_at
+                                        .get(&key)
+                                        .is_none_or(|sent_at| {
+                                            now.duration_since(*sent_at) >= ROUTE_ERROR_TTL
+                                        });
+                                    if due {
+                                        last_route_error_sent_at.insert(key, now);
+                                        let nack = serde_json::json!({
+                                            "type": "route_error",
+                                            "peer": dest_peer,
+                                            "room": dest_room,
+                                        });
+                                        if let Ok(line) = serde_json::to_string(&nack)
+                                            && sink.send(Message::Text(line)).await.is_err()
+                                        {
+                                            break 'routing;
+                                        }
+                                    }
                                 }
                             }
                         }

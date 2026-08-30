@@ -16,6 +16,14 @@ class RpcEventMapper {
         return const RpcAgentStart();
       case 'agent_end':
         return const RpcAgentEnd();
+      case 'ui_prompt_start':
+        // Plano 134 — bracket de prompt bloqueante (pi 0.84.4).
+        return RpcUiPromptStart(
+          kind: json['kind'] as String? ?? 'custom',
+          title: json['title'] as String?,
+        );
+      case 'ui_prompt_end':
+        return RpcUiPromptEnd(json['kind'] as String? ?? 'custom');
       case 'turn_start':
         return const RpcTurnStart();
       case 'turn_end':

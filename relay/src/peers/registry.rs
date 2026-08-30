@@ -302,6 +302,7 @@ impl PeerRegistry {
             current_model,
             current_thinking,
             current_working,
+            current_waiting_for_input,
             current_git,
             current_context_usage,
             changed,
@@ -325,6 +326,7 @@ impl PeerRegistry {
                             meta.model.clone(),
                             meta.thinking.clone(),
                             meta.working,
+                            meta.waiting_for_input,
                             meta.git.clone(),
                             meta.context_usage.clone(),
                         );
@@ -336,6 +338,10 @@ impl PeerRegistry {
                         }
                         if let Some(w) = patch.working {
                             meta.working = w;
+                        }
+                        // Plan/134 — blocking-prompt flag toggle.
+                        if let Some(w) = patch.waiting_for_input {
+                            meta.waiting_for_input = w;
                         }
                         // Plan/107b — opaque git snapshot passthrough.
                         if let Some(ref g) = patch.git {
@@ -349,6 +355,7 @@ impl PeerRegistry {
                             meta.model.clone(),
                             meta.thinking.clone(),
                             meta.working,
+                            meta.waiting_for_input,
                             meta.git.clone(),
                             meta.context_usage.clone(),
                         );
@@ -365,6 +372,7 @@ impl PeerRegistry {
                         head.1.model.clone(),
                         head.1.thinking.clone(),
                         head.1.working,
+                        head.1.waiting_for_input,
                         head.1.git.clone(),
                         head.1.context_usage.clone(),
                         changed,
@@ -414,6 +422,12 @@ impl PeerRegistry {
             meta_obj.insert(
                 "working".to_string(),
                 serde_json::Value::Bool(current_working),
+            );
+            // Plan/134 — same always-present convention for the
+            // blocking-prompt flag.
+            meta_obj.insert(
+                "waiting_for_input".to_string(),
+                serde_json::Value::Bool(current_waiting_for_input),
             );
             // Plan/107b — opaque git snapshot (only when the Pi reported one).
             if let Some(g) = &current_git {
@@ -492,6 +506,7 @@ mod tests {
             model: None,
             thinking: None,
             working: false,
+            waiting_for_input: false,
             git: None,
             context_usage: None,
             started_at: 0,
@@ -813,6 +828,100 @@ mod tests {
         assert_eq!(
             v["meta"]["working"], true,
             "absent `working` in a patch must not clear it"
+        );
+    }
+
+    /// Plan/134 — `waiting_for_input: true` patch broadcasts the post-patch
+    /// state (same shape as `working_true_patch_broadcasts_true`).
+    #[tokio::test]
+    async fn waiting_for_input_true_patch_broadcasts_true() {
+        let (reg, _metrics, pi, mut rx_app) = meta_fixture().await;
+
+        let patch = RoomMetaPatch {
+            waiting_for_input: Some(true),
+            ..Default::default()
+        };
+        assert!(reg.update_room_meta(&pi, "main", patch).await);
+
+        let v = recv_meta(&mut rx_app);
+        assert_eq!(v["peer"], pi);
+        assert_eq!(v["room_id"], "main");
+        assert_eq!(v["meta"]["waiting_for_input"], true);
+        // Always-serialized: the flag rides along even when `working` is the
+        // unchanged default.
+        assert_eq!(v["meta"]["working"], false);
+    }
+
+    /// Plan/134 — `waiting_for_input: false` flips a previously-true room
+    /// back off and broadcasts the cleared state.
+    #[tokio::test]
+    async fn waiting_for_input_false_patch_broadcasts_false() {
+        let (reg, _metrics, pi, mut rx_app) = meta_fixture().await;
+
+        let _ = reg
+            .update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    waiting_for_input: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await;
+        let _ = recv_meta(&mut rx_app); // drain the `true` broadcast
+
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    waiting_for_input: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+
+        let v = recv_meta(&mut rx_app);
+        assert_eq!(v["meta"]["waiting_for_input"], false);
+    }
+
+    /// Plan/134 — a patch that omits `waiting_for_input` must NOT zero a
+    /// previously-set `true` (merge-patch absence leaves it intact).
+    #[tokio::test]
+    async fn waiting_for_input_absent_patch_does_not_zero() {
+        let (reg, _metrics, pi, mut rx_app) = meta_fixture().await;
+
+        let _ = reg
+            .update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    waiting_for_input: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await;
+        let _ = recv_meta(&mut rx_app); // drain the `true` broadcast
+
+        // working-only patch: `waiting_for_input` is absent → untouched.
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    working: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+
+        let v = recv_meta(&mut rx_app);
+        assert_eq!(v["meta"]["working"], true);
+        assert_eq!(
+            v["meta"]["waiting_for_input"], true,
+            "absent `waiting_for_input` in a patch must not clear it"
         );
     }
 

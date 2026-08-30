@@ -378,6 +378,12 @@ class HomePage extends StatelessWidget {
     final isLive = vm.isRoomLive(it.peer.remoteEpk, it.room.roomId);
     final isReconnecting = !vm.isRelayConnected;
     final isWorking = vm.isRoomWorking(it.peer.remoteEpk, it.room.roomId);
+    // Plan/134 — the tri-state input: waiting beats working in the tile's
+    // 5-state dot.
+    final isWaitingForInput = vm.isRoomWaitingForInput(
+      it.peer.remoteEpk,
+      it.room.roomId,
+    );
     // Plan/tablet — highlight the open session, but only in the two-pane
     // layout (on phone the list is covered by the pushed chat, so a
     // persistent highlight would be meaningless).
@@ -395,6 +401,7 @@ class HomePage extends StatelessWidget {
           isLive: isLive,
           isReconnecting: isReconnecting,
           isWorking: isWorking,
+          isWaitingForInput: isWaitingForInput,
           isSelected: isSelected,
           notifyOnDone: vm.notifyOnDone(it.peer.remoteEpk, it.room.roomId),
           room: it.room,

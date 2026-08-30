@@ -57,6 +57,13 @@ abstract class PaneItem extends ChangeNotifier {
   /// Default `false`; agentes e terminais sobrescrevem.
   bool get isWorking => false;
 
+  /// Plano 134 — `true` enquanto o pi da aba está **bloqueado** esperando uma
+  /// resposta do usuário (prompt bloqueante de qualquer extensão). Acende o
+  /// badge âmbar de "esperando resposta" na aba, com prioridade sobre o
+  /// spinner do [isWorking] (tri-estado: waiting > working > idle). Só o
+  /// [AgentSession] sobrescreve.
+  bool get isWaitingForInput => false;
+
   /// Resultado novo não visto; default `false`. Agentes e terminais (com claude)
   /// sobrescrevem.
   bool get unseenFinish => false;

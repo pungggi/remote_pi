@@ -37,6 +37,9 @@ sealed class ControlInbound {
         // or nested under `meta.working`; read both for forward-compat.
         final rawWorking =
             (j['working'] as bool?) ?? (metaJson?['working'] as bool?);
+        // Plan/134 — same both-places read for the blocking-prompt flag.
+        final rawWaitingForInput = (j['waiting_for_input'] as bool?) ??
+            (metaJson?['waiting_for_input'] as bool?);
         final rawGit = j['git'] ?? metaJson?['git'];
         final rawContextUsage =
             j['context_usage'] ?? metaJson?['context_usage'];
@@ -51,6 +54,7 @@ sealed class ControlInbound {
               ? ThinkingLevel.fromWire(rawThinking)
               : null,
           working: rawWorking,
+          waitingForInput: rawWaitingForInput,
           git: rawGit is Map<String, dynamic>
               ? GitStatus.fromJson(rawGit)
               : null,
@@ -63,6 +67,15 @@ sealed class ControlInbound {
         peer: j['peer'] as String,
         roomId: j['room_id'] as String,
         sinceTs: (j['since_ts'] as num).toInt(),
+      ),
+      // Plan/137 — relay NACK for an envelope it could not route: the
+      // destination (peer, room) had no live connection. Identifies the
+      // DESTINATION, not the message (the body is encrypted ct); the app
+      // correlates by recency. Rate-limited server-side (one per 5 s per
+      // destination per connection).
+      'route_error' => RouteError(
+        peer: j['peer'] as String,
+        room: (j['room'] as String?) ?? 'main',
       ),
       'rooms' => RoomsSnapshot(
         peer: j['peer'] as String,
@@ -91,6 +104,9 @@ sealed class ControlInbound {
           // cleared state), so a plain nullable bool models the patch:
           // null = absent (preserve current), true/false = set.
           working: meta?['working'] as bool?,
+          // Plan/134 — blocking-prompt flag: nullable-as-absent like
+          // `working` (the flag only ever toggles).
+          waitingForInput: meta?['waiting_for_input'] as bool?,
           // Plan/132 — run-completion marker: nullable-as-absent like
           // `working` (an object key is either absent or present — there is
           // no "explicitly null" form on the wire).
@@ -233,6 +249,14 @@ class RoomInfo {
   /// (idle / not reported yet).
   final bool working;
 
+  /// Plan/134 — `true` while the room's Pi is blocked on a user-facing
+  /// `ctx.ui` prompt (pi 0.84.4 `ui_prompt_start`/`end`; any extension,
+  /// not just pi-ask). Independent of [working] (the turn stays open
+  /// while the prompt blocks); the UI derives the tri-state
+  /// `waitingForInput ? waiting : (working ? working : idle)`.
+  /// Defaults to `false` (idle / legacy relay).
+  final bool waitingForInput;
+
   /// Plan/107b — git status snapshot the Pi-extension pushes via
   /// `room_meta.git` (computed from the session cwd). `null` = not a repo /
   /// not reported yet → the tile falls back to the model subtitle.
@@ -251,6 +275,7 @@ class RoomInfo {
     this.model,
     this.thinking,
     this.working = false,
+    this.waitingForInput = false,
     this.git,
     this.contextUsage,
   });
@@ -267,6 +292,7 @@ class RoomInfo {
           ? ThinkingLevel.fromWire(rawThinking)
           : null,
       working: (j['working'] as bool?) ?? false,
+      waitingForInput: (j['waiting_for_input'] as bool?) ?? false,
       git: j['git'] is Map<String, dynamic>
           ? GitStatus.fromJson(j['git'] as Map<String, dynamic>)
           : null,
@@ -284,6 +310,7 @@ class RoomInfo {
     'model': model,
     if (thinking != null) 'thinking': thinking!.wire,
     'working': working,
+    'waiting_for_input': waitingForInput,
     if (git != null) 'git': git!.toJson(),
     if (contextUsage != null) 'context_usage': contextUsage!.toJson(),
   };
@@ -295,6 +322,7 @@ class RoomInfo {
     Object? model = _kRoomInfoUnset,
     Object? thinking = _kRoomInfoUnset,
     bool? working,
+    bool? waitingForInput,
     Object? git = _kRoomInfoUnset,
     Object? contextUsage = _kRoomInfoUnset,
   }) => RoomInfo(
@@ -307,6 +335,7 @@ class RoomInfo {
         ? this.thinking
         : thinking as ThinkingLevel?,
     working: working ?? this.working,
+    waitingForInput: waitingForInput ?? this.waitingForInput,
     git: identical(git, _kRoomInfoUnset) ? this.git : git as GitStatus?,
     contextUsage: identical(contextUsage, _kRoomInfoUnset)
         ? this.contextUsage
@@ -323,6 +352,7 @@ class RoomInfo {
       other.model == model &&
       other.thinking == thinking &&
       other.working == working &&
+      other.waitingForInput == waitingForInput &&
       other.git == git &&
       other.contextUsage == contextUsage;
 
@@ -335,6 +365,7 @@ class RoomInfo {
     model,
     thinking,
     working,
+    waitingForInput,
     git,
     contextUsage,
   );
@@ -360,6 +391,10 @@ class RoomAnnounced extends ControlInbound {
   /// any previously-known value instead of forcing `false`.
   final bool? working;
 
+  /// Plan/134 — blocking-prompt flag at announce time. Same nullable
+  /// preserve convention as [working].
+  final bool? waitingForInput;
+
   /// Plan/107b — git snapshot from `room_meta.git` (flat in room_announced).
   final GitStatus? git;
 
@@ -374,6 +409,7 @@ class RoomAnnounced extends ControlInbound {
     this.model,
     this.thinking,
     this.working,
+    this.waitingForInput,
     this.git,
     this.contextUsage,
   });
@@ -388,6 +424,21 @@ class RoomEnded extends ControlInbound {
     required this.roomId,
     required this.sinceTs,
   });
+}
+
+/// Plan/137 — the relay could not route an outbound envelope: the
+/// destination `(peer, room)` has no live connection right now. The app
+/// uses it to fail pending steers/sends immediately ("Not delivered — Pi
+/// unreachable") instead of an unbounded `steering…` spinner, and to mark
+/// the room's presence offline.
+class RouteError extends ControlInbound {
+  /// Destination peer id (base64 pubkey) — NOT the sender.
+  final String peer;
+
+  /// Destination room id (the Pi's per-cwd room).
+  final String room;
+
+  const RouteError({required this.peer, required this.room});
 }
 
 class RoomsSnapshot extends ControlInbound {
@@ -432,6 +483,12 @@ class RoomMetaUpdated extends ControlInbound {
   /// never be "explicitly null" on the wire — `false` is the off state.
   final bool? working;
 
+  /// Plan/134 — blocking-prompt flag ("the agent is waiting for the
+  /// human, not computing"). Nullable-as-absent like [working]: `null`
+  /// preserves the cached value, `true`/`false` set it. Independent of
+  /// `working` — a prompt opens MID-turn and the turn stays open.
+  final bool? waitingForInput;
+
   /// Plan/107b — git snapshot patch from `meta.git`. `null` = the update
   /// either cleared git or the cwd isn't a repo; [hasGit] distinguishes
   /// "git key absent" (preserve) from "git present" (apply, even if null).
@@ -457,6 +514,7 @@ class RoomMetaUpdated extends ControlInbound {
     this.model,
     this.thinking,
     this.working,
+    this.waitingForInput,
     this.git,
     this.contextUsage,
     this.runDone,
@@ -509,6 +567,63 @@ class RunDoneEvent {
     required this.roomId,
     required this.marker,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Plan/134 — waiting-for-input transition event.
+// ---------------------------------------------------------------------------
+
+/// Plan/134 — a `waiting_for_input` transition observed for a `(peer, room)`
+/// pair, emitted on [ConnectionManager.waitingForInputStream] BEFORE the
+/// room-cache bookkeeping (like [RunDoneEvent]): only genuine live
+/// transitions are emitted — app-open replays (`room_announced` / `rooms`
+/// snapshots) never fire one, so the notification layer can't double-fire
+/// on reconnect. Drives the "Pi is waiting for input at the terminal"
+/// local notification for backgrounded rooms.
+class WaitingForInputEvent {
+  final String epk;
+  final String roomId;
+
+  /// `true` = the room started waiting (a blocking prompt opened);
+  /// `false` = it stopped (answered / cleared).
+  final bool waiting;
+
+  const WaitingForInputEvent({
+    required this.epk,
+    required this.roomId,
+    required this.waiting,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      other is WaitingForInputEvent &&
+      other.epk == epk &&
+      other.roomId == roomId &&
+      other.waiting == waiting;
+
+  @override
+  int get hashCode => Object.hash(epk, roomId, waiting);
+}
+
+/// Plan/137 — the relay reported a destination `(peer, room)` unreachable
+/// for an envelope this app sent (rate-limited server-side). Emitted on
+/// [ConnectionManager.routeErrorStream]. Consumers fail pending
+/// steering/sends for that room instead of spinning forever.
+class RouteErrorEvent {
+  /// Destination peer epk, already normalized to standard base64.
+  final String epk;
+
+  /// Destination room id.
+  final String roomId;
+
+  const RouteErrorEvent({required this.epk, required this.roomId});
+
+  @override
+  bool operator ==(Object other) =>
+      other is RouteErrorEvent && other.epk == epk && other.roomId == roomId;
+
+  @override
+  int get hashCode => Object.hash(epk, roomId);
 }
 
 // ---------------------------------------------------------------------------

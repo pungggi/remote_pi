@@ -37,6 +37,7 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
   ExtensionFactory,
+  UIPromptStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { SettingsManager, convertToPng } from "@earendil-works/pi-coding-agent";
 import { type Ed25519Keypair } from "./pairing/crypto.js";
@@ -148,6 +149,7 @@ import {
   ext,
   type RemoteState,
   type RelayConnectivity,
+  type ExtensionState,
   type WireContextUsage,
   type FullSdkModel,
   type ReceivedImageDetails,
@@ -340,6 +342,85 @@ function _publishWorking(working: boolean): void {
 }
 
 /**
+ * Plan/134: publish the `waiting_for_input` flag as room_meta — true while a
+ * blocking user-facing `ctx.ui` prompt is open (pi 0.84.4 `ui_prompt_start`/
+ * `ui_prompt_end`; covers pi-ask's ask_user AND any foreign extension's
+ * confirm/select/input/editor/custom). Raw, no debounce — the app debounces
+ * (same decision as plan/32 Q4).
+ *
+ * Independent of `working`: during a prompt the turn is still "open" from
+ * `turn_start`'s perspective, so `working` is NOT touched here — the app
+ * derives the tri-state `waiting_for_input ? waiting : (working ? working :
+ * idle)`. `kind`/`title` are for the log only; they never ride the wire (the
+ * relay treats the field as opaque, like `working`).
+ */
+/**
+ * Plan/137 — the two OR-ed sources behind `waiting_for_input`. The SDK's
+ * `ui_prompt_start/end` (plan/134) covers every blocking ctx.ui prompt on
+ * pi ≥ 0.84.4; the ask bridge's active-flow signal (hook wired at bridge
+ * creation) covers pi-ask flows on older SDKs and doubles as belt-and-
+ * suspenders. Separate booleans so one source's falling edge can't clear a
+ * prompt the other source still holds open.
+ */
+function _setWaitingSdkInput(waiting: boolean, kind?: string, title?: string): void {
+  ext.waitingSdkInput = waiting;
+  _publishWaitingForUser(ext.waitingSdkInput || ext.waitingBridgeFlow, kind, title);
+}
+
+function _setWaitingBridgeFlow(active: boolean): void {
+  ext.waitingBridgeFlow = active;
+  _publishWaitingForUser(ext.waitingSdkInput || ext.waitingBridgeFlow, "ask_flow");
+}
+
+/**
+ * Plan/100/137 — (re)bind the pi-ask bridge for THIS pi instance, always with
+ * the waiting_for_input fallback hook wired. Two callers: the extension
+ * factory (fresh module) and the `session_start` rebind (module-reusing hosts
+ * whose `session_shutdown` disposed the bridge). PR #59 review #2: the rebind
+ * must go through the SAME construction as the factory — a bare
+ * `createExtensionUiBridge(pi, _broadcastToActive)` there silently dropped
+ * `onActiveFlowsChanged`, so after the first session replacement pis without
+ * `ui_prompt_*` events stopped publishing `waiting_for_input` entirely.
+ *
+ * Disposes any prior bridge first so a rebind can't leak subscriptions or
+ * double-send; the dispose fires the OLD bridge's hook with `false`, so the
+ * flag reset below runs first — a rebind must not inherit a stale true from
+ * its predecessor (nor publish a spurious false after the reset helper did).
+ */
+function _recreateExtensionUiBridge(pi: ExtensionAPI): void {
+  ext.extensionUiBridge?.dispose();
+  ext.waitingBridgeFlow = false;
+  ext.extensionUiBridge = createExtensionUiBridge(pi, _broadcastToActive, {
+    onActiveFlowsChanged: (active) => _setWaitingBridgeFlow(active),
+  });
+}
+
+/** Plan/134/137 defensive reset — a session rebind, run end, or teardown kills
+ *  any prompt that belonged to the replaced context. Clears BOTH sources so a
+ *  stale true can't survive into the next hello/meta snapshot. */
+function _resetWaitingForInput(): void {
+  ext.waitingSdkInput = false;
+  ext.waitingBridgeFlow = false;
+  _publishWaitingForUser(false);
+}
+
+function _publishWaitingForUser(
+  waiting: boolean,
+  kind?: string,
+  title?: string,
+): void {
+  // Log-only enrichment (acceptance: "kind/title logged") — the blocking
+  // dialog is already visible in the host UI, so we never notify there.
+  if (waiting) {
+    console.log(`[remote-pi] ui_prompt_start (kind=${kind ?? "?"}${title ? `, title=${JSON.stringify(title)}` : ""}) — publishing waiting_for_input=true`);
+  }
+  if (ext.myRoomMeta) ext.myRoomMeta = { ...ext.myRoomMeta, waiting_for_input: waiting };
+  if (ext.relay && ext.myRoomId) {
+    ext.relay.sendControl({ type: "room_meta_update", room_id: ext.myRoomId, meta: { waiting_for_input: waiting } });
+  }
+}
+
+/**
  * Publish live context-window usage as `room_meta.context_usage` (opaque blob
  * — the relay forwards it verbatim, the app parses tokens/contextWindow/percent).
  * Same shape as the model/thinking/working/git updates.
@@ -399,7 +480,7 @@ function _publishRunDone(turnId: string | null): void {
  */
 function _republishRoomMeta(): void {
   if (!ext.relay || !ext.myRoomId || !ext.myRoomMeta) return;
-  const meta: Record<string, unknown> = { working: ext.myRoomMeta.working ?? false };
+  const meta: Record<string, unknown> = { working: ext.myRoomMeta.working ?? false, waiting_for_input: ext.myRoomMeta.waiting_for_input ?? false };
   if (ext.myRoomMeta.model) meta.model = ext.myRoomMeta.model;
   if (ext.myRoomMeta.thinking !== undefined) meta.thinking = ext.myRoomMeta.thinking;
   if (ext.myRoomMeta.git !== undefined) meta.git = ext.myRoomMeta.git;
@@ -973,9 +1054,29 @@ export function _getActivePeerCountForTest(): number {
   return ext.activePeers.size;
 }
 
+/**
+ * Test-only (plan/134): the live room-meta mirror — lets tests assert that
+ * teardown paths (`_goIdle`, session rebind) cleared a stale
+ * `waiting_for_input` without needing a relay round-trip. Indexed access
+ * type keeps this in lockstep with `ExtensionState.myRoomMeta`.
+ */
+export function _getRoomMetaForTest(): ExtensionState["myRoomMeta"] {
+  return ext.myRoomMeta;
+}
+
 /** Test-only: true if a specific peer (base64 std) has an attached channel. */
 export function _hasActivePeerForTest(appPeerIdStd: string): boolean {
   return ext.activePeers.has(appPeerIdStd);
+}
+
+/**
+ * Test-only (plan/137, PR #59 review #2): the bridge-flow half of the merged
+ * `waiting_for_input` flag. Lets tests prove the `session_start` rebind kept
+ * the `onActiveFlowsChanged` hook wired — the flag flipping on a `started`
+ * event is the observable of that wiring, no relay needed.
+ */
+export function _getWaitingBridgeFlowForTest(): boolean {
+  return ext.waitingBridgeFlow;
 }
 
 
@@ -1407,6 +1508,14 @@ function _goIdle(byeReason?: import("./protocol/types.js").ByeReason): void {
   _peerPresenceOnline.clear(); // stale relay's view — resubscribed on next start
   ext.peerShort = "";
   ext.currentTurnId = null;
+  // Plan/134 — a stop/teardown kills any prompt with the run. The relay is
+  // already torn down below, so this is a LOCAL reset only (the next start's
+  // hello must not replay a stale true). Plan/137 — reset BOTH sources.
+  if (ext.myRoomMeta?.waiting_for_input === true) {
+    ext.myRoomMeta = { ...ext.myRoomMeta, waiting_for_input: false };
+  }
+  ext.waitingSdkInput = false;
+  ext.waitingBridgeFlow = false;
   ext.pendingReceivedImagePreviews.length = 0;
   ext.pendingSteers = [];
   ext.pendingFollowUps = [];
@@ -1849,6 +1958,15 @@ function _attachOwner(
   // Mid-run attach: make sure the fresh owner sees the in-flight response
   // (hydrates a turn id when none is seeded and replays the text so far).
   _maybeResumeTurnForOwner(channel);
+  // Plan/137 — replay ask_user flows still awaiting an answer to the fresh
+  // channel. The bridge's `started` broadcast fires exactly once; an owner
+  // attaching later (reconnect, app relaunch, zombie-socket replacement)
+  // never saw it, and waiting for their session_sync leaves the ask_user tool
+  // call spinning with no sheet in the gap. Same per-sender rationale as the
+  // session_sync replay: owners attached earlier already got the live frame.
+  for (const req of ext.extensionUiBridge?.pendingRequests() ?? []) {
+    try { channel.send(req); } catch { /* best-effort per frame */ }
+  }
   // New owner attached → widen the presence subscription so we learn when
   // THIS peer goes offline (send path skips dead dests instead of signing
   // frames the relay will drop). Idempotent server-side (list replace).
@@ -2383,10 +2501,8 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // Plan/100 — bridge @eko24ive/pi-ask clarification flows to the paired app.
   // Inert when pi-ask isn't installed (no events fire) or the SDK exposes no
   // events bus. ask_user without pi-ask doesn't exist, so this never breaks a
-  // Pi that doesn't use the extension. Dispose any prior bridge first so a
-  // factory re-run (new pi session) can't leak subscriptions or double-send.
-  ext.extensionUiBridge?.dispose();
-  ext.extensionUiBridge = createExtensionUiBridge(pi, _broadcastToActive);
+  // Pi that doesn't use the extension.
+  _recreateExtensionUiBridge(pi);
 
   // Plano 19: ensure ~/.pi/piper/{sessions,skills}/ exist and deploy the
   // agent-network skill on first load. resources_discover lets Pi find it.
@@ -2590,6 +2706,13 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // before the agent_done branch: it must not depend on a peer being
     // attached or the run having an app-seeded turn id.
     _publishRunDone(ext.currentTurnId ?? null);
+    // Plan/134 defensive — abort paths are the risky ones for a lost
+    // ui_prompt_end: if the SDK ever fails to pair one with its start, clear
+    // the waiting flag here so it can't outlive the run. No-op when the
+    // flag is already false (no extra broadcast).
+    if (ext.myRoomMeta?.waiting_for_input === true) {
+      _resetWaitingForInput();
+    }
     // Reconciliation fallback (2026-08-22): snapshot the cumulative turn
     // text BEFORE clearing it, and ride it on agent_done. Receivers that
     // streamed the turn live compare against what they actually got and
@@ -2667,6 +2790,21 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     void _revertModelOverride();
   });
 
+  // Plan/134: pi 0.84.4 fires ui_prompt_start/end whenever Pi starts/stops
+  // waiting on a BLOCKING user-facing ctx.ui prompt — pi-ask's ask_user or
+  // any other extension's confirm/select/input/editor/custom. Publish the
+  // tri-state input; `working` stays untouched (independent flags — see
+  // _publishWaitingForUser). The runtime `typeof` guards keep the vitest
+  // mocks (which pass plain objects) safe without weakening the types.
+  pi.on("ui_prompt_start", (event: UIPromptStartEvent) => {
+    const kind = typeof event?.kind === "string" ? event.kind : undefined;
+    const title = typeof event?.title === "string" ? event.title : undefined;
+    _setWaitingSdkInput(true, kind, title);
+  });
+  pi.on("ui_prompt_end", () => {
+    _setWaitingSdkInput(false);
+  });
+
   // Plan/32: compaction feedback. compact() doesn't run a turn, so bracket it
   // with working=true/false here. Returning void = no veto → default
   // compaction proceeds.
@@ -2705,11 +2843,22 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // bound to the current session.
   pi.on("session_start", (_event, ctx) => {
     ext.lastEventCtx = ctx;
+    // Plan/134 — a session replacement/rebind kills any prompt that belonged
+    // to the replaced session: clear a stale waiting_for_input so it can't
+    // survive into the new session's hello/meta snapshot. Published (not just
+    // reset) because the relay link is typically still up here.
+    if (ext.myRoomMeta?.waiting_for_input === true) {
+      _resetWaitingForInput();
+    }
     // session_shutdown disposes per-session pi-ask subscriptions. A host that
     // reuses this module instance does NOT re-run the factory, so rebind the
     // bridge here; fresh-module hosts already created theirs in the factory.
+    // PR #59 review #2 — always via the shared helper so the rebind keeps the
+    // waiting_for_input fallback hook (a bare createExtensionUiBridge here
+    // silently dropped it, killing the fallback after the first session on
+    // pis without ui_prompt events).
     if (!ext.extensionUiBridge) {
-      ext.extensionUiBridge = createExtensionUiBridge(pi, _broadcastToActive);
+      _recreateExtensionUiBridge(pi);
     }
     // Rearm a reused-but-disposed instance. The session_shutdown teardown (below)
     // sets ext.disposed=true assuming the host re-evaluates THIS module fresh for the

@@ -218,6 +218,77 @@ void main() {
   );
 
   test(
+    'plan/134: a waiting_for_input flip recomposes ChatReady (pill repaint) without touching working',
+    () async {
+      final ch = _FakeChannel();
+      final storage = _FakeStorage();
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      final boxes = LocalBoxes();
+      final sync = SyncService(conn, boxes);
+      final read = SessionReadRepository(boxes);
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+      await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
+
+      conn.adopt(ch, _peer);
+      // Cache the room so the meta patch has a place to land (mirrors the
+      // relay announcing the room before any meta flows).
+      ch.pushControl(const RoomAnnounced(
+        peer: 'epk_chat',
+        roomId: 'main',
+        startedAt: 1,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      final vm = ChatViewModel(read, sync, conn, prefs, storage);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(vm.isWaitingForInput, isFalse, reason: 'idle before the prompt');
+      final before = vm.state;
+
+      // Blocking prompt opens — relay broadcasts waiting_for_input=true.
+      ch.pushControl(const RoomMetaUpdated(
+        peer: 'epk_chat',
+        roomId: 'main',
+        waitingForInput: true,
+        hasModel: false,
+        hasThinking: false,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(vm.isWaitingForInput, isTrue);
+      expect(vm.isWorking, isFalse,
+          reason: 'waiting is independent of working (no turn in flight)');
+      // THE regression guard: the pill/composer read the VM getter, so a
+      // pure waiting flip MUST produce a different ChatReady or
+      // ViewModel.emit skips notifyListeners and the UI never repaints.
+      final during = vm.state;
+      expect(during, isNot(before),
+          reason: 'ChatReady identity must include isWaitingForInput');
+      expect((during as ChatReady).isWaitingForInput, isTrue);
+
+      // Prompt answered — flag clears and the state recomposes again.
+      ch.pushControl(const RoomMetaUpdated(
+        peer: 'epk_chat',
+        roomId: 'main',
+        waitingForInput: false,
+        hasModel: false,
+        hasThinking: false,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(vm.isWaitingForInput, isFalse);
+      expect(vm.state, isNot(during));
+
+      vm.dispose();
+      sync.dispose();
+      conn.dispose();
+    },
+  );
+
+  test(
     'working send uses steer behavior and preserves current target',
     () async {
       final ch = _FakeChannel();
@@ -592,4 +663,186 @@ void main() {
       conn.dispose();
     },
   );
+
+  group('Plan/137 — ask recovery card + route_error', () {
+    test('pending ask_user without a sheet shows the recovery card (after '
+        'the anti-flash delay), and the arriving sheet hides it', () async {
+      final ch = _FakeChannel();
+      final storage = _FakeStorage();
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      final boxes = LocalBoxes();
+      final msgBox = await boxes.msgsBox(_peer.remoteEpk, 'main');
+      await msgBox.clear();
+      final sync = SyncService(conn, boxes);
+      final read = SessionReadRepository(boxes);
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+      await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
+
+      conn.adopt(ch, _peer);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      final vm = ChatViewModel(read, sync, conn, prefs, storage);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // Turn opens, the agent calls ask_user — but the question frame is
+      // lost (the incident this plan fixes).
+      ch.push(UserInput(id: 'ask-u1', text: 'plan m6'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      ch.push(ToolRequest(
+        toolCallId: 'tc_ask1',
+        tool: 'ask_user',
+        args: null,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // Anti-flash window: not yet.
+      expect((vm.state as ChatReady).askRecovery, isFalse,
+          reason: 'request frame may still be in flight');
+
+      // After the delay the card appears — nothing else fires while the
+      // agent is blocked in the tool.
+      await Future<void>.delayed(const Duration(milliseconds: 3500));
+      expect((vm.state as ChatReady).askRecovery, isTrue);
+
+      // Retry path works: the sheet arriving (bridge replay) hides it.
+      ch.push(const ExtensionUiRequest(
+        id: 'tool:tc_ask1',
+        method: ExtensionUiMethod.select,
+        title: 'Direction',
+        options: ['Alpha', 'Beta'],
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect((vm.state as ChatReady).askRecovery, isFalse,
+          reason: 'open sheet is the answer path, no card needed');
+      expect((vm.state as ChatReady).pendingUiRequest?.id, 'tool:tc_ask1');
+
+      // And once the tool completes, no card even without a sheet.
+      ch.push(ToolResult(toolCallId: 'tc_ask1', result: 'answered'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect((vm.state as ChatReady).askRecovery, isFalse);
+
+      vm.dispose();
+      sync.dispose();
+      conn.dispose();
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('a SECOND ask_user flow re-arms the recovery timer (PR #59 review #1)',
+        () async {
+      final ch = _FakeChannel();
+      final storage = _FakeStorage();
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      final boxes = LocalBoxes();
+      final msgBox = await boxes.msgsBox(_peer.remoteEpk, 'main');
+      await msgBox.clear();
+      final sync = SyncService(conn, boxes);
+      final read = SessionReadRepository(boxes);
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+      await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
+
+      conn.adopt(ch, _peer);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      final vm = ChatViewModel(read, sync, conn, prefs, storage);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // Flow 1: pending, no sheet → card after the delay; then answered.
+      ch.push(UserInput(id: 'ask-a1', text: 'first question'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      ch.push(ToolRequest(
+        toolCallId: 'tc_a1',
+        tool: 'ask_user',
+        args: null,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 3500));
+      expect((vm.state as ChatReady).askRecovery, isTrue,
+          reason: 'first flow armed and fired its timer');
+      ch.push(ToolResult(toolCallId: 'tc_a1', result: 'answered'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect((vm.state as ChatReady).askRecovery, isFalse);
+
+      // Flow 2 with NO other state change in between: the one-shot timer
+      // must re-arm. Pre-fix the slot stayed non-null after the first fire,
+      // so nothing recomputed and the second card never appeared.
+      ch.push(UserInput(id: 'ask-a2', text: 'second question'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      ch.push(ToolRequest(
+        toolCallId: 'tc_a2',
+        tool: 'ask_user',
+        args: null,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 3500));
+      expect((vm.state as ChatReady).askRecovery, isTrue,
+          reason: 'second flow must arm its own delayed recompute');
+
+      vm.dispose();
+      sync.dispose();
+      conn.dispose();
+    }, timeout: const Timeout(Duration(seconds: 40)));
+
+    test('route_error for the active room clears the steering label and '
+        'surfaces a warning row', () async {
+      final ch = _FakeChannel();
+      final storage = _FakeStorage();
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      final boxes = LocalBoxes();
+      final msgBox = await boxes.msgsBox(_peer.remoteEpk, 'main');
+      await msgBox.clear();
+      final sync = SyncService(conn, boxes);
+      final read = SessionReadRepository(boxes);
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+      await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
+
+      conn.adopt(ch, _peer);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      final vm = ChatViewModel(read, sync, conn, prefs, storage);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // A confirmed steer whose consumption never comes (dead destination).
+      ch.push(UserInput(
+        id: 'steer-1',
+        text: 'Re-propose the Ask User tool please',
+        streamingBehavior: UserMessageStreamingBehavior.steer,
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      final steerRow = (vm.state as ChatReady)
+          .messages
+          .whereType<UserMsg>()
+          .singleWhere((m) => m.id == 'steer-1');
+      expect(steerRow.steering, isTrue,
+          reason: 'precondition: label spins while unconsumed');
+
+      // The relay NACKs the destination (peer, room).
+      ch.pushControl(const RouteError(peer: 'epk_chat', room: 'main'));
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      final after = (vm.state as ChatReady).messages;
+      final cleared = after.whereType<UserMsg>().singleWhere((m) => m.id == 'steer-1');
+      expect(cleared.steering, isFalse,
+          reason: 'route_error must end the unbounded steering… spinner');
+      expect(
+        after.whereType<AssistantMsg>().map((m) => m.text).any(
+          (t) => t.contains('Not delivered'),
+        ),
+        isTrue,
+        reason: 'the ⚠ row explains why the message went nowhere',
+      );
+
+      vm.dispose();
+      sync.dispose();
+      conn.dispose();
+    });
+  });
 }

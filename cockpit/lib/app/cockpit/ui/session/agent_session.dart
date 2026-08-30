@@ -92,6 +92,18 @@ class AgentSession extends PaneItem {
   /// sem acender o indicador de "trabalhando" (que só aparece com AgentStart).
   bool _pendingSend = false;
 
+  /// Plano 134 — `true` entre `ui_prompt_start` e `ui_prompt_end`: o pi está
+  /// **bloqueado** esperando uma resposta do usuário (confirm/select/input/
+  /// editor/custom de qualquer extensão). Independente de `streaming` (o
+  /// turno segue aberto durante o prompt); a UI deriva o tri-estado
+  /// `waiting > streaming > idle`. Limpo defensivamente em `agent_end`,
+  /// erro de turno e morte do processo (os caminhos de abort são os
+  /// arriscados para um `ui_prompt_end` perdido).
+  bool _waitingForInput = false;
+
+  /// Plano 134 — getter da UI: badge de "esperando resposta" na aba.
+  bool get waitingForInput => _waitingForInput;
+
   /// Textos de mensagens enviadas **localmente** que já entraram otimisticamente
   /// no transcript e estão aguardando o eco `message_start:user` do pi. Quando o
   /// eco chega e bate com uma entrada daqui, ignoramos (senão duplica a bolha).
@@ -152,6 +164,11 @@ class AgentSession extends PaneItem {
   /// que apenas bloqueia novo envio — ver [_pendingSend]).
   @override
   bool get isWorking => isStreaming;
+
+  /// Plano 134 — badge âmbar de "esperando resposta" na aba (tri-estado
+  /// `waiting > working > idle`).
+  @override
+  bool get isWaitingForInput => _waitingForInput;
   bool get isBusy => _status == AgentStatus.streaming || _pendingSend;
   bool get isAlive =>
       _status == AgentStatus.idle || _status == AgentStatus.streaming;
@@ -492,11 +509,24 @@ class AgentSession extends PaneItem {
         final startedAt = _turnStartedAt;
         _turnStartedAt = null;
         _resetOpenBuffers();
+        // Plano 134 — defensivo: um run que morre leva o prompt embora. O SDK
+        // emite `ui_prompt_end` quando não está mais esperando, mas os caminhos
+        // de abort são os arriscados — nunca deixe um `true` sobreviver ao run.
+        _waitingForInput = false;
         // Registra quanto tempo o turno levou no fim da conversa.
         if (wasStreaming && startedAt != null) {
           _add(WorkedEntry(DateTime.now().difference(startedAt)));
         }
         if (wasStreaming) onTurnEnd?.call();
+      case RpcUiPromptStart():
+        // Plano 134 — bracket de prompt bloqueante. Sem card no transcript:
+        // os prompts interativos do RPC já chegam como `extension_ui_request`
+        // (card respondível); o badge na aba é a anotação genérica, única
+        // sinalização para prompts sem card. (kind/title ficam no evento —
+        // úteis pra um futuro card genérico.)
+        _waitingForInput = true;
+      case RpcUiPromptEnd():
+        _waitingForInput = false;
       case RpcTurnStart():
         _resetOpenBuffers();
       case RpcTurnEnd():
@@ -529,6 +559,7 @@ class AgentSession extends PaneItem {
         _pendingSend = false;
         if (_status == AgentStatus.streaming) _status = AgentStatus.idle;
         _turnStartedAt = null;
+        _waitingForInput = false; // plano 134 — turno falho não fica esperando
         _addInfo('agent error: $message', isError: true, dedup: true);
       case RpcAutoRetry(
         :final attempt,
@@ -542,6 +573,7 @@ class AgentSession extends PaneItem {
       case RpcProcessExit(:final code):
         _pendingSend = false;
         _status = AgentStatus.crashed;
+        _waitingForInput = false; // plano 134 — processo morto não espera
         _resetOpenBuffers();
         _addInfo('process exited (code=$code)', isError: code != 0);
         onCrashed?.call();

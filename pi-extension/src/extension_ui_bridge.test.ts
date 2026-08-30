@@ -72,6 +72,30 @@ describe("extension_ui_bridge", () => {
     expect(createExtensionUiBridge(pi, () => {})).toBeNull();
   });
 
+  it("notifies onActiveFlowsChanged on empty↔non-empty transitions only (plan/137)", () => {
+    const bus = fakeBus();
+    const seen: boolean[] = [];
+    const bridge = createExtensionUiBridge(fakePi(bus), () => {}, {
+      onActiveFlowsChanged: (active) => seen.push(active),
+    })!;
+
+    bus.emit("@eko24ive/pi-ask:started", singleQuestionFlow());
+    bus.emit(
+      "@eko24ive/pi-ask:started",
+      singleQuestionFlow({ flowId: "tool:tc_2", toolCallId: "tc_2" }),
+    );
+    expect(seen).toEqual([true]); // second open is not a transition
+
+    bus.emit("@eko24ive/pi-ask:completed", { version: 1, flowId: "tool:tc_1" });
+    expect(seen).toEqual([true]); // one flow still open
+
+    bus.emit("@eko24ive/pi-ask:completed", { version: 1, flowId: "tool:tc_2" });
+    expect(seen).toEqual([true, false]);
+
+    bridge.dispose();
+    expect(seen).toEqual([true, false]); // already empty — no spurious edge
+  });
+
   it("translates a pi-ask `started` event into one extension_ui_request", () => {
     const bus = fakeBus();
     const sent: ServerMessage[] = [];
@@ -279,13 +303,65 @@ describe("extension_ui_bridge", () => {
     expect(data.response).toEqual({ kind: "cancel" });
   });
 
-  it("drops a strict-client cancel for an unknown flow id", () => {
+  it("emits a strict-client cancel even for a forgotten flow (plan/137)", () => {
+    // Post-TTL the bridge no longer knows the flow, but the phone may still
+    // hold the durable sheet (plan/129). Emitting the cancel lets pi-ask
+    // NACK it (submit-result flow_not_found) → the handler broadcasts a
+    // DISMISS notify (see the flow_not_found test below) → the stale sheet
+    // closes instead of hanging on a dead Submit.
     const bus = fakeBus();
     const bridge = createExtensionUiBridge(fakePi(bus), () => {})!;
 
     bridge.respond({ type: "extension_ui_response", id: "never-seen", cancelled: true });
 
-    expect(bus.emitted.filter((e) => e.name === SUBMIT)).toHaveLength(0);
+    const submits = bus.emitted.filter((e) => e.name === SUBMIT);
+    expect(submits).toHaveLength(1);
+    const data = submits[0]?.data as { flowId: string; response: { kind: string } };
+    expect(data.flowId).toBe("never-seen");
+    expect(data.response).toEqual({ kind: "cancel" });
+  });
+
+  it("flow_not_found NACK DISMISSES the sheet; other errors keep the retry warning (PR #59 review #3)", () => {
+    const bus = fakeBus();
+    const sent: ServerMessage[] = [];
+    createExtensionUiBridge(fakePi(bus), (m) => sent.push(m))!;
+
+    // A flow the bridge forgot (post-TTL cancel) → pi-ask NACKs it.
+    bus.emit("@eko24ive/pi-ask:submit-result", {
+      version: 1,
+      requestId: "r1",
+      flowId: "gone-flow",
+      ok: false,
+      error: "flow_not_found",
+      message: "Ask flow is not active.",
+    });
+    expect(sent).toHaveLength(1);
+    const dismiss = sent[0];
+    expect(dismiss.type).toBe("extension_ui_request");
+    if (dismiss.type !== "extension_ui_request") return;
+    expect(dismiss.method).toBe("notify");
+    expect(dismiss.id).toBe("gone-flow");
+    // Dismiss contract = NO notify_type (same as `completed`): the app drops
+    // the durable request and closes the sheet. A warning here would strand
+    // it open with a dead Submit — the exact bug the review flagged.
+    expect(dismiss.notify_type).toBeUndefined();
+
+    // A real answer error stays a warning so the sheet remains open for
+    // retry with the rejection message.
+    bus.emit("@eko24ive/pi-ask:submit-result", {
+      version: 1,
+      requestId: "r2",
+      flowId: "live-flow",
+      ok: false,
+      error: "invalid_answer",
+      message: "Unknown option value.",
+    });
+    expect(sent).toHaveLength(2);
+    const warn = sent[1];
+    expect(warn.type).toBe("extension_ui_request");
+    if (warn.type !== "extension_ui_request") return;
+    expect(warn.notify_type).toBe("warning");
+    expect(warn.message).toBe("Unknown option value.");
   });
 
   it("drops a response for an unknown flow id (degraded path)", () => {
@@ -397,14 +473,18 @@ describe("extension_ui_bridge", () => {
       expect(bridge.pendingRequests()).toEqual([]);
     });
 
-    it("does not replay a flow dropped by the TTL", () => {
+    it("does not replay a flow dropped by the TTL (4h — plan/137)", () => {
       vi.useFakeTimers();
       const bus = fakeBus();
       const bridge = createExtensionUiBridge(fakePi(bus), () => {})!;
 
       bus.emit("@eko24ive/pi-ask:started", singleQuestionFlow());
+      // 10 min (the old TTL) must NOT expire a flow anymore — a desktop
+      // dialog can legitimately wait longer, and expiry stranded the phone.
       vi.advanceTimersByTime(10 * 60 * 1000 + 1);
+      expect(bridge.pendingRequests()).toHaveLength(1);
 
+      vi.advanceTimersByTime(4 * 60 * 60 * 1000 - 10 * 60 * 1000);
       expect(bridge.pendingRequests()).toEqual([]);
       vi.useRealTimers();
     });
@@ -458,7 +538,7 @@ describe("extension_ui_bridge", () => {
       bus.emit("@eko24ive/pi-ask:started", singleQuestionFlow());
       sent.length = 0;
 
-      vi.advanceTimersByTime(10 * 60 * 1000 + 1);
+      vi.advanceTimersByTime(4 * 60 * 60 * 1000 + 1);
 
       expect(sent).toHaveLength(1);
       expect(sent[0]).toMatchObject({

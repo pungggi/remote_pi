@@ -44,6 +44,16 @@ class ChatReady extends ChatState {
   /// else changed. See [ChatViewModel.isWorking].
   final bool isWorking;
 
+  /// Plan/134 — whether the room this chat is viewing is blocked on a
+  /// user-facing ctx.ui prompt (drives the amber "Waiting for your
+  /// answer…" pill + composer hint). Part of the state identity for the
+  /// same reason as [isWorking]: the pill reads the VM getter, and without
+  /// it in `==` a pure `meta.waiting_for_input` flip produced an equal
+  /// ChatReady and [ViewModel.emit] skipped notifyListeners — the UI kept
+  /// showing "working…" until something else changed. See
+  /// [ChatViewModel.isWaitingForInput].
+  final bool isWaitingForInput;
+
   /// Active model name for this room (from `room_meta.model`). Part of the
   /// state identity for the same reason as [isWorking]: the AppBar / composer
   /// hint read it via side-channel getters (`activeRoom.model`), and without
@@ -73,6 +83,14 @@ class ChatReady extends ChatState {
   /// than returned). The UI shows a "Load more messages" button at the top.
   final bool truncated;
 
+  /// Plan/137 — a pending `ask_user` tool call has been sitting WITHOUT a
+  /// rendered question sheet (the request frame was lost). Drives the
+  /// recovery card above the composer: Retry (re-sync → bridge replay) and
+  /// Cancel question (abort the blocked turn, releasing queued steering).
+  /// Part of the state identity like [isWorking] so the card appearing needs
+  /// no other state change (nothing else fires while the agent is blocked).
+  final bool askRecovery;
+
   String? get queuedText =>
       queuedMessages.isEmpty ? null : queuedMessages.first.text;
 
@@ -84,12 +102,14 @@ class ChatReady extends ChatState {
     this.peerOfflineReason,
     this.peerPresence = const PresenceUnknown(),
     this.isWorking = false,
+    this.isWaitingForInput = false,
     this.model,
     this.contextUsage,
     this.queuedMessages = const [],
     this.pendingUiRequest,
     this.pendingUiError,
     this.truncated = false,
+    this.askRecovery = false,
   });
 
   ChatReady copyWith({
@@ -100,6 +120,7 @@ class ChatReady extends ChatState {
     String? peerOfflineReason,
     PresenceState? peerPresence,
     bool? isWorking,
+    bool? isWaitingForInput,
     String? model,
     bool clearModel = false,
     ContextUsage? contextUsage,
@@ -113,6 +134,7 @@ class ChatReady extends ChatState {
     String? pendingUiError,
     bool clearPendingUiError = false,
     bool? truncated,
+    bool? askRecovery,
   }) =>
       ChatReady(
         messages: messages ?? this.messages,
@@ -124,6 +146,7 @@ class ChatReady extends ChatState {
             : (peerOfflineReason ?? this.peerOfflineReason),
         peerPresence: peerPresence ?? this.peerPresence,
         isWorking: isWorking ?? this.isWorking,
+        isWaitingForInput: isWaitingForInput ?? this.isWaitingForInput,
         model: clearModel ? null : (model ?? this.model),
         contextUsage: clearContextUsage
             ? null
@@ -138,6 +161,7 @@ class ChatReady extends ChatState {
             ? null
             : (pendingUiError ?? this.pendingUiError),
         truncated: truncated ?? this.truncated,
+        askRecovery: askRecovery ?? this.askRecovery,
       );
 
   @override
@@ -150,12 +174,14 @@ class ChatReady extends ChatState {
       other.peerOfflineReason == peerOfflineReason &&
       other.peerPresence.runtimeType == peerPresence.runtimeType &&
       other.isWorking == isWorking &&
+      other.isWaitingForInput == isWaitingForInput &&
       other.model == model &&
       other.contextUsage == contextUsage &&
       other.queuedMessages == queuedMessages &&
       other.pendingUiRequest == pendingUiRequest &&
       other.pendingUiError == pendingUiError &&
-      other.truncated == truncated;
+      other.truncated == truncated &&
+      other.askRecovery == askRecovery;
 
   @override
   int get hashCode => Object.hash(
@@ -166,12 +192,14 @@ class ChatReady extends ChatState {
         peerOfflineReason,
         peerPresence.runtimeType,
         isWorking,
+        isWaitingForInput,
         model,
         contextUsage,
         queuedMessages,
         pendingUiRequest,
         pendingUiError,
         truncated,
+        askRecovery,
       );
 }
 

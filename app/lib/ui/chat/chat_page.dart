@@ -86,6 +86,16 @@ class ChatPage extends StatelessWidget {
             // surfaces those, and stacking duplicates noise the surface.
             if (state is ChatReady && state.pairingRevoked)
               _RevokedBanner(onRePair: () => context.go('/pair')),
+            // Plan/137 — a pending ask_user whose question sheet never
+            // arrived: offer a Retry (re-sync → bridge replay) and a Cancel
+            // (abort the blocked turn — the only universal unblock when the
+            // flow is truly unrecoverable). Sits right above the composer
+            // so it's visible without scrolling.
+            if (state is ChatReady && state.askRecovery)
+              _AskRecoveryCard(
+                onRetry: () => vm.retryAskRecovery(),
+                onCancel: () => vm.cancel(vm.cancelTargetId ?? 'working'),
+              ),
             Expanded(child: _buildBody(context, state, vm)),
             _buildInput(context, state, vm),
           ],
@@ -148,10 +158,15 @@ class ChatPage extends StatelessWidget {
     // Plan-18 follow-up — when the agent is currently producing a
     // response, show "working…" instead of online/offline.
     final isWorking = vm.isWorking;
+    // Plan/134 — when the agent is blocked on a user-facing prompt, the pill
+    // switches to "Waiting for your answer…" (amber). Priority:
+    // waiting > working > reconnecting > online > offline. The model label
+    // only shows while working (computing), not while waiting.
+    final isWaiting = vm.isWaitingForInput;
     // While the agent is working, show the model running this turn next to
     // the "working…" pill. `room.model` is kept current via room_meta_updated.
     final rawModel = room?.model;
-    final modelLabel = (isWorking && rawModel != null && rawModel.isNotEmpty)
+    final modelLabel = (isWorking && !isWaiting && rawModel != null && rawModel.isNotEmpty)
         ? rawModel
         : null;
     // Plan/115 — live context-window fill (tokens/contextWindow/percent),
@@ -221,15 +236,23 @@ class ChatPage extends StatelessWidget {
                       builder: (_) {
                         // Plan-18 follow-up — 4-state pill:
                         // working / reconnecting / online / offline.
-                        // Priority: working > reconnecting > online > offline.
-                        final color = isWorking
+                        // Plan/134 inserts a 5th, top-priority state:
+                        // waiting (amber) — the agent is blocked on a
+                        // user-facing prompt.
+                        // Priority: waiting > working > reconnecting > online
+                        // > offline.
+                        final color = isWaiting
+                            ? colors.warning
+                            : isWorking
                             ? colors.working
                             : isReconnecting
                             ? colors.warning
                             : isOnline
                             ? colors.success
                             : colors.muted;
-                        final label = isWorking
+                        final label = isWaiting
+                            ? 'Waiting for your answer…'
+                            : isWorking
                             ? 'working…'
                             : isReconnecting
                             ? 'reconnecting…'
@@ -535,6 +558,10 @@ class ChatPage extends StatelessWidget {
     // token-streaming window. Driven by the broad working signal so it matches
     // the AppBar/Home "working" indicator.
     final isWorking = isReady && vm.isWorking;
+    // Plan/134 — the composer hint mirrors the pill: "Waiting for your
+    // answer…" takes priority over the steer hint while a blocking prompt
+    // is open. The field itself stays usable (queue/steer as usual).
+    final isWaiting = isReady && vm.isWaitingForInput;
     final cancelId = vm.cancelTargetId;
     // Quick actions need an open channel to dispatch — only offer the
     // entry point when the chat input itself is enabled. Hiding the
@@ -555,6 +582,7 @@ class ChatPage extends StatelessWidget {
           isPeerOffline ||
           isPresenceOffline,
       streaming: isWorking,
+      waitingForInput: isWaiting,
       model: vm.activeRoom?.model,
       // Plan/109 — second send button: pick a scoped model → send this draft
       // with it as a one-shot override (session default unchanged).
@@ -1646,6 +1674,70 @@ class _EmptyState extends StatelessWidget {
               child: Text(actionLabel!),
             ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Plan/137 — recovery card for a pending `ask_user` whose question sheet
+/// never reached this device (lost request frame, expired replay, or a
+/// pre-plan/137 extension). The chat is otherwise frozen waiting for an
+/// answer the phone can't give: Retry forces a session_sync so the bridge
+/// replays the flow (the sheet opens if the flow is still active), Cancel
+/// aborts the blocked turn — which also releases any queued steering.
+class _AskRecoveryCard extends StatelessWidget {
+  final VoidCallback onRetry;
+  final VoidCallback onCancel;
+  const _AskRecoveryCard({required this.onRetry, required this.onCancel});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      width: double.infinity,
+      color: colors.warning.withValues(alpha: 0.12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        children: [
+          Icon(LucideIcons.circleHelp, color: colors.warning, size: 15),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Pi is waiting for your answer, but the question sheet didn’t '
+              'reach this device.',
+              style: TextStyle(
+                fontSize: 12,
+                color: colors.text,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          GestureDetector(
+            onTap: onRetry,
+            child: Text(
+              'Retry',
+              style: TextStyle(
+                color: colors.accent,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                decoration: TextDecoration.underline,
+              ),
+            ),
+          ),
+          const SizedBox(width: 14),
+          GestureDetector(
+            onTap: onCancel,
+            child: Text(
+              'Cancel question',
+              style: TextStyle(
+                color: colors.error,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                decoration: TextDecoration.underline,
+              ),
+            ),
+          ),
         ],
       ),
     );

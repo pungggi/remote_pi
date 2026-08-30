@@ -27,6 +27,10 @@ android {
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
+        // flutter_local_notifications (plan/132) requires core library
+        // desugaring: its AAR metadata check fails the build without it
+        // (java.time / java.util streams on minSdk 34 runtimes).
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -95,6 +99,9 @@ flutter {
 }
 
 dependencies {
+    // Core library desugaring (see compileOptions) — required by
+    // flutter_local_notifications' AAR metadata check.
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     // 16 KB page-size compliance (Google Play, enforced since Nov 2025).
     // mobile_scanner 5.2.3 pulls ML Kit + CameraX whose prebuilt native libs
     // are only 4 KB-aligned (libbarhopper_v3.so, libimage_processing_util_jni.so),

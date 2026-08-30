@@ -122,6 +122,10 @@ export interface ExtensionState {
     model?: string;
     thinking?: ThinkingLevel;
     working?: boolean;
+    /** Plan/134 — true while a blocking user-facing ctx.ui prompt (any
+     *  extension's confirm/select/input/editor/custom) is open. Independent
+     *  of `working`: the turn is still open while the prompt blocks. */
+    waiting_for_input?: boolean;
     git?: WireGitStatus | null;
     context_usage?: WireContextUsage | null;
   } | null;
@@ -129,6 +133,13 @@ export interface ExtensionState {
   currentThinking: ThinkingLevel | undefined;
   pendingModelRevert: FullSdkModel | null;
   sessionStartedAt: number | null;
+  /** Plan/137 — the two OR-ed sources behind `myRoomMeta.waiting_for_input`:
+   *  the SDK's `ui_prompt_start/end` signal (plan/134, any blocking ctx.ui
+   *  prompt) and the ask-bridge's active-flow signal (fallback for pis that
+   *  don't emit the events). Kept as separate booleans so one source's
+   * falling edge can't clear a still-open prompt from the other source. */
+  waitingSdkInput: boolean;
+  waitingBridgeFlow: boolean;
 
   // mesh
   meshNode: MeshNode | null;
@@ -208,6 +219,8 @@ export const ext: ExtensionState = {
   currentThinking: undefined,
   pendingModelRevert: null,
   sessionStartedAt: null,
+  waitingSdkInput: false,
+  waitingBridgeFlow: false,
 
   // mesh
   meshNode: null,
@@ -296,6 +309,8 @@ export function resetExtensionState(): void {
     currentThinking: undefined,
     pendingModelRevert: null,
     sessionStartedAt: null,
+    waitingSdkInput: false,
+    waitingBridgeFlow: false,
     meshNode: null,
     sessionName: null,
     sessionPeerCount: 0,

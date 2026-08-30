@@ -181,6 +181,17 @@ class ConnectionManager extends Service {
   // Plan/132 — run-completion markers (events, not cached state). Broadcast
   // so both the completion notifier and tests can subscribe.
   final _runDoneController = StreamController<RunDoneEvent>.broadcast();
+
+  /// Plan/134 — waiting-for-input transitions (rising AND falling edges),
+  /// fanned out before room-cache bookkeeping like [RunDoneEvent].
+  final _waitingForInputController =
+      StreamController<WaitingForInputEvent>.broadcast();
+
+  /// Plan/137 — relay route NACKs for unroutable destinations (the app
+  /// steered into a room whose Pi has no live relay connection). Events,
+  /// not state: SyncService uses them to fail pending steers/sends
+  /// immediately instead of an unbounded `steering…` spinner.
+  final _routeErrorController = StreamController<RouteErrorEvent>.broadcast();
   bool _roomsRestored = false;
   ConnectionStatus _status = const StatusNoPeer();
   PeerRecord? _activePeer;
@@ -350,6 +361,19 @@ class ConnectionManager extends Service {
   /// user is NOT currently viewing. Events only; the relay never replays a
   /// marker (broadcast-only field), so there is no snapshot counterpart.
   Stream<RunDoneEvent> get runDoneStream => _runDoneController.stream;
+
+  /// Plan/134 — stream of `meta.waiting_for_input` TRANSITIONS for every
+  /// subscribed room (both edges; the notification layer only cares about
+  /// the rising one). Emitted from live `room_meta_updated` frames only —
+  /// never from app-open replays (`room_announced` / `rooms` snapshots) —
+  /// so a reconnecting app cannot re-fire the notification.
+  Stream<WaitingForInputEvent> get waitingForInputStream =>
+      _waitingForInputController.stream;
+
+  /// Plan/137 — route NACKs observed for any `(peer, room)` the app tried
+  /// to reach. Fires as soon as the relay reports the destination gone.
+  Stream<RouteErrorEvent> get routeErrorStream =>
+      _routeErrorController.stream;
 
   Map<String, List<RoomInfo>> get roomsSnapshot => _roomsSnapshot();
 
@@ -700,6 +724,8 @@ class ConnectionManager extends Service {
     _presenceController.close();
     // Plan/132 — events-only stream; safe to close on teardown.
     _runDoneController.close();
+    _waitingForInputController.close();
+    _routeErrorController.close();
   }
 
   // ---------------------------------------------------------------------------
@@ -840,6 +866,7 @@ class ConnectionManager extends Service {
         :final model,
         :final thinking,
         :final working,
+        :final waitingForInput,
         :final git,
         :final contextUsage,
       ):
@@ -859,6 +886,8 @@ class ConnectionManager extends Service {
         // relay that omits it (null) keeps the cached value instead of
         // forcing the room back to idle.
         var preservedWorking = false;
+        // Plan/134 — same preserve convention for the blocking-prompt flag.
+        var preservedWaitingForInput = false;
         GitStatus? preservedGit;
         ContextUsage? preservedContextUsage;
         final existingIdx = list.indexWhere((r) => r.roomId == roomId);
@@ -866,6 +895,7 @@ class ConnectionManager extends Service {
           preservedName = list[existingIdx].name;
           preservedThinking = list[existingIdx].thinking;
           preservedWorking = list[existingIdx].working;
+          preservedWaitingForInput = list[existingIdx].waitingForInput;
           preservedGit = list[existingIdx].git;
           preservedContextUsage = list[existingIdx].contextUsage;
         }
@@ -877,6 +907,7 @@ class ConnectionManager extends Service {
           model: model,
           thinking: thinking ?? preservedThinking,
           working: working ?? preservedWorking,
+          waitingForInput: waitingForInput ?? preservedWaitingForInput,
           git: git ?? preservedGit,
           contextUsage: contextUsage ?? preservedContextUsage,
         );
@@ -911,12 +942,31 @@ class ConnectionManager extends Service {
           _liveRoomIds.remove(key);
         }
         if (removed) roomsDirty = true;
+      case RouteError(:final peer, :final room):
+        // Plan/137 — the relay NACKed an envelope addressed to (peer,
+        // room): no live connection there right now. Fan the event out
+        // FIRST (it's a signal, not state), then flip the cached
+        // presence to offline so the active chat reacts. The rooms
+        // cache stays untouched — the periodic RoomsSnapshot recheck
+        // self-heals a false offline within one interval, and a
+        // reconnecting Pi re-announces.
+        final key = toStandardB64(peer);
+        if (!_routeErrorController.isClosed) {
+          _routeErrorController.add(RouteErrorEvent(epk: key, roomId: room));
+        }
+        final prev = _presence[key];
+        const next = PresenceOffline();
+        if (!_presenceEquals(prev, next)) {
+          _presence[key] = next;
+          presenceDirty = true;
+        }
       case RoomMetaUpdated(
         :final peer,
         :final roomId,
         :final model,
         :final thinking,
         :final working,
+        :final waitingForInput,
         :final git,
         :final hasModel,
         :final hasThinking,
@@ -935,7 +985,29 @@ class ConnectionManager extends Service {
             RunDoneEvent(epk: key, roomId: roomId, marker: runDone),
           );
         }
+        // Plan/134 — forward waiting-for-input TRANSITIONS the same way
+        // (event, not state): computed against the cached value BEFORE any
+        // early-out below, so a rising edge for a not-yet-cached room still
+        // notifies (unknown previous state reads as `false`). Snapshot /
+        // announce paths never emit — app-open replays must not re-fire the
+        // notification.
         final list = _roomsByPeer[key];
+        final cachedRoom = list?.cast<RoomInfo?>().firstWhere(
+          (r) => r!.roomId == roomId,
+          orElse: () => null,
+        );
+        final prevWaiting = cachedRoom?.waitingForInput ?? false;
+        final nextWaiting = waitingForInput ?? prevWaiting;
+        if (nextWaiting != prevWaiting &&
+            !_waitingForInputController.isClosed) {
+          _waitingForInputController.add(
+            WaitingForInputEvent(
+              epk: key,
+              roomId: roomId,
+              waiting: nextWaiting,
+            ),
+          );
+        }
         if (list == null) break;
         final idx = list.indexWhere((r) => r.roomId == roomId);
         if (idx < 0) break;
@@ -961,6 +1033,8 @@ class ConnectionManager extends Service {
         // non-null sets it. This is what carries the relay's
         // turn_start/turn_end broadcast to the Home dot for EVERY room.
         final nextWorking = working ?? current.working;
+        // Plan/134 — blocking-prompt flag: nullable-as-absent like `working`.
+        final nextWaitingFlag = waitingForInput ?? current.waitingForInput;
         // Plan/107b — git snapshot patch: apply only when the meta
         // envelope carried a `git` key (hasGit), else preserve the cached
         // snapshot.
@@ -971,6 +1045,7 @@ class ConnectionManager extends Service {
         if (current.model == nextModel &&
             current.thinking == nextThinking &&
             current.working == nextWorking &&
+            current.waitingForInput == nextWaitingFlag &&
             current.git == nextGit &&
             current.contextUsage == nextContextUsage) {
           break; // dedup: nothing actually changed
@@ -979,6 +1054,7 @@ class ConnectionManager extends Service {
           model: nextModel,
           thinking: nextThinking,
           working: nextWorking,
+          waitingForInput: nextWaitingFlag,
           git: nextGit,
           contextUsage: nextContextUsage,
         );
@@ -1014,6 +1090,9 @@ class ConnectionManager extends Service {
             // `rooms_of` reads the current registry meta, so its
             // `working` reflects the latest turn_start/turn_end.
             working: r.working,
+            // Plan/134 — same authoritative read for the blocking-prompt
+            // flag (never emits a transition event — app-open replay).
+            waitingForInput: r.waitingForInput,
             contextUsage: r.contextUsage ?? byId[r.roomId]?.contextUsage,
           );
         }
@@ -1145,6 +1224,22 @@ class ConnectionManager extends Service {
     if (list == null) return false;
     for (final r in list) {
       if (r.roomId == roomId) return r.working;
+    }
+    return false;
+  }
+
+  /// Plan/134 — `true` when the relay's last room-meta broadcast for
+  /// `(epk, roomId)` carried `waiting_for_input: true` (a blocking
+  /// user-facing ctx.ui prompt — any extension's, not just pi-ask). Like
+  /// [isRoomWorking] it reflects EVERY subscribed room and is gated on
+  /// [StatusOnline] (no fresh signal → not waiting). The UI derives the
+  /// tri-state: waiting beats working beats idle.
+  bool isRoomWaitingForInput(String epk, String roomId) {
+    if (_status is! StatusOnline) return false;
+    final list = _roomsByPeer[toStandardB64(epk)];
+    if (list == null) return false;
+    for (final r in list) {
+      if (r.roomId == roomId) return r.waitingForInput;
     }
     return false;
   }
