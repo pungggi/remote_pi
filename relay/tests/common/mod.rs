@@ -48,6 +48,10 @@ pub async fn start_relay_with_state() -> (u16, relay::AppState) {
         metrics,
         port,
         heartbeat_interval: std::time::Duration::from_secs(60),
+        // Plan/140 D — far above any test duration; the reap behavior has
+        // its own dedicated test with tightened timings (see
+        // `silent_half_open_connection_is_reaped`).
+        reap_silence: std::time::Duration::from_secs(600),
         // Short TTL (prod default is 30 s) so the after-TTL delivery tests
         // sleep ~1.2 s instead of 31 s. Immediate-burst suppression tests
         // still suppress — their follow-ups land well inside the window.
@@ -64,6 +68,45 @@ pub async fn start_relay_with_state() -> (u16, relay::AppState) {
     // Give axum a moment to start accepting.
     tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
     (port, state)
+}
+
+/// Plan/140 D — test-only variant with tightened heartbeat + reap timings
+/// (AppState is built directly, so the prod env-clamp floors don't apply).
+pub async fn start_relay_with_timings(heartbeat_secs: u64, reap_silence_secs: u64) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let mesh = Arc::new(MeshStore::open_in_memory().unwrap());
+    let presence = Arc::new(PresenceManager::new());
+    let rooms = Arc::new(RoomManager::new());
+    let metrics = Arc::new(FirehoseMetrics::new());
+    let registry = Arc::new(PeerRegistry::new(
+        presence.clone(),
+        rooms.clone(),
+        metrics.clone(),
+    ));
+    let mesh_auth = Arc::new(MeshAuthCache::new());
+    let state = AppState {
+        registry,
+        presence,
+        rooms,
+        mesh,
+        mesh_auth,
+        metrics,
+        port,
+        heartbeat_interval: std::time::Duration::from_secs(heartbeat_secs),
+        reap_silence: std::time::Duration::from_secs(reap_silence_secs),
+        control_reply_dedup_ttl: std::time::Duration::from_secs(1),
+    };
+    let app = build_router(state);
+    tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await;
+    });
+    tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+    port
 }
 
 /// Connects using a caller-supplied key and room_id, completes the full auth handshake.

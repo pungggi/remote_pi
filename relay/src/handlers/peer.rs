@@ -240,6 +240,14 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
     // one diagnosable from relay.log alone.
     let mut close_reason: Option<String> = None;
 
+    // Plan/140 D — last inbound frame of ANY kind (message / ping / pong).
+    // A healthy client answers our 60 s heartbeat Ping with a Pong (ws
+    // libs do this automatically), so silence beyond reap_silence means the
+    // socket is half-open: reap it so the room/presence goes offline for
+    // real instead of ghosting "online" with a dead receiver until TCP
+    // teardown finally notices.
+    let mut last_inbound = Instant::now();
+
     'routing: loop {
         tokio::select! {
             item = stream.next() => {
@@ -250,6 +258,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                         break;
                     }
                     Some(Ok(msg)) => {
+                        last_inbound = Instant::now();
                         let text = match msg {
                             Message::Text(t) => t,
                             Message::Close(frame) => {
@@ -590,6 +599,15 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                 }
             }
             _ = heartbeat.tick() => {
+                // Plan/140 D — silence reaper. Checked on the heartbeat tick
+                // (so the effective delay is reap_silence +≤1 interval).
+                if last_inbound.elapsed() > state.reap_silence {
+                    close_reason = Some(format!(
+                        "reaped: silent {}s (no pong since last heartbeat)",
+                        last_inbound.elapsed().as_secs()
+                    ));
+                    break;
+                }
                 if sink.send(Message::Ping(Vec::new())).await.is_err() {
                     break;
                 }

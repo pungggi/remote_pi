@@ -48,6 +48,7 @@ async fn spawn_relay() -> (String, tempfile::TempDir) {
         metrics,
         port,
         heartbeat_interval: std::time::Duration::from_secs(60),
+        reap_silence: std::time::Duration::from_secs(600),
         control_reply_dedup_ttl: std::time::Duration::from_secs(1),
     };
 

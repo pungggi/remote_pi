@@ -4188,21 +4188,32 @@ describe("rooms wiring", () => {
     expect(capturedOpts[0]!.roomId).not.toBe(capturedOpts[1]!.roomId);
   });
 
-  test("RoomAlreadyOpenError closes its initial Relay candidate before reporting", async () => {
-    _defaultConnectImpl = async () => {
-      throw new MockRoomAlreadyOpenError("AbCdEfGhIjKl");
-    };
+  test("RoomAlreadyOpenError retries the ghost window, then reports", async () => {
+    // Plan/140 D — RoomAlreadyOpen is no longer immediately fatal: the
+    // holder may be our own ghost connection or the supervisor's keeper.
+    // Tighten the ghost-retry cadence so the bounded window completes fast.
+    process.env["REMOTE_PI_GHOST_RETRY_MS"] = "1";
+    process.env["REMOTE_PI_SKIP_CLAIM"] = "1";
+    try {
+      _defaultConnectImpl = async () => {
+        throw new MockRoomAlreadyOpenError("AbCdEfGhIjKl");
+      };
 
-    captureHandler("remote-pi");
-    const ctx = makeMockCtx("/tmp/remote-pi-dup");
-    await _connectForTest(ctx);
+      captureHandler("remote-pi");
+      const ctx = makeMockCtx("/tmp/remote-pi-dup");
+      await _connectForTest(ctx);
 
-    expect(ctx.ui.notify).toHaveBeenCalledWith(
-      expect.stringContaining("Already running in this cwd"),
-      "error",
-    );
-    expect(relayRef.current?.close).toHaveBeenCalledTimes(1);
-    expect(_getState()).toBe("idle");
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        expect.stringContaining("Already running in this cwd"),
+        "error",
+      );
+      // Every rejected candidate (initial + ghost retries) is closed.
+      expect(relayRef.current?.close.mock.calls.length ?? 0).toBeGreaterThanOrEqual(1);
+      expect(_getState()).toBe("idle");
+    } finally {
+      delete process.env["REMOTE_PI_GHOST_RETRY_MS"];
+      delete process.env["REMOTE_PI_SKIP_CLAIM"];
+    }
   });
 
   test("generic initial Relay failure closes its candidate before reporting", async () => {
@@ -6200,20 +6211,35 @@ describe("relay reconnect", () => {
 
   test("RoomAlreadyOpenError on initial connect does NOT schedule a start retry", async () => {
     vi.useFakeTimers();
+    process.env["REMOTE_PI_GHOST_RETRY_MS"] = "1";
+    process.env["REMOTE_PI_SKIP_CLAIM"] = "1";
     try {
       _defaultConnectImpl = async () => {
         throw new MockRoomAlreadyOpenError("AbCdEfGhIjKl");
       };
       captureHandler("remote-pi");
-      await _connectForTest(makeMockCtx("/tmp/remote-pi-dup-initial"));
+      const connecting = _connectForTest(makeMockCtx("/tmp/remote-pi-dup-initial"));
+      // Drive the clock in small steps until the bounded ghost window
+      // (12 × 1 ms) settles — a single big advance can outrun the chain.
+      let settled = false;
+      void connecting.finally(() => { settled = true; });
+      for (let i = 0; i < 100 && !settled; i++) {
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      await connecting;
+      // The ghost window reuses the SAME RelayClient instance.
       expect(relayInstances).toHaveLength(1);
+      expect(_getState()).toBe("idle");
 
-      // Retrying a deterministic room conflict would fight the incumbent.
+      // Retrying a deterministic room conflict beyond the bounded window
+      // would fight the incumbent — no further start retries happen.
       await vi.advanceTimersByTimeAsync(60_000);
       expect(relayInstances).toHaveLength(1);
       expect(_getState()).toBe("idle");
     } finally {
       vi.useRealTimers();
+      delete process.env["REMOTE_PI_GHOST_RETRY_MS"];
+      delete process.env["REMOTE_PI_SKIP_CLAIM"];
     }
   });
 

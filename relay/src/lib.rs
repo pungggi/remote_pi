@@ -54,6 +54,16 @@ pub struct AppState {
     /// how often a phone's radio must wake. 60 s beats every common NAT idle
     /// timeout with margin and halves inbound wakeups vs. the old 25 s.
     pub heartbeat_interval: Duration,
+    /// Plan/140 D — a connection with NO inbound frame (message/ping/pong)
+    /// for this long is reaped: the socket is half-open (NAT drop, sleep,
+    /// crash without FIN) and lingers until TCP teardown — meanwhile its
+    /// room/presence stays misleadingly "online" with a dead receiver, and
+    /// the ghost keeps a broadcast slot forever. (On single-occupancy relays
+    /// a ghost also blocks the owner's reconnect — the 2026-09-05
+    /// "16-minute dark room" class.) Default 150 s (≥2 missed 60 s
+    /// heartbeats, mirroring the client-side watchdog), configurable via
+    /// `REMOTEPI_REAP_SILENCE_SECS` (min 10).
+    pub reap_silence: Duration,
     /// PR #48 review #1 — TTL for identical-reply suppression on
     /// `presence_check` / `rooms_check`. See [DEFAULT_DEDUP_TTL_SECS].
     pub control_reply_dedup_ttl: Duration,
@@ -120,6 +130,35 @@ pub fn resolve_heartbeat_secs(raw: Option<&str>) -> u64 {
         }
         Some(v) => v,
         None => DEFAULT_HEARTBEAT_SECS,
+    }
+}
+
+/// Plan/140 D — default silence window before a connection is reaped
+/// (seconds). ≥2 missed 60 s heartbeats: one lost ping (plus scheduling
+/// drift) is never enough, two certainly are.
+pub const DEFAULT_REAP_SILENCE_SECS: u64 = 150;
+
+/// Plan/140 D — floor for the reap window. Below this a slow-but-healthy
+/// client risks a false reap during a busy GC pause or a burst of large
+/// frames.
+pub const MIN_REAP_SILENCE_SECS: u64 = 10;
+
+/// Plan/140 D — resolve the reap window from an optional env-string value
+/// (`REMOTEPI_REAP_SILENCE_SECS`). Same contract as
+/// [resolve_heartbeat_secs]: `None`/unparseable → default, below-floor
+/// clamps up with a `warn`.
+pub fn resolve_reap_silence_secs(raw: Option<&str>) -> u64 {
+    match raw.and_then(|s| s.trim().parse::<u64>().ok()) {
+        Some(v) if v < MIN_REAP_SILENCE_SECS => {
+            tracing::warn!(
+                requested = v,
+                min = MIN_REAP_SILENCE_SECS,
+                "REMOTEPI_REAP_SILENCE_SECS below floor; clamping"
+            );
+            MIN_REAP_SILENCE_SECS
+        }
+        Some(v) => v,
+        None => DEFAULT_REAP_SILENCE_SECS,
     }
 }
 

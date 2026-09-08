@@ -42,7 +42,7 @@ import type {
 import { SettingsManager, convertToPng } from "@earendil-works/pi-coding-agent";
 import { type Ed25519Keypair } from "./pairing/crypto.js";
 import { buildQRUri, qrSession, renderQRAscii, clampPairTtlMs, TOKEN_TTL_MS } from "./pairing/qr.js";
-import { upsertRoom } from "./session/rooms_registry.js";
+import { piperHomeDir, upsertRoom } from "./session/rooms_registry.js";
 import {
   addPeer,
   getOrCreateEd25519Keypair,
@@ -131,7 +131,7 @@ import { runSetupWizard, type WizardUI } from "./session/setup_wizard.js";
 import { updateFooter, type FooterState } from "./ui/footer.js";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chmodSync, mkdtempSync, mkdirSync, copyFileSync, existsSync, unlinkSync, readFileSync, statSync, writeFileSync, realpathSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdtempSync, mkdirSync, copyFileSync, existsSync, unlinkSync, readFileSync, statSync, writeFileSync, realpathSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { spawnSync } from "node:child_process";
 import { hostname, tmpdir } from "node:os";
@@ -1151,11 +1151,31 @@ function _registerRoomForKeeper(cwd: string, roomId: string): void {
  *  (supervisor offline, pre-plan/140 build, or a REAL session holding the
  *  room — the claim never evicts a live peer). */
 async function _claimRoomFromKeeper(roomId: string): Promise<boolean> {
+  // Tests (fake timers) skip the real UDS round-trip — the pipe I/O makes
+  // the await chain stall under a faked clock.
+  if (process.env["REMOTE_PI_SKIP_CLAIM"] === "1") return false;
   try {
     const reply = await callSupervisor({ op: "claim_room", room_id: roomId });
     return reply.dropped === true;
   } catch {
     return false;
+  }
+}
+
+/** Plan/140 D — per-room relay lifecycle log (`~/.pi/piper/ext-<room>.log`),
+ *  one line per event, best-effort. The 2026-09-05/08 incidents were only
+ *  explainable from the RELAY side; this makes the daemon side equally
+ *  diagnosable (connect attempts, rejects, reclaims, closes, reconnects). */
+function _relayLog(roomId: string | null | undefined, event: string, detail = ""): void {
+  try {
+    const dir = piperHomeDir();
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(
+      join(dir, `ext-${roomId ?? "default"}.log`),
+      `${new Date().toISOString()} ${event}${detail ? " " + detail : ""}\n`,
+    );
+  } catch {
+    // Observability only — never break the relay path on an unwritable home.
   }
 }
 
@@ -1614,6 +1634,7 @@ function _goIdle(byeReason?: import("./protocol/types.js").ByeReason): void {
 function _onRelayClose(closedRelay: RelayClient): void {
   if (ext.relay !== closedRelay) return; // delayed close from a replaced Relay
   if (ext.state === "idle") return;  // already torn down (e.g. /remote-pi stop)
+  _relayLog(ext.myRoomId, "relay-closed");
 
   ext.relayLifecycleGeneration += 1;
   ext.stopAutoListener?.();
@@ -1740,16 +1761,19 @@ async function _attemptReconnect(
     // Replay the same room identity from _cmdStart. Without this the relay
     // would log this WS as a default-room peer and the app would see a
     // phantom "legacy session" appear (regression of plano 17 + 18).
+    _relayLog(ext.myRoomId, "reconnect-attempt", url);
     await relay.connect({
       ...(ext.myRoomId ? { roomId: ext.myRoomId } : {}),
       ...(ext.myRoomMeta ? { roomMeta: ext.myRoomMeta } : {}),
     });
     // Plan/140 — reconnects refresh the keeper registry's lastSeen too.
     if (ext.myRoomId) _registerRoomForKeeper(process.cwd(), ext.myRoomId);
-  } catch {
+    _relayLog(ext.myRoomId, "reconnect-ok", url);
+  } catch (err) {
     // A reconnect candidate stays local until publication; every rejected
     // candidate is deterministically closed before stale-return or retry.
     try { relay.close(); } catch { /* best-effort rejected candidate cleanup */ }
+    _relayLog(ext.myRoomId, "reconnect-failed", String(err));
     if (!_isCurrentReconnect(lifecycleGeneration, url)) return;
     _scheduleReconnect(lifecycleGeneration, url);
     return;
@@ -3600,10 +3624,16 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   // form to ws(s):// at this boundary. The relayUrl variable keeps the
   // http(s):// form for logging + mesh client construction below.
   //
-  // Plan/140 — one keeper-aware retry: if the room is held and the holder
-  // is the supervisor's durable-history keeper, `claim_room` makes it
-  // yield and a single reconnect wins. Any OTHER holder (a real session)
-  // keeps the deterministic RoomAlreadyOpen verdict below.
+  // Plan/140 D — bounded ghost-room retry: RoomAlreadyOpen on a fresh start
+  // historically meant "another live terminal", but the holder can also be
+  // OUR OWN dead connection (relay not yet reaped) or the supervisor's
+  // keeper. Claim the keeper first, then retry — the ghost clears with the
+  // relay's silence reaper or TCP teardown. Only after the window do we
+  // surface the deterministic-conflict error.
+  const GHOST_ROOM_RETRIES = 12;
+  // Call-time env read so tests can tighten the cadence (the default makes
+  // the RoomAlreadyOpen tests time out at 5 s otherwise).
+  const GHOST_ROOM_RETRY_MS = Number(process.env["REMOTE_PI_GHOST_RETRY_MS"] ?? "") || 10_000;
   const relay = new RelayClient(toWebSocketUrl(relayUrl), edKp);
   const tryConnect = async (client: RelayClient): Promise<void> => {
     try {
@@ -3611,14 +3641,29 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
       return;
     } catch (err) {
       try { client.close(); } catch { /* best-effort rejected candidate cleanup */ }
-      if (err instanceof RoomAlreadyOpenError && await _claimRoomFromKeeper(roomId)) {
-        await client.connect({ roomId, roomMeta }); // throws → normal error path
-        return;
+      if (!(err instanceof RoomAlreadyOpenError)) throw err;
+      _relayLog(roomId, "connect-rejected", "room_already_open");
+      if (await _claimRoomFromKeeper(roomId)) {
+        _relayLog(roomId, "keeper-yielded");
+      }
+      for (let attempt = 1; attempt <= GHOST_ROOM_RETRIES; attempt++) {
+        await new Promise<void>((r) => setTimeout(r, GHOST_ROOM_RETRY_MS));
+        if (!isCurrentCandidate()) throw err;
+        try {
+          await client.connect({ roomId, roomMeta });
+          _relayLog(roomId, "connect-ok-after-reject", `attempt=${attempt}`);
+          return;
+        } catch (retryErr) {
+          try { client.close(); } catch { /* best-effort rejected candidate cleanup */ }
+          if (!(retryErr instanceof RoomAlreadyOpenError)) throw retryErr;
+          _relayLog(roomId, "connect-rejected-retry", `attempt=${attempt}/${GHOST_ROOM_RETRIES}`);
+        }
       }
       throw err;
     }
   };
   try {
+    _relayLog(roomId, "connect-attempt", relayUrl);
     await tryConnect(relay);
   } catch (err) {
     // A stop, shutdown/replacement, relay-off, or newer start may supersede a
@@ -3660,6 +3705,7 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   // Plan/140 — this room is live: refresh lastSeen so the keeper covers it
   // the moment this session goes away.
   _registerRoomForKeeper(process.cwd(), roomId);
+  _relayLog(roomId, "connect-ok", relayUrl);
   // A successful start settles the initial-connect retry loop (upstream #128).
   if (ext.initialConnectRetryTimer !== null) {
     clearTimeout(ext.initialConnectRetryTimer);

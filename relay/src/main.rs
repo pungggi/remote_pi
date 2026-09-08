@@ -26,6 +26,12 @@ async fn main() -> anyhow::Result<()> {
         relay::resolve_dedup_ttl_secs(std::env::var("REMOTEPI_DEDUP_TTL_SECS").ok().as_deref());
     info!(dedup_ttl_secs, "control-reply dedup TTL");
 
+    // Plan/140 D — silence window before a half-open connection is reaped
+    // (default 150 s, floor 10 s). See `relay::resolve_reap_silence_secs`.
+    let reap_silence_secs =
+        relay::resolve_reap_silence_secs(std::env::var("REMOTEPI_REAP_SILENCE_SECS").ok().as_deref());
+    info!(reap_silence_secs, "half-open connection reap window");
+
     // Read (and memoize) the outer-envelope size ceiling once at startup, then
     // log the effective value so ops can confirm RELAY_MAX_CT_MIB took effect.
     let max_ct_bytes = relay::protocol::outer::max_ct_bytes();
@@ -77,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
         metrics: metrics.clone(),
         port,
         heartbeat_interval: std::time::Duration::from_secs(heartbeat_secs),
+        reap_silence: std::time::Duration::from_secs(reap_silence_secs),
         control_reply_dedup_ttl: std::time::Duration::from_secs(dedup_ttl_secs),
     };
     tokio::spawn(async move {
@@ -101,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
         metrics,
         port,
         heartbeat_interval: std::time::Duration::from_secs(heartbeat_secs),
+        reap_silence: std::time::Duration::from_secs(reap_silence_secs),
         control_reply_dedup_ttl: std::time::Duration::from_secs(dedup_ttl_secs),
     };
     let app = relay::build_router(state);

@@ -297,3 +297,52 @@ async fn auth_timeout_closes_half_handshake() {
         "relay must close the connection after the auth timeout"
     );
 }
+
+/// Plan/140 D — a half-open connection that stops answering the relay's
+/// heartbeat Pings (no inbound frame at all) is REAPED after
+/// `reap_silence`: the room/presence goes offline for real instead of
+/// ghosting "online" with a dead receiver until TCP teardown notices
+/// (which on a quiet NAT path can take many minutes).
+///
+/// Mechanics: the silent client simply never READS its socket after the
+/// auth handshake — tungstenite answers Pings in its read path, so a
+/// stream that is never polled never pongs. Timings are tightened via a
+/// directly-built AppState (heartbeat 1 s, reap 2 s — prod env floors do
+/// not apply to tests).
+#[tokio::test]
+async fn silent_half_open_connection_is_reaped() {
+    let port = common::start_relay_with_timings(1, 2).await;
+    let sk = random_key();
+
+    // Client A: full auth into a room, then eternal silence. The stream is
+    // deliberately NOT polled during the reap window — tungstenite answers
+    // Pings in its read path, so polling would pong and keep it alive.
+    let (mut ws_a, _peer_a) = connect_and_auth_with_room(port, &sk, "ghostroom").await;
+
+    // Reap window is 2 s + up to one 1 s tick; 6 s covers it with margin.
+    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+
+    // Now drain: the relay has already reaped, so after the buffered
+    // heartbeat Pings the stream must END (Close/None/Err). Without the
+    // reaper, fresh Pings keep arriving every second and the stream never
+    // ends within the budget.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut ended = false;
+    while std::time::Instant::now() < deadline {
+        match tokio::time::timeout(std::time::Duration::from_millis(1200), ws_a.next()).await {
+            Ok(None) | Ok(Some(Err(_))) | Ok(Some(Ok(Message::Close(_)))) => {
+                ended = true;
+                break;
+            }
+            Ok(Some(Ok(_))) => continue, // buffered Ping/Close-precursor — keep draining
+            Err(_) => {
+                // No frame for 1.2 s — with a 1 s heartbeat cadence that only
+                // happens when the server stopped sending: the reap worked,
+                // the close frame just didn't survive the wire.
+                ended = true;
+                break;
+            }
+        }
+    }
+    assert!(ended, "silent half-open connection must be reaped by the relay");
+}
