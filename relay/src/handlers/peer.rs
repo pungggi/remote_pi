@@ -235,15 +235,31 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
         heartbeat_interval,
     );
 
+    // Plan/140 B — why did the socket end? "disconnected" alone hid the
+    // 2026-09-05/08 wedge incidents; the close code/reason makes the next
+    // one diagnosable from relay.log alone.
+    let mut close_reason: Option<String> = None;
+
     'routing: loop {
         tokio::select! {
             item = stream.next() => {
                 match item {
-                    None | Some(Err(_)) => break,
+                    None => break,
+                    Some(Err(e)) => {
+                        close_reason = Some(format!("ws error: {e}"));
+                        break;
+                    }
                     Some(Ok(msg)) => {
                         let text = match msg {
                             Message::Text(t) => t,
-                            Message::Close(_) => break,
+                            Message::Close(frame) => {
+                                close_reason = Some(
+                                    frame
+                                        .map(|f| format!("code={} reason={}", f.code, f.reason))
+                                        .unwrap_or_else(|| "no frame".to_string()),
+                                );
+                                break;
+                            }
                             // Pong frames are keepalive responses; Ping frames are
                             // answered automatically by axum's WS. Drop both.
                             Message::Ping(_) | Message::Pong(_) => continue,
@@ -583,5 +599,11 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
 
     registry.unregister(&peer_id, &room_id, conn_id).await;
     rooms.unsubscribe_all(&peer_id).await;
-    info!(peer = %peer_short, room = %room_id, addr = %peer_addr, "disconnected");
+    info!(
+        peer = %peer_short,
+        room = %room_id,
+        addr = %peer_addr,
+        close = close_reason.as_deref().unwrap_or("eof"),
+        "disconnected"
+    );
 }

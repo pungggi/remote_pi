@@ -47,6 +47,12 @@ export type ControlRequest =
   // and is NOT resurrected at boot. `name` scopes the room for custom-
   // named sessions (omitted/default → legacy cwd-only room).
   | { op: "start_transient"; cwd: string; name?: string }
+  // ── Plan/140 — a real session claims its room from the keeper ──
+  // Called by ANY extension instance (interactive or daemon) whose relay
+  // connect failed with RoomAlreadyOpenError: the supervisor asks the
+  // in-process room-keeper to drop its connection for that room so the
+  // real session can take it. Reply says whether a keeper held it.
+  | { op: "claim_room"; room_id: string }
   // ── cron (plan/39) ──
   | { op: "cron_add"; daemon_id: string; schedule: string; prompt: string; tz?: string; skip_if_busy?: boolean; wake?: boolean; catchup?: boolean }
   | { op: "cron_list" }
@@ -80,6 +86,9 @@ export interface ControlReplyShapes {
   // so the caller knows which room will (re)announce. `started` is false
   // when a child for that cwd was already running/starting (idempotent).
   start_transient: { id: string; cwd: string; room_id: string; started: boolean };
+  // ── Plan/140 — claim_room reply. `dropped` is true when a keeper
+  // connection held the room and was released for the claimer.
+  claim_room: { room_id: string; dropped: boolean };
   // ── cron (plan/39) ──
   cron_add: { job: CronJobView };
   cron_list: { jobs: CronJobView[] };

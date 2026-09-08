@@ -42,6 +42,7 @@ import type {
 import { SettingsManager, convertToPng } from "@earendil-works/pi-coding-agent";
 import { type Ed25519Keypair } from "./pairing/crypto.js";
 import { buildQRUri, qrSession, renderQRAscii, clampPairTtlMs, TOKEN_TTL_MS } from "./pairing/qr.js";
+import { upsertRoom } from "./session/rooms_registry.js";
 import {
   addPeer,
   getOrCreateEd25519Keypair,
@@ -1136,6 +1137,28 @@ let _probeSendFirst = 0;
 let _probeSendCount = 0;
 let _probeSendChars = 0;
 let _probeSendLast = 0;
+/** Plan/140 — record this (cwd → room) mapping for the supervisor's keeper
+ *  (durable-history presence for dark rooms). Best-effort by design: an
+ *  unwritable home must never break the relay connect path. */
+function _registerRoomForKeeper(cwd: string, roomId: string): void {
+  try {
+    upsertRoom({ cwd, roomId, lastSeenAt: Date.now() });
+  } catch { /* best-effort */ }
+}
+
+/** Plan/140 — best-effort ask the supervisor's room-keeper to yield `roomId`.
+ *  True only when a keeper held it and released; false for any failure
+ *  (supervisor offline, pre-plan/140 build, or a REAL session holding the
+ *  room — the claim never evicts a live peer). */
+async function _claimRoomFromKeeper(roomId: string): Promise<boolean> {
+  try {
+    const reply = await callSupervisor({ op: "claim_room", room_id: roomId });
+    return reply.dropped === true;
+  } catch {
+    return false;
+  }
+}
+
 function _probeBroadcast(msg: ServerMessage): void {
   if (msg.type === "agent_chunk") {
     const t = Date.now();
@@ -1721,6 +1744,8 @@ async function _attemptReconnect(
       ...(ext.myRoomId ? { roomId: ext.myRoomId } : {}),
       ...(ext.myRoomMeta ? { roomMeta: ext.myRoomMeta } : {}),
     });
+    // Plan/140 — reconnects refresh the keeper registry's lastSeen too.
+    if (ext.myRoomId) _registerRoomForKeeper(process.cwd(), ext.myRoomId);
   } catch {
     // A reconnect candidate stays local until publication; every rejected
     // candidate is deterministically closed before stale-return or retry.
@@ -3574,13 +3599,28 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   // Transport opens WebSocket; convert the canonical http(s):// stored
   // form to ws(s):// at this boundary. The relayUrl variable keeps the
   // http(s):// form for logging + mesh client construction below.
+  //
+  // Plan/140 — one keeper-aware retry: if the room is held and the holder
+  // is the supervisor's durable-history keeper, `claim_room` makes it
+  // yield and a single reconnect wins. Any OTHER holder (a real session)
+  // keeps the deterministic RoomAlreadyOpen verdict below.
   const relay = new RelayClient(toWebSocketUrl(relayUrl), edKp);
+  const tryConnect = async (client: RelayClient): Promise<void> => {
+    try {
+      await client.connect({ roomId, roomMeta });
+      return;
+    } catch (err) {
+      try { client.close(); } catch { /* best-effort rejected candidate cleanup */ }
+      if (err instanceof RoomAlreadyOpenError && await _claimRoomFromKeeper(roomId)) {
+        await client.connect({ roomId, roomMeta }); // throws → normal error path
+        return;
+      }
+      throw err;
+    }
+  };
   try {
-    await relay.connect({ roomId, roomMeta });
+    await tryConnect(relay);
   } catch (err) {
-    // A rejected local candidate is never published and must always be closed,
-    // regardless of whether this lifecycle is still authoritative.
-    try { relay.close(); } catch { /* best-effort rejected candidate cleanup */ }
     // A stop, shutdown/replacement, relay-off, or newer start may supersede a
     // candidate before its rejection arrives. Keep the outgoing context silent;
     // only the authoritative attempt may report an error.
@@ -3617,6 +3657,9 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   ext.peerShort = myShort;
   ext.myRoomId = roomId;
   ext.state = "started";
+  // Plan/140 — this room is live: refresh lastSeen so the keeper covers it
+  // the moment this session goes away.
+  _registerRoomForKeeper(process.cwd(), roomId);
   // A successful start settles the initial-connect retry loop (upstream #128).
   if (ext.initialConnectRetryTimer !== null) {
     clearTimeout(ext.initialConnectRetryTimer);

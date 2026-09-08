@@ -7,6 +7,9 @@ import { daemonIdForCwd } from "./id.js";
 import { defaultAgentName, type LocalConfig } from "../session/local_config.js";
 import { DEVICE_ROOM, roomIdFor } from "../rooms.js";
 import { ipcAddress, usesNamedPipe } from "../session/ipc.js";
+import { RoomKeeper } from "../session/room_keeper.js";
+import { getOrCreateEd25519Keypair } from "../pairing/storage.js";
+import { resolveRelayUrl } from "../config.js";
 import { EXIT_DAEMON_FRESH_SESSION, RpcChild, type RpcChildExitEvent, type RpcChildOptions } from "./rpc_child.js";
 import {
   type ControlReply,
@@ -157,6 +160,9 @@ export class Supervisor {
   private readonly children = new Map<string, ChildSlot>();
   /** Live croner schedules, keyed by cron job id (plan/39). */
   private readonly cronJobs = new Map<string, Cron>();
+  /** Plan/140 — in-process room keeper (durable-history presence for dark
+   *  rooms). Null when it failed to start (never fatal to the supervisor). */
+  private keeper: RoomKeeper | null = null;
   private shuttingDown = false;
 
   constructor(private readonly opts: SupervisorOptions) {}
@@ -177,6 +183,11 @@ export class Supervisor {
     this._spawnAllFromRegistry();
     // Plan/120 — always-on device daemon (handles offline terminal-open).
     this._spawnDeviceDaemon();
+    // Plan/140 — durable-history keeper for dark rooms. Started AFTER the
+    // children so a registry daemon wins the race for its own room (the
+    // keeper backs off on RoomAlreadyOpen and the real daemon has the
+    // first-mover advantage here).
+    await this._startKeeper();
     // Cron (plan/39): schedule all enabled jobs, then run any missed catchup.
     this._reconcileCron();
     this._runCatchup();
@@ -185,6 +196,11 @@ export class Supervisor {
   /** Graceful shutdown: stop all children, close UDS. */
   async stop(): Promise<void> {
     this.shuttingDown = true;
+    // Plan/140 — release keeper rooms first so a concurrently starting
+    // sibling supervisor doesn't fight RoomAlreadyOpen ghosts during the
+    // handover.
+    try { await this.keeper?.stop(); } catch { /* best-effort */ }
+    this.keeper = null;
     // Stop all cron schedules (plan/39) so no fire races with teardown.
     for (const c of this.cronJobs.values()) c.stop();
     this.cronJobs.clear();
@@ -292,6 +308,9 @@ export class Supervisor {
       case "register":     return this._opRegister(req.cwd);
       case "unregister":   return this._opUnregister(req.id);
       case "start_transient": return this._opStartTransient(req.cwd, req.name);
+      // Plan/140 — real session claims its room from the keeper.
+      case "claim_room":
+        return { ok: true, data: { room_id: req.room_id, dropped: this.keeper?.dropRoom(req.room_id) ?? false } };
       case "cron_add":     return this._opCronAdd(req);
       case "cron_list":    return this._opCronList();
       case "cron_remove":  return this._opCronRemove(req.job_id);
@@ -737,6 +756,8 @@ export class Supervisor {
   private _spawnDeviceDaemon(): void {
     const id = DEVICE_DAEMON_ID;
     const cwd = process.env["REMOTE_PI_HOME"] || homedir();
+    // Plan/140 — same proactive keeper yield as per-project daemons.
+    this.keeper?.dropRoom(DEVICE_ROOM);
     // Clean up any prior slot (crashed + waiting for backoff).
     const existing = this.children.get(id);
     if (existing) {
@@ -761,7 +782,32 @@ export class Supervisor {
     child.spawn();
   }
 
+  /** Plan/140 — start the in-process room keeper. Never throws: a keeper
+   *  failure (missing keyring, unreadable config) must not take the
+   *  supervisor down — the fleet keeps running without keeper coverage. */
+  private async _startKeeper(): Promise<void> {
+    try {
+      const keypair = await getOrCreateEd25519Keypair();
+      const keeper = new RoomKeeper({
+        relayUrl: resolveRelayUrl().url,
+        keypair,
+        log: (line) => process.stderr.write(`[room-keeper] ${line}\n`),
+      });
+      await keeper.warmRatchets();
+      await keeper.start();
+      this.keeper = keeper;
+      process.stderr.write("[room-keeper] up — serving durable history for dark rooms\n");
+    } catch (err) {
+      process.stderr.write(`[room-keeper] failed to start (keeper disabled): ${String(err)}\n`);
+    }
+  }
+
   private _spawnEntry(id: string, cwd: string, name?: string, transient = false): void {
+    // Plan/140 — a real daemon for this room is starting: proactively yield
+    // the keeper's connection so the child's relay connect doesn't hit
+    // RoomAlreadyOpen (claim_room is the reactive fallback for interactive
+    // sessions the supervisor doesn't spawn).
+    this.keeper?.dropRoom(roomIdFor(cwd, name));
     // Clean up any prior slot (e.g. crashed + waiting for backoff).
     const existing = this.children.get(id);
     if (existing) {
