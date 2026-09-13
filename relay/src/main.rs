@@ -51,10 +51,19 @@ async fn main() -> anyhow::Result<()> {
     let presence = Arc::new(relay::PresenceManager::new());
     let rooms = Arc::new(relay::RoomManager::new());
     let metrics = Arc::new(relay::FirehoseMetrics::new());
-    let registry = Arc::new(relay::PeerRegistry::new(
+    // Plan/141 — room mailbox bounds. TTL defaults to 24 h (the realistic
+    // phone-offline window); both knobs are env-tunable.
+    let mailbox_ttl_secs =
+        relay::resolve_mailbox_ttl_secs(std::env::var("REMOTEPI_MAILBOX_TTL_SECS").ok().as_deref());
+    let mailbox_max_frames =
+        relay::resolve_mailbox_max_frames(std::env::var("REMOTEPI_MAILBOX_MAX_FRAMES").ok().as_deref());
+    info!(mailbox_ttl_secs, mailbox_max_frames, "room mailbox bounds");
+    let registry = Arc::new(relay::PeerRegistry::with_mailbox(
         presence.clone(),
         rooms.clone(),
         metrics.clone(),
+        mailbox_max_frames,
+        std::time::Duration::from_secs(mailbox_ttl_secs),
     ));
     let mesh_auth = Arc::new(relay::MeshAuthCache::new());
 

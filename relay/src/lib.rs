@@ -162,6 +162,31 @@ pub fn resolve_reap_silence_secs(raw: Option<&str>) -> u64 {
     }
 }
 
+/// Plan/141 — default mailbox TTL (seconds). 24 h: the mailbox is RAM, but
+/// bounded per room by the frame cap anyway (~50 KB/room), and the phone's
+/// realistic offline window (work, overnight, weekend) is hours, not
+/// minutes. Durable long-term history remains the transcript's job
+/// (session_sync); the TTL only decides how long the relay bridges frames
+/// for rooms with no live session and no keeper.
+pub const DEFAULT_MAILBOX_TTL_SECS: u64 = 86_400;
+
+/// Plan/141 — default per-room mailbox frame cap.
+pub const DEFAULT_MAILBOX_MAX_FRAMES: usize = 100;
+
+/// Plan/141 — resolve the mailbox TTL from `REMOTEPI_MAILBOX_TTL_SECS`.
+/// Same contract as [resolve_reap_silence_secs]: `None`/unparseable →
+/// default. (No floor — even 0 is a legitimate "disable the mailbox"
+/// setting for constrained hosts.)
+pub fn resolve_mailbox_ttl_secs(raw: Option<&str>) -> u64 {
+    raw.and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(DEFAULT_MAILBOX_TTL_SECS)
+}
+
+/// Plan/141 — resolve the per-room frame cap from
+/// `REMOTEPI_MAILBOX_MAX_FRAMES`.
+pub fn resolve_mailbox_max_frames(raw: Option<&str>) -> usize {
+    raw.and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(DEFAULT_MAILBOX_MAX_FRAMES)
+}
+
 // Allows mesh handlers to keep using `State<Arc<MeshStore>>` instead of
 // reaching into the full `AppState`.
 impl FromRef<AppState> for Arc<MeshStore> {
