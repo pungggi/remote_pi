@@ -223,6 +223,175 @@ async fn successful_forward_never_nacks() {
     );
 }
 
+/// Plan/141 — an envelope sent while the destination peer is offline is
+/// parked in the room's mailbox instead of dropped, and replayed — in
+/// original order, before any live traffic — to the next real connection
+/// at that (peer, room).
+#[tokio::test]
+async fn mailbox_replays_to_reconnecting_peer() {
+    let port = start_relay().await;
+    let phone = random_key();
+
+    // Phone connects, then goes dark.
+    let (ws_phone, phone_peer) = connect_and_auth_with_room(port, &phone, "chat").await;
+    drop(ws_phone);
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    // Ext tries to deliver two envelopes to the offline phone.
+    let (mut ws_ext, _) = connect_and_auth(port).await;
+    for marker in ["parked-1", "parked-2"] {
+        ws_ext
+            .send(Message::text(
+                json!({"peer": phone_peer, "room": "chat", "ct": marker}).to_string(),
+            ))
+            .await
+            .unwrap();
+    }
+    // The route_error NACK (plan/137) arrives for the sender — drain it.
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), ws_ext.next()).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(200), ws_ext.next()).await;
+
+    // Phone reconnects: mailbox backlog first, then live traffic.
+    let (mut ws_phone2, _) = connect_and_auth_with_room(port, &phone, "chat").await;
+    for marker in ["parked-1", "parked-2"] {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(1), ws_phone2.next())
+            .await
+            .expect("timed out waiting for mailbox replay")
+            .unwrap()
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+        assert_eq!(v["ct"], marker, "mailbox must replay in order");
+    }
+    ws_ext
+        .send(Message::text(
+            json!({"peer": phone_peer, "room": "chat", "ct": "live-3"}).to_string(),
+        ))
+        .await
+        .unwrap();
+    let live = tokio::time::timeout(std::time::Duration::from_secs(1), ws_phone2.next())
+        .await
+        .expect("timed out waiting for live frame after replay")
+        .unwrap()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(live.to_text().unwrap()).unwrap();
+    assert_eq!(v["ct"], "live-3");
+}
+
+/// Plan/141 — a keeper connection (fallback presence) must NOT drain the
+/// mailbox: the backlog belongs to the real device that reconnects later.
+#[tokio::test]
+async fn mailbox_keeper_does_not_consume_backlog() {
+    let port = start_relay().await;
+    let phone = random_key();
+
+    let (ws_phone, phone_peer) = connect_and_auth_with_room(port, &phone, "chat").await;
+    drop(ws_phone);
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    let (mut ws_ext, _) = connect_and_auth(port).await;
+    ws_ext
+        .send(Message::text(
+            json!({"peer": phone_peer, "room": "chat", "ct": "parked-1"}).to_string(),
+        ))
+        .await
+        .unwrap();
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), ws_ext.next()).await;
+
+    // Keeper takes the dark room (hello with room_meta.keeper).
+    let url = format!("ws://127.0.0.1:{port}");
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    let (mut ws_keeper, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws_keeper
+        .send(Message::text(
+            json!({
+                "type": "hello",
+                "pubkey": B64.encode(phone.verifying_key().to_bytes()),
+                "room_id": "chat",
+                "room_meta": {"name": "k", "cwd": "k", "keeper": true}
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    let challenge: serde_json::Value =
+        serde_json::from_str(ws_keeper.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+    assert_eq!(challenge["type"], "challenge");
+    let nonce: [u8; 32] = B64
+        .decode(challenge["nonce"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    ws_keeper
+        .send(Message::text(
+            json!({"type": "auth", "sig": B64.encode(phone.sign(&nonce).to_bytes())})
+                .to_string(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let leaked =
+        tokio::time::timeout(std::time::Duration::from_millis(300), ws_keeper.next()).await;
+    assert!(leaked.is_err(), "keeper must not receive the backlog");
+
+    // The real device still gets it afterwards.
+    let (mut ws_phone2, _) = connect_and_auth_with_room(port, &phone, "chat").await;
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(1), ws_phone2.next())
+        .await
+        .expect("timed out waiting for backlog after keeper")
+        .unwrap()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+    assert_eq!(v["ct"], "parked-1");
+}
+
+/// Plan/141 — the mailbox is bounded: beyond the per-room cap the OLDEST
+/// frames are dropped, so a long offline window cannot grow memory
+/// without bound.
+#[tokio::test]
+async fn mailbox_is_capped_at_max_frames() {
+    let port = start_relay().await;
+    let phone = random_key();
+
+    let (ws_phone, phone_peer) = connect_and_auth_with_room(port, &phone, "chat").await;
+    drop(ws_phone);
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    let (mut ws_ext, _) = connect_and_auth(port).await;
+    for i in 0..105 {
+        ws_ext
+            .send(Message::text(
+                json!({"peer": phone_peer, "room": "chat", "ct": format!("m-{i:03}")})
+                    .to_string(),
+            ))
+            .await
+            .unwrap();
+    }
+    // Give the relay a moment to process the burst, then go quiet.
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+
+    let (mut ws_phone2, _) = connect_and_auth_with_room(port, &phone, "chat").await;
+    let mut first: Option<String> = None;
+    let mut count = 0usize;
+    while count <= 105 {
+        match tokio::time::timeout(std::time::Duration::from_millis(250), ws_phone2.next()).await
+        {
+            Ok(Some(Ok(frame))) => {
+                let v: serde_json::Value =
+                    serde_json::from_str(frame.to_text().unwrap()).unwrap();
+                if v.get("ct").is_some() {
+                    if first.is_none() {
+                        first = v["ct"].as_str().map(String::from);
+                    }
+                    count += 1;
+                }
+            }
+            _ => break,
+        }
+    }
+    assert_eq!(count, 100, "mailbox must deliver exactly the capped 100 frames");
+    assert_eq!(first.as_deref(), Some("m-005"), "oldest frames are evicted");
+}
+
 /// A client that sends an invalid signature must have its WS closed within 100 ms.
 #[tokio::test]
 async fn invalid_sig_closes_ws() {

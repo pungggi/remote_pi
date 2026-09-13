@@ -625,6 +625,29 @@ não conhece o id interno. O app correlaciona por recência do `(peer, room)`.
 
 ---
 
+## Mailbox de sala — 2026-09-13 (plano 141)
+
+O `route_error` avisa o remetente, mas o envelope em si ainda era
+**perdido** — se o celular estava offline quando a resposta do agente
+chegou (app em background, VPN caiu, relay reiniciado), nada reenviava o
+frame, e a cura dependia de o app re-sincronizar `session_sync` com uma
+sessão/keeper viva. O relay agora mantém uma **mailbox por `(peer, room)`**:
+
+- No forward-miss (sem conexão viva no destino), o envelope já reescrito é
+  **armazenado** em vez de dropado (o `route_error` continua sendo emitido).
+- Na próxima conexão **não-keeper** naquele `(peer, room)`, o backlog é
+  **replayado primeiro, em ordem original**, antes de qualquer frame vivo —
+  a entrega vira at-least-once para a janela recente, sem mudança alguma
+  no app/extension (os frames chegam como envelopes normais; o dedup do
+  app cuida de sobreposição com o `session_sync`).
+- Conexões **keeper** (fallback de presença, plano 140) NUNCA drenam a
+  mailbox — o backlog pertence ao dispositivo real.
+- Limites: **100 frames por sala** (os mais antigos são evitados), **TTL
+  30 min** (evicção lazy + sweep no cadence do heartbeat). Memória fica
+  limitada por sala; salas mortas simplesmente expiram.
+- Compat: relays antigos dropam como antes; clientes antigos recebem o
+  replay como se fosse tráfego vivo normal.
+
 ---
 
 ## Pareamento

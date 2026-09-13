@@ -96,6 +96,10 @@ async fn main() -> anyhow::Result<()> {
             if pruned > 0 {
                 info!(pruned, "subscription re-validation sweep pruned pairs");
             }
+            // Plan/141 — age out expired mailbox backlogs on the same
+            // cadence (lazy TTL eviction covers active rooms; this bounds
+            // rooms that never see traffic again).
+            sweeper_state.registry.mailbox_sweep();
         }
     });
 

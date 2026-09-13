@@ -589,9 +589,23 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                 if !registry.forward(
                                     &dest_peer,
                                     &dest_room,
-                                    Message::Text(fwd_line),
+                                    Message::Text(fwd_line.clone()),
                                     conn_id,
                                 ) {
+                                    // Plan/141 — undeliverable NOW does not mean
+                                    // undeliverable FOREVER: park the (already
+                                    // rewritten) envelope in the dest room's
+                                    // bounded mailbox instead of dropping it on
+                                    // the floor. The next real connection at
+                                    // the key drains the backlog first — this
+                                    // closes the "last response lost while the
+                                    // phone was offline" class at the relay
+                                    // itself, independent of session_sync.
+                                    registry.mailbox_store(
+                                        &dest_peer,
+                                        &dest_room,
+                                        fwd_line,
+                                    );
                                     // Was debug! ("normal during churn, ~94% of
                                     // the log"), but the relay's subscriber runs
                                     // at a fixed INFO level — RUST_LOG has no
@@ -605,7 +619,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                         dest = %dest_tail,
                                         room = %dest_room,
                                         bytes = ct_len,
-                                        "dest (peer, room) not found, dropping",
+                                        "dest (peer, room) not found, mailboxed",
                                     );
                                     // Plan/137 — NACK the sender (rate-limited):
                                     // an app steering into a dead/phantom room

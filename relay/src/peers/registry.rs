@@ -14,6 +14,7 @@ use crate::rooms::{RoomManager, RoomMeta, RoomMetaPatch};
 
 type RoomKey = (String, String); // (peer_id, room_id)
 type ConnEntry = (u64, RoomMeta, mpsc::UnboundedSender<Message>);
+type MailboxEntry = (std::time::Instant, String); // (stored_at, rewritten fwd line)
 
 /// Maps `(peer_id, room_id)` pairs to a *list* of live connections.
 ///
@@ -56,6 +57,17 @@ pub struct PeerRegistry {
     presence: Arc<PresenceManager>,
     rooms: Arc<RoomManager>,
     metrics: Arc<FirehoseMetrics>,
+    /// Plan/141 — per-`(peer, room)` mailbox of envelopes that arrived while
+    /// the destination had no live connection (forward miss). Bounded per
+    /// room by `mailbox_max` frames and aged out after `mailbox_ttl`; the
+    /// next NON-KEEPER connection at the key drains it first, converting
+    /// the relay's data path from at-most-once to at-least-once for the
+    /// recent window (the “last response lost while phone offline” class).\n    /// Keeper conns never drain (they are fallback presence, not
+    /// receivers) — otherwise the keeper would swallow frames the phone
+    /// still needs.
+    mailboxes: Mutex<HashMap<RoomKey, std::collections::VecDeque<MailboxEntry>>>,
+    mailbox_max: usize,
+    mailbox_ttl: std::time::Duration,
 }
 
 impl PeerRegistry {
@@ -64,12 +76,26 @@ impl PeerRegistry {
         rooms: Arc<RoomManager>,
         metrics: Arc<FirehoseMetrics>,
     ) -> Self {
+        Self::with_mailbox(presence, rooms, metrics, 100, std::time::Duration::from_secs(1800))
+    }
+
+    /// Same as [`PeerRegistry::new`], with explicit mailbox bounds (tests).
+    pub fn with_mailbox(
+        presence: Arc<PresenceManager>,
+        rooms: Arc<RoomManager>,
+        metrics: Arc<FirehoseMetrics>,
+        mailbox_max: usize,
+        mailbox_ttl: std::time::Duration,
+    ) -> Self {
         Self {
             next_conn: AtomicU64::new(0),
             senders: Mutex::new(HashMap::new()),
             presence,
             rooms,
             metrics,
+            mailboxes: Mutex::new(HashMap::new()),
+            mailbox_max,
+            mailbox_ttl,
         }
     }
 
@@ -99,9 +125,21 @@ impl PeerRegistry {
             let is_first_in_room = !lock.contains_key(&key);
             lock.entry(key)
                 .or_default()
-                .push((conn_id, room_meta.clone(), tx));
+                .push((conn_id, room_meta.clone(), tx.clone()));
             (was_offline_before, is_first_in_room)
         };
+
+        // Plan/141 — drain the room's mailbox to the fresh connection
+        // BEFORE the routing loop can deliver any live frame, so envelopes
+        // that arrived while the owner was offline are replayed in original
+        // order. Keeper conns are fallback presence, not receivers: they
+        // must never consume the backlog the real device still needs.
+        if room_meta.keeper != Some(true) {
+            let backlog = self.mailbox_drain(&peer_id, &room_id);
+            for line in backlog {
+                let _ = tx.send(Message::Text(line));
+            }
+        }
 
         // room_announced fires once per (peer, room) lifecycle.
         if is_first_in_room {
@@ -265,6 +303,63 @@ impl PeerRegistry {
             }
         }
         delivered
+    }
+
+    /// Plan/141 — append an undeliverable envelope (rewritten, ready to
+    /// forward verbatim) to the destination room's mailbox. Bounded: the
+    /// per-room queue is TTL-evicted from the front and capped at
+    /// `mailbox_max` frames, so a dead destination can never grow memory
+    /// without bound.
+    pub fn mailbox_store(&self, dest_peer: &str, dest_room: &str, line: String) {
+        let now = std::time::Instant::now();
+        let mut lock = self.mailboxes.lock().unwrap();
+        let q = lock
+            .entry((dest_peer.to_string(), dest_room.to_string()))
+            .or_default();
+        q.push_back((now, line));
+        while let Some((t, _)) = q.front() {
+            if now.duration_since(*t) >= self.mailbox_ttl {
+                q.pop_front();
+            } else {
+                break;
+            }
+        }
+        while q.len() > self.mailbox_max {
+            q.pop_front();
+        }
+    }
+
+    /// Plan/141 — remove and return the room's still-live mailbox entries
+    /// (TTL-fresh, in original order). Called on a non-keeper register.
+    fn mailbox_drain(&self, peer_id: &str, room_id: &str) -> Vec<String> {
+        let now = std::time::Instant::now();
+        let mut lock = self.mailboxes.lock().unwrap();
+        lock.remove(&(peer_id.to_string(), room_id.to_string()))
+            .map(|q| {
+                q.into_iter()
+                    .filter(|(t, _)| now.duration_since(*t) < self.mailbox_ttl)
+                    .map(|(_, l)| l)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Plan/141 — drop TTL-expired entries everywhere (called from the
+    /// reaper cadence; also lazy-evicted on store/drain, so this only
+    /// bounds rooms that never see traffic again).
+    pub fn mailbox_sweep(&self) {
+        let now = std::time::Instant::now();
+        let mut lock = self.mailboxes.lock().unwrap();
+        lock.retain(|_, q| {
+            while let Some((t, _)) = q.front() {
+                if now.duration_since(*t) >= self.mailbox_ttl {
+                    q.pop_front();
+                } else {
+                    break;
+                }
+            }
+            !q.is_empty()
+        });
     }
 
     /// Applies `patch` to every live conn at `(peer_id, room_id)` and
