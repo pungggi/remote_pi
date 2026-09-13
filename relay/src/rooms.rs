@@ -41,6 +41,12 @@ pub struct RoomMeta {
     /// line without a per-session request round-trip.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git: Option<serde_json::Value>,
+    /// Plan/140 C — `true` when this room is held by the supervisor's room
+    /// keeper (durable-history mirror; no live agent behind it). The app
+    /// badges such sessions "Pi offline / archive" instead of presenting
+    /// them as live. Set once at hello time; never patched afterwards.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keeper: Option<bool>,
     /// Context-window usage snapshot the Pi-extension pushes via
     /// `room_meta.context_usage` (opaque JSON blob — e.g. `{tokens,
     /// contextWindow, percent}` — the relay never inspects it, the app parses

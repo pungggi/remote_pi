@@ -102,6 +102,12 @@ class SessionTile extends StatelessWidget {
                 Expanded(
                   child: _TitleBlock(peer: peer, room: room, git: git),
                 ),
+                if (room?.keeper ?? false) ...[
+                  // Plan/140 C — durable-history mirror: the room is served
+                  // from the transcript by the PC's keeper; no live agent.
+                  Icon(LucideIcons.archive, size: 13, color: colors.muted),
+                  const SizedBox(width: 8),
+                ],
                 if (notifyOnDone) ...[
                   // Plan/132 — muted bell so it never competes with the
                   // presence dot; it's a state marker, not an alert.

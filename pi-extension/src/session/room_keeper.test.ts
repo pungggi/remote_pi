@@ -169,6 +169,30 @@ describe("RoomKeeper (plan/140)", () => {
     await keeper.stop();
   });
 
+  it("holds at most maxRooms dark rooms, newest first (plan/140 C)", async () => {
+    const { keeper, fake, registryPath } = makeKeeper({ maxRooms: 2 });
+    const now = Date.now();
+    upsertRoom({ cwd: "C:\\a", roomId: "roomA", lastSeenAt: now - 3000 }, registryPath);
+    upsertRoom({ cwd: "C:\\b", roomId: "roomB", lastSeenAt: now - 2000 }, registryPath);
+    upsertRoom({ cwd: "C:\\c", roomId: "roomC", lastSeenAt: now - 1000 }, registryPath);
+    await keeper.start();
+    // The two NEWEST are held; the oldest is not.
+    const heldRooms = fake.connectCalls.map((c) => c.roomId).sort();
+    expect(heldRooms).toEqual(["roomB", "roomC"]);
+    // The keeper marker rides the hello so the relay can announce the room
+    // as a durable-history mirror (app badges it "Pi offline / archive").
+    expect(fake.connectCalls[0]!.roomMeta).toMatchObject({ keeper: true });
+    await keeper.stop();
+  });
+
+  it("maxRooms 0 disables holding entirely", async () => {
+    const { keeper, fake, registryPath } = makeKeeper({ maxRooms: 0 });
+    upsertRoom({ cwd: "C:\\a", roomId: "roomA", lastSeenAt: Date.now() }, registryPath);
+    await keeper.start();
+    expect(fake.connectCalls.length).toBe(0);
+    await keeper.stop();
+  });
+
   it("dropRoom releases the connection and reports it held the room", async () => {
     const { keeper, fake, cwd, registryPath } = makeKeeper();
     upsertRoom({ cwd, roomId: "keptRoom", lastSeenAt: Date.now() }, registryPath);

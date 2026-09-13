@@ -97,9 +97,21 @@ export function pruneRooms(maxAgeMs: number, path: string = roomsRegistryPath())
   return removed;
 }
 
+/** Hard cap on stored rooms (newest by lastSeenAt kept). Bounds the file
+ *  and the keeper's candidate pool — the 2026-09-08 fleet registered 207
+ *  rooms in ONE day, and an unbounded registry would keep growing. */
+const MAX_REGISTRY_ENTRIES = 200;
+
 function writeRoomsRegistry(map: Map<string, RoomsRegistryEntry>, path: string): void {
   try {
     mkdirSync(dirname(path), { recursive: true });
+    if (map.size > MAX_REGISTRY_ENTRIES) {
+      const sorted = [...map.values()].sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+      const keep = new Set(sorted.slice(0, MAX_REGISTRY_ENTRIES).map((e) => e.roomId));
+      for (const roomId of [...map.keys()]) {
+        if (!keep.has(roomId)) map.delete(roomId);
+      }
+    }
     const file: RoomsRegistryFile = {};
     for (const [roomId, e] of map) file[roomId] = e;
     writeFileSync(path, JSON.stringify(file, null, 2) + "\n", "utf8");

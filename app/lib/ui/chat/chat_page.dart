@@ -86,6 +86,18 @@ class ChatPage extends StatelessWidget {
             // surfaces those, and stacking duplicates noise the surface.
             if (state is ChatReady && state.pairingRevoked)
               _RevokedBanner(onRePair: () => context.go('/pair')),
+            // Plan/140 C — the active session is served by the PC's
+            // room-keeper (durable-history mirror): full history, no live
+            // agent. An honest banner instead of a silently frozen chat —
+            // any live frame (chunk / done) clears it via the stream.
+            StreamBuilder<bool>(
+              stream: vm.piOfflineStream,
+              initialData: vm.piOffline,
+              builder: (context, snap) {
+                if (snap.data != true) return const SizedBox.shrink();
+                return const _PiOfflineBanner();
+              },
+            ),
             // Plan/137 — a pending ask_user whose question sheet never
             // arrived: offer a Retry (re-sync → bridge replay) and a Cancel
             // (abort the blocked turn — the only universal unblock when the
@@ -1735,6 +1747,36 @@ class _AskRecoveryCard extends StatelessWidget {
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
                 decoration: TextDecoration.underline,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PiOfflineBanner extends StatelessWidget {
+  const _PiOfflineBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      width: double.infinity,
+      color: colors.muted.withValues(alpha: 0.12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+      child: Row(
+        children: [
+          Icon(LucideIcons.archive, size: 14, color: colors.muted),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Pi offline — showing saved history. Start the session on the PC to continue.',
+              style: TextStyle(
+                fontSize: 12,
+                color: colors.muted,
+                fontWeight: FontWeight.w500,
               ),
             ),
           ),

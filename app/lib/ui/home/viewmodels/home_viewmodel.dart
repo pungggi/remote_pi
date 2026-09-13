@@ -320,7 +320,11 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// the `_relayConnected &&` is belt-and-suspenders that also documents
   /// intent: "online" requires a live relay.
   bool _online(HomeItem it) =>
-      _relayConnected && _conn.isRoomLive(it.peer.remoteEpk, it.room.roomId);
+      // Plan/140 C — a keeper-held room is a durable-history mirror, not a
+      // live agent: it counts as offline for the filter tabs.
+      !it.room.keeper &&
+      _relayConnected &&
+      _conn.isRoomLive(it.peer.remoteEpk, it.room.roomId);
 
   /// Plan-38 Fase 3 — the items the current [HomeList.filter] keeps. A pure
   /// view over `state.items()`; returns `const []` outside a list state.
@@ -329,7 +333,12 @@ class HomeViewModel extends ViewModel<HomeState> {
     if (s is! HomeList) return const [];
     final all = s.items(normalizeEpk: normalizeEpkForLookup);
     return switch (s.filter) {
-      HomeFilter.all => all,
+      // Plan/140 C — keeper-held (archive) sessions sort last in All.
+      HomeFilter.all => all.toList()
+        ..sort((a, b) {
+          if (a.room.keeper == b.room.keeper) return 0;
+          return a.room.keeper ? 1 : -1;
+        }),
       HomeFilter.online => all.where(_online).toList(),
       HomeFilter.offline => all.where((i) => !_online(i)).toList(),
     };

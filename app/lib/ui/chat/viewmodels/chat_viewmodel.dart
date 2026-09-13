@@ -23,6 +23,12 @@ import 'package:app/ui/core/viewmodel/viewmodel.dart';
 class ChatViewModel extends ViewModel<ChatState> {
   final SessionReadRepository _read;
   final SyncService _sync;
+
+  /// Plan/140 C — the active session is served by the PC's room-keeper
+  /// (durable-history mirror): full history, no live agent behind it.
+  /// The chat shows a persistent offline banner; any live frame clears it.
+  bool get piOffline => _sync.piOffline;
+  Stream<bool> get piOfflineStream => _sync.piOfflineStream;
   final ConnectionManager _conn;
   final Preferences _prefs;
   final PairingStorage _storage;

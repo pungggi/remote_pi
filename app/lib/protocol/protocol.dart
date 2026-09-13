@@ -43,6 +43,9 @@ sealed class ControlInbound {
         final rawGit = j['git'] ?? metaJson?['git'];
         final rawContextUsage =
             j['context_usage'] ?? metaJson?['context_usage'];
+        // Plan/140 C — keeper marker (durable-history mirror, no live agent).
+        final rawKeeper = (j['keeper'] as bool?) ??
+            (metaJson?['keeper'] as bool?) ?? false;
         return RoomAnnounced(
           peer: j['peer'] as String,
           roomId: j['room_id'] as String,
@@ -61,6 +64,7 @@ sealed class ControlInbound {
           contextUsage: rawContextUsage is Map<String, dynamic>
               ? ContextUsage.fromJson(rawContextUsage)
               : null,
+          keeper: rawKeeper,
         );
       }(),
       'room_ended' => RoomEnded(
@@ -267,6 +271,12 @@ class RoomInfo {
   /// until the first response reports usage (e.g. right after compaction).
   final ContextUsage? contextUsage;
 
+  /// Plan/140 C — `true` when this room is held by the PC's room-keeper
+  /// (durable-history mirror, no live agent). Home badges such sessions
+  /// "Pi offline" and sorts them last; opening one still shows the full
+  /// chat history (served from the transcript) with an offline banner.
+  final bool keeper;
+
   const RoomInfo({
     required this.roomId,
     required this.startedAt,
@@ -278,6 +288,7 @@ class RoomInfo {
     this.waitingForInput = false,
     this.git,
     this.contextUsage,
+    this.keeper = false,
   });
 
   factory RoomInfo.fromJson(Map<String, dynamic> j) {
@@ -293,6 +304,7 @@ class RoomInfo {
           : null,
       working: (j['working'] as bool?) ?? false,
       waitingForInput: (j['waiting_for_input'] as bool?) ?? false,
+      keeper: (j['keeper'] as bool?) ?? false,
       git: j['git'] is Map<String, dynamic>
           ? GitStatus.fromJson(j['git'] as Map<String, dynamic>)
           : null,
@@ -400,6 +412,11 @@ class RoomAnnounced extends ControlInbound {
 
   /// Plan/115 — context-window fill (flat in room_announced).
   final ContextUsage? contextUsage;
+
+  /// Plan/140 C — `true` when the announcing connection is the PC's
+  /// room-keeper (durable-history mirror, no live agent). Never patched
+  /// after announce; `false` on old relays that don't forward the flag.
+  final bool keeper;
   const RoomAnnounced({
     required this.peer,
     required this.roomId,
@@ -412,6 +429,7 @@ class RoomAnnounced extends ControlInbound {
     this.waitingForInput,
     this.git,
     this.contextUsage,
+    this.keeper = false,
   });
 }
 
@@ -1690,6 +1708,12 @@ class SessionHistory extends ServerMessage {
   /// Plan/128 — cursor to send back as `before` for the next OLDER page.
   /// Absent when nothing older remains. `truncated` mirrors `has_more`.
   final String? nextBefore;
+
+  /// Plan/140 C — `true` when the keeper (durable-history mirror) served
+  /// this page: no live agent is behind the session. The chat shows an
+  /// offline banner; any live frame (chunk/done) clears it. Old keepers
+  /// omit the field → `false`.
+  final bool offline;
   SessionHistory({
     required this.inReplyTo,
     required this.sessionStartedAt,
@@ -1697,6 +1721,7 @@ class SessionHistory extends ServerMessage {
     required this.eos,
     this.truncated = false,
     this.nextBefore,
+    this.offline = false,
   });
 
   factory SessionHistory.fromJson(Map<String, dynamic> j) => SessionHistory(
@@ -1711,6 +1736,7 @@ class SessionHistory extends ServerMessage {
         (j['has_more'] as bool?) ??
         false,
     nextBefore: j['next_before'] as String?,
+    offline: (j['offline'] as bool?) ?? false,
   );
 }
 

@@ -150,6 +150,11 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
         // Plan/107b — opaque git snapshot (the relay forwards it verbatim;
         // the app parses the shape).
         let git = room_meta_val.and_then(|m| m.get("git")).cloned();
+        // Plan/140 C — keeper marker: this room is a durable-history mirror
+        // (supervisor room-keeper), not a live agent session.
+        let keeper = room_meta_val
+            .and_then(|m| m.get("keeper"))
+            .and_then(|v| v.as_bool());
         // Opaque context-usage blob (the relay forwards it verbatim).
         let context_usage = room_meta_val.and_then(|m| m.get("context_usage")).cloned();
         let started_at = SystemTime::now()
@@ -165,6 +170,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             working,
             waiting_for_input,
             git,
+            keeper,
             context_usage,
             started_at,
         }

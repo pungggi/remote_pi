@@ -508,6 +508,7 @@ mod tests {
             working: false,
             waiting_for_input: false,
             git: None,
+            keeper: None,
             context_usage: None,
             started_at: 0,
         }

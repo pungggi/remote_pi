@@ -880,6 +880,7 @@ class ConnectionManager extends Service {
         :final waitingForInput,
         :final git,
         :final contextUsage,
+        :final keeper,
       ):
         final key = toStandardB64(peer);
         final list = _roomsByPeer[key] ?? <RoomInfo>[];
@@ -921,6 +922,10 @@ class ConnectionManager extends Service {
           waitingForInput: waitingForInput ?? preservedWaitingForInput,
           git: git ?? preservedGit,
           contextUsage: contextUsage ?? preservedContextUsage,
+          // Plan/140 C — wire wins: a real session re-announcing the room
+          // (without the flag) flips the tile back to live; a keeper
+          // re-taking a dark room re-marks it.
+          keeper: keeper,
         );
         final liveAlready = _liveRoomIds[key]?.contains(roomId) ?? false;
         final identicalEntry = existingIdx >= 0 && list[existingIdx] == next;

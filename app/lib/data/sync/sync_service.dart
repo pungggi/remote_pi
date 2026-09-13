@@ -201,7 +201,42 @@ class SyncService extends Service {
     // `steering…` spin forever; the no-echo backstop keeps handling the
     // optimistic bubbles that never got an echo.
     _routeErrorSub = _conn.routeErrorStream.listen(_onRouteError);
+    // Plan/139 G2 → plan/140 C — a run finished (run_done control frame, all
+    // rooms) but the data-frame `agent_done` for OUR active room may have
+    // been lost (socket flap mid-turn). A debounced re-sync heals any
+    // missing tail regardless of WHY the frame was lost.
+    _runDoneSub = _conn.runDoneStream.listen(_onRunDone);
     _onStatus(_conn.status); // replay current
+  }
+
+  // Plan/140 C — debounced re-sync after run_done (see constructor).
+  StreamSubscription<RunDoneEvent>? _runDoneSub;
+  Timer? _runDoneSyncDebounce;
+
+  void _onRunDone(RunDoneEvent evt) {
+    final activeEpk = _activeEpk;
+    if (activeEpk == null) return;
+    final matchesActive = evt.epk == activeEpk && evt.roomId == _activeRoomId;
+    if (!matchesActive) return; // only the open chat self-heals
+    _runDoneSyncDebounce?.cancel();
+    _runDoneSyncDebounce = Timer(const Duration(milliseconds: 1500), () {
+      _runDoneSyncDebounce = null;
+      requestSync();
+    });
+  }
+
+  // Plan/140 C — true while the active session is served by the keeper
+  // (durable-history mirror): the chat shows a persistent "Pi offline"
+  // banner. Cleared by ANY live frame (chunk / done).
+  bool _piOffline = false;
+  final _piOfflineController = StreamController<bool>.broadcast();
+  bool get piOffline => _piOffline;
+  Stream<bool> get piOfflineStream => _piOfflineController.stream;
+
+  void _setPiOffline(bool value) {
+    if (_piOffline == value) return;
+    _piOffline = value;
+    if (!_piOfflineController.isClosed) _piOfflineController.add(value);
   }
 
   // ---------------------------------------------------------------------------
@@ -750,6 +785,8 @@ class SyncService extends Service {
     }
     switch (msg) {
       case AgentChunk(:final inReplyTo, :final delta):
+        // Plan/140 C — a live frame: the session is NOT keeper-served.
+        _setPiOffline(false);
         StreamProbe.instance.chunk(inReplyTo, delta.length);
         // Reconciliation accounting — see [_reconcileTurnId]. A new
         // in_reply_to starts a fresh accumulator (turn boundary).
@@ -765,6 +802,8 @@ class SyncService extends Service {
         _setWorking(true, replyTo: inReplyTo);
 
       case AgentDone(:final inReplyTo, :final text):
+        // Plan/140 C — live frame (see AgentChunk).
+        _setPiOffline(false);
         // Finalize whatever text accumulated since the last tool boundary.
         final segText = _finalizeSegment();
         _clearSteeringLabel(inReplyTo);
@@ -1098,6 +1137,9 @@ class SyncService extends Service {
   Future<void> _applyHistory(SessionHistory h, {bool wasLoadMore = false}) async {
     final epk = _activeEpk;
     if (epk == null) return;
+    // Plan/140 C — the keeper (durable-history mirror) served this page:
+    // no live agent behind the session → chat shows the offline banner.
+    _setPiOffline(h.offline);
     // Plan/111/128 — track truncation (mirrors the server's `has_more`) and
     // thread the backward-paging cursor for `loadMore`.
     if (h.truncated != _truncated) {
@@ -1822,6 +1864,7 @@ class SyncService extends Service {
   void dispose() {
     _flushTimer?.cancel();
     _syncDebounce?.cancel();
+    _runDoneSyncDebounce?.cancel();
     _cancelSyncRetryTimer();
     _cancelAllSendTimers();
     _connSub?.cancel();
@@ -1829,12 +1872,14 @@ class SyncService extends Service {
     _roomsSub?.cancel();
     _presenceSub?.cancel();
     _routeErrorSub?.cancel();
+    _runDoneSub?.cancel();
     _streamingController.close();
     _eventController.close();
     _extensionUiController.close();
     _workingController.close();
     _queuedController.close();
     _truncatedController.close();
+    _piOfflineController.close();
   }
 }
 

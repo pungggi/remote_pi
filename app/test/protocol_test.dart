@@ -585,6 +585,54 @@ void main() {
       }) as SessionHistory;
       expect(bare.truncated, isFalse);
       expect(bare.nextBefore, isNull);
+      expect(bare.offline, isFalse); // plan/140 C — absent = live session
+    });
+
+    test('SessionHistory parses the plan/140 keeper offline marker', () {
+      final keeperServed = ServerMessage.fromJson({
+        'type': 'session_history',
+        'in_reply_to': 'r1',
+        'session_started_at': 1700,
+        'events': [],
+        'eos': true,
+        'offline': true,
+      }) as SessionHistory;
+      expect(keeperServed.offline, isTrue);
+    });
+
+    test('RoomAnnounced parses the plan/140 keeper marker (both places)', () {
+      final flat = ControlInbound.tryFromJson({
+        'type': 'room_announced',
+        'peer': 'p',
+        'room_id': 'rid',
+        'started_at': 5,
+        'keeper': true,
+      }) as RoomAnnounced;
+      expect(flat.keeper, isTrue);
+
+      final nested = ControlInbound.tryFromJson({
+        'type': 'room_announced',
+        'peer': 'p',
+        'room_id': 'rid',
+        'started_at': 5,
+        'meta': {'keeper': true},
+      }) as RoomAnnounced;
+      expect(nested.keeper, isTrue);
+
+      final live = ControlInbound.tryFromJson({
+        'type': 'room_announced',
+        'peer': 'p',
+        'room_id': 'rid',
+        'started_at': 5,
+      }) as RoomAnnounced;
+      expect(live.keeper, isFalse); // old relay / real session
+
+      final roomInfo = RoomInfo.fromJson({
+        'room_id': 'rid',
+        'started_at': 5,
+        'keeper': true,
+      });
+      expect(roomInfo.keeper, isTrue);
     });
   });
 }

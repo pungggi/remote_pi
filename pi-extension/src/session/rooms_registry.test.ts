@@ -46,6 +46,21 @@ describe("rooms_registry (plan/140)", () => {
     expect(map.has("newRoom")).toBe(true);
   });
 
+  it("caps stored entries at the 200 newest (plan/140 C)", () => {
+    const p = tempPath();
+    const base = 1_000_000;
+    for (let i = 0; i < 205; i++) {
+      upsertRoom({ cwd: `C:\\p${i}`, roomId: `r${i}`, lastSeenAt: base + i }, p);
+    }
+    const map = readRoomsRegistry(p);
+    expect(map.size).toBe(200);
+    // Oldest five evicted, newest kept.
+    expect(map.has("r0")).toBe(false);
+    expect(map.has("r4")).toBe(false);
+    expect(map.has("r5")).toBe(true);
+    expect(map.has("r204")).toBe(true);
+  });
+
   it("survives a corrupt file (empty registry, no throw)", () => {
     const dir = mkdtempSync(join(tmpdir(), "rooms-corrupt-"));
     const corrupt = join(dir, "rooms.json");

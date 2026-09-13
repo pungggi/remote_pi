@@ -86,6 +86,11 @@ export interface RoomKeeperOptions {
   registryPath?: string;
   /** Rooms not seen within this window are not kept. Default 14 days. */
   maxAgeMs?: number;
+  /** Plan/140 C — at most this many dark rooms are held (newest by
+   *  lastSeenAt first). Bounds the app's session list and the announce
+   *  storm after a supervisor restart; the rest stay served on-demand once
+   *  a live session re-registers them. Default 20; 0 disables the keeper. */
+  maxRooms?: number;
   /** Re-sweep cadence for new/stale rooms. Default 60 s. */
   sweepIntervalMs?: number;
   /** Reconnect cadence while a room is held by a real session. Default 60 s. */
@@ -113,6 +118,7 @@ interface HeldRoom {
 }
 
 const DEFAULT_MAX_AGE_MS = 14 * 24 * 3_600_000;
+const DEFAULT_MAX_ROOMS = 20;
 const DEFAULT_SWEEP_MS = 60_000;
 const DEFAULT_RETRY_MS = 60_000;
 const DEFAULT_CLAIM_COOLDOWN_MS = 10_000;
@@ -124,11 +130,12 @@ export class RoomKeeper {
   private readonly retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
-  private readonly opts: Required<Pick<RoomKeeperOptions, "maxAgeMs" | "sweepIntervalMs" | "retryMs" | "claimCooldownMs" | "historyLimit">> & RoomKeeperOptions;
+  private readonly opts: Required<Pick<RoomKeeperOptions, "maxAgeMs" | "maxRooms" | "sweepIntervalMs" | "retryMs" | "claimCooldownMs" | "historyLimit">> & RoomKeeperOptions;
 
   constructor(opts: RoomKeeperOptions) {
     this.opts = {
       maxAgeMs: opts.maxAgeMs ?? DEFAULT_MAX_AGE_MS,
+      maxRooms: opts.maxRooms ?? (Number(process.env["REMOTE_PI_KEEPER_MAX_ROOMS"] ?? "") || DEFAULT_MAX_ROOMS),
       sweepIntervalMs: opts.sweepIntervalMs ?? DEFAULT_SWEEP_MS,
       retryMs: opts.retryMs ?? DEFAULT_RETRY_MS,
       claimCooldownMs: opts.claimCooldownMs ?? DEFAULT_CLAIM_COOLDOWN_MS,
@@ -162,17 +169,22 @@ export class RoomKeeper {
     for (const roomId of [...this.held.keys()]) this._release(roomId, "stop");
   }
 
-  /** Desired-room sweep: connect new dark rooms, release stale ones. */
+  /** Desired-room sweep: connect the NEWEST dark rooms (bounded by
+   *  maxRooms), release stale ones. */
   async sweep(): Promise<void> {
     if (this.stopped) return;
+    if (this.opts.maxRooms <= 0) {
+      for (const roomId of [...this.held.keys()]) this._release(roomId, "max-rooms-0");
+      return;
+    }
     const registry = readRoomsRegistry(this.opts.registryPath);
     const cutoff = this.now - this.opts.maxAgeMs;
-    const desired = new Set<string>();
-    for (const [roomId, entry] of registry) {
-      if (entry.lastSeenAt < cutoff) continue;
-      if (roomId === DEVICE_ROOM || entry.roomId === DEVICE_ROOM) continue;
-      desired.add(roomId);
-    }
+    // Newest first, bounded: the app's session list mirrors held rooms, so
+    // an unbounded sweep floods it (2026-09-08: 207 rooms appeared).
+    const eligible = [...registry.values()]
+      .filter((e) => e.lastSeenAt >= cutoff && e.roomId !== DEVICE_ROOM)
+      .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+    const desired = new Set(eligible.slice(0, this.opts.maxRooms).map((e) => e.roomId));
     for (const roomId of [...this.held.keys()]) {
       if (!desired.has(roomId)) this._release(roomId, "stale");
     }
@@ -204,7 +216,10 @@ export class RoomKeeper {
     try {
       await relay.connect({
         roomId: entry.roomId,
-        roomMeta: { name: basename(entry.cwd) || entry.cwd, cwd: entry.cwd },
+        // Plan/140 C — the keeper marker rides the hello's room_meta so the
+        // relay announces this room as a durable-history mirror, letting the
+        // app badge it "Pi offline / archive" instead of a live session.
+        roomMeta: { name: basename(entry.cwd) || entry.cwd, cwd: entry.cwd, keeper: true },
       });
     } catch (err) {
       try { relay.close(); } catch { /* best-effort */ }
