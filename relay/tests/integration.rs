@@ -298,6 +298,63 @@ async fn auth_timeout_closes_half_handshake() {
     );
 }
 
+/// Plan/140 C — a keeper hello (room_meta.keeper=true) for a room that
+/// already has a live connection must be rejected with `room_already_open`
+/// BEFORE the challenge, so the keeper client throws RoomAlreadyOpenError
+/// and backs off. Without this the duplicate-connection policy lets the
+/// keeper coexist with the live session and its announce flips the app's
+/// tile to "archive" while the agent runs.
+#[tokio::test]
+async fn keeper_hello_yields_to_live_room() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+
+    let port = start_relay().await;
+    let sk = random_key();
+
+    // Real session holds the room.
+    let (_ws_live, _peer) = connect_and_auth_with_room(port, &sk, "livetest").await;
+
+    // Keeper hello for the same room: expect error(room_already_open)
+    // instead of a challenge, then the socket closes.
+    let url = format!("ws://127.0.0.1:{port}");
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(Message::text(
+        json!({
+            "type": "hello",
+            "pubkey": B64.encode(sk.verifying_key().to_bytes()),
+            "room_id": "livetest",
+            "room_meta": {"name": "x", "cwd": "x", "keeper": true}
+        })
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+    let reply: serde_json::Value =
+        serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+    assert_eq!(reply["type"], "error");
+    assert_eq!(reply["code"], "room_already_open");
+    let closed = tokio::time::timeout(std::time::Duration::from_secs(3), ws.next()).await;
+    assert!(closed.is_ok(), "keeper hello must close the connection");
+
+    // A keeper hello for a FREE room still completes the handshake normally
+    // (challenge arrives, auth proceeds).
+    let (mut ws2, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws2.send(Message::text(
+        json!({
+            "type": "hello",
+            "pubkey": B64.encode(sk.verifying_key().to_bytes()),
+            "room_id": "freetest",
+            "room_meta": {"name": "x", "cwd": "x", "keeper": true}
+        })
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+    let challenge: serde_json::Value =
+        serde_json::from_str(ws2.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+    assert_eq!(challenge["type"], "challenge");
+}
+
 /// Plan/140 D — a half-open connection that stops answering the relay's
 /// heartbeat Pings (no inbound frame at all) is REAPED after
 /// `reap_silence`: the room/presence goes offline for real instead of

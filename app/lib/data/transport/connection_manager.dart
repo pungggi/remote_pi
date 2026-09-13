@@ -950,6 +950,16 @@ class ConnectionManager extends Service {
         _maybeAdoptLegacyRoom(key, roomId);
       case RoomEnded(:final peer, :final roomId):
         final key = toStandardB64(peer);
+        // Plan/140 C — a keeper-held mirror that ended has nothing behind
+        // it (the real session, if any, holds its own connection): remove
+        // the tile entirely. Real sessions keep their grey offline tile.
+        final cachedList = _roomsByPeer[key];
+        var wasKeeperMirror = false;
+        if (cachedList != null &&
+            cachedList.any((r) => r.roomId == roomId && r.keeper)) {
+          cachedList.removeWhere((r) => r.roomId == roomId);
+          wasKeeperMirror = true;
+        }
         // Mark the room offline but KEEP it in the cached set so the
         // tile stays in Home (now grey). Removing from _liveRoomIds
         // is enough.
@@ -961,7 +971,7 @@ class ConnectionManager extends Service {
         // observed waiting value so a re-registered room's new prompt is a
         // genuine new rising edge (not a no-op against a stale observation).
         _waitingForInputSeen.remove('$key:$roomId');
-        if (removed) roomsDirty = true;
+        if (removed || wasKeeperMirror) roomsDirty = true;
       case RouteError(:final peer, :final room):
         // Plan/137 — the relay NACKed an envelope addressed to (peer,
         // room): no live connection there right now. Fan the event out
@@ -1128,10 +1138,21 @@ class ConnectionManager extends Service {
             // flag (never emits a transition event — app-open replay).
             waitingForInput: r.waitingForInput,
             contextUsage: r.contextUsage ?? byId[r.roomId]?.contextUsage,
+            // Plan/140 C — the snapshot is authoritative for the keeper
+            // marker too (the relay's `rooms_of` carries the live meta).
+            keeper: r.keeper,
           );
         }
         final newList = byId.values.toList();
         final newLive = rooms.map((r) => r.roomId).toSet();
+        // Plan/140 C — purge stale keeper mirrors: a keeper-marked room the
+        // relay no longer lists was released (registry wipe, maxRooms cut,
+        // supervisor restart) and has NO real session behind it — drop the
+        // tile instead of keeping it as a ghost "offline session". Real
+        // sessions (keeper=false) always keep their grey tile.
+        newList.removeWhere(
+          (r) => r.keeper && !newLive.contains(r.roomId),
+        );
         final liveChanged = !_setEquals(
           newLive,
           _liveRoomIds[key] ?? const <String>{},

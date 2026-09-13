@@ -72,6 +72,52 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
         }
     };
 
+    // Plan/140 C — keeper hellos YIELD to a live holder of the same
+    // (peer, room) BEFORE the handshake continues. The relay otherwise
+    // accepts duplicate room connections, so a keeper taking a room that
+    // still has its real session would re-announce it with the keeper
+    // marker and flip the app's tile to "archive" while the agent runs.
+    // Replying `error: room_already_open` in place of the challenge makes
+    // the client throw RoomAlreadyOpenError (the legacy protocol path) and
+    // back off — the room's own retry cadence takes over once it frees.
+    // The pubkey is read pre-auth here: the reject only ever DENIES a
+    // keeper connection, so an unauthenticated claim gains nothing.
+    {
+        let hello_json: serde_json::Value =
+            serde_json::from_str(&hello_text).unwrap_or(serde_json::Value::Null);
+        let is_keeper = hello_json
+            .get("room_meta")
+            .and_then(|m| m.get("keeper"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if is_keeper {
+            let early_peer_id = B64.encode(vk.to_bytes());
+            let early_room = hello_json
+                .get("room_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("main");
+            let held = state
+                .registry
+                .rooms_of(&early_peer_id)
+                .iter()
+                .any(|r| r.room_id == early_room);
+            if held {
+                let _ = sink
+                    .send(Message::Text(
+                        serde_json::json!({"type": "error", "code": "room_already_open"})
+                            .to_string(),
+                    ))
+                    .await;
+                info!(
+                    peer = %early_peer_id,
+                    room = %early_room,
+                    "keeper hello rejected: room live — yielding to the real session"
+                );
+                return;
+            }
+        }
+    }
+
     // ── 2. Send challenge ─────────────────────────────────────────────────
     // Plan 115 — advertise the relay's local RFC1918 IPv4 candidates so the
     // phone can dial LAN first at home (bypassing Tailscale). Collected
