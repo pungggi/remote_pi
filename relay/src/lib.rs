@@ -162,13 +162,13 @@ pub fn resolve_reap_silence_secs(raw: Option<&str>) -> u64 {
     }
 }
 
-/// Plan/141 — default mailbox TTL (seconds). 24 h: the mailbox is RAM, but
-/// bounded per room by the frame cap anyway (~50 KB/room), and the phone's
-/// realistic offline window (work, overnight, weekend) is hours, not
-/// minutes. Durable long-term history remains the transcript's job
-/// (session_sync); the TTL only decides how long the relay bridges frames
-/// for rooms with no live session and no keeper.
-pub const DEFAULT_MAILBOX_TTL_SECS: u64 = 86_400;
+/// Plan/141 — default mailbox TTL (seconds). 72 h: the mailbox is RAM, but
+/// bounded per room by the frame cap anyway (~50 KB/room), and the owner's
+/// preferred offline window spans a whole weekend. Durable long-term
+/// history remains the transcript's job (session_sync); the TTL only
+/// decides how long the relay bridges frames for rooms with no live
+/// session and no keeper.
+pub const DEFAULT_MAILBOX_TTL_SECS: u64 = 259_200;
 
 /// Plan/141 — default per-room mailbox frame cap.
 pub const DEFAULT_MAILBOX_MAX_FRAMES: usize = 100;

@@ -643,7 +643,7 @@ sessão/keeper viva. O relay agora mantém uma **mailbox por `(peer, room)`**:
 - Conexões **keeper** (fallback de presença, plano 140) NUNCA drenam a
   mailbox — o backlog pertence ao dispositivo real.
 - Limites: **100 frames por sala** (os mais antigos são evitados), **TTL
-  24 h** (`REMOTEPI_MAILBOX_TTL_SECS`, `REMOTEPI_MAILBOX_MAX_FRAMES` para
+  72 h** (`REMOTEPI_MAILBOX_TTL_SECS`, `REMOTEPI_MAILBOX_MAX_FRAMES` para
   ajustar; 0 desativa). Evicção lazy + sweep no cadence do heartbeat.
   Memória fica limitada por sala; salas mortas simplesmente expiram.
 - Compat: relays antigos dropam como antes; clientes antigos recebem o
