@@ -79,13 +79,15 @@ vi.mock("../src/transport/relay_client.js", () => ({
 
 // ── Import the extension after mocks ──────────────────────────────────────────
 
+// Plan/143: index.js is the thin entry — light accessors + async forwards stay
+// there; the SYNCHRONOUS runtime router lives in main.js (mocks apply to both).
 const {
   default: extension,
   _getState,
-  routeClientMessage,
   _startRelayForTest,
   _stopForTest,
 } = await import("../src/index.js");
+const { routeClientMessage } = await import("../src/main.js");
 
 import type { ExtensionAPI, ExtensionFactory } from "@mariozechner/pi-coding-agent";
 

@@ -218,16 +218,26 @@ vi.mock("./mesh/self_revoke.js", async (importOriginal) => {
   return { ...original, SelfRevoke: CapturingSelfRevoke };
 });
 
-// Import AFTER mocks
+// Import AFTER mocks. index.js is the thin entry (plan/143): it re-exports
+// the light ext-only accessors and async-forwards the heavy test hooks. Hooks
+// that must stay SYNCHRONOUS (module-level runtime state, sync relays into
+// the runtime) live in main.js — import it directly here (same module registry,
+// so the vi.mock blocks above apply to it too).
 const indexModule = await import("./index.js");
-const { _resetInnerSigStateForTest } = indexModule;
+const {
+  _resetInnerSigStateForTest,
+  _onPeerDisconnect,
+  routeClientMessage,
+  _mapAgentMessagesToEvents,
+  _getPendingSteerIdsForTest,
+  _restartSupervisorCommand,
+  _routeClientMessageFrom,
+  _deliverMeshMessageToAgentForTest,
+} = await import("./main.js");
 const {
   default: extension,
   _getState,
   _getRoomMetaForTest,
-  _onPeerDisconnect,
-  routeClientMessage,
-  _mapAgentMessagesToEvents,
   _setMessageBufferForTest,
   _setSessionStartedAtForTest,
   _hasPendingReconnect,
@@ -238,7 +248,6 @@ const {
   _getCurrentTurnIdForTest,
   _setCurrentTurnIdForTest,
   _setPresenceResubscribeMsForTest,
-  _getPendingSteerIdsForTest,
   _connectForTest,
   _startRelayForTest,
   _getCachedPublicKeyForTest,
@@ -246,7 +255,6 @@ const {
   _getActivePeerCountForTest,
   _getWaitingBridgeFlowForTest,
   _checkSelfRevokeForTest,
-  _restartSupervisorCommand,
   _setDisposedForTest,
   _resetAutoInitedForTest,
   _setAutoInitedForTest,
@@ -254,10 +262,12 @@ const {
   _getLockedNameForTest,
   _resetCwdLockForTest,
   _handleControl,
-  _routeClientMessageFrom,
-  _deliverMeshMessageToAgentForTest,
   CTRL_PREFIX,
 } = indexModule;
+
+// Plan/143: force the lazy runtime into the entry's synchronous fast path so
+// captured handlers behave exactly as they did against the old monolith.
+await indexModule._preloadRuntimeForTest();
 const { acquireCwdLock } = await import("./session/cwd_lock.js");
 const { encodeCwd } = await import("./session/file_index.js");
 

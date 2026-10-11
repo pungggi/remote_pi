@@ -127,9 +127,9 @@ describe("RoomKeeper (plan/140)", () => {
     expect(fake.connectCalls[0]!.roomMeta).toMatchObject({ cwd });
 
     // Phone asks for history (unsigned frame — ratchet empty, legacy path).
-    // The mapper's dynamic import loads the whole ext module — warm it first
+    // The mapper's dynamic import loads the runtime module — warm it first
     // (mirrors RoomKeeper.start's own pre-warm) and allow real-world latency.
-    await import("../index.js");
+    await import("../main.js");
     fake.emitMessage(outerLine(PHONE_PEER, { type: "session_sync", id: "sync-1" }));
     await new Promise((r) => setTimeout(r, 1000)); // serve is async (import + disk)
 

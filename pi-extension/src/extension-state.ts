@@ -36,6 +36,16 @@ import type { ExtensionUiBridge } from "./extension_ui_bridge.js";
 import type { Ed25519Keypair } from "./pairing/crypto.js";
 import type { QueuedMessageItem, ThinkingLevel, WireGitStatus } from "./protocol/types.js";
 
+// ── Shared light constants (plan/143: live here so BOTH the thin entry and
+//    the lazy runtime can import them without pulling heavy modules) ──
+
+/** Sentinel prefix for a transparent control message an RPC client sends on the
+ *  `prompt` channel (stdin). The `input` hook intercepts it, runs the action,
+ *  and swallows it (`action:"handled"`) so it never becomes an LLM turn or
+ *  transcript entry. Starts with NUL so it can't collide with real user input
+ *  and doesn't begin with "/" (which would route to the command parser). */
+export const CTRL_PREFIX = "\x00remote-pi-ctrl:";
+
 // ── State-shape types (moved here from index.ts — they describe state contents) ─
 
 export type RemoteState = "idle" | "started";
@@ -110,6 +120,10 @@ export interface ExtensionState {
    *  whose boot raced DNS stays offline until a manual restart. */
   initialConnectRetryTimer: ReturnType<typeof setTimeout> | null;
   initialConnectRetryAttempt: number;
+  /** Delay before the one-shot owner-presence re-subscribe (the relay may
+   *  not have propagated a freshly paired owner's blob yet). Test-shrinkable
+   *  via `_setPresenceResubscribeMsForTest` in the entry. */
+  presenceResubscribeMs: number;
   relayLifecycleGeneration: number;
   rootLifecycleGeneration: number;
   cmdRootInFlight: Promise<void> | null;
@@ -157,6 +171,11 @@ export interface ExtensionState {
   // agent run / turn
   agentRunActive: boolean;
   agentRunGeneration: number;
+  /** Replayable text of the in-flight agent run (plan/143: moved from main's
+   *  module scope so the thin entry's inline `message_update` path can
+   *  accumulate it without loading the runtime). */
+  turnText: string;
+  turnTextTurn: string | null;
   currentTurnId: string | null;
   messageBuffer: BufferMsg[];
   /** Plan/128 — cached durable `.jsonl` index (metadata only); the volatile
@@ -208,6 +227,7 @@ export const ext: ExtensionState = {
   reconnectAttempt: 0,
   initialConnectRetryTimer: null,
   initialConnectRetryAttempt: 0,
+  presenceResubscribeMs: 10_000,
   relayLifecycleGeneration: 0,
   rootLifecycleGeneration: 0,
   cmdRootInFlight: null,
@@ -238,6 +258,8 @@ export const ext: ExtensionState = {
   // agent run / turn
   agentRunActive: false,
   agentRunGeneration: 0,
+  turnText: "",
+  turnTextTurn: null,
   currentTurnId: null,
   messageBuffer: [],
   historyIndex: null,
@@ -300,6 +322,9 @@ export function resetExtensionState(): void {
     reconnectAttempt: 0,
     initialConnectRetryTimer: null,
     initialConnectRetryAttempt: 0,
+    // Preserved across resets (was a module-level let before plan/143): tests
+    // shrink it via _setPresenceResubscribeMsForTest and expect it to stick.
+    presenceResubscribeMs: ext.presenceResubscribeMs,
     relayLifecycleGeneration: 0,
     rootLifecycleGeneration: 0,
     cmdRootInFlight: null,
@@ -322,6 +347,8 @@ export function resetExtensionState(): void {
     hasGlobalPairings: false,
     agentRunActive: false,
     agentRunGeneration: 0,
+    turnText: "",
+    turnTextTurn: null,
     currentTurnId: null,
     messageBuffer: [],
     historyIndex: null,
