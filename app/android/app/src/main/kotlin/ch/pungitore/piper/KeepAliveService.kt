@@ -36,6 +36,24 @@ class KeepAliveService : Service() {
     override fun onCreate() {
         super.onCreate()
         ensureChannel()
+        // Plan/142 — enter foreground at the EARLIEST legal point. After
+        // Context.startForegroundService() the system gives the process ~5 s
+        // to call startForeground() and FATALS it on a miss
+        // (ForegroundServiceDidNotStartInTimeException — observed on-device
+        // 2026-10-11 while the UI isolate was backlogged with signature
+        // verifies). Doing it here — before the intent even arrives — buys
+        // back the onStartCommand delivery time; the real text replaces this
+        // placeholder a beat later in onStartCommand.
+        try {
+            startForeground(
+                NOTIF_ID,
+                buildNotification("Connected"),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
+        } catch (e: Exception) {
+            // Not in a foreground-allowed state (e.g. sticky restart after a
+            // kill) — onStartCommand's guarded path handles that case.
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
