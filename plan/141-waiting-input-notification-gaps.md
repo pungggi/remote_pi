@@ -36,7 +36,7 @@ relay → app parse all work); all fixes are **app-only**.
 | 1 | **Background snapshot**: on `setBackgrounded(true)`, notify for every live waiting room (except the room whose pi-ask sheet is open). |
 | 2 | **Cancel on clear**: falling edge cancels that room's banner from the tray. |
 | 3 | **Proactive permission ask**: one durable ask at the first foreground waiting edge (no sheet open) + a Settings row for denied users. |
-| 4 | Foreground behavior otherwise unchanged — no banner while the app is resumed (plan/132 §non-goals / plan/134 gate stands). |
+| 4 | ~~Foreground behavior otherwise unchanged~~ **AMENDED 2026-10-11** (user, during on-device verification): **every rising edge notifies, foreground included** — the tile dot alone proved too easy to miss with the app open on the desk. Sheet-open suppression and the permission gate stay; the ask stays foreground-only (the OS dialog can't appear from the background); the snapshot still covers prompts that were already pending when the app connected (replays emit no rising edge). |
 
 ## Expected structure
 
@@ -117,6 +117,32 @@ defensive try/catch as `show`).
 - [ ] Honest limits unchanged and still true: local-only (no push), process
       must be alive (keep-alive), one connected peer, sheet-open room never
       double-signals
+
+## On-device verification findings (2026-10-11)
+
+Debug build (`applicationIdSuffix .debug`) side-by-side on the user's
+Samsung; logcat + secure-storage dumps via `adb run-as`.
+
+1. **`ForegroundServiceDidNotStartInTimeException`** — banner tap after the
+   FGS start crashed the app (`startForegroundService` from a cached process
+   + pure-Dart ed25519 backlog ≈ 0.4–2.5 s/frame on the main isolate →
+   `startForeground` ran past the 5 s budget). Fix in plan/142
+   (`startForeground` moved into `onCreate`). Root-cause follow-up: the
+   crypto backlog itself (own plan, not scheduled).
+2. **Banner tap landed on the session list instead of the chat** —
+   `_openFromCompletionTap` (plan/132) exact-matched
+   `p.remoteEpk == toAppEpk(payloadEpk)`, but PairingStorage holds BOTH
+   base64url and standard forms depending on pairing era (see the warning
+   in `epk_encoding.dart`): this device's fresh pairing stored the
+   **standard** form, the lookup silently returned null and the tap was
+   dropped. Older pairings (url-safe) matched by luck — which is why
+   plan/132's tap routing appeared to work. Fixed by comparing
+   `toStandardB64()` on both sides and using the STORED epk form
+   downstream (`setSelectedRoom` / `SessionSelection.select` /
+   ChatViewModel's bootstrap all exact-match against PairingStorage).
+   Added `debugPrint` breadcrumbs (`[notif-tap] …`) to every branch of the
+   tap path — the routing failed silently before, invisible without a
+   debugger attached.
 
 ## Riscos & próximos
 

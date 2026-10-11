@@ -110,7 +110,7 @@ void main() {
     svc.dispose();
   });
 
-  test('foreground suppresses the banner (tiles already show the badge)',
+  test('foreground rising edge ALSO fires the banner (amended 2026-10-11 — always notify)',
       () async {
     final local = _FakeLocalNotifications();
     final svc = WaitingInputNotifications(boxes: LocalBoxes(), local: local);
@@ -121,7 +121,10 @@ void main() {
     ctrl.add(event(true));
     await Future<void>.delayed(const Duration(milliseconds: 5));
 
-    expect(local.shown, isEmpty);
+    expect(local.shown.length, 1,
+        reason: 'the tile dot alone proved too easy to miss with the app '
+            'open on the desk — the banner fires in the foreground too');
+    expect(local.shown.single.payload, 'epkX:r1');
 
     await ctrl.close();
     svc.dispose();
@@ -149,7 +152,8 @@ void main() {
     svc.dispose();
   });
 
-  test('denied permission suppresses the banner', () async {
+  test('denied permission suppresses the banner and never asks from the '
+      'background', () async {
     final local = _FakeLocalNotifications()..permission = false;
     final svc = WaitingInputNotifications(boxes: LocalBoxes(), local: local);
     svc.setBackgrounded(true);
@@ -160,6 +164,9 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 5));
 
     expect(local.shown, isEmpty);
+    expect(local.requests, 0,
+        reason: 'the OS dialog cannot appear while backgrounded — the '
+            'once-per-install ask stays reserved for a foreground edge');
 
     await ctrl.close();
     svc.dispose();
@@ -301,7 +308,8 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 5));
 
       expect(local.requests, 1, reason: 'durable flag prevents re-asking');
-      expect(local.shown, isEmpty, reason: 'foreground still never banners');
+      expect(local.shown, isEmpty,
+          reason: 'permission still denied after the ask — no banner');
 
       await ctrl.close();
       svc.dispose();
@@ -350,7 +358,7 @@ void main() {
       svc.dispose();
     });
 
-    test('already-granted permission records the flag without asking',
+    test('granted permission shows the banner without ever asking',
         () async {
       final local = _FakeLocalNotifications(); // permission = true
       final svc = WaitingInputNotifications(boxes: LocalBoxes(), local: local);
@@ -362,10 +370,13 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 5));
 
       expect(local.requests, 0);
+      expect(local.shown.length, 1,
+          reason: 'granted installs go straight to the banner');
       expect(
         LocalBoxes().notifyPrefsBox().get('permission_asked'),
-        true,
-        reason: 'granted installs never re-check on later edges',
+        isNot(true),
+        reason: 'the flag only matters on the denied path — granted '
+            'installs never consume it',
       );
 
       await ctrl.close();

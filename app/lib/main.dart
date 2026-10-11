@@ -140,9 +140,13 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
     _completionTapSub = injector
         .get<LocalNotifications>()
         .taps
-        .listen(_openFromCompletionTap);
+        .listen((payload) {
+          debugPrint('[notif-tap] warm payload=$payload');
+          _openFromCompletionTap(payload);
+        });
     // ignore: unawaited_futures
     injector.get<LocalNotifications>().consumeLaunchTap().then((payload) {
+      debugPrint('[notif-tap] cold payload=$payload');
       if (payload != null) _openFromCompletionTap(payload);
     });
   }
@@ -255,6 +259,7 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
     final payload = _launchTapPayload;
     if (payload == null) return;
     _launchTapPayload = null;
+    debugPrint('[notif-tap] drain parked payload=$payload');
     await _openFromCompletionTap(payload);
   }
 
@@ -271,7 +276,10 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
   /// the backgrounded case).
   Future<void> _openFromCompletionTap(String payload) async {
     final target = SessionCompletionNotifications.parsePayload(payload);
-    if (target == null) return;
+    if (target == null) {
+      debugPrint('[notif-tap] drop: unparsable payload=$payload');
+      return;
+    }
 
     final loc =
         _router.routerDelegate.currentConfiguration.last.matchedLocation;
@@ -281,26 +289,44 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
     if (loc == '/boot' ||
         loc.startsWith('/onboarding') ||
         loc == '/sync-required') {
+      debugPrint('[notif-tap] park: still at $loc');
       _launchTapPayload ??= payload;
       return;
     }
     // Already chatting — the user is looking at the app; drop the tap (the
     // banner was for the backgrounded case).
-    if (loc == '/chat') return;
+    if (loc == '/chat') {
+      debugPrint('[notif-tap] drop: already on /chat');
+      return;
+    }
 
-    final epk = toAppEpk(target.epk);
     final roomId = target.roomId;
 
+    // Compare NORMALIZED: PairingStorage has historically stored BOTH
+    // url-safe and standard base64 forms of the epk (see the warning in
+    // epk_encoding.dart) — a fresh pairing today stores the standard form,
+    // so exact-matching `remoteEpk == toAppEpk(payload)` silently drops
+    // the tap and the user lands on the session list (observed on-device,
+    // plan/141 test 3/4).
+    final wantedEpk = toStandardB64(target.epk);
     final storage = injector.get<PairingStorage>();
     PeerRecord? peer;
     for (final p in await storage.listPeers()) {
-      if (p.remoteEpk == epk) {
+      if (toStandardB64(p.remoteEpk) == wantedEpk) {
         peer = p;
         break;
       }
     }
     // Unpaired since the notification was shown — nothing to open.
-    if (peer == null) return;
+    if (peer == null) {
+      debugPrint('[notif-tap] drop: no peer for epk=$wantedEpk room=$roomId');
+      return;
+    }
+    // Use the STORED form downstream: setSelectedRoom / SessionSelection /
+    // ChatViewModel's bootstrap all exact-match against PairingStorage's
+    // epk string (mirrors Home's openSession).
+    final epk = peer.remoteEpk;
+    debugPrint('[notif-tap] routing to $epk/$roomId from $loc');
 
     final prefs = injector.get<Preferences>();
     await prefs.setSelectedRoom(epk: epk, roomId: roomId);

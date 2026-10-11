@@ -11,6 +11,17 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+### Changed
+
+- **Waiting-for-you banners now also fire while the app is open** —
+  on-device testing showed the orange tile dot alone is too easy to miss
+  when the phone sits unlocked on the desk. Every rising edge notifies now
+  (foreground and background); the only suppression left is the room whose
+  answer sheet you already have open. The permission ask stays
+  foreground-only (the OS dialog can't appear from the background), and the
+  background snapshot still covers prompts that were already pending when
+  the app connected.
+
 ### Added
 
 - **Waiting-for-you notifications that actually fire (plan/141)** — the

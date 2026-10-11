@@ -16,28 +16,30 @@ import 'package:app/protocol/protocol.dart';
 /// the user has no idea that walking to the terminal (or answering in the
 /// app) is the unblocking action.
 ///
-/// Gates (plan/141 revision):
-/// 1. **rising edge while backgrounded** — [WaitingForInputEvent]s are
-///    transitions emitted by [ConnectionManager] from live
-///    `room_meta_updated` frames; app-open replays (`room_announced` /
-///    `rooms` snapshots) never produce one, so a reconnecting app cannot
-///    re-fire a banner;
-///    **plus the background snapshot** — `setBackgrounded(true)` re-checks
-///    every live waiting room ([liveWaitingRooms]) so the common flow
-///    "dot appeared while I was looking, THEN I pocketed the phone" also
-///    notifies (plan/141 gap 1). Same stable id per room ⇒ a snapshot
-///    banner REPLACES a transition banner, never stacks;
+/// Gates (plan/141 revision, amended 2026-10-11 — ALWAYS notify):
+/// 1. **every rising edge notifies** — foreground AND background alike.
+///    On-device testing showed the tile dot is too easy to miss when the
+///    phone sits unlocked on the desk with the app open (user decision).
+///    App-open replays (`room_announced` / `rooms` snapshots) never
+///    produce a transition, so a reconnecting app still cannot re-fire a
+///    banner on its own; **the background snapshot** —
+///    `setBackgrounded(true)` re-checks every live waiting room
+///    ([liveWaitingRooms]) — covers exactly that case (plus "dot appeared
+///    while I was looking, THEN I pocketed the phone"). Same stable id
+///    per room ⇒ a snapshot banner REPLACES a transition banner, never
+///    stacks;
 /// 2. **pi-ask sheet dedupe** — when an `extension_ui_request` answer
 ///    sheet is already open for that room ([hasOpenAskSheet]), the sheet
 ///    IS the signal; suppressing the generic banner avoids a double
 ///    alert. Foreign prompts (no sheet) always notify — this banner is
 ///    their only signal;
-/// 3. **notification permission granted** — and while the app is
-///    FOREGROUNDED, the first waiting edge without an open sheet asks
-///    for the permission ONCE per install (durable `permission_asked`
-///    flag) — the activity is resumed there, so the OS dialog can show
-///    (plan/141 gap 2: previously nothing ever asked unless the keep-alive
-///    service happened to start).
+/// 3. **notification permission granted** — without it the banner cannot
+///    show; a FOREGROUND rising edge then asks for the permission ONCE
+///    per install (durable `permission_asked` flag) because the OS dialog
+///    can only appear while the activity is resumed. A backgrounded edge
+///    with missing permission stays silent (the Settings → Session alerts
+///    row is the recovery path) rather than burning the once-per-install
+///    ask on a dialog that can never appear.
 ///
 /// **Falling edges cancel** (plan/141 gap 3): when the prompt is answered
 /// — in the app, at the terminal, or by a run abort — the room's banner
@@ -120,26 +122,27 @@ class WaitingInputNotifications implements Service {
   Future<void> _onWaiting(WaitingForInputEvent e) async {
     if (_disposed) return;
     // Plan/141 — falling edge clears the room's banner from the tray,
-    // regardless of foreground/background: a banner fired earlier while
-    // backgrounded must not outlive the answered prompt.
+    // regardless of foreground/background: a banner fired earlier must not
+    // outlive the answered prompt.
     if (!e.waiting) {
       await _local.cancel(_notificationId(e.epk, e.roomId));
       return;
     }
-    // Gate 1 — only worth a banner when the user is not looking at the app.
-    if (!_backgrounded) {
-      // Plan/141 — foreground rising edge: the banner stays suppressed
-      // (tiles show the badge), but this is the ONE moment the OS dialog
-      // can actually show — ask for the permission once per install.
-      await _maybeAskPermission(e.epk, e.roomId);
-      return;
-    }
-    // Gate 2 — pi-ask sheet already open for this room: the sheet is the
+    // Gate 1 — pi-ask sheet already open for this room: the sheet is the
     // signal, a second banner would be noise. Foreign prompts have no
     // sheet, so they always pass through (this banner is their only signal).
     if (hasOpenAskSheet?.call(e.epk, e.roomId) ?? false) return;
-    // Gate 3 — permission.
-    if (!await _local.hasPermission()) return;
+    // Gate 2 — permission.
+    if (!await _local.hasPermission()) {
+      // Foreground only: the OS dialog can only appear while resumed. A
+      // backgrounded denial stays silent — burning the once-per-install
+      // ask on an unshowable dialog would lose it forever (Settings →
+      // Session alerts is the explicit recovery path).
+      if (!_backgrounded) await _maybeAskPermission(e.epk, e.roomId);
+      return;
+    }
+    // Foreground AND background fire (amended 2026-10-11): the tile dot
+    // alone proved too easy to miss with the app open on the desk.
     await _show(e.epk, e.roomId);
   }
 
@@ -160,10 +163,10 @@ class WaitingInputNotifications implements Service {
   }
 
   /// Plan/141 — proactive POST_NOTIFICATIONS ask: once per install, at
-  /// the first foreground waiting edge with no sheet open. Never
-  /// interrupts an in-progress answer (sheet check); never re-asks after
-  /// the first attempt (durable flag); a denial is recoverable via the
-  /// Settings → Session alerts row.
+  /// the first FOREGROUND rising edge with no sheet open (the OS dialog
+  /// can only show while resumed). Never interrupts an in-progress answer
+  /// (sheet check); never re-asks after the first attempt (durable flag);
+  /// a denial is recoverable via the Settings → Session alerts row.
   Future<void> _maybeAskPermission(String epk, String roomId) async {
     if (_askInFlight) return;
     // Sheet open — don't overlay the OS dialog on the answer the user is
