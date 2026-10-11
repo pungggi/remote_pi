@@ -158,7 +158,10 @@ Future<void> setupDependencies() async {
   // main(). No per-session opt-in (action-required state — see the facade's
   // doc) so no HomeViewModel injection either.
   _injector.addService<WaitingInputNotifications>(
-    () => WaitingInputNotifications(local: _injector.get<LocalNotifications>()),
+    () => WaitingInputNotifications(
+      boxes: _injector.get<LocalBoxes>(),
+      local: _injector.get<LocalNotifications>(),
+    ),
   );
 
   // Plan 116 — connection reliability: one-tap battery exemption + Tailscale
@@ -234,6 +237,7 @@ Future<void> setupDependencies() async {
       _injector.get<Preferences>(),
       _injector.get<ConnectionManager>(),
       _injector.get<MeshSyncService>(),
+      _injector.get<LocalNotifications>(),
     ),
   );
   _injector.addViewModel<PairingViewModel>(

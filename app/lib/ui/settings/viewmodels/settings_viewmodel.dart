@@ -1,4 +1,5 @@
 import 'package:app/data/mesh/mesh_sync_service.dart';
+import 'package:app/data/notifications/local_notifications.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/relay_config.dart';
@@ -21,10 +22,20 @@ class SettingsViewModel extends ViewModel<SettingsState> {
   /// safety net in [MeshSyncService] refuses to publish members=[] and
   /// the next `pullOnDemand` resurrects the peer from the stale blob.
   final MeshSyncService? _meshSync;
+
+  /// Plan/141 — notification permission surface for the Settings row
+  /// ("Session alerts"). Optional for the same reason as [_meshSync]:
+  /// view-model tests run without the plugin seam.
+  final LocalNotifications? _notifications;
   bool _disposed = false;
 
-  SettingsViewModel(this._storage, this._prefs, this._conn, [this._meshSync])
-    : super(const SettingsLoading()) {
+  SettingsViewModel(
+    this._storage,
+    this._prefs,
+    this._conn, [
+    this._meshSync,
+    this._notifications,
+  ]) : super(const SettingsLoading()) {
     _load();
   }
 
@@ -56,6 +67,20 @@ class SettingsViewModel extends ViewModel<SettingsState> {
     await _storage.savePeer(updated);
     await _load();
   }
+
+  /// Plan/141 — whether the OS currently allows posting notifications
+  /// (Android 13+ `POST_NOTIFICATIONS`; pre-13 → always true). Drives the
+  /// Settings → Session alerts row subtitle.
+  Future<bool> hasNotificationPermission() async =>
+      _notifications?.hasPermission() ?? true;
+
+  /// Plan/141 — explicit permission request from the Settings row (the
+  /// recovery path after a denial: the facade asks only once per install,
+  /// so a user who denied at the prompt re-enables here). Returns the
+  /// post-request state — Android may silently keep the denial, in which
+  /// case the row's SnackBar points at system settings.
+  Future<bool> requestNotificationPermission() async =>
+      _notifications?.requestPermission() ?? false;
 
   /// Effective relay URL the app is connecting to right now.
   String get effectiveRelayUrl => resolveRelayUrl(_prefs);

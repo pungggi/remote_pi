@@ -13,6 +13,16 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
+- **Waiting-for-you notifications that actually fire (plan/141)** — the
+  "Pi is waiting for input" banner now covers the flow where the orange dot
+  appeared *before* you pocketed the phone: backgrounding the app snapshots
+  every live waiting session and posts a banner for each (except the one
+  whose answer sheet you already have open). Answering the prompt anywhere
+  now also **clears** that banner from the tray. Because nothing ever asked
+  for notification permission outside the keep-alive path, Android 13+
+  installs could silently drop every banner — the app now asks once at the
+  first waiting edge, and Settings gained a **Session alerts** row (state +
+  re-request) as the recovery path after a denial.
 - **Adjustable font size (plan 131, upstream #114)** — Settings → Display
   now has a **Font size** row with four presets (Small / Default / Large /
   XL). The preset composes onto the system text scale — it multiplies the

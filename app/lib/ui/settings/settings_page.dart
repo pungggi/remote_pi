@@ -58,6 +58,10 @@ class SettingsPage extends StatelessWidget {
           // deep-links). Most relevant after a network switch drops Piper.
           const _ReliabilityEntry(),
           Divider(color: colors.border, height: 1),
+          // Plan/141 — notification permission surface (recovery path for a
+          // denied/dropped waiting-for-input ask).
+          const _NotificationsEntry(),
+          Divider(color: colors.border, height: 1),
           const _SectionHeader('Pairings'),
           switch (state) {
             SettingsLoading() => Padding(
@@ -108,6 +112,83 @@ class _ReliabilityEntry extends StatelessWidget {
       ),
       trailing: Icon(LucideIcons.chevronRight, size: 18, color: colors.muted2),
       onTap: () => context.push('/settings/reliability'),
+    );
+  }
+}
+
+class _NotificationsEntry extends StatefulWidget {
+  const _NotificationsEntry();
+
+  @override
+  State<_NotificationsEntry> createState() => _NotificationsEntryState();
+}
+
+class _NotificationsEntryState extends State<_NotificationsEntry> {
+  /// Null until the first check resolves — avoids flashing "Not allowed"
+  /// on builds where permission is actually granted.
+  bool? _allowed;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final vm = context.read<SettingsViewModel>();
+    final allowed = await vm.hasNotificationPermission();
+    if (mounted) setState(() => _allowed = allowed);
+  }
+
+  Future<void> _request() async {
+    final vm = context.read<SettingsViewModel>();
+    final messenger = ScaffoldMessenger.of(context);
+    final granted = await vm.requestNotificationPermission();
+    if (!mounted) return;
+    setState(() => _allowed = granted);
+    // Android silently keeps the denial after two prompt dismissals — the
+    // only way back is the system settings page, so say so.
+    if (!granted) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Notifications stay off — enable them for Piper in system settings.',
+            style: TextStyle(fontFamily: kMonoFamily),
+          ),
+          duration: Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final allowed = _allowed;
+    return ListTile(
+      leading: Icon(
+        allowed == false ? LucideIcons.bellOff : LucideIcons.bell,
+        size: 20,
+        color: colors.text,
+      ),
+      title: Text(
+        'Session alerts',
+        style: const TextStyle(fontFamily: kMonoFamily, fontSize: 14),
+      ),
+      subtitle: Text(
+        switch (allowed) {
+          null => 'Pi is waiting for you / task finished',
+          true => 'Allowed — banners while the app is backgrounded',
+          false => 'Not allowed — tap to request',
+        },
+        style: TextStyle(
+          fontFamily: kMonoFamily,
+          fontSize: 12,
+          color: colors.muted,
+        ),
+      ),
+      trailing: Icon(LucideIcons.chevronRight, size: 18, color: colors.muted2),
+      onTap: _request,
     );
   }
 }

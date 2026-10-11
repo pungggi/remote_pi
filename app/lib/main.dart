@@ -74,6 +74,19 @@ void main() async {
         sync.currentExtensionUiRequest != null;
   };
   waiting.attach(injector.get<ConnectionManager>().waitingForInputStream);
+  // Plan/141 — live waiting rooms for the background snapshot (dot seen in
+  // the foreground → banner once the app backgrounds). roomsSnapshot is
+  // keyed by standard-b64 epk; isRoomWaitingForInput re-normalizes and
+  // gates on StatusOnline + _liveRoomIds, so dead rooms never notify.
+  waiting.liveWaitingRooms = () {
+    final conn = injector.get<ConnectionManager>();
+    return [
+      for (final entry in conn.roomsSnapshot.entries)
+        for (final room in entry.value)
+          if (conn.isRoomWaitingForInput(entry.key, room.roomId))
+            (epk: entry.key, roomId: room.roomId),
+    ];
+  };
   // Plan/104 — if launched via a Share (ACTION_SEND image), pull it now so it
   // waits in the inbox; the router listener routes to the chat once booted.
   final shared = await injector.get<IImagePickerService>().consumeSharedImage();

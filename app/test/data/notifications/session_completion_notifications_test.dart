@@ -37,6 +37,15 @@ class _FakeLocalNotifications implements LocalNotifications {
     shown.add((id: id, title: title, body: body, payload: payload));
   }
 
+  /// Plan/141 — the waiting-for-input facade cancels falling edges; the
+  /// completion path never calls it, so a plain recorder suffices.
+  final List<int> cancelled = [];
+
+  @override
+  Future<void> cancel(int id) async {
+    cancelled.add(id);
+  }
+
   @override
   Stream<String> get taps => const Stream.empty();
 

@@ -32,6 +32,11 @@ abstract class LocalNotifications {
     String? payload,
   });
 
+  /// Plan/141 — remove a notification from the tray. Used to clear a
+  /// waiting-for-input banner once the prompt it described is answered
+  /// (falling edge), so the tray never carries a stale "Pi is waiting".
+  Future<void> cancel(int id);
+
   /// Payloads of tapped notifications **while the app was running** (warm
   /// taps). A notification that LAUNCHED a terminated app never fires the
   /// response callback — that payload is only available once, via
@@ -171,6 +176,19 @@ class FlutterLocalNotifications implements LocalNotifications {
       );
     } catch (_) {
       // Best-effort — the banner is an enhancement, never a hard dependency.
+    }
+  }
+
+  @override
+  Future<void> cancel(int id) async {
+    await initialize();
+    // Same defensive posture as show(): cancelling a notification that no
+    // longer exists (or on a platform without the channel) is a no-op, never
+    // an error.
+    try {
+      await _plugin.cancel(id: id);
+    } catch (_) {
+      // Best-effort.
     }
   }
 
