@@ -17,6 +17,10 @@ import { join } from "node:path";
 // Upper bound on a decoded received-image payload. Shared with the stateful
 // pipeline in index.ts (preview render + collect), so re-exported.
 export const RECEIVED_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+/** customType of the TUI preview message for a photo received from the app. */
+export const REMOTE_PI_RECEIVED_IMAGE_TYPE = "remote-pi:received-image";
+/** The only mime the TUI inline preview renders (everything else is converted). */
+export const IMAGE_PREVIEW_MIME = "image/png";
 
 /** Is `code` a single valid base64 (RFC 4648 §4) alphabet character? */
 export function isBase64Char(code: number): boolean {

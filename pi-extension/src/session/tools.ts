@@ -1,5 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+
+// Tool schemas are hand-written JSON Schema literals, NOT typebox builders
+// (plan/143 / issue #61): typebox costs ~0.5 s in the thin entry's static
+// graph, and pi validates non-TypeBox parameter schemas natively
+// (`coerceWithJsonSchema` in validateToolArguments). `as unknown as never`
+// slots the literal into ToolDefinition<TParams extends TSchema> without a
+// runtime typebox import.
+const jsonSchema = (s: object) => s as unknown as never;
 import type { TransportErrorReason } from "./envelope.js";
 import type { AckResult, SessionPeer } from "./peer.js";
 
@@ -55,29 +62,47 @@ export function registerAgentTools(
   pi: ExtensionAPI,
   getSessionPeer: () => SessionPeer | null,
 ): void {
-  const SendParams = Type.Object({
-    to: Type.String({
-      description:
-        "Recipient agent name (e.g. 'backend'), 'broadcast', or array of names. " +
-        "Broadcast/multicast are fire-and-forget; unicast returns an ACK status.",
-    }),
-    body: Type.Unknown({ description: "Free-form JSON payload. String or object — your choice." }),
-    re: Type.Optional(Type.String({
-      description:
-        "Set this to the `id` of an incoming message when you are REPLYING to it. " +
-        "The peer correlates your answer with their original send via this field.",
-    })),
+  const SendParams = jsonSchema({
+    type: "object",
+    properties: {
+      to: {
+        type: "string",
+        description:
+          "Recipient agent name (e.g. 'backend'), 'broadcast', or array of names. " +
+          "Broadcast/multicast are fire-and-forget; unicast returns an ACK status.",
+      },
+      body: {
+        description: "Free-form JSON payload. String or object — your choice.",
+      },
+      re: {
+        type: "string",
+        description:
+          "Set this to the `id` of an incoming message when you are REPLYING to it. " +
+          "The peer correlates your answer with their original send via this field.",
+      },
+    },
+    required: ["to", "body"],
   });
 
-  const RequestParams = Type.Object({
-    to: Type.String({ description: "Recipient agent name. Must be a single peer (not broadcast)." }),
-    body: Type.Unknown({ description: "Free-form JSON payload to send." }),
-    timeout_ms: Type.Optional(Type.Number({
-      description: "Optional override of the default 30s reply timeout. Per-request.",
-    })),
+  const RequestParams = jsonSchema({
+    type: "object",
+    properties: {
+      to: {
+        type: "string",
+        description: "Recipient agent name. Must be a single peer (not broadcast).",
+      },
+      body: {
+        description: "Free-form JSON payload to send.",
+      },
+      timeout_ms: {
+        type: "number",
+        description: "Optional override of the default 30s reply timeout. Per-request.",
+      },
+    },
+    required: ["to", "body"],
   });
 
-  pi.registerTool<typeof SendParams, SendDetails>({
+  pi.registerTool<never, SendDetails>({
     name: "agent_send",
     label: "Agent Send",
     description:
@@ -156,9 +181,9 @@ export function registerAgentTools(
     },
   });
 
-  const ListPeersParams = Type.Object({});
+  const ListPeersParams = jsonSchema({ type: "object", properties: {} });
 
-  pi.registerTool<typeof ListPeersParams, { peers: string[] }>({
+  pi.registerTool<never, { peers: string[] }>({
     name: "list_peers",
     label: "List Peers",
     description:
@@ -213,7 +238,7 @@ export function registerAgentTools(
     },
   });
 
-  pi.registerTool<typeof RequestParams, unknown>({
+  pi.registerTool<never, unknown>({
     name: "agent_request",
     label: "Agent Request (deprecated)",
     description:

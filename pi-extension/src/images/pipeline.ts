@@ -13,7 +13,6 @@
  * the module's API, not private helpers of a monolith.
  */
 
-import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -22,13 +21,13 @@ import {
   statSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { convertToPng } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Image, Text } from "@earendil-works/pi-tui";
 import type { ClientMessage, ServerMessage } from "../protocol/types.js";
 import type { ReceivedImageDetails } from "../extension-state.js";
 import { ext } from "../extension-state.js";
 import {
   RECEIVED_IMAGE_MAX_BYTES,
+  IMAGE_PREVIEW_MIME,
+  REMOTE_PI_RECEIVED_IMAGE_TYPE,
   decodeImagePayload,
   imageDimensions,
   imageExtension,
@@ -37,12 +36,17 @@ import {
   safePreviewPath,
 } from "./codec.js";
 
-// ── Pipeline-owned constants (moved from index.ts) ────────────────────────────
-const REMOTE_PI_RECEIVED_IMAGE_TYPE = "remote-pi:received-image";
+// Tool schemas are hand-written JSON Schema literals, NOT typebox builders
+// (plan/143 / issue #61): typebox costs ~0.5 s in the thin entry's static
+// graph, and pi validates non-TypeBox parameter schemas natively
+// (`coerceWithJsonSchema` in validateToolArguments). `as unknown as never`
+// slots the literal into ToolDefinition<TParams extends TSchema> without a
+// runtime typebox import.
+const jsonSchema = (s: object) => s as unknown as never;
+
 const SHOW_IMAGE_MAX_BYTES = 4 * 1024 * 1024;
 const SHOW_FILE_TEXT_MAX_BYTES = 1 * 1024 * 1024;
 const SHOW_FILE_PDF_MAX_BYTES = 10 * 1024 * 1024;
-const IMAGE_PREVIEW_MIME = "image/png";
 const IMAGE_CACHE_PREFIX = "pi-app-";
 export type ReceivedImagePreviewDelivery = "immediate" | "defer";
 
@@ -86,6 +90,12 @@ async function renderablePngPathFromImage(
   if (mime === IMAGE_PREVIEW_MIME) return undefined;
 
   try {
+    // Dynamic import (plan/143): the SDK is ~1.9 s of module graph and lives
+    // outside the thin entry's budget. Received-image previews only happen
+    // with a live relay session, long after boot — paying the import here is
+    // invisible. (extension.test.ts mocks the SDK module; vi.mock intercepts
+    // dynamic imports too.)
+    const { convertToPng } = await import("@earendil-works/pi-coding-agent");
     const converted = await convertToPng(imageData, mime);
     if (!converted || converted.mimeType !== IMAGE_PREVIEW_MIME || !converted.data) {
       return undefined;
@@ -364,20 +374,26 @@ function handleShowImage(
 }
 
 export function registerShowImageTool(pi: ExtensionAPI, deps: ImagePipelineDeps): void {
-  const ShowImageParams = Type.Object({
-    path: Type.String({
-      description:
-        "Path to an image file in the repo, relative to the session cwd (or absolute). " +
-        "Supported: JPEG, PNG, WebP, GIF. Hard cap 4 MiB.",
-    }),
-    caption: Type.Optional(Type.String({
-      description:
-        "Optional caption shown as a subtitle under the image bubble. " +
-        "The repo path is used as the full-screen viewer title.",
-    })),
+  const ShowImageParams = jsonSchema({
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description:
+          "Path to an image file in the repo, relative to the session cwd (or absolute). " +
+          "Supported: JPEG, PNG, WebP, GIF. Hard cap 4 MiB.",
+      },
+      caption: {
+        type: "string",
+        description:
+          "Optional caption shown as a subtitle under the image bubble. " +
+          "The repo path is used as the full-screen viewer title.",
+      },
+    },
+    required: ["path"],
   });
 
-  pi.registerTool<typeof ShowImageParams, ShowImageResult>({
+  pi.registerTool<never, ShowImageResult>({
     name: "show_image",
     label: "Show image to user",
     description:
@@ -394,7 +410,6 @@ export function registerShowImageTool(pi: ExtensionAPI, deps: ImagePipelineDeps)
       handleShowImage(params as { path: string; caption?: string }, deps),
   });
 }
-
 // ── Plan/126 — show_file tool (agent → user document: md/text/pdf/html) ───
 // Mirrors `show_image` for non-image files. The agent calls
 // `show_file({ path, caption?, kind?, allowNetwork? })`; the handler detects
@@ -631,30 +646,38 @@ function handleShowFile(
 }
 
 export function registerShowFileTool(pi: ExtensionAPI, deps: ImagePipelineDeps): void {
-  const ShowFileParams = Type.Object({
-    path: Type.String({
-      description:
-        "Path to a file in the repo, relative to the session cwd (or absolute). " +
-        "Markdown (.md/.markdown), plain text or code (.txt/.json/.yaml/.dart/.ts/.py/...), " +
-        "PDF (.pdf), or HTML (.html/.htm). Size caps: 1 MiB for text/markdown/html, 10 MiB for PDF.",
-    }),
-    caption: Type.Optional(Type.String({
-      description:
-        "Optional subtitle shown under the bubble. The repo path is used as the viewer title.",
-    })),
-    kind: Type.Optional(Type.Union(
-      [Type.Literal("markdown"), Type.Literal("text"), Type.Literal("pdf"), Type.Literal("html")],
-      { description: "Override auto-detection and force this viewer kind." },
-    )),
-    allowNetwork: Type.Optional(Type.Boolean({
-      description:
-        "HTML+JS only (kind=html). Default false: JavaScript runs but ALL network is blocked " +
-        "(remote <script>/<img>/css, fetch, XHR, websockets) — a safe sandbox. Set true to allow " +
-        "remote resources for trusted content. Ignored for non-html kinds.",
-    })),
+  const ShowFileParams = jsonSchema({
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description:
+          "Path to a file in the repo, relative to the session cwd (or absolute). " +
+          "Markdown (.md/.markdown), plain text or code (.txt/.json/.yaml/.dart/.ts/.py/...), " +
+          "PDF (.pdf), or HTML (.html/.htm). Size caps: 1 MiB for text/markdown/html, 10 MiB for PDF.",
+      },
+      caption: {
+        type: "string",
+        description:
+          "Optional subtitle shown under the bubble. The repo path is used as the viewer title.",
+      },
+      kind: {
+        type: "string",
+        enum: ["markdown", "text", "pdf", "html"],
+        description: "Override auto-detection and force this viewer kind.",
+      },
+      allowNetwork: {
+        type: "boolean",
+        description:
+          "HTML+JS only (kind=html). Default false: JavaScript runs but ALL network is blocked " +
+          "(remote <script>/<img>/css, fetch, XHR, websockets) — a safe sandbox. Set true to allow " +
+          "remote resources for trusted content. Ignored for non-html kinds.",
+      },
+    },
+    required: ["path"],
   });
 
-  pi.registerTool<typeof ShowFileParams, ShowFileResult>({
+  pi.registerTool<never, ShowFileResult>({
     name: "show_file",
     label: "Show file to user",
     description:
@@ -678,61 +701,6 @@ export function registerShowFileTool(pi: ExtensionAPI, deps: ImagePipelineDeps):
         allowNetwork?: boolean;
       }, deps),
   });
-}
-
-export function registerReceivedImageRenderer(pi: ExtensionAPI): void {
-  pi.registerMessageRenderer<ReceivedImageDetails>(
-    REMOTE_PI_RECEIVED_IMAGE_TYPE,
-    (message, _options, theme) => {
-      const details = (message.details ?? {}) as Partial<ReceivedImageDetails>;
-      const path = typeof details.path === "string" ? details.path : "";
-      const previewPath = typeof details.previewPath === "string" ? details.previewPath : "";
-      const mime = typeof details.mime === "string" ? details.mime : "application/octet-stream";
-      const inlineImagePath = previewPath.length > 0
-        ? previewPath
-        : (mime === IMAGE_PREVIEW_MIME ? path : "");
-      const size = typeof details.size === "number" ? details.size : undefined;
-      const index = typeof details.index === "number" ? details.index : undefined;
-      const text = typeof details.text === "string" ? details.text.trim() : "";
-      const messageId = typeof details.messageId === "string" ? details.messageId : "unknown";
-      const error = typeof details.error === "string" ? details.error : undefined;
-      const reason = typeof details.reason === "string" ? details.reason : undefined;
-
-      const label = `📷 Photo from Android (${messageId}${index !== undefined ? ` #${index}` : ""})`;
-      const lines = [
-        theme.fg("customMessageLabel", label),
-        theme.fg("customMessageText", `Saved: ${path || "(not saved)"}`),
-      ];
-      if (size !== undefined) lines.push(theme.fg("customMessageText", `Size: ${size} bytes`));
-      if (mime) lines.push(theme.fg("customMessageText", `MIME: ${mime}`));
-      if (error) lines.push(theme.fg("customMessageText", `Error: ${error}`));
-      if (reason) lines.push(theme.fg("customMessageText", `Reason: ${reason}`));
-      if (text) lines.push(theme.fg("customMessageText", `Text: ${text}`));
-
-      const container = new Container();
-      const metadata = new Box(1, 1, (line) => theme.bg("customMessageBg", line));
-      metadata.addChild(new Text(lines.join("\n")));
-      container.addChild(metadata);
-
-      if (inlineImagePath && !error) {
-        try {
-          const imageData = readFileSync(inlineImagePath).toString("base64");
-          if (imageData.length > 0) {
-            const image = new Image(imageData, IMAGE_PREVIEW_MIME, {
-              fallbackColor: (str) => theme.fg("customMessageText", str),
-            });
-            // Keep Kitty image rows out of Box padding/background so pi-tui can
-            // preserve the empty reserved rows that make inline images visible.
-            container.addChild(image);
-          }
-        } catch {
-          // Keep the metadata-only fallback on any IO/terminal issue.
-        }
-      }
-
-      return container;
-    },
-  );
 }
 
 function isReceivedImageContextMessage(message: unknown): boolean {

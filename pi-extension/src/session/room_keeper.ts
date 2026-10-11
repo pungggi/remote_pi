@@ -50,14 +50,16 @@ import { readRoomsRegistry, type RoomsRegistryEntry } from "./rooms_registry.js"
 import { DEVICE_ROOM } from "../rooms.js";
 
 /** Lazy accessor for the ext's message→events mapper. Imported dynamically on
- *  first sync to keep this module free of a static index.ts edge — the
- *  supervisor imports THIS module, and index.ts (transitively) imports the
- *  supervisor, so a static edge would close a module cycle. */
+ *  first sync to keep this module free of a static main.ts edge — the
+ *  supervisor imports THIS module, and main.ts (transitively) imports the
+ *  supervisor, so a static edge would close a module cycle. (Plan/143: the
+ *  mapper moved with the monolith from index.ts to main.ts; index.ts is now
+ *  the thin entry.) */
 type MapMessages = (msgs: unknown[], precedingUserId?: string) => unknown[];
 let cachedMapper: MapMessages | null = null;
 async function mapAgentMessages(): Promise<MapMessages> {
   if (!cachedMapper) {
-    const mod = await import("../index.js");
+    const mod = await import("../main.js");
     cachedMapper = mod._mapAgentMessagesToEvents as MapMessages;
   }
   return cachedMapper;
