@@ -89,10 +89,18 @@ function fwd(fn: (m: MainModule) => void): void {
     fn(m);
     return;
   }
-  void _main().then((loaded) => {
-    mainLoaded = loaded;
-    fn(loaded);
-  });
+  void _main()
+    .then((loaded) => {
+      mainLoaded = loaded;
+      fn(loaded);
+    })
+    .catch((err) => {
+      // PR #62 review: never let a deferred forward kill the host process —
+      // an import failure or a throwing handler would otherwise surface as an
+      // unhandled rejection (the monolith's sync handlers propagated to pi's
+      // event runner instead). Log and keep pi alive.
+      console.error("[remote-pi] runtime forward failed:", err);
+    });
 }
 
 /** Force-load the runtime NOW (tests + CLI). After this resolves, every
@@ -408,8 +416,8 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
 
   // Plano 20: agent_send + agent_request tools so the LLM can drive the
   // session network natively. Getter captures `ext.meshNode` live so the
-  // tool always sees the current state. The tool module is thin (typebox
-  // schemas + type-only imports), so it stays static.
+  // tool always sees the current state. The tool module is thin (plain JSON
+  // Schema literals + type-only imports — no typebox), so it stays static.
   registerAgentTools(pi, () => ext.meshNode?.peer() ?? null);
 
   // Inject the two cross-cutting concerns the image pipeline needs from the
@@ -654,7 +662,22 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
       !runtimeIdle() ||
       ext.disposed ||
       ext.myRoomMeta?.waiting_for_input === true;
-    if (needsRuntime) fwd((m) => m.onSessionStart(pi, ctx, autoStart));
+    if (needsRuntime) {
+      // PR #62 review (race fix): if session_shutdown fires while the runtime
+      // import is still resolving, its teardown bumps rootLifecycleGeneration
+      // — skip this deferred start, or main.onSessionStart would see
+      // ext.disposed, treat it as a module-reuse rearm, and _cmdRoot would
+      // re-create mesh/relay on a session that was just shut down. The
+      // monolith was synchronous (start always preceded shutdown); the token
+      // restores that ordering guarantee for the deferred path. When the
+      // runtime is already loaded the forward is synchronous and the token
+      // cannot change in between.
+      const startToken = ext.rootLifecycleGeneration;
+      fwd((m) => {
+        if (ext.rootLifecycleGeneration !== startToken) return;
+        m.onSessionStart(pi, ctx, autoStart);
+      });
+    }
   });
 
   // Tear down THIS instance's live handles when the SDK replaces the session.

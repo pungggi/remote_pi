@@ -13,10 +13,19 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const mainLoadMarker = vi.hoisted(() => ({ count: 0 }));
+const harness = vi.hoisted(() => ({
+  count: 0,
+  /** Factory resolutions — set only after the real module finished loading. */
+  resolved: 0,
+  /** Optional gate: the mock factory awaits it before resolving (race tests). */
+  gate: null as Promise<void> | null,
+}));
 vi.mock("./main.js", async (importOriginal) => {
-  mainLoadMarker.count += 1;
-  return await importOriginal<typeof import("./main.js")>();
+  harness.count += 1;
+  if (harness.gate) await harness.gate;
+  const mod = await importOriginal<typeof import("./main.js")>();
+  harness.resolved += 1;
+  return mod;
 });
 
 import extension from "./index.js";
@@ -50,7 +59,7 @@ beforeEach(() => resetExtensionState());
 
 describe("thin-entry lazy boundary (plan/143)", () => {
   test("importing the entry does not load the runtime", () => {
-    expect(mainLoadMarker.count).toBe(0);
+    expect(harness.count).toBe(0);
     // Light accessors work runtime-free.
     expect(ext.state).toBe("idle");
     expect(ext.activePeers.size).toBe(0);
@@ -60,11 +69,11 @@ describe("thin-entry lazy boundary (plan/143)", () => {
     const { pi, handlers, sent } = makePi();
     extension(pi);
     // Factory preamble (bridge rebind, skill deploy) is inline — no runtime.
-    expect(mainLoadMarker.count).toBe(0);
+    expect(harness.count).toBe(0);
 
     // session_start without a local config: auto-start gate stays closed.
     handlers.get("session_start")!({ type: "session_start" } as never, fakeCtx as never);
-    expect(mainLoadMarker.count).toBe(0);
+    expect(harness.count).toBe(0);
 
     // A full no-peer turn: agent lifecycle + streamed text + message buffer
     // are pure ext writes (mirrors of main.ts's handlers).
@@ -114,7 +123,46 @@ describe("thin-entry lazy boundary (plan/143)", () => {
     expect((handlers.get("session_shutdown")!({} as never, fakeCtx as never) as Promise<void>)).toBeInstanceOf(Promise);
     expect(ext.disposed).toBe(true);
 
-    expect(mainLoadMarker.count).toBe(0);
+    expect(harness.count).toBe(0);
+  });
+
+  test("session_shutdown during the runtime import cancels the deferred session_start (PR #62 race)", async () => {
+    // Hold the runtime import open so session_shutdown can interleave.
+    let release!: () => void;
+    harness.gate = new Promise<void>((r) => { release = r; });
+    process.env["REMOTE_PI_DAEMON"] = "1";
+    process.env["REMOTE_PI_DIRECT_CONFIG"] = JSON.stringify({ agent_name: "T", auto_start_relay: true });
+    try {
+      const { pi, handlers } = makePi();
+      extension(pi);
+      // auto-start gate passes (daemon + direct config) → deferred fwd starts
+      // the runtime import, now parked behind the gate.
+      handlers.get("session_start")!({ type: "session_start" } as never, fakeCtx as never);
+      expect(harness.count).toBe(1);
+      expect(harness.resolved).toBe(0);
+
+      // shutdown interleaves BEFORE the import resolves: inline teardown sets
+      // disposed + bumps rootLifecycleGeneration.
+      await handlers.get("session_shutdown")!({} as never, fakeCtx as never);
+      expect(ext.disposed).toBe(true);
+      const genAfterShutdown = ext.rootLifecycleGeneration;
+
+      release();
+      await vi.waitFor(() => expect(harness.resolved).toBe(1), { timeout: 15000 });
+      // Flush the fwd .then chain.
+      await new Promise((r) => setTimeout(r, 50));
+
+      // The deferred onSessionStart must NOT have re-armed a replaced session:
+      // disposed stays set, generations untouched, nothing started.
+      expect(ext.disposed).toBe(true);
+      expect(ext.rootLifecycleGeneration).toBe(genAfterShutdown);
+      expect(ext.state).toBe("idle");
+      expect(ext.meshNode).toBeNull();
+    } finally {
+      delete process.env["REMOTE_PI_DAEMON"];
+      delete process.env["REMOTE_PI_DIRECT_CONFIG"];
+      harness.gate = null;
+    }
   });
 
   test("CTRL_PREFIX input swallows synchronously AND loads the runtime", async () => {
@@ -123,8 +171,9 @@ describe("thin-entry lazy boundary (plan/143)", () => {
     const result = handlers.get("input")!({ text: "\x00remote-pi-ctrl:ping", source: "interactive" } as never, fakeCtx as never);
     // The swallow decision is synchronous (SDK contract)…
     expect(result).toEqual({ action: "handled" });
-    // …while the control dispatch forwards to the runtime (heavy action).
-    await vi.waitFor(() => expect(mainLoadMarker.count).toBe(1));
+    // …the control dispatch forwarded to the runtime — already loaded by the
+    // race test above (module cache), so no second factory run.
+    expect(harness.count).toBe(1);
   });
 
   test("commands dispatch through the runtime once loaded", async () => {
@@ -134,6 +183,6 @@ describe("thin-entry lazy boundary (plan/143)", () => {
     // Runtime already loaded by the previous test — the dispatch runs the
     // real command handler (sync fast path) without error.
     await status.handler("", fakeCtx);
-    expect(mainLoadMarker.count).toBe(1);
+    expect(harness.count).toBe(1);
   });
 });
