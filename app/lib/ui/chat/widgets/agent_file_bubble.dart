@@ -8,7 +8,7 @@ import 'package:flutter/material.dart';
 
 /// Plan/126 - left-aligned, tappable card for an [AgentFileMsg] (a document
 /// the agent pushed from the repo via the `show_file` tool: Markdown / text /
-/// PDF / HTML). Decodes the inline base64 once and shows an icon + filename +
+/// PDF / HTML / Mermaid (plan/144)). Decodes the inline base64 once and shows an icon + filename +
 /// a small preview / sandbox badge; tapping opens [DocViewerPage], which routes
 /// by [kind] to the right viewer. Distinct from [AgentImageBubble] (plan/114).
 class AgentFileBubble extends StatefulWidget {
@@ -57,6 +57,7 @@ class _AgentFileBubbleState extends State<AgentFileBubble> {
         'text' => 'Text file',
         'pdf' => 'PDF document',
         'html' => 'HTML page',
+        'mermaid' => 'Mermaid diagram',
         _ => 'Document',
       };
 
@@ -73,11 +74,15 @@ class _AgentFileBubbleState extends State<AgentFileBubble> {
         'text' => Icons.article_outlined,
         'pdf' => Icons.picture_as_pdf_outlined,
         'html' => Icons.code_outlined,
+        'mermaid' => Icons.account_tree_outlined,
         _ => Icons.drafts_outlined,
       };
 
   String? get _previewText {
-    if (widget.message.kind != 'markdown' && widget.message.kind != 'text') {
+    // Mermaid is text-y too: preview the diagram source's first lines.
+    if (widget.message.kind != 'markdown' &&
+        widget.message.kind != 'text' &&
+        widget.message.kind != 'mermaid') {
       return null;
     }
     final bytes = _bytes;
@@ -217,6 +222,7 @@ class _AgentFileBubbleState extends State<AgentFileBubble> {
       'text' => 'Text',
       'pdf' => 'PDF',
       'html' => 'HTML',
+      'mermaid' => 'Mermaid',
       _ => widget.message.kind,
     };
     final children = <Widget>[

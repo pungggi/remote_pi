@@ -1,5 +1,6 @@
 // Plan/126 - wire parsing of the `agent_file` ServerMessage (the document the
-// agent pushes to the user via the `show_file` tool: markdown/text/pdf/html).
+// agent pushes to the user via the `show_file` tool: markdown/text/pdf/html,
+// plus mermaid since plan/144).
 
 import 'package:app/protocol/protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -57,8 +58,8 @@ void main() {
       expect(f.allowNetwork, isTrue);
     });
 
-    test('kinds text/pdf/html all dispatch to AgentFile', () {
-      for (final kind in ['text', 'pdf', 'html', 'markdown']) {
+    test('kinds text/pdf/html/markdown/mermaid all dispatch to AgentFile', () {
+      for (final kind in ['text', 'pdf', 'html', 'markdown', 'mermaid']) {
         final m = ServerMessage.fromJson({
           'type': 'agent_file',
           'id': 'doc_$kind',

@@ -404,11 +404,11 @@ export type ServerMessage =
       type: "agent_file";
       id: string;
       in_reply_to: string;
-      kind: "markdown" | "text" | "pdf" | "html";
+      kind: "markdown" | "text" | "pdf" | "html" | "mermaid";
       /** Base64-encoded raw file bytes. Text kinds are valid UTF-8. */
       data: string;
       /** Original MIME for display/save (text/markdown, text/plain, text/html,
-       *  application/pdf). */
+       *  application/pdf, text/vnd.mermaid). */
       mime?: string;
       /** Repo path the agent read from (display / save name). */
       path?: string;

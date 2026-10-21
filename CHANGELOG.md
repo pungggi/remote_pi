@@ -11,6 +11,19 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Mermaid diagram previews via `show_file` (plan/144)** — the agent can now
+  push a Mermaid source file (`.mmd`/`.mermaid`, or any file with
+  `kind: "mermaid"`) to the phone, where it renders as an actual diagram
+  instead of raw text. Rendering happens in a sandboxed WebView from a
+  **bundled** mermaid.js copy: fully offline, `connect-src 'none'`, no CDN
+  round-trip, `securityLevel: "strict"` labels. The diagram theme follows the
+  app (dark/light), supports drag-pan / pinch-zoom / double-tap-reset, and
+  parse errors surface as a readable in-page message instead of a spinner.
+  Why bundled instead of CDN: the preview must work without network and must
+  not break the HTML viewer's sandbox discipline.
+
 ### Changed
 
 - **Waiting-for-you banners now also fire while the app is open** —

@@ -411,16 +411,19 @@ export function registerShowImageTool(pi: ExtensionAPI, deps: ImagePipelineDeps)
   });
 }
 // ── Plan/126 — show_file tool (agent → user document: md/text/pdf/html) ───
+// Plan/144 adds a fifth kind, `mermaid` (.mmd/.mermaid), rendered by the app's
+// bundled mermaid.js WebView.
 // Mirrors `show_image` for non-image files. The agent calls
 // `show_file({ path, caption?, kind?, allowNetwork? })`; the handler detects
-// the kind (markdown/text/pdf/html) by extension (explicit `kind` overrides),
+// the kind (markdown/text/pdf/html/mermaid) by extension (explicit `kind`
+// overrides),
 // validates per-kind size caps + UTF-8 for text kinds, broadcasts an
 // `agent_file` ServerMessage with inline base64 to every connected owner, and
 // returns ONLY metadata to the model (same context-hygiene discipline as
 // plan/49/114). HTML carries an `allow_network` flag so the app knows whether
 // the WebView sandbox should permit remote resources (default: blocked).
 
-type ShowFileKind = "markdown" | "text" | "pdf" | "html";
+type ShowFileKind = "markdown" | "text" | "pdf" | "html" | "mermaid";
 
 interface ShowFileResult {
   shown: boolean;
@@ -468,6 +471,7 @@ function mimeForFileKind(kind: ShowFileKind): string {
     case "text": return "text/plain";
     case "html": return "text/html";
     case "pdf": return "application/pdf";
+    case "mermaid": return "text/vnd.mermaid";
   }
 }
 
@@ -484,6 +488,7 @@ function detectFileKind(absPath: string): ShowFileKind | undefined {
   if (ext === "md" || ext === "markdown") return "markdown";
   if (ext === "html" || ext === "htm" || ext === "xhtml") return "html";
   if (ext === "pdf") return "pdf";
+  if (ext === "mmd" || ext === "mermaid") return "mermaid";
   if (SHOW_FILE_TEXT_EXTENSIONS.has(ext)) return "text";
   const base = (absPath.toLowerCase().split(/[\\/]/).pop() ?? "");
   // Dotfiles have an empty extension — strip the leading dot and match the
@@ -579,7 +584,7 @@ function handleShowFile(
   if (!kind) {
     return showFileError(
       `unsupported/unknown file type — pass kind= explicitly, or use a known extension ` +
-        `(md/markdown, txt/json/yaml/dart/ts/py/... code, html/htm, pdf): ${rawPath}`,
+        `(md/markdown, txt/json/yaml/dart/ts/py/... code, html/htm, pdf, mmd/mermaid): ${rawPath}`,
       rawPath,
     );
   }
@@ -654,7 +659,8 @@ export function registerShowFileTool(pi: ExtensionAPI, deps: ImagePipelineDeps):
         description:
           "Path to a file in the repo, relative to the session cwd (or absolute). " +
           "Markdown (.md/.markdown), plain text or code (.txt/.json/.yaml/.dart/.ts/.py/...), " +
-          "PDF (.pdf), or HTML (.html/.htm). Size caps: 1 MiB for text/markdown/html, 10 MiB for PDF.",
+          "PDF (.pdf), HTML (.html/.htm), or a Mermaid diagram source (.mmd/.mermaid). " +
+          "Size caps: 1 MiB for text/markdown/html/mermaid, 10 MiB for PDF.",
       },
       caption: {
         type: "string",
@@ -663,7 +669,7 @@ export function registerShowFileTool(pi: ExtensionAPI, deps: ImagePipelineDeps):
       },
       kind: {
         type: "string",
-        enum: ["markdown", "text", "pdf", "html"],
+        enum: ["markdown", "text", "pdf", "html", "mermaid"],
         description: "Override auto-detection and force this viewer kind.",
       },
       allowNetwork: {
@@ -682,16 +688,16 @@ export function registerShowFileTool(pi: ExtensionAPI, deps: ImagePipelineDeps):
     label: "Show file to user",
     description:
       "Display a document file from the repo to the user on their paired mobile app — " +
-      "Markdown, plain text/code, PDF, or HTML (with JavaScript). Each opens the right " +
+      "Markdown, plain text/code, PDF, HTML (with JavaScript), or a Mermaid diagram. Each opens " +
       "full-screen viewer. Use when the user asks to see/read/open a file that is not an " +
       "image (use show_image for images). The file bytes go directly to the app out-of-band; " +
       "this tool returns only metadata (kind, path, mime, size) — never the content — so it " +
       "does not bloat the model context. For HTML, JavaScript always runs; network is blocked " +
-      "unless you pass allowNetwork:true.",
+      "unless you pass allowNetwork:true. Mermaid renders offline from a bundled renderer.",
     promptSnippet:
-      "show_file({path, caption?, kind?, allowNetwork?}): display a Markdown/text/PDF/HTML file " +
+      "show_file({path, caption?, kind?, allowNetwork?}): display a Markdown/text/PDF/HTML/Mermaid file " +
       "from disk to the user on their phone (full-screen viewer). HTML runs JS; network blocked " +
-      "unless allowNetwork. Returns metadata only.",
+      "unless allowNetwork. Mermaid (.mmd) renders offline. Returns metadata only.",
     parameters: ShowFileParams,
     execute: async (_toolCallId, params) =>
       handleShowFile(params as {

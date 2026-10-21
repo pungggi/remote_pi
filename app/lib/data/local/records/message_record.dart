@@ -5,12 +5,13 @@ import 'package:app/domain/session_state.dart';
 /// [ChatMessage] the UI widgets already render.
 enum MsgRole { user, assistant, tool, compaction }
 
-/// Plan/126 - an agent-pushed document (show_file tool: markdown/text/pdf/html).
+/// Plan/126 - an agent-pushed document (show_file tool: markdown/text/pdf/html,
+/// plus mermaid since plan/144).
 /// The base64 [data] is the raw file bytes (valid UTF-8 for the text-y kinds);
 /// [kind] selects the viewer. Mirrors [MessageImage] (plan/30) for the image
 /// path. Persisted on the assistant row alongside `imagePath` (the repo path).
 class MessageFile {
-  final String kind; // markdown | text | pdf | html
+  final String kind; // markdown | text | pdf | html | mermaid
   final String data; // base64 raw file bytes
   final String? mime;
   final bool allowNetwork; // HTML only
