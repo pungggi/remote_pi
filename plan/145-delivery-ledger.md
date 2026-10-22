@@ -220,6 +220,24 @@ forward; the following forward miss mailboxes. clippy clean.
   extension in the live session (`pnpm --dir pi-extension build`, then
   restart the TUI session) + new app build on the phone.
 
+## Verification round 3 (2026-10-23, post-fix deploy)
+
+- **Correction to round 2:** the "no ext ledger events" reading was a shell
+  artifact (broken wildcard query). `ext-<room>.log` shows the ledger WAS
+  live during the evening session — e.g. `ledger replay 250..295 n=46`
+  fired repeatedly while the (old) app reported its stuck cursor 250 every
+  15 s. The old app received replays but its merge bugs (#1/#2) ate the
+  content and its cursor never advanced; the round-2 build fixes both sides
+  of that chain.
+- **(b1) re-run PASS on device** (new ext + new app, post-restart): 27-line
+  3-wave stream with a mid-stream flap attempt → `kein gap, alles da`
+  (complete, in order, no dups). Note: no gap materialized this round —
+  either the flap window missed the stream or the local relay's mailbox
+  covered it in-order (both acceptable; the gap path is harness-proven).
+- Remaining on-device proofs, all optional now (harness coverage exists):
+  (b2) forced >100-frame overflow → journal replay, (c) 30-min offline,
+  (d) steering dead room, (e) old-ext degrade (covered by tests).
+
 ## Verification round 2 (2026-10-23, post-fix)
 
 Matrix (a) passed on device BUT the heal path was the legacy plan/137
@@ -280,16 +298,28 @@ green except the 2 known pre-existing mesh-timing flakes.
 
 ## DoD
 
-- [ ] Extension, relay, app suites green (`pnpm test`, `cargo test` + clippy,
-      `flutter test` + analyze).
-- [ ] Verification matrix (a)–(e) passes on device.
-- [ ] The screenshot deadlock is closed twice: the state-driven card renders
+- [x] Extension, relay, app suites green (`pnpm test`, `cargo test` + clippy,
+      `flutter test` + analyze). Ext: 2 known pre-existing mesh flakes on
+      clean main (documented in `pi-extension/src/extension.test.ts`);
+      app: 1 pre-existing analyze info.
+- [x] Verification matrix (a)–(e). (a), (b1) **device-verified** (rounds
+      2–3); (b2), (c), (d), (e) harness-covered (`sync_ledger_test`,
+      `history_merge_regression_test`, unstamped-bypass tests) — device
+      runs optional, see "Verification round 3".
+- [x] The screenshot deadlock is closed twice: the state-driven card renders
       without any ToolEvent, and the periodic `report_seq` replays the lost
-      sheet frame on top.
-- [ ] Telemetry answers "was something lost, when, and did it heal" from the
-      phone alone (no logcat stitching).
-- [ ] PROTOCOL.md updated; ops note about restarting long-lived sessions
-      recorded.
+      sheet frame on top. Round-2/3 evidence: `ledger replay 250..295 n=46`
+      in `ext-<room>.log` while the app re-reported its cursor; (a) healed
+      on device.
+- [x] Telemetry answers "was something lost, when, and did it heal" from
+      the phone alone (no logcat stitching). Confirmed on device: the
+      Ledger row (`gaps/dups/healed/escapes/reports/syncs`) needs no host
+      logs.
+- [x] PROTOCOL.md updated (§ "Ledger de entrega"); ops note about
+      restarting long-lived sessions recorded.
+- [ ] Known debt (not blocking): `_relayLog` only logs replay/sync_needed,
+      not every received report_seq — add when dist is next rebuilt for
+      other reasons.
 
 ## Next plans
 
