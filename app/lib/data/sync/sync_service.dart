@@ -214,6 +214,15 @@ class SyncService extends Service {
 
   int? _ledgerEpoch;
   int _ledgerContig = 0;
+
+  /// Plan/145 (verification round) — cursor persisted in the runtime box at
+  /// safe points; loaded per room in [_loadIndex]. Same-epoch resume keeps a
+  /// mid-stream hole DETECTABLE after a process death (the (b1) loss).
+  int? _persistedLedgerEpoch;
+  int _persistedLedgerContig = 0;
+  int? _lastPersistedLedgerEpoch;
+  int _lastPersistedLedgerContig = -1;
+
   final Map<int, ServerMessage> _ledgerHeld = {};
   Timer? _ledgerHoldTimer;
   Timer? _ledgerTailTimer;
@@ -253,6 +262,12 @@ class SyncService extends Service {
   void _resetLedger() {
     _ledgerEpoch = null;
     _ledgerContig = 0;
+    // Persisted cursor for the room we are LEAVING — stale until
+    // _loadIndex reloads the incoming room's value.
+    _persistedLedgerEpoch = null;
+    _persistedLedgerContig = 0;
+    _lastPersistedLedgerEpoch = null;
+    _lastPersistedLedgerContig = -1;
     if (_ledgerHeld.isNotEmpty) {
       ledgerHeldDropped += _ledgerHeld.length;
       _ledgerHeld.clear();
@@ -272,8 +287,16 @@ class SyncService extends Service {
       // frame for this room (null baseline): adopt `seq - 1` as the cursor
       // and let this frame apply. Held frames from the old epoch can never
       // fill correctly — drop them.
+      //
+      // Plan/145 (verification round) — cold start: when the persisted
+      // cursor is from the SAME epoch, the process died mid-stream and
+      // RESUMES from it instead of adopting seq-1. Adopting here silently
+      // skipped everything between death and this frame — the (b1) loss:
+      // the hole was never detected, so no report/replay ever fired.
+      // Resuming keeps the hole a GAP: hold → report → journal replay.
       _ledgerEpoch = epoch;
-      _ledgerContig = seq - 1;
+      _ledgerContig =
+          _persistedLedgerEpoch == epoch ? _persistedLedgerContig : seq - 1;
       if (_ledgerHeld.isNotEmpty) {
         ledgerHeldDropped += _ledgerHeld.length;
         _ledgerHeld.clear();
@@ -320,6 +343,7 @@ class SyncService extends Service {
       _ledgerHoldTimer?.cancel();
       _ledgerHoldTimer = null;
     }
+    _persistLedgerCursor();
   }
 
   void _armLedgerHoldTimer() {
@@ -345,7 +369,37 @@ class SyncService extends Service {
       _ledgerContig = frame.ledgerSeq! - 1;
       _onServerMessage(frame);
     }
+    _persistLedgerCursor();
     requestSync();
+  }
+
+  /// Plan/145 (verification round) — durable cursor for THIS (epk, room),
+  /// written at safe points only (agent_done, hold drain/escape, history
+  /// baseline): a process death mid-stream must not silently skip the
+  /// un-persisted hole on restart (see the adopt branch in [_ledgerGate]).
+  /// Per-frame writes were deliberately rejected; these points bound the
+  /// replayable tail to a single turn.
+  void _persistLedgerCursor() {
+    final epoch = _ledgerEpoch;
+    if (epoch == null) return;
+    if (epoch == _lastPersistedLedgerEpoch &&
+        _ledgerContig == _lastPersistedLedgerContig) {
+      return;
+    }
+    _lastPersistedLedgerEpoch = epoch;
+    _lastPersistedLedgerContig = _ledgerContig;
+    final epk = _activeEpk;
+    if (epk == null) return;
+    final room = _activeRoomId;
+    final contig = _ledgerContig;
+    // ignore: discarded_futures
+    _enqueue(() async {
+      if (_activeEpk != epk || _activeRoomId != room) return;
+      _boxes.runtimeBox().put(
+        'ledger:${LocalBoxes.sessionKey(epk, room)}',
+        {'epoch': epoch, 'contig': contig},
+      );
+    });
   }
 
   /// Report our ledger cursor to the Pi (→ journal replay of the missing
@@ -411,6 +465,7 @@ class SyncService extends Service {
         ledgerHeldDropped += _ledgerHeld.length;
         _ledgerHeld.clear();
       }
+      _persistLedgerCursor();
       return;
     }
     if (current > _ledgerContig) {
@@ -421,6 +476,7 @@ class SyncService extends Service {
         ledgerDupsDropped++;
       }
       _drainLedgerHeld();
+      _persistLedgerCursor();
     }
   }
 
@@ -1073,6 +1129,9 @@ class SyncService extends Service {
         // Reconciliation fallback: heal a lost tail when the Pi's cumulative
         // turn text extends what we actually streamed.
         _reconcileTurnText(inReplyTo, text);
+        // Plan/145 (verification round) — turn end is the primary safe point
+        // for the durable cursor.
+        _persistLedgerCursor();
 
       case AgentMessage(:final inReplyTo, :final text):
         // ignore: discarded_futures
@@ -1513,6 +1572,39 @@ class SyncService extends Service {
         final mapKey = _key(row.role, row.id);
         final existingSeq = _idToSeq[mapKey];
         if (existingSeq == null) {
+          // Plan/145 (verification round) — text that was live-streamed sits
+          // in the box under a throwaway `agent_<uuid>` id (finalize rows are
+          // per-segment; history rows are per-block with amsg ids / legacy
+          // reply ids — different id spaces). Exact-text match (bounded to a
+          // 5-minute window) ⇒ the sync row is the authoritative copy of the
+          // same message: re-key the streamed row IN PLACE (same seq = same
+          // chronology) instead of appending a duplicate bubble. Without
+          // this, every post-turn re-sync duplicated the streamed text — and
+          // a mid-turn reconnect (lost tail) duplicated the head AND dropped
+          // the tail blocks that shared the legacy reply id.
+          if (row.role == MsgRole.assistant) {
+            MapEntry<String, int>? streamed;
+            for (final e in _idToSeq.entries) {
+              if (!e.key.startsWith('assistant:agent_')) continue;
+              final rec = MessageRecord.fromJson(_coerce(box.get(e.value)));
+              if (rec.text == row.text &&
+                  (rec.ts.difference(row.ts).abs())
+                      .compareTo(const Duration(minutes: 5)) <
+                      0) {
+                streamed = e;
+                break;
+              }
+            }
+            if (streamed != null) {
+              _idToSeq.remove(streamed.key);
+              _idToSeq[mapKey] = streamed.value;
+              await box.put(
+                streamed.value,
+                row.copyWith(seq: streamed.value).toJson(),
+              );
+              continue;
+            }
+          }
           // New to this box → append. `_nextSeq` is a monotonic storage
           // identity; it stays chronological for the initial sync + live
           // appends (the only paths in this step). Backward paging
@@ -1665,10 +1757,13 @@ class SyncService extends Service {
               ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
             ),
           );
-        case AgentMessageEvt(:final inReplyTo, :final text):
+        case AgentMessageEvt(:final inReplyTo, :final id, :final text):
           out.add(
             MessageRecord(
-              id: inReplyTo,
+              // Plan/145 (verification round) — prefer the unique block id;
+              // `inReplyTo` is shared by every block of a turn and collapses
+              // them on the merge (first block wins, rest dropped).
+              id: id ?? inReplyTo,
               seq: seq++,
               role: MsgRole.assistant,
               text: text,
@@ -1764,6 +1859,18 @@ class SyncService extends Service {
         if (r.role == MsgRole.user && r.pending) _armSendTimeout(r.id, r.ts);
       }
       _indexLoaded = true;
+      // Plan/145 (verification round) — resume the room's persisted ledger
+      // cursor: a process death mid-stream must still detect its hole.
+      final ledgerRaw = _boxes
+          .runtimeBox()
+          .get('ledger:${LocalBoxes.sessionKey(epk, room)}');
+      if (ledgerRaw is Map) {
+        _persistedLedgerEpoch = (ledgerRaw['epoch'] as num?)?.toInt();
+        _persistedLedgerContig = (ledgerRaw['contig'] as num?)?.toInt() ?? 0;
+      } else {
+        _persistedLedgerEpoch = null;
+        _persistedLedgerContig = 0;
+      }
     });
   }
 

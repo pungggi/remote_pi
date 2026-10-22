@@ -315,7 +315,17 @@ export type SessionHistoryEvent =
   | {
       ts: number;
       type: "agent_message";
+      // Reply context: the id of the user message this answers (stable across
+      // re-syncs). NOTE: all text blocks of one turn share this value — it is
+      // NOT a unique row key.
       in_reply_to: string;
+      // Plan/145 (verification round) — the UNIQUE, stable row key for this
+      // text block: `amsg_<message-ts>` / `amsg_<message-ts>_<n>` for the
+      // n-th extra block of a multi-block assistant message. Older apps key
+      // rows by `in_reply_to` and collapse multi-block turns (first block
+      // wins); newer apps prefer `id` when present. Absent only on events
+      // from pre-fix extensions.
+      id?: string;
       text: string;
       usage?: Usage;
     }

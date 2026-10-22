@@ -220,6 +220,43 @@ forward; the following forward miss mailboxes. clippy clean.
   extension in the live session (`pnpm --dir pi-extension build`, then
   restart the TUI session) + new app build on the phone.
 
+## Verification round 2 (2026-10-23, post-fix)
+
+Matrix (a) passed on device BUT the heal path was the legacy plan/137
+pending-UI-request replay, NOT the ledger (no `ext-*.log` ledger events —
+that file only appears on replay/sync_needed). Matrix (b1) then EXPOSED
+THREE REAL BUGS ("nur Welle 1, doppelt"):
+
+1. **History id collision (ext, pre-existing)** — `_mapAgentMessagesToEvents`
+   keyed every `agent_message` by `in_reply_to` = last user id. All text
+   blocks of one turn shared ONE row key: the app's merge appended block 1
+   and silently DROPPED blocks 2..n ("already have it"). Multi-block turns
+   (text→tool→text→tool→text) lost everything after the first block on every
+   sync. Fix: unique stable `amsg_<ts>` (+`_<n>`) ids on each block
+   (`id` field; `in_reply_to` unchanged for old apps).
+2. **Cross-id-space duplication (app, pre-existing)** — live-streamed text is
+   finalized as `agent_<uuid>` rows; history rows carry mapper ids. Every
+   post-turn re-sync appended the same text AGAIN (proven in harness for
+   single-block turns too). Fix: on merge, an incoming assistant row with
+   EXACT text match (±5 min) against an `agent_` row re-keys that row in
+   place (same seq) instead of appending.
+3. **Ledger cold-start adopt (app, plan/145 gap)** — after a process death
+   mid-stream the first stamped frame adopted `seq-1`, permanently skipping
+   the un-persisted hole (no gap → no report → no replay — the (b1) loss).
+   Fix: durable cursor in the runtime box, written at safe points only
+   (agent_done, hold drain/escape, history baseline); same-epoch cold start
+   RESUMES from it, keeping the hole a detectable GAP. (The plan's original
+   per-frame persistence was right in spirit; safe-point writes are the
+   correct cost tradeoff.)
+
+Also added: `_relayLog` fires on every `report_seq` receipt (observability
+was a hole: the happy path was invisible).
+
+Evidence: `history_merge_regression_test.dart` (3 tests, exact (b1)
+sequence), `sync_ledger_test.dart` cold-start resume group (2), ext mapper
+id test. Suites: app 850/850 + analyze clean (1 pre-existing info); ext
+green except the 2 known pre-existing mesh-timing flakes.
+
 ## Steps (com critério de aceite)
 
 1. **Wave 1** ext. *Aceite*: vitest bullets above green.

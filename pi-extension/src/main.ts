@@ -5312,16 +5312,27 @@ export function _mapAgentMessagesToEvents(
       const usage = m.usage
         ? { input_tokens: m.usage.input ?? 0, output_tokens: m.usage.output ?? 0 }
         : undefined;
+      // Plan/145 (verification round) — unique stable id per text block.
+      // The legacy key (`in_reply_to` = last user id) collapses multi-block
+      // turns on the receiver: blocks 2..n share block 1's key and are
+      // dropped as "already have it". `amsg_<ts>` (+ `_<n>` for extra
+      // blocks of one message) is stable across re-syncs (same buffer
+      // order) and unique per block. `in_reply_to` keeps its reply-context
+      // meaning for older apps.
+      let blockNo = 0;
       for (const raw of content) {
         if (!raw || typeof raw !== "object") continue;
         const block = raw as { type?: string; text?: unknown; id?: unknown; name?: unknown; arguments?: unknown };
         if (block.type === "text") {
           const text = String(block.text ?? "");
           if (!text) continue;
+          blockNo++;
+          const id = blockNo === 1 ? `amsg_${ts}` : `amsg_${ts}_${blockNo}`;
           const ev: SessionHistoryEvent = {
             ts,
             type: "agent_message",
             in_reply_to: lastUserId ?? `sync_${ts}`,
+            id,
             text,
             ...(usage ? { usage } : {}),
           };

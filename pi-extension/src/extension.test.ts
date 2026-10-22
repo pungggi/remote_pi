@@ -4534,6 +4534,48 @@ describe("session sync", () => {
     expect((events[1] as { in_reply_to: string }).in_reply_to).toBe(`sync_${ts}`);
   });
 
+  test("plan/145 (verification round): every text block gets a UNIQUE stable id", () => {
+    const ts = 1_700_000_000_000;
+    // One assistant message, three text blocks — the (b1) shape: all share
+    // in_reply_to (last user id); pre-fix they also shared the app's row key
+    // and blocks 2..n were dropped on merge ("already have it").
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "go", timestamp: ts },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "WELLE-1" },
+          { type: "text", text: "WELLE-2" },
+          { type: "text", text: "WELLE-3" },
+        ],
+        timestamp: ts + 100,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "NEXT-TURN" }],
+        timestamp: ts + 200,
+      },
+    ]);
+
+    const agentEvts = events.filter((e) => e.type === "agent_message");
+    expect(agentEvts.map((e) => (e as { text: string }).text)).toEqual([
+      "WELLE-1",
+      "WELLE-2",
+      "WELLE-3",
+      "NEXT-TURN",
+    ]);
+    const ids = agentEvts.map((e) => (e as { id?: string }).id);
+    expect(ids[0]).toBe(`amsg_${ts + 100}`);
+    expect(ids[1]).toBe(`amsg_${ts + 100}_2`);
+    expect(ids[2]).toBe(`amsg_${ts + 100}_3`);
+    expect(ids[3]).toBe(`amsg_${ts + 200}`);
+    // all unique, and in_reply_to stays the legacy reply context
+    expect(new Set(ids).size).toBe(4);
+    for (const e of agentEvts) {
+      expect((e as { in_reply_to: string }).in_reply_to).toBe(`sync_${ts}`);
+    }
+  });
+
   test("mapping (plan/30 re-sync): user [image, text] → user_input keeps images", () => {
     const ts = 1_700_000_000_000;
     const events = _mapAgentMessagesToEvents([

@@ -1831,6 +1831,7 @@ sealed class SessionHistoryEvent {
       'agent_message' => AgentMessageEvt(
         ts: ts,
         inReplyTo: j['in_reply_to'] as String,
+        id: j['id'] as String?,
         text: j['text'] as String,
       ),
       // Plan/32 — compaction replayed from history so the system bubble
@@ -1887,10 +1888,17 @@ class ToolResultEvt extends SessionHistoryEvent {
 
 class AgentMessageEvt extends SessionHistoryEvent {
   final String inReplyTo;
+
+  /// Plan/145 (verification round) — unique stable row key for this text
+  /// block (`amsg_<ts>` from the new ext). Null on events from pre-fix
+  /// extensions: the row then keys by [inReplyTo] — which collapses
+  /// multi-block turns (all blocks share the last user message id).
+  final String? id;
   final String text;
   const AgentMessageEvt({
     required super.ts,
     required this.inReplyTo,
+    this.id,
     required this.text,
   });
 }

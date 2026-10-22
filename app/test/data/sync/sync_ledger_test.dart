@@ -72,8 +72,9 @@ void main() {
     await _dir.delete(recursive: true);
   });
 
-  Future<({ConnectionManager conn, _FakeChannel ch, SyncService sync})>
+  Future<({ConnectionManager conn, _FakeChannel ch, SyncService sync, String epk})>
   setup({
+    String? epkOverride,
     Duration holdEscape = const Duration(seconds: 5),
     Duration tailEvery = const Duration(seconds: 15),
   }) async {
@@ -89,7 +90,7 @@ void main() {
       ledgerHoldEscapeAfter: holdEscape,
       ledgerTailReportEvery: tailEvery,
     );
-    final epk = 'epk_ledger_${++_counter}';
+    final epk = epkOverride ?? 'epk_ledger_${++_counter}';
     conn.adopt(
       ch,
       PeerRecord(
@@ -100,7 +101,7 @@ void main() {
       ),
     );
     await _settle();
-    return (conn: conn, ch: ch, sync: sync);
+    return (conn: conn, ch: ch, sync: sync, epk: epk);
   }
 
   group('protocol', () {
@@ -280,6 +281,63 @@ void main() {
       s.ch.push(stampedChunk(8, 'y', epoch: 9999));
       await _settle();
       expect(s.sync.streaming?.buffer, 'xy');
+      s.sync.dispose();
+      s.conn.dispose();
+    });
+  });
+
+  group('cold-start resume (persistence)', () {
+    test('process death mid-stream: same-epoch resume detects the hole and '
+        'the journal replay heals in order', () async {
+      final s = await setup();
+      // Turn 1 applies 1..3 and ENDS (agent_done = the safe point).
+      s.ch.push(stampedChunk(1, 'a'));
+      s.ch.push(stampedChunk(2, 'b'));
+      s.ch.push(stampedChunk(3, 'c'));
+      s.ch.push(AgentDone(inReplyTo: 't1')..ledgerSeq = 4..ledgerEpoch = _epoch);
+      await _settle();
+      expect(s.sync.ledgerContig, 4);
+
+      // ── process death: everything in-memory is gone ──
+      final s2 = await setup(epkOverride: s.epk);
+      // Fresh SyncService, same boxes/room, same epoch (Pi stayed alive).
+      // Frame 6 arrives live — frames 5 (and the tail of 4) were lost while
+      // the app was dead/reconnecting.
+      s2.ch.push(stampedChunk(6, 'f'));
+      await _settle();
+      // NOT adopted as contig=5: the persisted cursor (4) keeps 5 a GAP.
+      expect(s2.sync.ledgerContig, 4, reason: 'persisted cursor resumed');
+      expect(s2.sync.ledgerHeldCount, 1, reason: 'seq 6 held behind the hole');
+      final reports = s2.ch.sent.whereType<ReportSeq>().toList();
+      expect(reports, isNotEmpty);
+      expect(reports.last.seq, 4);
+
+      // The Pi's journal replay fills 5 → held 6 applies in order.
+      s2.ch.push(stampedChunk(5, 'e'));
+      await _settle();
+      expect(s2.sync.streaming?.buffer, 'ef');
+      expect(s2.sync.ledgerContig, 6);
+      s2.sync.dispose();
+      s2.conn.dispose();
+      s.sync.dispose();
+      s.conn.dispose();
+    });
+
+    test('epoch moved on the Pi: adopt, do not resume the stale cursor',
+        () async {
+      final s = await setup();
+      s.ch.push(stampedChunk(2, 'x'));
+      s.ch.push(AgentDone(inReplyTo: 't1')..ledgerSeq = 3..ledgerEpoch = _epoch);
+      await _settle();
+
+      final s2 = await setup(epkOverride: s.epk);
+      // Pi restarted while the app was dead → new epoch, seq restarts at 1.
+      s2.ch.push(stampedChunk(1, 'y', epoch: 9999));
+      await _settle();
+      expect(s2.sync.ledgerContig, 1, reason: 'new epoch adopts, no resume');
+      expect(s2.sync.ledgerEpoch, 9999);
+      s2.sync.dispose();
+      s2.conn.dispose();
       s.sync.dispose();
       s.conn.dispose();
     });
