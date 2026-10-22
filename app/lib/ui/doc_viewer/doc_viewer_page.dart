@@ -1,6 +1,7 @@
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/doc_viewer/html_viewer.dart';
 import 'package:app/ui/doc_viewer/markdown_viewer.dart';
+import 'package:app/ui/doc_viewer/mermaid_viewer.dart';
 import 'package:app/ui/doc_viewer/pdf_viewer.dart';
 import 'package:app/ui/doc_viewer/text_viewer.dart';
 import 'package:flutter/material.dart';
@@ -10,14 +11,14 @@ import 'package:share_plus/share_plus.dart';
 
 /// Plan/126 - full-screen viewer for a document the agent pushed from the repo
 /// (`show_file` tool). Routes by [kind] to the right sub-viewer (Markdown /
-/// text / PDF / HTML+JS) and provides common chrome: a top bar (title + close)
+/// text / PDF / HTML+JS / Mermaid, plan/144) and provides common chrome: a top bar (title + close)
 /// and a bottom Share action. Swipe down dismisses (photo-app convention).
 ///
 /// Mirrors [ImageViewerPage]'s (plan/114) chrome discipline: SystemUiOverlayStyle
 /// follows the theme; the route restores the previous style when popped.
 class DocViewerPage extends StatefulWidget {
   final Uint8List bytes;
-  final String kind; // markdown | text | pdf | html
+  final String kind; // markdown | text | pdf | html | mermaid
   final String? mime;
   final String title;
   final String caption;
@@ -61,6 +62,7 @@ class _DocViewerPageState extends State<DocViewerPage> {
         'text' => 'text/plain',
         'html' => 'text/html',
         'pdf' => 'application/pdf',
+        'mermaid' => 'text/vnd.mermaid',
         _ => 'application/octet-stream',
       };
 
@@ -78,6 +80,7 @@ class _DocViewerPageState extends State<DocViewerPage> {
       'text' => 'txt',
       'html' => 'html',
       'pdf' => 'pdf',
+      'mermaid' => 'mmd',
       _ => 'bin',
     };
     final hasExt = RegExp(r'\.[A-Za-z0-9]{1,5}$').hasMatch(cleaned);
@@ -104,6 +107,8 @@ class _DocViewerPageState extends State<DocViewerPage> {
           bytes: widget.bytes,
           allowNetwork: widget.allowNetwork,
         );
+      case 'mermaid':
+        return MermaidViewer(bytes: widget.bytes);
       default:
         return Center(
           child: Text(
@@ -135,11 +140,16 @@ class _DocViewerPageState extends State<DocViewerPage> {
           behavior: HitTestBehavior.translucent,
           // Swipe down fast -> dismiss (photo-app convention). Use a small
           // threshold so vertical scrolling inside text/markdown still works.
-          onVerticalDragEnd: (details) {
-            if ((details.primaryVelocity ?? 0) > 600) {
-              Navigator.of(context).pop();
-            }
-          },
+          // Mermaid is exempt (plan/144): this vertical-drag recognizer wins
+          // the gesture arena over the WebView and would kill in-viewer
+          // panning; the mermaid viewer handles its own gestures.
+          onVerticalDragEnd: widget.kind == 'mermaid'
+              ? null
+              : (details) {
+                  if ((details.primaryVelocity ?? 0) > 600) {
+                    Navigator.of(context).pop();
+                  }
+                },
           child: Column(
             children: [
               _topBar(context),

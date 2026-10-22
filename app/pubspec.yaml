@@ -148,6 +148,7 @@ flutter:
   #   cp CHANGELOG.md app/assets/CHANGELOG.md
   assets:
     - assets/CHANGELOG.md
+    - assets/mermaid/
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

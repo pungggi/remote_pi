@@ -1633,7 +1633,8 @@ class AgentImage extends ServerMessage {
 }
 
 /// Plan/126 - a document the agent shows to the user (via the `show_file`
-/// tool): Markdown / plain text or code / PDF / HTML. Carries inline base64
+/// tool): Markdown / plain text or code / PDF / HTML / Mermaid (plan/144).
+/// Carries inline base64
 /// bytes in [data] plus a [kind] that selects the viewer. Mirrors [AgentImage]
 /// (plan/114): live broadcast, persisted locally (plan/31 DB), not replayed
 /// via `session_history`. For HTML, [allowNetwork] tells the WebView sandbox
@@ -1642,7 +1643,7 @@ class AgentImage extends ServerMessage {
 class AgentFile extends ServerMessage {
   final String id;
   final String inReplyTo;
-  final String kind; // markdown | text | pdf | html
+  final String kind; // markdown | text | pdf | html | mermaid
   final String data; // base64 (raw file bytes; valid UTF-8 for text kinds)
   final String? mime;
   final String? path;

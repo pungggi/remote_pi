@@ -353,16 +353,17 @@ vs decisão #8 do plan/30 — risco #2 do plan/114).
 ## Documentos do agente (plan/126)
 
 Generalização do plan/114 além de imagens: o **agente mostra ao usuário** um
-**documento** do disco — Markdown, texto/código, PDF, ou HTML com JavaScript.
+**documento** do disco — Markdown, texto/código, PDF, HTML com JavaScript, ou
+diagrama **Mermaid** (plan/144).
 O agente chama a tool `show_file({ path, caption?, kind?, allowNetwork? })`;
 a pi-extension detecta o `kind` pela extensão (override via `kind=`), valida o
-teto por tipo (**1 MiB** texto/markdown/html, **10 MiB** PDF), confirma UTF-8
+teto por tipo (**1 MiB** texto/markdown/html/mermaid, **10 MiB** PDF), confirma UTF-8
 válido para os tipos textuais, faz broadcast de um `agent_file` ServerMessage
 com **inline base64** a todos os owners, e devolve ao modelo **só metadados**
 (`{ shown, kind, path, mime, bytes }`) — os bytes **nunca** entram no contexto
 do modelo (mesma disciplina do plan/49/114). O app renderiza um balão (card)
 tappable que abre o viewer certo conforme `kind` (Markdown / texto / PDF /
-HTML+JS).
+HTML+JS / Mermaid).
 
 **Sandbox HTML+JS (decisão #12 do plan/126):** JS sempre roda. Por padrão a
 rede é **bloqueada** — um `<meta Content-Security-Policy>` restritivo é
@@ -373,6 +374,14 @@ scripts/imagens/fonts remotos, `fetch`/XHR, websockets e iframes são
 bloqueados. O `allowNetwork: true` (HTML-only) omite o CSP e libera a rede — o
 app mostra um badge `JS · online` para o usuário saber do estado de confiança.
 
+O viewer **Mermaid** (plan/144) renderiza a fonte do diagrama com uma cópia
+**bundled** do `mermaid.min.js` (asset do app, ~2,7 MB), inline numa página
+temporária com CSP restritivo (`default-src 'none'`, `connect-src 'none'`) —
+renderiza **offline**, sem rede. O tema segue o brightness do app (`dark` /
+`default`); pan/pinch-zoom é feito em página (pointer events + transform CSS),
+erros de parse aparecem na própria página. `securityLevel: "strict"` (padrão)
+mantém labels sanitizados.
+
 ### Wire
 ServerMessage `agent_file` (broadcast ao vivo, **não** replayed via
 `session_history`):
@@ -381,7 +390,7 @@ ServerMessage `agent_file` (broadcast ao vivo, **não** replayed via
 { "type": "agent_file",
   "id": "doc_<uuid>",
   "in_reply_to": "<turn-id ou \"\" se fora de turn>",
-  "kind": "markdown",               // markdown | text | pdf | html
+  "kind": "markdown",               // markdown | text | pdf | html | mermaid
   "data": "<base64 bytes>",
   "mime": "text/markdown",          // original mime p/ display/save
   "path": "plan/126-agent-document-viewers.md",
@@ -395,7 +404,7 @@ Mesmo `ct` opaco do plan/30/114; relay **inalterado**. Double-base64 (~+77%)
 aceito pelos tetos (1 MiB / 10 MiB). Persistência **local no app** (DB plan/31):
 sobrevive a restart, não a re-sync pós-wipe (mesmo gap do plan/114). Detecção
 de `kind` por extensão (md/markdown, txt/json/yaml/dart/ts/py/... code,
-html/htm/xhtml, pdf, além de dotfiles comuns como `.env`/`.gitignore`/`.editorconfig`).
+html/htm/xhtml, pdf, mmd/mermaid, além de dotfiles comuns como `.env`/`.gitignore`/`.editorconfig`).
 A detecção é **somente por extensão** no MVP — **sem** checagem de magic bytes;
 um PDF truncado/corrupt é aceito pelo `.pdf` e renderiza um erro no viewer (mais
 útil que recusar). O agente pode forçar o `kind=` quando a extensão não bastar.

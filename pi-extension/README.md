@@ -98,17 +98,19 @@ opens a full-screen viewer (pinch-zoom, save, share). It returns only metadata
 over the relay and never enter the model context. JPEG/PNG/WebP/GIF up to 4 MiB.
 
 `show_file` (plan/126) generalizes that to **documents**: Markdown, plain
-text/code, PDF, and HTML (with JavaScript). The LLM calls
+text/code, PDF, HTML (with JavaScript), and Mermaid diagrams (plan/144). The LLM calls
 `show_file({ path, caption?, kind?, allowNetwork? })`; the extension detects
 the viewer `kind` from the extension (override with `kind=`), enforces per-kind
-caps (1 MiB text/markdown/html, 10 MiB PDF), confirms UTF-8 for the text kinds,
+caps (1 MiB text/markdown/html/mermaid, 10 MiB PDF), confirms UTF-8 for the text kinds,
 broadcasts an `agent_file` with inline base64, and returns only metadata
 (`kind`, `path`, `mime`, `bytes`). The app opens the right viewer per kind.
 For HTML, **JavaScript always runs**, but by default the network is **blocked**
 — a strict Content-Security-Policy meta is injected so inline JS/styles and
 `data:` assets work while remote scripts/images/`fetch`/websockets are blocked.
 Pass `allowNetwork: true` (HTML-only) to let the document reach the network
-(the app badges it `JS · online` so the trust state is visible).
+(the app badges it `JS · online` so the trust state is visible). Mermaid
+sources (`.mmd`/`.mermaid`) render **offline** in the app from a bundled
+mermaid.js copy — sandboxed WebView, no network, theme follows the app.
 
 Peers on the same machine talk over a Unix domain socket at
 `~/.pi/remote/sessions/<session-name>/broker.sock`. When sibling PCs are paired,

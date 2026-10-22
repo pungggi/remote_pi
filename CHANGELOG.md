@@ -11,6 +11,29 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Mermaid diagram previews via `show_file` (plan/144)** — the agent can now
+  push a Mermaid source file (`.mmd`/`.mermaid`, or any file with
+  `kind: "mermaid"`) to the phone, where it renders as an actual diagram
+  instead of raw text. Rendering happens in a sandboxed WebView from a
+  **bundled** mermaid.js copy: fully offline, `connect-src 'none'`, no CDN
+  round-trip, `securityLevel: "strict"` labels. The diagram theme follows the
+  app (dark/light), supports drag-pan / pinch-zoom / double-tap-reset, and
+  parse errors surface as a readable in-page message instead of a spinner.
+  Why bundled instead of CDN: the preview must work without network and must
+  not break the HTML viewer's sandbox discipline.
+- **Mermaid viewer gesture rework (plan/144 fix)** — on-device testing
+  (Android/TLHC) showed the in-page touch handlers never see motion events:
+  an ancestor gesture detector wins the arena and finger 2 never reaches the
+  WebView at all. All motion gestures now run on the Flutter side via a raw
+  `Listener` around the WebView and drive the page through `runJavaScript`
+  (`mmdPan`, `mmdZoom` with a focal point); the page keeps only double-tap
+  (zoom-in around the tap / back to fit) and desktop wheel zoom. ＋/－/fit
+  buttons cover the no-gesture path, the initial view is centered (not
+  top-left), and the swipe-down-to-dismiss detector is disabled for the
+  Mermaid viewer (it starved the WebView's gesture arena).
+
 ### Changed
 
 - **Waiting-for-you banners now also fire while the app is open** —

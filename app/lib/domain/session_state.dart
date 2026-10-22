@@ -166,7 +166,7 @@ class AgentImageMsg extends ChatMessage {
 /// state. [caption] (possibly empty) shows under the card; [path] is the
 /// original repo path used as the viewer title.
 class AgentFileMsg extends ChatMessage {
-  final String kind; // markdown | text | pdf | html
+  final String kind; // markdown | text | pdf | html | mermaid
   final String data; // base64 raw file bytes
   final String? mime;
   final String? path;

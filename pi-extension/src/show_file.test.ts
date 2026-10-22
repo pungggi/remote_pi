@@ -143,6 +143,58 @@ describe("show_file tool (plan/126)", () => {
     expect(result.details?.mime).toBe("text/html");
   });
 
+  // Plan/144 — mermaid kind: .mmd/.mermaid auto-detect, text cap + UTF-8 rules
+  // apply (mermaid source is text), metadata-only result.
+  test("valid .mmd → kind mermaid, metadata only, no base64 in result", async () => {
+    const path = join(dir, "flow.mmd");
+    const body = "graph TD\n  A[Start] --> B{Ok?}\n  B -->|yes| C[Done]\n";
+    writeFileSync(path, body);
+    const data = Buffer.from(body).toString("base64");
+
+    const tool = captureShowFileTool();
+    const result = await tool.execute("call-mmd", { path });
+
+    expect(result.details).toMatchObject({
+      shown: false,
+      kind: "mermaid",
+      path,
+      mime: "text/vnd.mermaid",
+      bytes: Buffer.byteLength(body),
+    });
+    assertNoBase64Payload(result, data);
+  });
+
+  test("valid .mermaid → kind mermaid", async () => {
+    const path = join(dir, "sequence.mermaid");
+    writeFileSync(path, "sequenceDiagram\n  Alice->>Bob: hi\n");
+
+    const tool = captureShowFileTool();
+    const result = await tool.execute("call-mermaid-ext", { path });
+
+    expect(result.details?.kind).toBe("mermaid");
+  });
+
+  test("explicit kind=mermaid override on unknown extension", async () => {
+    const path = join(dir, "diagram.txt"); // .txt detects as text without override
+    writeFileSync(path, "graph LR\n  A --> B\n");
+
+    const tool = captureShowFileTool();
+    const result = await tool.execute("call-mmd-force", { path, kind: "mermaid" });
+
+    expect(result.details).toMatchObject({ kind: "mermaid", mime: "text/vnd.mermaid" });
+  });
+
+  test("binary content pushed as .mmd → shown:false 'not valid UTF-8'", async () => {
+    const path = join(dir, "bad.mmd");
+    writeFileSync(path, Buffer.from([0xff, 0xfe, 0x00, 0x01, 0x80, 0xc0]));
+
+    const tool = captureShowFileTool();
+    const result = await tool.execute("call-mmd-bin", { path });
+
+    expect(result.details?.shown).toBe(false);
+    expect(result.details?.error as string).toContain("not valid UTF-8");
+  });
+
   test("explicit kind override forces rendering regardless of extension", async () => {
     const path = join(dir, "weird.dat");
     writeFileSync(path, "# this is actually markdown\n");

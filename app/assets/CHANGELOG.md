@@ -13,6 +13,12 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
+- **Mermaid diagram previews** — when the agent shows you a diagram source
+  (`.mmd` file), tapping the bubble now opens the rendered diagram instead of
+  raw text: pan and pinch-zoom, dark/light to match the app, and it works
+  fully offline (the renderer ships inside the app). Broken diagram syntax
+  shows a readable error rather than hanging.
+
 - **Completion notifications** — long-press a session and flip "Notify when
   finished": when that session's agent run ends while the app is
   backgrounded (and the background connection is alive), you get a system
