@@ -140,11 +140,16 @@ class _DocViewerPageState extends State<DocViewerPage> {
           behavior: HitTestBehavior.translucent,
           // Swipe down fast -> dismiss (photo-app convention). Use a small
           // threshold so vertical scrolling inside text/markdown still works.
-          onVerticalDragEnd: (details) {
-            if ((details.primaryVelocity ?? 0) > 600) {
-              Navigator.of(context).pop();
-            }
-          },
+          // Mermaid is exempt (plan/144): this vertical-drag recognizer wins
+          // the gesture arena over the WebView and would kill in-viewer
+          // panning; the mermaid viewer handles its own gestures.
+          onVerticalDragEnd: widget.kind == 'mermaid'
+              ? null
+              : (details) {
+                  if ((details.primaryVelocity ?? 0) > 600) {
+                    Navigator.of(context).pop();
+                  }
+                },
           child: Column(
             children: [
               _topBar(context),

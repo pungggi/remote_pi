@@ -22,8 +22,14 @@ import 'package:webview_flutter/webview_flutter.dart';
 ///
 /// The diagram theme follows the app brightness (`dark` / `default`) and the
 /// page background is transparent so the viewer scaffold shows through.
-/// Pan/pinch-zoom is implemented in-page (pointer events + CSS transform)
-/// because webview_flutter exposes no native pinch-zoom API.
+/// Gesture model (plan/144 fix): ALL motion gestures are tracked on the
+/// Flutter side by a raw [Listener] around the WebView — the TLHC platform
+/// view loses the gesture arena to surrounding detectors, so touchmove
+/// streams are unreliable inside the page. The Listener drives pan
+/// (window.mmdPan) and pinch (window.mmdZoom with a focal point) via
+/// runJavaScript; the page itself handles only double-tap (touchend) and
+/// desktop wheel. Zoom buttons (＋/－/fit) call the same entry points, so
+/// zooming always works even where gestures cannot.
 class MermaidViewer extends StatefulWidget {
   final Uint8List bytes;
 
@@ -45,6 +51,17 @@ class _MermaidViewerState extends State<MermaidViewer> {
   /// True once [didChangeDependencies] kicked off `_prepare` (it can fire more
   /// than once; the page must be built exactly once).
   bool _started = false;
+
+  /// Active pointers for the Flutter-side pinch bridge (plan/144 fix): the
+  /// TLHC platform view does not deliver a second finger to the page, so a
+  /// [Listener] around the [WebViewWidget] measures the pinch and drives the
+  /// in-page zoom via runJavaScript. [__pinchDist] is null when idle.
+  final Map<int, Offset> _pinchPointers = {};
+  double? _pinchDist;
+
+  /// Accumulated single-finger pan delta since the last mmdPan eval (the JS
+  /// bridge is only hit every ~2px so slow drags don't spam platform calls).
+  Offset _panAcc = Offset.zero;
 
   /// The bundled renderer is ~2.7 MB — read it from the asset bundle once per
   /// app run, not once per opened diagram.
@@ -72,9 +89,16 @@ class _MermaidViewerState extends State<MermaidViewer> {
       ..addJavaScriptChannel(
         'MermaidNotify',
         onMessageReceived: (msg) {
-          // The page posts 'rendered' or 'error:...' after mermaid finishes.
-          // Either way the spinner stops; errors are shown in-page.
-          if (mounted && _loading) setState(() => _loading = false);
+          // The page posts 'rendered'/'error:...' after mermaid finishes and
+          // 'gesture:...' for zoom diagnostics. Everything is echoed to logcat
+          // (debugPrint) so device tests can follow the gesture lifecycle.
+          debugPrint('[mmd] ${msg.message}');
+          if (mounted && _loading) {
+            final kind = msg.message.split(':').first;
+            if (kind == 'rendered' || kind == 'error') {
+              setState(() => _loading = false);
+            }
+          }
         },
       )
       ..setNavigationDelegate(
@@ -197,7 +221,7 @@ class _MermaidViewerState extends State<MermaidViewer> {
 <body>
 <div id="stage"><div id="canvas"></div></div>
 <div id="err"></div>
-<div id="hint">drag to pan · pinch to zoom · double-tap to reset</div>
+<div id="hint">drag = pan · pinch = zoom · double-tap = zoom / fit</div>
 <script>$lib</script>
 <script>
 (function () {
@@ -230,6 +254,7 @@ class _MermaidViewerState extends State<MermaidViewer> {
 
   mermaid.render('mmd-diagram', source).then(function (out) {
     document.getElementById('canvas').innerHTML = out.svg;
+    fitCenter();
     notify('rendered');
   }).catch(function (e) {
     var msg = (e && e.message) ? e.message : String(e);
@@ -243,59 +268,121 @@ class _MermaidViewerState extends State<MermaidViewer> {
     notify('error', msg);
   });
 
-  // ── Pan / pinch-zoom (webview_flutter has no native pinch API) ──────────
+  // ── Pan / pinch-zoom ──────────────────────────────────────────────────
+  // Touch path uses touch events — the most reliable event stream inside
+  // an Android WebView; pointer events handle mouse-pan + wheel (desktop).
+  // If the platform view swallows multi-touch entirely, the Flutter-side
+  // zoom buttons still work: they call window.mmdZoom/mmdReset.
   var stage = document.getElementById('stage');
   var canvas = document.getElementById('canvas');
+  var MIN_S = 0.25, MAX_S = 8;
   var scale = 1, tx = 0, ty = 0;
-  var pointers = new Map();
-  var lastPinch = 0, moved = false, lastTap = 0;
-
+  function clampS(s) { return Math.min(MAX_S, Math.max(MIN_S, s)); }
   function apply() {
     canvas.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
   }
-  function reset() { scale = 1; tx = 0; ty = 0; apply(); }
-  function pinchDist() {
-    var p = Array.from(pointers.values());
-    return Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y);
+  // Reset state: scale 1, content centered when smaller than the viewport,
+  // top/left-aligned when larger (reading order for diagrams).
+  function fitCenter() {
+    var r = canvas.getBoundingClientRect();
+    var w = r.width / scale, h = r.height / scale; // untransformed size
+    scale = 1;
+    tx = w <= window.innerWidth ? (window.innerWidth - w) / 2 : 0;
+    ty = h <= window.innerHeight ? (window.innerHeight - h) / 2 : 0;
+    apply(); notifyGesture('fit');
   }
-  stage.addEventListener('pointerdown', function (e) {
-    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    stage.setPointerCapture(e.pointerId);
-    if (pointers.size === 2) lastPinch = pinchDist();
+  function notifyGesture(what) { notify('gesture', what + ' scale=' + scale.toFixed(2)); }
+
+  // extPinch: true while a Flutter-side pinch bridge drives the zoom (the
+  // TLHC platform view never delivers finger 2 to the page, so a Flutter
+  // Listener detects the pinch and calls mmdZoom/mmdPinch from Dart).
+  var extPinch = false;
+  window.mmdPinch = function (on) { extPinch = on; };
+
+  // Pan by (dx, dy) viewport px — driven by the Flutter Listener.
+  window.mmdPan = function (dx, dy) { tx += dx; ty += dy; apply(); };
+
+  // Zoom by factor f around (cx, cy) in viewport px.
+  function zoomAt(f, cx, cy) {
+    var ns = clampS(scale * f);
+    var applied = ns / scale;
+    scale = ns;
+    tx = cx - (cx - tx) * applied;
+    ty = cy - (cy - ty) * applied;
+    apply(); notifyGesture('zoom');
+  }
+  window.mmdZoom = function (f, cx, cy) {
+    if (typeof cx !== 'number') cx = window.innerWidth / 2;
+    if (typeof cy !== 'number') cy = window.innerHeight / 2;
+    zoomAt(f, cx, cy);
+  };
+  window.mmdReset = function () { fitCenter(); };
+
+  function tDist(t) {
+    return Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  }
+
+  // Touch tracking in-page is limited to tap detection (double-tap): motion
+  // streams (touchmove) are unreliable under TLHC — an ancestor gesture
+  // detector can win the arena and the stream is cancelled. Pan and pinch
+  // therefore live on the Flutter side (Listener → mmdPan / mmdZoom).
+  var moved = false, lastTap = 0, lastTapPos = null, downPos = null;
+  stage.addEventListener('touchstart', function (e) {
+    e.preventDefault();
     moved = false;
+    if (e.touches.length === 1) {
+      downPos = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    } else if (e.touches.length === 2) {
+      downPos = null;
+      notifyGesture('pinch-start');
+    }
+  }, { passive: false });
+  stage.addEventListener('touchmove', function (e) {
+    e.preventDefault();
+    // Count as a drag once the finger travelled past a small slop, so a
+    // sloppy tap still counts towards double-tap but a drag does not.
+    if (e.touches.length === 1 && downPos) {
+      var t = e.touches[0];
+      if (Math.hypot(t.clientX - downPos.x, t.clientY - downPos.y) > 8) moved = true;
+    } else if (e.touches.length === 2) {
+      moved = true;
+    }
+  }, { passive: false });
+  function tEnd(e) {
+    if (e.touches.length > 0) return;
+    if (!moved) {
+      var t = e.changedTouches[0];
+      var pos = t ? { x: t.clientX, y: t.clientY } : lastTapPos;
+      var now = Date.now();
+      if (now - lastTap < 350 && lastTapPos && pos) {
+        // Double-tap: zoomed in → back to fit; at fit → 2.5x around the tap.
+        if (scale > 1.05) { fitCenter(); }
+        else { zoomAt(2.5, pos.x, pos.y); }
+      }
+      lastTap = now; lastTapPos = pos;
+    }
+  }
+  stage.addEventListener('touchend', tEnd, { passive: false });
+  stage.addEventListener('touchcancel', tEnd, { passive: false });
+
+  // Mouse pan (pointer events, mouse only — touch is handled above).
+  var mouseFrom = null;
+  stage.addEventListener('pointerdown', function (e) {
+    if (e.pointerType !== 'mouse') return;
+    mouseFrom = { x: e.clientX, y: e.clientY };
   });
   stage.addEventListener('pointermove', function (e) {
-    if (!pointers.has(e.pointerId)) return;
-    var prev = pointers.get(e.pointerId);
-    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointers.size === 1) {
-      tx += e.clientX - prev.x; ty += e.clientY - prev.y;
-      moved = true;
-    } else if (pointers.size === 2) {
-      var d = pinchDist();
-      if (lastPinch > 0) {
-        scale = Math.min(8, Math.max(0.25, scale * d / lastPinch));
-      }
-      lastPinch = d;
-      moved = true;
-    }
+    if (e.pointerType !== 'mouse' || !mouseFrom) return;
+    tx += e.clientX - mouseFrom.x; ty += e.clientY - mouseFrom.y;
+    mouseFrom = { x: e.clientX, y: e.clientY };
     apply();
   });
-  function up(e) {
-    pointers.delete(e.pointerId);
-    if (pointers.size < 2) lastPinch = 0;
-    if (!moved) {
-      var now = Date.now();
-      if (now - lastTap < 300) reset();
-      lastTap = now;
-    }
-  }
-  stage.addEventListener('pointerup', up);
-  stage.addEventListener('pointercancel', up);
-  // Desktop/web parity (harmless on mobile): ctrl+wheel or plain wheel zooms.
+  stage.addEventListener('pointerup', function () { mouseFrom = null; });
+
+  // Desktop/web parity: wheel zooms.
   stage.addEventListener('wheel', function (e) {
     e.preventDefault();
-    scale = Math.min(8, Math.max(0.25, scale * (e.deltaY < 0 ? 1.15 : 0.87)));
+    scale = clampS(scale * (e.deltaY < 0 ? 1.15 : 0.87));
     apply();
   }, { passive: false });
 })();
@@ -320,7 +407,7 @@ class _MermaidViewerState extends State<MermaidViewer> {
             ),
           )
         else
-          WebViewWidget(controller: _controller),
+          _pinchBridge(WebViewWidget(controller: _controller)),
         if (_loading && _loadError == null)
           Center(
             child: CircularProgressIndicator(
@@ -355,7 +442,136 @@ class _MermaidViewerState extends State<MermaidViewer> {
             ),
           ),
         ),
+        // Zoom controls (plan/144 fix): the Android platform view may not
+        // deliver multi-touch to the page, so these buttons drive the same
+        // in-page transform via runJavaScript — zoom always works.
+        if (_loadError == null)
+          Positioned(
+            left: 8,
+            top: 0,
+            bottom: 0,
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _ZoomBtn(Icons.add, () => _zoom(1.3)),
+                  const SizedBox(height: 8),
+                  _ZoomBtn(Icons.remove, () => _zoom(1 / 1.3)),
+                  const SizedBox(height: 8),
+                  _ZoomBtn(Icons.filter_center_focus_outlined, _reset),
+                ],
+              ),
+            ),
+          ),
       ],
+    );
+  }
+
+  /// Raw-pointer wrapper around the WebView. A [Listener] (unlike a
+  /// GestureDetector) observes every pointer regardless of the gesture
+  /// arena, so finger 2 — which the TLHC platform view never forwards to the
+  /// page — still reaches Dart and drives the pinch zoom.
+  Widget _pinchBridge(Widget child) => Listener(
+        onPointerDown: _onPinchPointer,
+        onPointerMove: _onPinchPointer,
+        onPointerUp: _onPinchPointerEnd,
+        onPointerCancel: _onPinchPointerEnd,
+        child: child,
+      );
+
+  void _onPinchPointer(PointerEvent e) {
+    final prev = _pinchPointers[e.pointer];
+    _pinchPointers[e.pointer] = e.position;
+    // Single-pointer motion pans — but only outside an active pinch. The
+    // stored position keeps updating during a pinch, so handing back to one
+    // finger continues the pan without a jump.
+    if (e is PointerMoveEvent &&
+        _pinchPointers.length == 1 &&
+        _pinchDist == null &&
+        prev != null) {
+      _panAcc += e.position - prev;
+      if (_panAcc.dx.abs() + _panAcc.dy.abs() >= 2) {
+        _eval(
+          'window.mmdPan && window.mmdPan('
+          '${_panAcc.dx.toStringAsFixed(1)}, ${_panAcc.dy.toStringAsFixed(1)});',
+        );
+        _panAcc = Offset.zero;
+      }
+    }
+    _updatePinch();
+  }
+
+  void _onPinchPointerEnd(PointerEvent e) {
+    _pinchPointers.remove(e.pointer);
+    _updatePinch();
+  }
+
+  void _updatePinch() {
+    if (_pinchPointers.length != 2) {
+      if (_pinchDist != null) {
+        // Pinch ended (a finger lifted or a third joined): unfreeze page pan.
+        _eval('window.mmdPinch && window.mmdPinch(false);');
+        _pinchDist = null;
+      }
+      return;
+    }
+    final pts = _pinchPointers.values.toList();
+    final d = (pts[0] - pts[1]).distance;
+    final last = _pinchDist;
+    if (last == null) {
+      // Pinch begins: freeze the page's own single-finger pan so finger 1's
+      // moves don't fight the zoom.
+      _eval('window.mmdPinch && window.mmdPinch(true);');
+      _pinchDist = d;
+      return;
+    }
+    // Only eval when the distance moved meaningfully (~0.5%) — keeps the JS
+    // bridge quiet while still feeling continuous.
+    if (last > 0 && (d / last - 1).abs() > 0.005) {
+      final mid = Offset(
+        (pts[0].dx + pts[1].dx) / 2,
+        (pts[0].dy + pts[1].dy) / 2,
+      );
+      _eval(
+        'window.mmdZoom && window.mmdZoom('
+        '${(d / last).toStringAsFixed(4)}, '
+        '${mid.dx.toStringAsFixed(1)}, ${mid.dy.toStringAsFixed(1)});',
+      );
+      _pinchDist = d;
+    }
+  }
+
+  /// Best-effort JS eval: the page may not be ready yet; a rejected future
+  /// is ignored rather than surfacing an error (the next tap retries).
+  void _eval(String js) {
+    _controller.runJavaScript(js).catchError((Object _) {});
+  }
+
+  void _zoom(double factor) =>
+      _eval('window.mmdZoom && window.mmdZoom($factor);');
+  void _reset() => _eval('window.mmdReset && window.mmdReset();');
+}
+
+class _ZoomBtn extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+
+  const _ZoomBtn(this.icon, this.onTap);
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Material(
+      color: colors.bg.withValues(alpha: 0.7),
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(6),
+          child: Icon(icon, size: 18, color: colors.text),
+        ),
+      ),
     );
   }
 }
