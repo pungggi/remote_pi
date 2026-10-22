@@ -48,9 +48,15 @@ class _MermaidViewerState extends State<MermaidViewer> {
   /// in [dispose] (mirrors [HtmlViewer]'s cleanup discipline).
   File? _tempFile;
 
-  /// True once [didChangeDependencies] kicked off `_prepare` (it can fire more
-  /// than once; the page must be built exactly once).
-  bool _started = false;
+  /// Brightness the current page was rendered for. When the platform theme
+  /// flips while the viewer is open (ThemeMode.system), the page is rebuilt
+  /// with the new theme so SVG labels stay readable on the transparent
+  /// WebView (review finding: stale theme on live brightness change).
+  Brightness? _renderedFor;
+
+  /// Locates the WebView's render box to convert screen-global pointer
+  /// positions into WebView-local CSS px (the zoom focal point's frame).
+  final GlobalKey _webViewKey = GlobalKey();
 
   /// Active pointers for the Flutter-side pinch bridge (plan/144 fix): the
   /// TLHC platform view does not deliver a second finger to the page, so a
@@ -127,12 +133,14 @@ class _MermaidViewerState extends State<MermaidViewer> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // Theme brightness needs a context, which initState does not have — build
-    // the page here, once.
-    if (!_started) {
-      _started = true;
-      _prepare();
-    }
+    // Theme brightness needs a context, which initState does not have. The
+    // first call builds the page; a LATER call with a different brightness
+    // (system theme flip while the viewer is open) rebuilds it themed.
+    final brightness = Theme.of(context).brightness;
+    if (_renderedFor == brightness) return;
+    final firstBuild = _renderedFor == null;
+    _renderedFor = brightness;
+    _prepare(reload: !firstBuild);
   }
 
   @override
@@ -148,11 +156,26 @@ class _MermaidViewerState extends State<MermaidViewer> {
     super.dispose();
   }
 
-  Future<void> _prepare() async {
+  Future<void> _prepare({bool reload = false}) async {
     // Capture theme + colors BEFORE the first await (the lint
     // use_build_context_synchronously forbids context use across async gaps).
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final colors = context.colors;
+    if (reload) {
+      // Theme flip while open: spin again and drop the old temp page so
+      // dispose() tracks exactly the newest file.
+      final old = _tempFile;
+      if (old != null) {
+        try {
+          if (old.existsSync()) old.deleteSync();
+        } catch (_) {}
+        _tempFile = null;
+      }
+      setState(() {
+        _loading = true;
+        _loadError = null;
+      });
+    }
     try {
       final source = utf8.decode(widget.bytes, allowMalformed: true);
       final lib = await (_mermaidLibFuture ??= rootBundle.loadString(
@@ -250,6 +273,9 @@ class _MermaidViewerState extends State<MermaidViewer> {
     securityLevel: 'strict',
     theme: theme,
     themeVariables: { fontFamily: 'system-ui, sans-serif' },
+    // Align the renderer's text budget with the 1 MiB wire cap: the default
+    // 50k chars rejects files show_file already accepted (review finding).
+    maxTextSize: 1048576,
   });
 
   mermaid.render('mmd-diagram', source).then(function (out) {
@@ -363,23 +389,17 @@ class _MermaidViewerState extends State<MermaidViewer> {
     }
   }
   stage.addEventListener('touchend', tEnd, { passive: false });
-  stage.addEventListener('touchcancel', tEnd, { passive: false });
+  // A cancelled stream (gesture-arena steal) must never count as a tap: mark
+  // the sequence as moved and forget the last tap position (review finding).
+  stage.addEventListener('touchcancel', function () {
+    moved = true;
+    downPos = null;
+    lastTapPos = null;
+  }, { passive: false });
 
-  // Mouse pan (pointer events, mouse only — touch is handled above).
-  var mouseFrom = null;
-  stage.addEventListener('pointerdown', function (e) {
-    if (e.pointerType !== 'mouse') return;
-    mouseFrom = { x: e.clientX, y: e.clientY };
-  });
-  stage.addEventListener('pointermove', function (e) {
-    if (e.pointerType !== 'mouse' || !mouseFrom) return;
-    tx += e.clientX - mouseFrom.x; ty += e.clientY - mouseFrom.y;
-    mouseFrom = { x: e.clientX, y: e.clientY };
-    apply();
-  });
-  stage.addEventListener('pointerup', function () { mouseFrom = null; });
-
-  // Desktop/web parity: wheel zooms.
+  // Mouse drags pan through the same Flutter bridge (single code path — a
+  // page-side mouse pan would apply the delta twice, review finding).
+  // Desktop/web parity for zoom stays in-page: wheel.
   stage.addEventListener('wheel', function (e) {
     e.preventDefault();
     scale = clampS(scale * (e.deltaY < 0 ? 1.15 : 0.87));
@@ -407,7 +427,9 @@ class _MermaidViewerState extends State<MermaidViewer> {
             ),
           )
         else
-          _pinchBridge(WebViewWidget(controller: _controller)),
+          _pinchBridge(
+            WebViewWidget(key: _webViewKey, controller: _controller),
+          ),
         if (_loading && _loadError == null)
           Center(
             child: CircularProgressIndicator(
@@ -479,9 +501,22 @@ class _MermaidViewerState extends State<MermaidViewer> {
         child: child,
       );
 
+  /// Screen-global → WebView-local. Null before the first layout.
+  Offset? _webViewLocal(Offset global) {
+    final ro = _webViewKey.currentContext?.findRenderObject();
+    if (ro is RenderBox && ro.hasSize) return ro.globalToLocal(global);
+    return null;
+  }
+
   void _onPinchPointer(PointerEvent e) {
+    // Local coordinates: the page's zoom focal point is in viewport CSS px
+    // while PointerEvent.position is screen-global — global coords would
+    // drift the pinch center by the top-bar offset (review finding). Pan
+    // deltas are offset-invariant; one normalized path serves both.
+    final local = _webViewLocal(e.position);
+    if (local == null) return;
     final prev = _pinchPointers[e.pointer];
-    _pinchPointers[e.pointer] = e.position;
+    _pinchPointers[e.pointer] = local;
     // Single-pointer motion pans — but only outside an active pinch. The
     // stored position keeps updating during a pinch, so handing back to one
     // finger continues the pan without a jump.
