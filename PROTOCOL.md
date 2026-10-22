@@ -660,6 +660,76 @@ sessão/keeper viva. O relay agora mantém uma **mailbox por `(peer, room)`**:
 
 ---
 
+## Ledger de entrega (`seq`/`epoch` + journal) — 2026-10-21 (plano 145)
+
+Os curadores anteriores eram todos **heurísticos** (timers, sinais indiretos):
+qualquer perda que bloqueasse o turn (sheet de `ask_user` perdida) ou caísse
+no RABO do stream (última resposta) era invisível para todos eles — o turn
+bloqueado nunca emite `run_done`, e nenhum frame seguinte existe para revelar
+o buraco. O ledger torna a perda **detectável** em vez de adivinhada.
+
+### Wire
+
+- Todo frame **broadcast para owners** sai de `_broadcastToActive` carimbado
+  com `seq` (int monotônico por sala, começa em 1) e `epoch` (==
+  `session_started_at` — o detector de restart que já existia).
+- Respostas **unicast** (`session_history`, replays de `pendingRequests`,
+  `pair_ok`, …) NUNCA são carimbadas: não são membros do stream.
+- `session_history` ganha `current_seq`: o cursor da sala no instante do
+  snapshot. O app re-basela para ele após o merge — fecha a corrida com
+  frames transmitidos DURANTE o cômputo do sync.
+- Novo ClientMessage `report_seq { id, seq, epoch }`: o app informa o último
+  seq aplicado de forma contígua.
+- Novo ServerMessage `sync_needed { reason: "epoch" | "overflow" }`: o
+  journal não cobre o gap → o app cai para um `session_sync` completo.
+
+### Extension (remetente)
+
+- **Journal**: ring em memória com os últimos **2048** frames carimbados
+  (`REMOTE_PI_JOURNAL_MAX` ajusta). Frames emitidos SEM ninguém conectado
+  também entram — um app que anexa depois pode ser recuperado pelo journal.
+- Em `report_seq`: replay unicast do range `(seq, roomSeq]`, em ordem, com os
+  carimbos ORIGINAIS (replays, não novos membros). Gap mais antigo que o ring
+  → `sync_needed("overflow")`; epoch diferente → `sync_needed("epoch")`.
+  Bursts limitados a 1 a cada 2 s por canal (reports dentro da janela
+  colapsam no mais recente).
+- Restart/rebind da sessão re-carimba o epoch e reinicia o ledger (seq 1,
+  journal vazio). `stop`/`start` do relay preserva (mesmo epoch).
+
+### App (receptor)
+
+- **Aplicação estritamente ordenada**: `seq <= cursor` → drop (dedup forte,
+  cobre frames sem id como `agent_chunk`); `seq == cursor+1` → aplica e
+  drena segurados; `seq > cursor+1` → segura (cap 64) e reporta o cursor.
+- **Escape de 5 s**: se o replay não veio, aplica os segurados em ordem
+  (pulando o buraco) e pede sync completo — chat congelado é pior que um
+  chunk faltando.
+- **Tail report**: a cada **15 s** com o chat aberto, o app re-reporta o
+  cursor. É o ÚNICO curador do caso "turn bloqueado" — nenhum frame futuro
+  existiria para revelar a perda (o caso do screenshot).
+- **Card de recuperação state-driven**: `waiting_for_input` (room meta
+  durável) && sem sheet aberto && online ⇒ card após 3 s — sem depender de
+  ToolEvent no DB local (plan/137 era event-derivado; tool-start e sheet
+  morrem juntos no mesmo flap).
+- Sem carimbo (Pi pré-145) ⇒ o gate nem engata: degrada para os curadores
+  heurísticos de sempre.
+
+### Relay
+
+`registry.forward` agora **remove o sender morto na primeira falha de send**
+(o próximo forward já cai direto na mailbox em vez de tentar o canal morto
+até o cleanup da task). Sem mudança de wire.
+
+### Compat e ops
+
+- App velho + Pi novo: chaves extras ignoradas (nunca reporta → nunca há
+  replay). App novo + Pi velho: nada carimbado → heurísticas antigas.
+- **Nota de ops**: sessões TUI longas mantêm a extensão carregada no boot.
+  Depois de rebuildar `dist/`, reinicie essas sessões — senão elas seguem
+  emitindo frames SEM carimbo e o app fica em modo heurístico sem avisar.
+
+---
+
 ## Pareamento
 
 QR code mostra Pi-pubkey + room hint + token de uso único.

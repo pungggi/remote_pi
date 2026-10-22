@@ -198,7 +198,7 @@ void main() {
 
       // submit-result rejection → same id, warning → modal stays, error set.
       h.ch.push(
-        const ExtensionUiRequest(
+        ExtensionUiRequest(
           id: 'tool:f1',
           method: ExtensionUiMethod.notify,
           message: 'Unknown option value.',
@@ -230,7 +230,7 @@ void main() {
 
       // completed → notify without warning type, same id → dismiss.
       h.ch.push(
-        const ExtensionUiRequest(
+        ExtensionUiRequest(
           id: 'tool:f1',
           method: ExtensionUiMethod.notify,
           message: 'Clarification resolved.',
@@ -257,7 +257,7 @@ void main() {
 
       // Notify for some other id → no effect on the open modal.
       h.ch.push(
-        const ExtensionUiRequest(
+        ExtensionUiRequest(
           id: 'other',
           method: ExtensionUiMethod.notify,
           message: 'noise',
@@ -291,7 +291,7 @@ void main() {
 
       // f1 rejected → error surfaces, modal stays open.
       h.ch.push(
-        const ExtensionUiRequest(
+        ExtensionUiRequest(
           id: 'tool:f1',
           method: ExtensionUiMethod.notify,
           message: 'Unknown option value.',
@@ -306,7 +306,7 @@ void main() {
       // A stand-alone completed notify for a DIFFERENT flow must not hide f1's
       // rejection — f1 is still open and unresolved.
       h.ch.push(
-        const ExtensionUiRequest(
+        ExtensionUiRequest(
           id: 'tool:other',
           method: ExtensionUiMethod.notify,
           message: 'Clarification resolved.',
@@ -323,7 +323,7 @@ void main() {
 
       // The matched completed notify (f1 itself) does clear it.
       h.ch.push(
-        const ExtensionUiRequest(
+        ExtensionUiRequest(
           id: 'tool:f1',
           method: ExtensionUiMethod.notify,
           message: 'Clarification resolved.',
@@ -433,7 +433,7 @@ void main() {
       p.ch.push(_request('tool:f1'));
       await Future<void>.delayed(const Duration(milliseconds: 30));
       p.ch.push(
-        const ExtensionUiRequest(
+        ExtensionUiRequest(
           id: 'tool:f1',
           method: ExtensionUiMethod.notify,
           message: 'Clarification resolved.',

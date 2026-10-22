@@ -67,6 +67,7 @@ import { SelfRevoke } from "./mesh/self_revoke.js";
 import type { MeshTopologySnapshot } from "./mesh/siblings.js";
 import type {
   ClientMessage,
+  JournaledFrame,
   PairErrorCode,
   ServerMessage,
   SessionHistoryEvent,
@@ -901,6 +902,21 @@ export function _resetHistoryIndexForTest(): void {
   ext.historyIndex = null;
 }
 
+/** Plan/145 — test-only: ledger introspection. */
+export function _getRoomSeqForTest(): number {
+  return ext.roomSeq;
+}
+
+/** Plan/145 — test-only: the journaled seqs, oldest first. */
+export function _getJournalSeqsForTest(): number[] {
+  return ext.roomJournal.map((f) => f.seq);
+}
+
+/** Plan/145 — test-only: drive the session_new reset path directly. */
+export function _resetSessionForNewForTest(inReplyTo: string): void {
+  _resetSessionForNew(inReplyTo);
+}
+
 /** Test-only override of session started timestamp. */
 export function _setSessionStartedAtForTest(ts: number | null): void {
   ext.sessionStartedAt = ts;
@@ -1086,9 +1102,148 @@ export function _getWaitingBridgeFlowForTest(): boolean {
  */
 export function _broadcastToActive(msg: ServerMessage): void {
   _probeBroadcast(msg);
+  const frame = _stampBroadcast(msg);
   for (const ch of ext.activePeers.values()) {
-    try { ch.send(msg); } catch { /* best-effort per channel */ }
+    try { ch.send(frame); } catch { /* best-effort per channel */ }
   }
+}
+
+// ── Plan/145 — delivery ledger ──────────────────────────────────────────────
+//
+// Every owner-bound broadcast frame carries `(epoch, seq)` so the app can
+// DETECT a loss instead of guessing it from turn-boundary heuristics (the
+// pre-145 failure class: a lost frame mid-turn — e.g. the ask_user sheet —
+// blocks the turn, so `run_done` never fires and no healer ever engages).
+//
+//   - `seq`   per-room monotone int, stamped HERE at the single choke point.
+//   - `epoch` == ext.sessionStartedAt (already the app's restart detector).
+//   - Journal: bounded in-memory ring of the stamped frames. A client that
+//     reports itself behind (`report_seq`) gets the missing range replayed
+//     unicast; a gap the ring no longer covers (or an epoch mismatch) gets a
+//     `sync_needed` nudge — the full session_sync merge stays the backstop.
+//   - Per-sender query answers (session_history, pendingRequests replays,
+//     pair_ok, …) are NEVER stamped and never journaled: they are not stream
+//     members, so a stamp would look like a gap to the receiver.
+//
+// Frames broadcast while NO owner is attached are still stamped + journaled:
+// a phone that attaches mid-turn and reports its seq can then be caught up
+// from the journal without waiting for the next turn boundary.
+
+const JOURNAL_MAX_DEFAULT = 2048;
+
+/** Bounded ring size for `ext.roomJournal`. Env-overridable for tests. */
+function _getJournalMax(): number {
+  const raw = process.env["REMOTE_PI_JOURNAL_MAX"];
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : JOURNAL_MAX_DEFAULT;
+}
+
+/**
+ * Stamp `msg` with the next ledger seq + current epoch and append it to the
+ * journal. Returns the frame to send (the ORIGINAL when no session has
+ * started — pre-start frames are control replies, never stream members).
+ * Never mutates `msg`: the stamped copy is what travels and what is journaled.
+ */
+function _stampBroadcast(msg: ServerMessage): ServerMessage {
+  if (ext.sessionStartedAt === null) return msg;
+  const frame = { ...msg, seq: ++ext.roomSeq, epoch: ext.sessionStartedAt } as JournaledFrame;
+  ext.roomJournal.push(frame);
+  const max = _getJournalMax();
+  if (ext.roomJournal.length > max) {
+    ext.roomJournal.splice(0, ext.roomJournal.length - max);
+  }
+  return frame;
+}
+
+/** Min spacing between replay bursts towards ONE channel (storm guard). */
+const REPLAY_MIN_SPACING_MS = 2_000;
+
+type ReplayBookkeeping = {
+  lastAt: number;
+  timer: ReturnType<typeof setTimeout> | null;
+  pendingSeq: number | null;
+  pendingEpoch: number | null;
+};
+
+// WeakMap: the bookkeeping dies with the channel — detach needs no cleanup.
+const _replayBookkeeping = new WeakMap<PlainPeerChannel, ReplayBookkeeping>();
+
+/**
+ * Handle a client's `report_seq`: replay the journal range it is missing.
+ * Rate-limited per channel: reports arriving inside a burst window collapse
+ * to the LATEST one, replayed when the window opens. A flapping client
+ * re-reporting a gap must not amplify into a replay storm.
+ */
+function _handleReportSeq(
+  sender: PlainPeerChannel,
+  msg: { seq: number; epoch: number },
+): void {
+  if (ext.sessionStartedAt === null) return;
+  const now = Date.now();
+  const bk = _replayBookkeeping.get(sender) ??
+    { lastAt: 0, timer: null, pendingSeq: null, pendingEpoch: null };
+  _replayBookkeeping.set(sender, bk);
+  const waitMs = bk.lastAt + REPLAY_MIN_SPACING_MS - now;
+  if (waitMs <= 0 && bk.timer === null) {
+    bk.lastAt = now;
+    _replayFromJournal(sender, msg.seq, msg.epoch);
+    return;
+  }
+  bk.pendingSeq = msg.seq;
+  bk.pendingEpoch = msg.epoch;
+  if (bk.timer === null) {
+    const timer = setTimeout(() => {
+      bk.timer = null;
+      const seq = bk.pendingSeq;
+      const epoch = bk.pendingEpoch;
+      bk.pendingSeq = null;
+      bk.pendingEpoch = null;
+      if (seq === null || epoch === null) return;
+      bk.lastAt = Date.now();
+      _replayFromJournal(sender, seq, epoch);
+    }, waitMs);
+    // Never let a pending replay keep a daemon process alive.
+    (timer as unknown as { unref?: () => void }).unref?.();
+    bk.timer = timer;
+  }
+}
+
+/**
+ * Replay every journaled frame with `seq > reportedSeq` to `sender`, in
+ * order, keeping the ORIGINAL stamps (replays, not new stream members).
+ * Falls back to `sync_needed` when the epoch moved on or the gap underflows
+ * the ring. No-op when the client is already current.
+ */
+function _replayFromJournal(
+  sender: PlainPeerChannel,
+  reportedSeq: number,
+  reportedEpoch: number,
+): void {
+  if (ext.sessionStartedAt === null) return;
+  if (reportedEpoch !== ext.sessionStartedAt) {
+    _relayLog(ext.myRoomId, "ledger", `sync_needed epoch app=${reportedEpoch}`);
+    try { sender.send({ type: "sync_needed", reason: "epoch" }); } catch { /* best-effort */ }
+    return;
+  }
+  if (reportedSeq >= ext.roomSeq) return; // already current
+  const journal = ext.roomJournal;
+  const journalStart = journal.length > 0 ? journal[0]!.seq : ext.roomSeq + 1;
+  if (reportedSeq + 1 < journalStart) {
+    _relayLog(ext.myRoomId, "ledger", `sync_needed overflow app=${reportedSeq} oldest=${journalStart}`);
+    try { sender.send({ type: "sync_needed", reason: "overflow" }); } catch { /* best-effort */ }
+    return;
+  }
+  let first = -1;
+  let last = -1;
+  let n = 0;
+  for (const frame of journal) {
+    if (frame.seq <= reportedSeq) continue;
+    try { sender.send(frame); } catch { /* best-effort per channel */ }
+    if (first < 0) first = frame.seq;
+    last = frame.seq;
+    n++;
+  }
+  if (n > 0) _relayLog(ext.myRoomId, "ledger", `replay ${first}..${last} n=${n}`);
 }
 
 // [probe 2026-08-21] send-side span per turn — pairs with the app's
@@ -4459,6 +4614,12 @@ export function _routeClientMessageFrom(
   if (msg.type === "session_sync") {
     return _handleSessionSync(sender, msg);
   }
+  // Plan/145 — delivery-ledger report: same early-dispatch discipline as
+  // session_sync (a missing ext.pi must not silence the ledger's reply).
+  if (msg.type === "report_seq") {
+    _handleReportSeq(sender, msg);
+    return;
+  }
   if (msg.type === "cancel") {
     try {
       const aborted = _abortCurrentTurn(ctx);
@@ -4814,6 +4975,7 @@ async function _handleSessionSync(
       events: [],
       eos: true,
       truncated: false,
+      current_seq: 0,
     });
     return;
   }
@@ -4849,6 +5011,10 @@ async function _handleSessionSync(
     eos: true,
     truncated: hasMore, // back-compat alias of `has_more` for older clients
     has_more: hasMore,
+    // Plan/145 — the app re-baselines its ledger cursor to this after the
+    // merge, closing the sync race (a frame broadcast mid-compute is either
+    // in the snapshot or applies as current_seq + 1).
+    current_seq: ext.roomSeq,
   };
   if (nextBefore !== undefined) reply.next_before = nextBefore;
   sender.send(reply);
@@ -5062,6 +5228,10 @@ function _resetSessionForNew(inReplyTo: string): void {
   ext.lastConsumedSteerText = null;
   _resetQueuedItems({ broadcast: true });
   ext.sessionStartedAt = Date.now();
+  // Plan/145 — the ledger restarts with the epoch: old-session frames must
+  // never replay into the new session, and the next broadcast is seq 1.
+  ext.roomSeq = 0;
+  ext.roomJournal = [];
   _broadcastToActive({
     type: "session_history",
     in_reply_to: inReplyTo,

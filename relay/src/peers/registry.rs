@@ -288,21 +288,46 @@ impl PeerRegistry {
         msg: Message,
         from_conn_id: u64,
     ) -> bool {
-        let lock = self.senders.lock().unwrap();
+        let mut lock = self.senders.lock().unwrap();
         let key = (dest_peer.to_string(), dest_room.to_string());
-        let Some(v) = lock.get(&key) else {
+        let Some(v) = lock.get_mut(&key) else {
             return false;
         };
         let mut delivered = false;
-        for (cid, _, tx) in v.iter() {
+        // Plan/145 (wave 3) — eager eviction: a failed mpsc send means the
+        // conn task is already dead. Remove the dead sender NOW so the next
+        // forward misses immediately (→ the caller mailboxes) instead of
+        // burning a send attempt on a known-dead channel until the task's
+        // own cleanup runs (an aborted task never runs it — the entry would
+        // otherwise linger forever).
+        v.retain_mut(|(cid, _, tx)| {
             if *cid == from_conn_id {
-                continue;
+                return true; // skip-sender: never probed, never evicted
             }
-            if tx.send(msg.clone()).is_ok() {
-                delivered = true;
+            match tx.send(msg.clone()) {
+                Ok(()) => {
+                    delivered = true;
+                    true
+                }
+                Err(_) => false,
             }
+        });
+        let empty = v.is_empty();
+        if empty {
+            lock.remove(&key);
         }
         delivered
+    }
+
+    /// Test-only: number of registered senders at (peer, room) — observes the
+    /// eager eviction in `forward`.
+    #[cfg(test)]
+    pub fn sender_count(&self, peer_id: &str, room_id: &str) -> usize {
+        let lock = self.senders.lock().unwrap();
+        lock
+            .get(&(peer_id.to_string(), room_id.to_string()))
+            .map(|v| v.len())
+            .unwrap_or(0)
     }
 
     /// Plan/141 — append an undeliverable envelope (rewritten, ready to
@@ -668,6 +693,36 @@ mod tests {
         assert!(reg.forward(&peer, "main", Message::Text("hi2".into()), conn2));
         assert_eq!(rx1.try_recv().unwrap().to_text().unwrap(), "hi2");
         assert!(rx2.try_recv().is_err());
+    }
+
+    /// Plan/145 — a conn whose task died (receiver dropped) is evicted on the
+    /// FIRST failed forward, so the next forward misses the room at once (→
+    /// mailbox) instead of retrying a known-dead channel until cleanup runs.
+    #[tokio::test]
+    async fn forward_evicts_dead_sender_eagerly() {
+        let reg = make_registry();
+        let peer = "peer_a".to_string();
+
+        let (tx_live, mut rx_live) = mpsc::unbounded_channel::<Message>();
+        let (tx_dead, rx_dead) = mpsc::unbounded_channel::<Message>();
+
+        let conn_live = reg.register(peer.clone(), make_meta("main"), tx_live).await;
+        reg.register(peer.clone(), make_meta("main"), tx_dead).await;
+        assert_eq!(reg.sender_count(&peer, "main"), 2);
+
+        // The conn task dies WITHOUT unregistering (e.g. abort): the sender
+        // stays registered but every send fails.
+        drop(rx_dead);
+
+        // First forward: live conn receives; the dead one is evicted inline.
+        assert!(reg.forward(&peer, "main", Message::Text("one".into()), EXTERNAL));
+        assert_eq!(rx_live.try_recv().unwrap().to_text().unwrap(), "one");
+        assert_eq!(reg.sender_count(&peer, "main"), 1);
+
+        // When the last conn goes, the room key itself disappears (no
+        // lingering empty vec).
+        reg.unregister(&peer, "main", conn_live).await;
+        assert_eq!(reg.sender_count(&peer, "main"), 0);
     }
 
     /// Three conns at same (peer, room); one disconnects; remaining two keep

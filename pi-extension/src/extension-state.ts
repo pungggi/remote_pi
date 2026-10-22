@@ -34,7 +34,7 @@ import type { AcquiredLock } from "./session/cwd_lock.js";
 import type { FileIndex } from "./session/file_index.js";
 import type { ExtensionUiBridge } from "./extension_ui_bridge.js";
 import type { Ed25519Keypair } from "./pairing/crypto.js";
-import type { QueuedMessageItem, ThinkingLevel, WireGitStatus } from "./protocol/types.js";
+import type { JournaledFrame, QueuedMessageItem, ThinkingLevel, WireGitStatus } from "./protocol/types.js";
 
 // ── Shared light constants (plan/143: live here so BOTH the thin entry and
 //    the lazy runtime can import them without pulling heavy modules) ──
@@ -155,6 +155,15 @@ export interface ExtensionState {
   waitingSdkInput: boolean;
   waitingBridgeFlow: boolean;
 
+  // Plan/145 — delivery ledger. `roomSeq` is the seq of the last stamped
+  // broadcast (0 = none yet); `roomJournal` is a bounded ring of the most
+  // recent stamped frames, replayed on demand when an app reports itself
+  // behind (`report_seq`). The epoch IS `sessionStartedAt` — both fields
+  // share its lifecycle (preserved across stop/start cycles, reset when the
+  // epoch is restamped: `_resetSessionForNew`, `resetExtensionState`).
+  roomSeq: number;
+  roomJournal: JournaledFrame[];
+
   // mesh
   meshNode: MeshNode | null;
   sessionName: string | null;
@@ -241,6 +250,8 @@ export const ext: ExtensionState = {
   sessionStartedAt: null,
   waitingSdkInput: false,
   waitingBridgeFlow: false,
+  roomSeq: 0,
+  roomJournal: [],
 
   // mesh
   meshNode: null,
@@ -336,6 +347,8 @@ export function resetExtensionState(): void {
     sessionStartedAt: null,
     waitingSdkInput: false,
     waitingBridgeFlow: false,
+    roomSeq: 0,
+    roomJournal: [],
     meshNode: null,
     sessionName: null,
     sessionPeerCount: 0,

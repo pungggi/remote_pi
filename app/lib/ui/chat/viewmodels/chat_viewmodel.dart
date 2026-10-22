@@ -83,6 +83,10 @@ class ChatViewModel extends ViewModel<ChatState> {
     _truncatedSub = _sync.truncatedStream.listen(_onTruncated);
     _roomsSub = _conn.roomsStream.listen((_) => _recompute());
     _statusSub = _conn.statusStream.listen(_onStatus);
+    // Plan/145 — foreground refcount for the ledger tail healer (a 15s
+    // cursor report while the chat is open; heals losses no further frame
+    // would ever reveal, e.g. a blocked ask_user turn).
+    _sync.setChatForeground(true);
     // ignore: discarded_futures
     _bootstrap();
   }
@@ -146,6 +150,10 @@ class ChatViewModel extends ViewModel<ChatState> {
   List<QueuedMsg> get queuedMessages => _queuedMessages;
   String? get queuedText =>
       _queuedMessages.isEmpty ? null : _queuedMessages.first.text;
+
+  /// Plan/145 — delivery-ledger telemetry for the session-info dialog
+  /// (gap/dup/replay counters of the active room's frame stream).
+  Map<String, int> get ledgerStats => _sync.ledgerStats;
 
   void queueMessage(String text) {
     unawaited(_sync.queueMessage(text));
@@ -212,63 +220,66 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   void _onMessages(List<MessageRecord> rows) {
     _messages = [for (final r in rows) r.toChatMessage()];
-    _trackPendingAskTools();
     _recompute();
   }
 
-  /// Plan/137 — first-seen tracking for pending `ask_user` tool calls. The
-  /// recovery card must not flash while the live extension_ui_request frame
-  /// is still in flight (it lands ~1 s after the tool call appears), so we
-  /// only surface it after [askRecoveryDelay]. Also arms a one-shot timer
-  /// per newly-seen call so the card appears without any further state
-  /// change (nothing else fires while the agent is blocked in the tool).
+  /// Debounce for the ask-recovery card: the waiting meta and the sheet
+  /// frame land ~1s apart, so the card stays hidden for [askRecoveryDelay]
+  /// before we conclude the sheet is lost. Also re-armed as a one-shot timer
+  /// so the card appears without any further state change (nothing else
+  /// fires while the agent sits blocked in the tool).
   static const Duration askRecoveryDelay = Duration(seconds: 3);
-  final Map<String, DateTime> _askToolFirstSeen = {};
   Timer? _askRecoveryTimer;
 
-  void _trackPendingAskTools() {
-    final pending = <String>{};
-    for (final m in _messages) {
-      if (m is ToolEvent && m.tool == 'ask_user' && m.status == ToolEventStatus.pending) {
-        pending.add(m.toolCallId);
-        final firstSeen = _askToolFirstSeen.putIfAbsent(
-          m.toolCallId,
-          () => DateTime.now(),
-        );
-        if (DateTime.now().difference(firstSeen) < askRecoveryDelay) {
-          // PR #59 review #1 — the timer must release its slot when it fires,
-          // or the `??=` above never arms again and a LATER ask_user flow's
-          // card would only appear on some unrelated state change.
-          _askRecoveryTimer ??= Timer(askRecoveryDelay, () {
-            _askRecoveryTimer = null;
-            _recompute();
-          });
-        }
+  /// Plan/145 — first moment the room was seen waiting-for-input WITHOUT an
+  /// open sheet while online. Null whenever the trio breaks (sheet open /
+  /// not waiting / offline) so a fresh loss window re-arms the debounce.
+  DateTime? _waitingNoSheetSince;
+
+  /// Plan/145 — state-driven ask recovery. The card keys off the durable
+  /// `waiting_for_input` room meta — the channel that survives every frame
+  /// loss — instead of a pending ask_user ToolEvent in the local DB
+  /// (plan/137's event-derived condition). The tool-start frame and the
+  /// sheet frame leave the Pi milliseconds apart, so one socket flap kills
+  /// BOTH: pill on, no sheet, no ToolEvent in the DB, and the blocked turn
+  /// never reaches run_done — no heuristic healer ever fired (the
+  /// 2026-10-21 screenshot deadlock). The room meta is replayed on every
+  /// announce, so this condition is reconstructible from durable state alone.
+  ///
+  /// The card offers Retry (ledger report + full sync, so the bridge
+  /// replays the flow / the journal replays the sheet frame) and Cancel
+  /// (aborts the blocked turn, releasing queued steering). For a FOREIGN
+  /// (non-ask) prompt the same card is still correct: Pi waits on a desktop
+  /// dialog, and Cancel is the working remote escape hatch.
+  void _trackAskRecovery() {
+    final active = isWaitingForInput &&
+        _sync.currentExtensionUiRequest == null &&
+        _runtime.connection == RuntimeConnection.online;
+    if (active) {
+      final since = _waitingNoSheetSince ??= DateTime.now();
+      // Arm the one-shot recompute only while the card is still pending.
+      // Re-arming AFTER it fired would turn into a 3s heartbeat whose pending
+      // timer then occupies the slot across an idle window, shifting the next
+      // window's debounce (PR #59 review #1, state-driven edition).
+      if (DateTime.now().difference(since) < askRecoveryDelay) {
+        _askRecoveryTimer ??= Timer(askRecoveryDelay, () {
+          _askRecoveryTimer = null;
+          _recompute();
+        });
       }
+    } else {
+      _waitingNoSheetSince = null;
+      _askRecoveryTimer?.cancel();
+      _askRecoveryTimer = null;
     }
-    _askToolFirstSeen.removeWhere((id, _) => !pending.contains(id));
   }
 
-  /// Plan/137 — `true` when a pending ask_user has been sitting WITHOUT a
-  /// rendered question sheet for longer than [askRecoveryDelay]: the request
-  /// frame was lost (bridge gap, expired replay, pre-plan/137 extension) and
-  /// the phone has no answer path. The card offers Retry (force a sync so the
-  /// bridge replays the flow) and Cancel (abort the blocked turn, which also
-  /// releases any queued steering).
+  /// `true` when the room has been waiting-for-input WITHOUT a rendered
+  /// sheet for longer than [askRecoveryDelay] (see [_trackAskRecovery]).
   bool get _needsAskRecovery {
-    if (_sync.currentExtensionUiRequest != null) return false;
-    if (_runtime.connection != RuntimeConnection.online) return false;
-    final now = DateTime.now();
-    for (final m in _messages) {
-      if (m is ToolEvent &&
-          m.tool == 'ask_user' &&
-          m.status == ToolEventStatus.pending &&
-          (_askToolFirstSeen[m.toolCallId] == null ||
-              now.difference(_askToolFirstSeen[m.toolCallId]!) >= askRecoveryDelay)) {
-        return true;
-      }
-    }
-    return false;
+    final since = _waitingNoSheetSince;
+    return since != null &&
+        DateTime.now().difference(since) >= askRecoveryDelay;
   }
 
   void _onStreaming(StreamingMessage? s) {
@@ -367,6 +378,7 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   void _recompute() {
     if (_disposed) return;
+    _trackAskRecovery();
     emit(_compose());
   }
 
@@ -431,10 +443,14 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   Future<void> cancel(String targetId) => _sync.cancel(targetId);
 
-  /// Plan/137 — Retry on the ask-recovery card: force a fresh session_sync
-  /// so the Pi-extension bridge replays any pending ask flow (the sheet
-  /// opens if the flow is still active server-side).
-  void retryAskRecovery() => _sync.requestSync();
+  /// Plan/137/144 — Retry on the ask-recovery card: re-report the ledger
+  /// cursor (the Pi replays the lost sheet frame straight from its journal)
+  /// AND force a fresh session_sync (the bridge replays any still-pending
+  /// flow). Two independent healers — whichever path delivers first wins.
+  void retryAskRecovery() {
+    _sync.reportLedgerNow();
+    _sync.requestSync();
+  }
 
   Future<void> approveTool(String toolCallId, ApproveDecision decision) =>
       _sync.approveTool(toolCallId, decision);
@@ -500,7 +516,8 @@ class ChatViewModel extends ViewModel<ChatState> {
     _roomsSub?.cancel();
     _statusSub?.cancel();
     _askRecoveryTimer?.cancel();
-    _askToolFirstSeen.clear();
+    // Plan/145 — release the tail-healer foreground refcount.
+    _sync.setChatForeground(false);
     super.dispose();
   }
 }
