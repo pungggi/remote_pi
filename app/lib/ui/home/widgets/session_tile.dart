@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/git_status_span.dart';
@@ -35,8 +37,10 @@ class SessionTile extends StatelessWidget {
   final RoomInfo? room;
 
   /// Plan/107b — on-demand git snapshot for this session (when fetched).
-  /// When present, replaces the model subtitle with a compact posh-git
-  /// summary (branch / ahead / behind / dirty / stash).
+  /// When both this and the room's model are available, the subtitle
+  /// alternates every 3 seconds (branch summary ↔ selected model) in
+  /// lock-step across ALL tiles; with only one of the two, that one
+  /// wins statically (git → model → "Last paired").
   final GitStatus? git;
   final VoidCallback onOpen;
 
@@ -186,16 +190,64 @@ class _PresenceDot extends StatelessWidget {
   }
 }
 
-class _TitleBlock extends StatelessWidget {
+/// One clock for the whole list: every [_TitleBlock] listens to the same
+/// notifier, so all tiles flip between the branch (git) phase and the
+/// model phase in lock-step: a coordinated alternation, not per-tile
+/// flicker. Ref-counted: the timer only runs while tiles are mounted,
+/// and the phase resets to "branch" when the last one goes away.
+class _SubtitleClock {
+  static const interval = Duration(seconds: 3);
+  static final ValueNotifier<bool> showGitPhase = ValueNotifier<bool>(true);
+  static Timer? _timer;
+  static int _refs = 0;
+
+  static void retain() {
+    _refs++;
+    _timer ??= Timer.periodic(interval, (_) {
+      showGitPhase.value = !showGitPhase.value;
+    });
+  }
+
+  static void release() {
+    _refs = _refs > 0 ? _refs - 1 : 0;
+    if (_refs == 0 && _timer != null) {
+      _timer!.cancel();
+      _timer = null;
+      // Reopening the list starts on the branch phase for a stable
+      // first paint.
+      if (!showGitPhase.value) showGitPhase.value = true;
+    }
+  }
+}
+
+class _TitleBlock extends StatefulWidget {
   final PeerRecord peer;
   final RoomInfo? room;
   final GitStatus? git;
   const _TitleBlock({required this.peer, required this.room, this.git});
 
   @override
+  State<_TitleBlock> createState() => _TitleBlockState();
+}
+
+class _TitleBlockState extends State<_TitleBlock> {
+  @override
+  void initState() {
+    super.initState();
+    _SubtitleClock.retain();
+  }
+
+  @override
+  void dispose() {
+    _SubtitleClock.release();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final r = room;
+    final peer = widget.peer;
+    final r = widget.room;
     // Title preference: explicit room.name → cwd basename → peer
     // nickname → session name. The cwd path line was dropped on purpose
     // — the tile now shows just title + subtitle (model / paired date).
@@ -232,36 +284,63 @@ class _TitleBlock extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 3),
-        // Plan/107b — a fetched git snapshot takes precedence over the
-        // model subtitle (it's the glanceable status the user asked for
-        // in the session list); otherwise fall back to the model /
-        // "Last paired" so the row keeps a stable height.
-        Builder(
-          builder: (_) {
-            if (git != null) {
-              return Text.rich(
-                TextSpan(children: gitStatusSpans(git!, colors)),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              );
-            }
-            final model = room?.model;
-            final hasModel = model != null && model.isNotEmpty;
-            return Text(
-              hasModel
-                  ? _truncateModel(model)
-                  : 'Last paired: ${_relativeTime(peer.pairedAt)}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: hasModel ? colors.accent : colors.muted,
-                fontSize: 12,
-                fontFamily: kMonoFamily,
-              ),
-            );
-          },
-        ),
+        _buildSubtitle(context),
       ],
+    );
+  }
+
+  /// Plan/107b + model alternation: with BOTH a git snapshot and a
+  /// published model, the line flips every 3 seconds between the
+  /// posh-git summary (branch / ahead / behind / dirty / stash) and
+  /// the selected model, crossfading in sync with every other tile.
+  /// With only one of the two it renders statically (git beats model,
+  /// as before); with neither it falls back to "Last paired" so the
+  /// row keeps a stable height.
+  Widget _buildSubtitle(BuildContext context) {
+    final colors = context.colors;
+    final git = widget.git;
+    final model = widget.room?.model;
+    final hasModel = model != null && model.isNotEmpty;
+
+    Widget gitLine() => Text.rich(
+          TextSpan(children: gitStatusSpans(git!, colors)),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        );
+    Widget modelLine() => Text(
+          _truncateModel(model!),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: colors.accent,
+            fontSize: 12,
+            fontFamily: kMonoFamily,
+          ),
+        );
+
+    if (git != null && hasModel) {
+      return ValueListenableBuilder<bool>(
+        valueListenable: _SubtitleClock.showGitPhase,
+        builder: (context, showGit, _) => AnimatedSwitcher(
+          duration: const Duration(milliseconds: 300),
+          child: showGit
+              ? KeyedSubtree(key: const ValueKey('git'), child: gitLine())
+              : KeyedSubtree(
+                  key: const ValueKey('model'), child: modelLine()),
+        ),
+      );
+    }
+    if (git != null) return gitLine();
+    if (hasModel) return modelLine();
+    return Text(
+      'Last paired: ${_relativeTime(widget.peer.pairedAt)}',
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        color: colors.muted,
+        fontSize: 12,
+        fontFamily: kMonoFamily,
+      ),
     );
   }
 }
