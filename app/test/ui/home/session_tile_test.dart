@@ -85,10 +85,12 @@ void main() {
     );
 
     testWidgets(
-      'pressure tint: ≥70% shifts away from the relaxed tint, ≥90% again',
+      'pressure ladder 17/24/35/50 (user-tuned): every band paints a more '
+      'prominent tint than the one before',
       (tester) async {
         final decors = <BoxDecoration>[];
-        for (final percent in [50, 80, 95]) {
+        // One probe per band: <17, 17-24, 24-35, 35-50, >=50.
+        for (final percent in [10, 20, 30, 40, 60]) {
           await _pump(
             tester,
             room: RoomInfo(
@@ -103,12 +105,17 @@ void main() {
           );
           decors.add(_fillDecoration(tester));
         }
-        // Subtle but distinct: each pressure band paints a different tint.
-        expect(decors[0].color, isNot(decors[1].color));
-        expect(decors[1].color, isNot(decors[2].color));
-        // …and every tint stays a low-alpha background hint (≤ 0.15).
+        // Distinct at every step and monotonically more prominent:
+        // hue escalates accent → warning → error, alpha only rises.
+        for (var i = 1; i < decors.length; i++) {
+          expect(decors[i].color, isNot(decors[i - 1].color),
+              reason: 'band $i must differ from band ${i - 1}');
+          expect(decors[i].color!.a, greaterThan(decors[i - 1].color!.a),
+              reason: 'band $i must be MORE prominent than band ${i - 1}');
+        }
+        // Still a background hint, never a solid slab (≤ 0.2).
         for (final d in decors) {
-          expect(d.color!.a, lessThan(0.15));
+          expect(d.color!.a, lessThan(0.2));
           expect(d.color!.a, greaterThan(0.0));
         }
       },
