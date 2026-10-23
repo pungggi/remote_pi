@@ -1655,6 +1655,10 @@ describe("multi-channel broadcast (W2D)", () => {
       .find((d) => d.peer === "lateOwnerA__1234" && d.inner.type === "agent_chunk")!;
     expect(chunk.inner["delta"]).toBe("head text");
     expect(String(chunk.inner["in_reply_to"])).toMatch(/^resume_/);
+    // Plan/145 (review): the resume head is stamped + journaled like a
+    // broadcast, so the app's ledger gate dedups its journal replay.
+    expect(typeof chunk.inner["seq"]).toBe("number");
+    expect(typeof chunk.inner["epoch"]).toBe("number");
     expect(_getCurrentTurnIdForTest()).toMatch(/^resume_/);
 
     // Live tail now streams to the attached owner (coalesced window).
@@ -1673,6 +1677,57 @@ describe("multi-channel broadcast (W2D)", () => {
     expect(done).toBeDefined();
     expect(String(done!.inner["in_reply_to"])).toMatch(/^resume_/);
     expect(_getCurrentTurnIdForTest()).toBeNull();
+    await new Promise((r) => setTimeout(r, 80)); // drain window for later tests
+  });
+
+  test("mid-run attach with an owner already streaming replays journaled chunks (no new-seq head)", async () => {
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx());
+    const onAgentStart = captureEventHandler("agent_start");
+    const onInput = captureEventHandler("input");
+    const onUpdate = captureEventHandler("message_update");
+    const onEnd = captureEventHandler("agent_end");
+
+    // Owner A attached from the turn's start: its chunks broadcast + journal
+    // under the stable, input-seeded turn id.
+    relayRef.current!.emit("message", makeInnerLine("ownerA__1234567890", {
+      type: "pair_request", id: "pr-a", token: "test-token", device_name: "Phone A",
+    }));
+    await vi.waitFor(() => expect(_getState()).toBe("paired"), { timeout: 2000 });
+    onAgentStart({ type: "agent_start" } as unknown as Parameters<typeof onAgentStart>[0]);
+    onInput({ source: "terminal", text: "long answer please" } as unknown as Parameters<typeof onInput>[0]);
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+    onUpdate({ assistantMessageEvent: { type: "text_delta", delta: "hello " } } as unknown as Parameters<typeof onUpdate>[0]);
+    await new Promise((r) => setTimeout(r, 80)); // flush window
+    onUpdate({ assistantMessageEvent: { type: "text_delta", delta: "world" } } as unknown as Parameters<typeof onUpdate>[0]);
+    await new Promise((r) => setTimeout(r, 80)); // flush window
+
+    const chunksTo = (peer: string, from: number) => relayRef.current!.send.mock.calls.slice(from)
+      .map((c) => c[0] as string).map(decodeSentCt)
+      .filter((d) => d.peer === peer && d.inner.type === "agent_chunk");
+    const toA = chunksTo("ownerA__1234567890", sendsBefore);
+    expect(toA.length).toBeGreaterThan(0);
+
+    // Owner B attaches mid-run: its catch-up must be the ORIGINAL journaled
+    // frames — same seqs A received. A synthesized full-text head would mint
+    // a NEW seq in a B-only frame: every later A frame would gap, A would
+    // report, and the journal replay would hand A the head's full text again
+    // (duplicate on a lossless connection).
+    const beforeB = relayRef.current!.send.mock.calls.length;
+    relayRef.current!.emit("message", makeInnerLine("ownerB__1234567890", {
+      type: "pair_request", id: "pr-b", token: "test-token", device_name: "Phone B",
+    }));
+    await vi.waitFor(() => expect(chunksTo("ownerB__1234567890", beforeB).length).toBeGreaterThan(0), { timeout: 2000 });
+    const toB = chunksTo("ownerB__1234567890", beforeB);
+    expect(toB.map((d) => d.inner["seq"])).toEqual(toA.map((d) => d.inner["seq"]));
+    expect(toB.map((d) => d.inner["delta"])).toEqual(toA.map((d) => d.inner["delta"]));
+    // No new seq minted for the catch-up (a fallback head would exceed max(A)).
+    const maxSeqA = Math.max(...toA.map((d) => Number(d.inner["seq"])));
+    expect(toB.every((d) => Number(d.inner["seq"]) <= maxSeqA)).toBe(true);
+    // Owner A received NOTHING from B's attach (no replay-to-A, no head).
+    expect(chunksTo("ownerA__1234567890", beforeB)).toEqual([]);
+
+    onEnd({} as unknown as Parameters<typeof onEnd>[0]);
     await new Promise((r) => setTimeout(r, 80)); // drain window for later tests
   });
 
@@ -4532,6 +4587,48 @@ describe("session sync", () => {
     });
     // agent_message in_reply_to should point at the prior user_input id
     expect((events[1] as { in_reply_to: string }).in_reply_to).toBe(`sync_${ts}`);
+  });
+
+  test("plan/145 (verification round): every text block gets a UNIQUE stable id", () => {
+    const ts = 1_700_000_000_000;
+    // One assistant message, three text blocks — the (b1) shape: all share
+    // in_reply_to (last user id); pre-fix they also shared the app's row key
+    // and blocks 2..n were dropped on merge ("already have it").
+    const events = _mapAgentMessagesToEvents([
+      { role: "user", content: "go", timestamp: ts },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "WELLE-1" },
+          { type: "text", text: "WELLE-2" },
+          { type: "text", text: "WELLE-3" },
+        ],
+        timestamp: ts + 100,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "NEXT-TURN" }],
+        timestamp: ts + 200,
+      },
+    ]);
+
+    const agentEvts = events.filter((e) => e.type === "agent_message");
+    expect(agentEvts.map((e) => (e as { text: string }).text)).toEqual([
+      "WELLE-1",
+      "WELLE-2",
+      "WELLE-3",
+      "NEXT-TURN",
+    ]);
+    const ids = agentEvts.map((e) => (e as { id?: string }).id);
+    expect(ids[0]).toBe(`amsg_${ts + 100}`);
+    expect(ids[1]).toBe(`amsg_${ts + 100}_2`);
+    expect(ids[2]).toBe(`amsg_${ts + 100}_3`);
+    expect(ids[3]).toBe(`amsg_${ts + 200}`);
+    // all unique, and in_reply_to stays the legacy reply context
+    expect(new Set(ids).size).toBe(4);
+    for (const e of agentEvts) {
+      expect((e as { in_reply_to: string }).in_reply_to).toBe(`sync_${ts}`);
+    }
   });
 
   test("mapping (plan/30 re-sync): user [image, text] → user_input keeps images", () => {

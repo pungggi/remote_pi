@@ -90,6 +90,57 @@ void main() {
     await ch.close();
   });
 
+  // Plan/145 (review): stamped frames bypass the id-LRU — the SyncService
+  // ledger gate dedups them by (epoch, seq). `steer_consumed` carries the
+  // user_message's id; an LRU drop would swallow the frame AND every journal
+  // replay of it — the gate would never see that seq, hold all later
+  // traffic, and force escapes even on a lossless connection.
+  test('stamped frames sharing an id are BOTH delivered (ledger dedups)',
+      () async {
+    final t = _ScriptedTransport();
+    final ch = PlainPeerChannel(transport: t);
+    final received = <Object>[];
+    final both = Completer<void>();
+    final sub = ch.serverMessages.listen((m) {
+      received.add(m);
+      if (received.length == 2 && !both.isCompleted) both.complete();
+    });
+    t.push(jsonEncode({
+      'type': 'user_message', 'id': 'm1', 'text': 'hi',
+      'seq': 1, 'epoch': 7,
+    }));
+    t.push(jsonEncode({
+      'type': 'steer_consumed', 'id': 'm1', 'seq': 2, 'epoch': 7,
+    }));
+    await both.future.timeout(const Duration(seconds: 2));
+    expect(received.length, 2,
+        reason: 'the shared id must not drop the stamped steer_consumed');
+    await sub.cancel();
+    await ch.close();
+  });
+
+  test('a stamped REPLAY (same id AND seq) is delivered for the gate to drop',
+      () async {
+    final t = _ScriptedTransport();
+    final ch = PlainPeerChannel(transport: t);
+    final received = <Object>[];
+    final both = Completer<void>();
+    final sub = ch.serverMessages.listen((m) {
+      received.add(m);
+      if (received.length == 2 && !both.isCompleted) both.complete();
+    });
+    final frame = jsonEncode({
+      'type': 'user_message', 'id': 'm1', 'text': 'hello',
+      'seq': 9, 'epoch': 7,
+    });
+    t.push(frame);
+    t.push(frame); // journal replay — ledger gate dedups, not the LRU
+    await both.future.timeout(const Duration(seconds: 2));
+    expect(received.length, 2);
+    await sub.cancel();
+    await ch.close();
+  });
+
   test('replayed id-bearing frame is still deduped', () async {
     final t = _ScriptedTransport();
     final ch = PlainPeerChannel(transport: t);

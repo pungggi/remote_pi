@@ -35,7 +35,7 @@ ExtensionUiRequest _richRequest({String id = 'tool:tc_1'}) =>
       ),
     );
 
-ExtensionUiRequest _degradedInput() => const ExtensionUiRequest(
+ExtensionUiRequest _degradedInput() => ExtensionUiRequest(
   id: 'flow:input',
   method: ExtensionUiMethod.input,
   title: 'Describe',
@@ -187,7 +187,7 @@ void main() {
   ) async {
     await pumpSheet(
       tester,
-      request: const ExtensionUiRequest(
+      request: ExtensionUiRequest(
         id: 'notify:1',
         method: ExtensionUiMethod.notify,
         message: 'Clarification resolved.',

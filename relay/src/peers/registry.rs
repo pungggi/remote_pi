@@ -219,37 +219,51 @@ impl PeerRegistry {
         };
 
         if room_emptied {
-            let room_subs = self.rooms.subscribers_of(peer_id).await;
-            if !room_subs.is_empty() {
-                let msg = serde_json::json!({
-                    "type": "room_ended",
-                    "peer": peer_id,
-                    "room_id": room_id,
-                    "since_ts": now_ms,
-                })
-                .to_string();
-                for sub in &room_subs {
-                    self.forward_to_all_rooms_of(sub, Message::Text(msg.clone()));
-                }
-            }
+            self.notify_room_ended(peer_id, room_id, now_ms).await;
         }
 
         if peer_offlined {
-            let pres_subs = self.presence.subscribers_of(peer_id).await;
-            if !pres_subs.is_empty() {
-                let msg = serde_json::json!({
-                    "type": "peer_offline",
-                    "peer": peer_id,
-                    "since_ts": now_ms,
-                })
-                .to_string();
-                for sub in pres_subs {
-                    self.forward_to_all_rooms_of(&sub, Message::Text(msg.clone()));
-                }
-            }
-            self.presence.record_offline(peer_id, now_ms).await;
-            self.presence.unsubscribe_all(peer_id).await;
+            self.notify_peer_offline(peer_id, now_ms).await;
         }
+    }
+
+    /// Broadcasts `room_ended` for `(peer_id, room_id)` to the peer's room
+    /// subscribers. Shared by `unregister` and `forward`'s eager eviction.
+    async fn notify_room_ended(&self, peer_id: &str, room_id: &str, now_ms: i64) {
+        let room_subs = self.rooms.subscribers_of(peer_id).await;
+        if room_subs.is_empty() {
+            return;
+        }
+        let msg = serde_json::json!({
+            "type": "room_ended",
+            "peer": peer_id,
+            "room_id": room_id,
+            "since_ts": now_ms,
+        })
+        .to_string();
+        for sub in &room_subs {
+            self.forward_to_all_rooms_of(sub, Message::Text(msg.clone()));
+        }
+    }
+
+    /// Broadcasts `peer_offline` to the peer's presence subscribers, records
+    /// the offline timestamp, and clears the subscriptions. Shared by
+    /// `unregister` and `forward`'s eager eviction.
+    async fn notify_peer_offline(&self, peer_id: &str, now_ms: i64) {
+        let pres_subs = self.presence.subscribers_of(peer_id).await;
+        if !pres_subs.is_empty() {
+            let msg = serde_json::json!({
+                "type": "peer_offline",
+                "peer": peer_id,
+                "since_ts": now_ms,
+            })
+            .to_string();
+            for sub in pres_subs {
+                self.forward_to_all_rooms_of(&sub, Message::Text(msg.clone()));
+            }
+        }
+        self.presence.record_offline(peer_id, now_ms).await;
+        self.presence.unsubscribe_all(peer_id).await;
     }
 
     /// Returns `true` if `peer_id` has at least one live connection.
@@ -281,28 +295,73 @@ impl PeerRegistry {
     /// Pass any `from_conn_id` that is not part of the destination `Vec`
     /// (e.g. the sender's own conn_id from another room) to deliver to all.
     /// Never inspects message content.
-    pub fn forward(
+    pub async fn forward(
         &self,
         dest_peer: &str,
         dest_room: &str,
         msg: Message,
         from_conn_id: u64,
     ) -> bool {
-        let lock = self.senders.lock().unwrap();
-        let key = (dest_peer.to_string(), dest_room.to_string());
-        let Some(v) = lock.get(&key) else {
-            return false;
-        };
-        let mut delivered = false;
-        for (cid, _, tx) in v.iter() {
-            if *cid == from_conn_id {
-                continue;
+        // Plan/145 (wave 3) — eager eviction: a failed mpsc send means the
+        // conn task is already dead. Remove the dead sender NOW so the next
+        // forward misses immediately (→ the caller mailboxes) instead of
+        // burning a send attempt on a known-dead channel until the task's
+        // own cleanup runs (an aborted task never runs it — the entry would
+        // otherwise linger forever).
+        let (delivered, room_emptied, peer_offlined) = {
+            let mut lock = self.senders.lock().unwrap();
+            let key = (dest_peer.to_string(), dest_room.to_string());
+            let Some(v) = lock.get_mut(&key) else {
+                return false;
+            };
+            let mut delivered = false;
+            v.retain_mut(|(cid, _, tx)| {
+                if *cid == from_conn_id {
+                    return true; // skip-sender: never probed, never evicted
+                }
+                match tx.send(msg.clone()) {
+                    Ok(()) => {
+                        delivered = true;
+                        true
+                    }
+                    Err(_) => false,
+                }
+            });
+            let room_emptied = v.is_empty();
+            if room_emptied {
+                lock.remove(&key);
             }
-            if tx.send(msg.clone()).is_ok() {
-                delivered = true;
+            let peer_offlined = room_emptied && !lock.keys().any(|(p, _)| p == dest_peer);
+            (delivered, room_emptied, peer_offlined)
+        };
+
+        // Plan/145 (review): eager eviction emptied the room — a later
+        // `unregister` no longer finds the entry, so the notifications it
+        // would have sent must fire HERE. Skipping them left subscribers
+        // with stale online-room state.
+        if room_emptied {
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            self.notify_room_ended(dest_peer, dest_room, now_ms).await;
+            if peer_offlined {
+                self.notify_peer_offline(dest_peer, now_ms).await;
             }
         }
+
         delivered
+    }
+
+    /// Test-only: number of registered senders at (peer, room) — observes the
+    /// eager eviction in `forward`.
+    #[cfg(test)]
+    pub fn sender_count(&self, peer_id: &str, room_id: &str) -> usize {
+        let lock = self.senders.lock().unwrap();
+        lock
+            .get(&(peer_id.to_string(), room_id.to_string()))
+            .map(|v| v.len())
+            .unwrap_or(0)
     }
 
     /// Plan/141 — append an undeliverable envelope (rewritten, ready to
@@ -633,15 +692,15 @@ mod tests {
 
         assert_ne!(conn_main, conn_work);
 
-        assert!(reg.forward(&peer, "main", Message::Text("to_main".into()), EXTERNAL));
+        assert!(reg.forward(&peer, "main", Message::Text("to_main".into()), EXTERNAL).await);
         assert_eq!(rx_main.try_recv().unwrap().to_text().unwrap(), "to_main");
 
-        assert!(reg.forward(&peer, "work", Message::Text("to_work".into()), EXTERNAL));
+        assert!(reg.forward(&peer, "work", Message::Text("to_work".into()), EXTERNAL).await);
         assert_eq!(rx_work.try_recv().unwrap().to_text().unwrap(), "to_work");
 
         reg.unregister(&peer, "work", conn_work).await;
-        assert!(!reg.forward(&peer, "work", Message::Text("gone".into()), EXTERNAL));
-        assert!(reg.forward(&peer, "main", Message::Text("still_there".into()), EXTERNAL));
+        assert!(!reg.forward(&peer, "work", Message::Text("gone".into()), EXTERNAL).await);
+        assert!(reg.forward(&peer, "main", Message::Text("still_there".into()), EXTERNAL).await);
         let _ = rx_main.try_recv();
     }
 
@@ -660,14 +719,79 @@ mod tests {
         assert_ne!(conn1, conn2);
 
         // Send "from" conn1 → only conn2 receives.
-        assert!(reg.forward(&peer, "main", Message::Text("hi".into()), conn1));
+        assert!(reg.forward(&peer, "main", Message::Text("hi".into()), conn1).await);
         assert!(rx1.try_recv().is_err(), "sender must not echo");
         assert_eq!(rx2.try_recv().unwrap().to_text().unwrap(), "hi");
 
         // Send "from" conn2 → only conn1 receives.
-        assert!(reg.forward(&peer, "main", Message::Text("hi2".into()), conn2));
+        assert!(reg.forward(&peer, "main", Message::Text("hi2".into()), conn2).await);
         assert_eq!(rx1.try_recv().unwrap().to_text().unwrap(), "hi2");
         assert!(rx2.try_recv().is_err());
+    }
+
+    /// Plan/145 — a conn whose task died (receiver dropped) is evicted on the
+    /// FIRST failed forward, so the next forward misses the room at once (→
+    /// mailbox) instead of retrying a known-dead channel until cleanup runs.
+    #[tokio::test]
+    async fn forward_evicts_dead_sender_eagerly() {
+        let reg = make_registry();
+        let peer = "peer_a".to_string();
+
+        let (tx_live, mut rx_live) = mpsc::unbounded_channel::<Message>();
+        let (tx_dead, rx_dead) = mpsc::unbounded_channel::<Message>();
+
+        let conn_live = reg.register(peer.clone(), make_meta("main"), tx_live).await;
+        reg.register(peer.clone(), make_meta("main"), tx_dead).await;
+        assert_eq!(reg.sender_count(&peer, "main"), 2);
+
+        // The conn task dies WITHOUT unregistering (e.g. abort): the sender
+        // stays registered but every send fails.
+        drop(rx_dead);
+
+        // First forward: live conn receives; the dead one is evicted inline.
+        assert!(reg.forward(&peer, "main", Message::Text("one".into()), EXTERNAL).await);
+        assert_eq!(rx_live.try_recv().unwrap().to_text().unwrap(), "one");
+        assert_eq!(reg.sender_count(&peer, "main"), 1);
+
+        // When the last conn goes, the room key itself disappears (no
+        // lingering empty vec).
+        reg.unregister(&peer, "main", conn_live).await;
+        assert_eq!(reg.sender_count(&peer, "main"), 0);
+    }
+
+    /// Plan/145 (review): when eager eviction removes the LAST dead sender,
+    /// subscribers must still get `room_ended` — a later `unregister` no
+    /// longer finds the entry and cannot emit it.
+    #[tokio::test]
+    async fn forward_evicting_last_dead_sender_emits_room_ended() {
+        let presence = Arc::new(PresenceManager::new());
+        let rooms = Arc::new(RoomManager::new());
+        let metrics = Arc::new(FirehoseMetrics::new());
+        let reg = PeerRegistry::new(presence, rooms.clone(), metrics);
+
+        let pi = "pi".to_string();
+        let app = "app".to_string();
+
+        let (tx_pi, rx_pi) = mpsc::unbounded_channel::<Message>();
+        reg.register(pi.clone(), make_meta("main"), tx_pi).await;
+
+        let (tx_app, mut rx_app) = mpsc::unbounded_channel::<Message>();
+        reg.register(app.clone(), make_meta("main"), tx_app).await;
+        rooms.subscribe(app.clone(), vec![pi.clone()]).await;
+
+        // Pi's conn task dies WITHOUT unregistering (e.g. abort).
+        drop(rx_pi);
+
+        // The forward evicts the dead sender and empties the room.
+        assert!(!reg.forward(&pi, "main", Message::Text("x".into()), EXTERNAL).await);
+        assert_eq!(reg.sender_count(&pi, "main"), 0);
+
+        // The app subscribed to the pi's rooms receives room_ended.
+        let msg = rx_app.try_recv().expect("subscriber must receive room_ended");
+        let v: serde_json::Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+        assert_eq!(v["type"], "room_ended");
+        assert_eq!(v["peer"], pi);
+        assert_eq!(v["room_id"], "main");
     }
 
     /// Three conns at same (peer, room); one disconnects; remaining two keep
@@ -687,7 +811,7 @@ mod tests {
 
         reg.unregister(&peer, "main", conn2).await;
 
-        assert!(reg.forward(&peer, "main", Message::Text("ping".into()), EXTERNAL));
+        assert!(reg.forward(&peer, "main", Message::Text("ping".into()), EXTERNAL).await);
         assert_eq!(rx1.try_recv().unwrap().to_text().unwrap(), "ping");
         assert!(
             rx2.try_recv().is_err(),
@@ -709,7 +833,7 @@ mod tests {
         let _ = reg.register(peer.clone(), make_meta("main"), tx1).await;
         let _ = reg.register(peer.clone(), make_meta("main"), tx2).await;
 
-        assert!(reg.forward(&peer, "main", Message::Text("from_pi".into()), EXTERNAL));
+        assert!(reg.forward(&peer, "main", Message::Text("from_pi".into()), EXTERNAL).await);
         assert_eq!(rx1.try_recv().unwrap().to_text().unwrap(), "from_pi");
         assert_eq!(rx2.try_recv().unwrap().to_text().unwrap(), "from_pi");
     }
@@ -724,10 +848,10 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
         let conn = reg.register(peer.clone(), make_meta("main"), tx).await;
 
-        assert!(!reg.forward(&peer, "main", Message::Text("echo".into()), conn));
+        assert!(!reg.forward(&peer, "main", Message::Text("echo".into()), conn).await);
         assert!(rx.try_recv().is_err());
 
-        assert!(reg.forward(&peer, "main", Message::Text("hi".into()), EXTERNAL));
+        assert!(reg.forward(&peer, "main", Message::Text("hi".into()), EXTERNAL).await);
         assert_eq!(rx.try_recv().unwrap().to_text().unwrap(), "hi");
     }
 
@@ -747,12 +871,12 @@ mod tests {
 
         // Stale unregister of conn_a is a no-op.
         reg.unregister(&peer, "main", conn_a).await;
-        assert!(reg.forward(&peer, "main", Message::Text("alive".into()), EXTERNAL));
+        assert!(reg.forward(&peer, "main", Message::Text("alive".into()), EXTERNAL).await);
         assert_eq!(rx_b.try_recv().unwrap().to_text().unwrap(), "alive");
 
         // Correct unregister removes the last conn → entry gone.
         reg.unregister(&peer, "main", conn_b).await;
-        assert!(!reg.forward(&peer, "main", Message::Text("gone".into()), EXTERNAL));
+        assert!(!reg.forward(&peer, "main", Message::Text("gone".into()), EXTERNAL).await);
     }
 
     /// First register from an offline peer with a presence subscriber must

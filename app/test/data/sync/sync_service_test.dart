@@ -2197,7 +2197,7 @@ void main() {
       s.ch.push(select('flow-3'));
       await _settle();
 
-      s.ch.push(const ExtensionUiRequest(
+      s.ch.push(ExtensionUiRequest(
         id: 'flow-3',
         method: ExtensionUiMethod.notify,
         message: 'Unknown option value.',

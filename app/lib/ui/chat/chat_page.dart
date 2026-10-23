@@ -364,6 +364,7 @@ class ChatPage extends StatelessWidget {
                   vm.activeRoom,
                   roomName,
                   context.read<IActionsRepository>(),
+                  vm.ledgerStats,
                 );
               }
             },
@@ -382,6 +383,7 @@ class ChatPage extends StatelessWidget {
     RoomInfo? room,
     String name,
     IActionsRepository actions,
+    Map<String, int> ledgerStats,
   ) {
     // Plan/107 — kick the git-status request off immediately so it's already
     // in flight when the dialog paints (the row shows "loading…" meanwhile).
@@ -425,6 +427,9 @@ class ChatPage extends StatelessWidget {
                 _InfoRow(label: 'Model', value: model),
               _InfoRow(label: 'Room', value: room?.roomId ?? '—'),
               _InfoRow(label: 'Paired', value: paired),
+              // Plan/145 — delivery-ledger telemetry: non-zero gap/escape
+              // counters here mean frames were lost AND self-healed.
+              _InfoRow(label: 'Ledger', value: _formatLedgerStats(ledgerStats)),
               FutureBuilder<GitStatus?>(
                 future: gitFuture,
                 builder: (ctx, snap) {
@@ -1830,6 +1835,23 @@ class _RevokedBanner extends StatelessWidget {
 
 /// One labelled key/value row in the session-info dialog. The value is
 /// selectable so the user can copy the path / device name.
+/// Plan/145 — compact one-line rendering of the delivery-ledger counters
+/// (session-info dialog). All-zero renders short so a healthy session reads
+/// calm; any gap/escape jumps out.
+String _formatLedgerStats(Map<String, int> s) {
+  final gaps = s['gapsDetected'] ?? 0;
+  final dups = s['dupsDropped'] ?? 0;
+  final held = s['heldApplied'] ?? 0;
+  final escapes = s['holdEscapes'] ?? 0;
+  final reports = s['reportsSent'] ?? 0;
+  final syncs = s['syncNeeded'] ?? 0;
+  if (gaps == 0 && escapes == 0 && syncs == 0) {
+    return 'healthy · $reports reports';
+  }
+  return 'gaps $gaps · dups $dups · healed $held · escapes $escapes · '
+      'reports $reports · syncs $syncs';
+}
+
 class _InfoRow extends StatelessWidget {
   final String label;
   final String value;

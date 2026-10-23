@@ -182,12 +182,353 @@ class SyncService extends Service {
 
   final Map<String, Timer> _pendingSendTimers = {};
 
+  // ── Plan/145 — delivery ledger (active room) ─────────────────────────────
+  //
+  // The pi-extension stamps every owner-bound broadcast frame with
+  // `(ledgerEpoch, ledgerSeq)` (per-room monotone; epoch == the Pi's
+  // session_started_at). The gate applies stamped frames STRICTLY in order:
+  //   - seq <= contig      → replay/dup → drop (counted)
+  //   - seq == contig + 1  → apply, advance, drain newly-contiguous held frames
+  //   - seq >  contig + 1  → hold (bounded map) + report our cursor; the Pi's
+  //     journal replay re-delivers the hole — including this frame, so a held
+  //     frame needs no separate re-request.
+  // A held frame that outlives [_ledgerHoldEscapeAfter] is applied anyway
+  // (skipping the hole) and a full session_sync is requested: a frozen chat
+  // is worse than a momentarily missing chunk, and the sync merge heals rows.
+  //
+  // Unstamped frames (unicast query answers, pre-145 extensions) bypass the
+  // gate entirely — a mixed old/new deployment degrades to the pre-145
+  // heuristic healers instead of false gap alarms.
+  //
+  // In-memory only, reset on activate(): a process restart re-baselines from
+  // the first stamped frame (adopt seq-1) or the next session_history's
+  // currentSeq — no persisted cursor that could lie about a dead epoch.
+  static const int _ledgerHeldCap = 64;
+  static const Duration _defaultLedgerHoldEscapeAfter = Duration(seconds: 5);
+  static const Duration _defaultLedgerTailReportEvery = Duration(seconds: 15);
+  static const Duration _ledgerReportMinSpacing = Duration(seconds: 1);
+
+  /// Injectable for tests (same seam as [syncRetryDelay]).
+  final Duration ledgerHoldEscapeAfter;
+  final Duration ledgerTailReportEvery;
+
+  int? _ledgerEpoch;
+  int _ledgerContig = 0;
+
+  /// Plan/145 (verification round) — cursor persisted in the runtime box at
+  /// safe points; loaded per room in [_loadIndex]. Same-epoch resume keeps a
+  /// mid-stream hole DETECTABLE after a process death (the (b1) loss).
+  int? _persistedLedgerEpoch;
+  int _persistedLedgerContig = 0;
+
+  /// Plan/145 (review) — the ledger gate stays CLOSED until [_loadIndex] has
+  /// read the durable cursor for the active room. Stamped frames arriving
+  /// earlier (the message subscription can go live before activation
+  /// finishes) queue here and replay in arrival order once the cursor is
+  /// known — otherwise the gate's adopt branch runs on an empty baseline
+  /// and silently skips the very gap the saved cursor should have detected.
+  bool _ledgerReady = false;
+  final List<ServerMessage> _preLedgerQueue = [];
+  static const int _preLedgerQueueCap = 512;
+  int? _lastPersistedLedgerEpoch;
+  int _lastPersistedLedgerContig = -1;
+
+  final Map<int, ServerMessage> _ledgerHeld = {};
+  Timer? _ledgerHoldTimer;
+  Timer? _ledgerTailTimer;
+  DateTime _lastLedgerReport = DateTime.fromMillisecondsSinceEpoch(0);
+  // Refcounted (chat open/leave can overlap during navigation transitions).
+  int _chatForegroundCount = 0;
+
+  // Telemetry (plan/145 G3) — surfaced via [ledgerStats] on the debug UI, so
+  // the next "response swallowed" report comes with evidence, not riddles.
+  int ledgerFramesStamped = 0;
+  int ledgerDupsDropped = 0;
+  int ledgerGapsDetected = 0;
+  int ledgerHeldApplied = 0;
+  int ledgerHeldDropped = 0;
+  int ledgerHoldEscapes = 0;
+  int ledgerReportsSent = 0;
+  int ledgerSyncNeeded = 0;
+
+  /// Plan/145 telemetry snapshot for the session-info dialog.
+  Map<String, int> get ledgerStats => {
+    'stamped': ledgerFramesStamped,
+    'dupsDropped': ledgerDupsDropped,
+    'gapsDetected': ledgerGapsDetected,
+    'heldApplied': ledgerHeldApplied,
+    'heldDropped': ledgerHeldDropped,
+    'holdEscapes': ledgerHoldEscapes,
+    'reportsSent': ledgerReportsSent,
+    'syncNeeded': ledgerSyncNeeded,
+  };
+
+  /// Test seams: the current ledger cursor (null epoch = no stamped frame
+  /// seen yet) and the held-frame count.
+  int? get ledgerEpoch => _ledgerEpoch;
+  int get ledgerContig => _ledgerContig;
+  int get ledgerHeldCount => _ledgerHeld.length;
+
+  /// Test seams (plan/145 review): activation-race queue visibility.
+  bool get ledgerReady => _ledgerReady;
+  int get preLedgerQueueLength => _preLedgerQueue.length;
+
+  /// Test seam (plan/145 review): simulates the pre-/post-activation ledger
+  /// window; setting true flushes the pre-activation queue like [_loadIndex].
+  @visibleForTesting
+  set ledgerReadyForTest(bool v) {
+    _ledgerReady = v;
+    if (v) _flushPreLedgerQueue();
+  }
+
+  void _resetLedger() {
+    _ledgerEpoch = null;
+    _ledgerContig = 0;
+    // Persisted cursor for the room we are LEAVING — stale until
+    // _loadIndex reloads the incoming room's value.
+    _persistedLedgerEpoch = null;
+    _persistedLedgerContig = 0;
+    _lastPersistedLedgerEpoch = null;
+    _lastPersistedLedgerContig = -1;
+    // Closed again until the incoming room's _loadIndex finishes.
+    _ledgerReady = false;
+    if (_preLedgerQueue.isNotEmpty) {
+      ledgerHeldDropped += _preLedgerQueue.length;
+      _preLedgerQueue.clear();
+    }
+    if (_ledgerHeld.isNotEmpty) {
+      ledgerHeldDropped += _ledgerHeld.length;
+      _ledgerHeld.clear();
+    }
+    _ledgerHoldTimer?.cancel();
+    _ledgerHoldTimer = null;
+  }
+
+  /// Plan/145 — the apply gate for stamped frames. True when [msg] is the
+  /// next in-order frame and the caller should apply it; false when the frame
+  /// was dropped (duplicate) or held behind a gap.
+  bool _ledgerGate(ServerMessage msg) {
+    final seq = msg.ledgerSeq!;
+    final epoch = msg.ledgerEpoch!;
+    if (_ledgerEpoch != epoch) {
+      // Epoch moved (Pi restart / session reset) — or the very first stamped
+      // frame for this room (null baseline): adopt `seq - 1` as the cursor
+      // and let this frame apply. Held frames from the old epoch can never
+      // fill correctly — drop them.
+      //
+      // Plan/145 (verification round) — cold start: when the persisted
+      // cursor is from the SAME epoch, the process died mid-stream and
+      // RESUMES from it instead of adopting seq-1. Adopting here silently
+      // skipped everything between death and this frame — the (b1) loss:
+      // the hole was never detected, so no report/replay ever fired.
+      // Resuming keeps the hole a GAP: hold → report → journal replay.
+      _ledgerEpoch = epoch;
+      _ledgerContig =
+          _persistedLedgerEpoch == epoch ? _persistedLedgerContig : seq - 1;
+      if (_ledgerHeld.isNotEmpty) {
+        ledgerHeldDropped += _ledgerHeld.length;
+        _ledgerHeld.clear();
+      }
+      _ledgerHoldTimer?.cancel();
+      _ledgerHoldTimer = null;
+    }
+    if (seq <= _ledgerContig) {
+      // Duplicate (journal/mailbox replay of an applied frame). Stronger than
+      // the id-LRU in PlainPeerChannel: also covers id-less frames
+      // (agent_chunk).
+      ledgerDupsDropped++;
+      return false;
+    }
+    if (seq > _ledgerContig + 1) {
+      // Gap. Hold and report; the Pi replays the missing range in order.
+      ledgerGapsDetected++;
+      debugPrint(
+        '[ledger] gap: cursor=$_ledgerContig, got seq=$seq — holding + reporting',
+      );
+      if (_ledgerHeld.length < _ledgerHeldCap) {
+        _ledgerHeld[seq] = msg;
+        _armLedgerHoldTimer();
+      } else {
+        ledgerHeldDropped++;
+      }
+      _reportLedgerSeq();
+      return false;
+    }
+    _ledgerContig = seq;
+    return true;
+  }
+
+  /// Apply held frames that became contiguous. Runs after every applied
+  /// stamped frame and after a history re-baseline.
+  ///
+  /// Plan/145 (review): NEVER persists the durable cursor. This method runs
+  /// after every stamped agent_chunk, and chunk text lives only in
+  /// `_streaming`/`_chunkBuf` until finalization — persisting here (even
+  /// only when frames drained) would let a process death restore a cursor
+  /// past text that never reached the message box and suppress its replay.
+  /// The in-memory cursor may run ahead; the durable one only moves at real
+  /// safe points (agent_done, hold escape, history baseline).
+  void _drainLedgerHeld() {
+    while (true) {
+      final next = _ledgerHeld.remove(_ledgerContig + 1);
+      if (next == null) break;
+      ledgerHeldApplied++;
+      _onServerMessage(next); // in-order now; its tail recurses the drain
+    }
+    if (_ledgerHeld.isEmpty) {
+      _ledgerHoldTimer?.cancel();
+      _ledgerHoldTimer = null;
+    }
+  }
+
+  void _armLedgerHoldTimer() {
+    _ledgerHoldTimer ??= Timer(ledgerHoldEscapeAfter, _ledgerHoldEscape);
+  }
+
+  /// The replay never came (report lost, journal overflowed before answering,
+  /// ...). Apply the held frames in seq order — skipping the hole — and let a
+  /// full session_sync heal the rows. A frozen chat is worse than a skipped
+  /// chunk.
+  void _ledgerHoldEscape() {
+    _ledgerHoldTimer = null;
+    if (_ledgerHeld.isEmpty) return;
+    ledgerHoldEscapes++;
+    final seqs = _ledgerHeld.keys.toList()..sort();
+    final frames = [for (final s in seqs) _ledgerHeld.remove(s)!];
+    debugPrint(
+      '[ledger] hold escape: applying ${frames.length} held frames '
+      '(hole before seq ${seqs.first})',
+    );
+    for (final frame in frames) {
+      // Admit exactly this frame: the gate drops anything <= contig.
+      _ledgerContig = frame.ledgerSeq! - 1;
+      _onServerMessage(frame);
+    }
+    _persistLedgerCursor();
+    requestSync();
+  }
+
+  /// Plan/145 (verification round) — durable cursor for THIS (epk, room),
+  /// written at safe points only (agent_done, hold escape, history
+  /// baseline): a process death mid-stream must not silently skip the
+  /// un-persisted hole on restart (see the adopt branch in [_ledgerGate]).
+  /// Per-frame writes were deliberately rejected; these points bound the
+  /// replayable tail to a single turn.
+  void _persistLedgerCursor() {
+    final epoch = _ledgerEpoch;
+    if (epoch == null) return;
+    if (epoch == _lastPersistedLedgerEpoch &&
+        _ledgerContig == _lastPersistedLedgerContig) {
+      return;
+    }
+    _lastPersistedLedgerEpoch = epoch;
+    _lastPersistedLedgerContig = _ledgerContig;
+    final epk = _activeEpk;
+    if (epk == null) return;
+    final room = _activeRoomId;
+    final contig = _ledgerContig;
+    // ignore: discarded_futures
+    _enqueue(() async {
+      if (_activeEpk != epk || _activeRoomId != room) return;
+      _boxes.runtimeBox().put(
+        'ledger:${LocalBoxes.sessionKey(epk, room)}',
+        {'epoch': epoch, 'contig': contig},
+      );
+    });
+  }
+
+  /// Report our ledger cursor to the Pi (→ journal replay of the missing
+  /// range, or `sync_needed` when the ring no longer covers the gap).
+  /// Throttled to [_ledgerReportMinSpacing] unless [force]: a chunk flood
+  /// after a flap must not amplify into a report storm (the Pi additionally
+  /// rate-limits its replay bursts per channel).
+  void _reportLedgerSeq({bool force = false}) {
+    final epoch = _ledgerEpoch;
+    final ch = _conn.channel;
+    if (epoch == null || ch == null) return;
+    final now = DateTime.now();
+    if (!force &&
+        now.difference(_lastLedgerReport) < _ledgerReportMinSpacing) {
+      return;
+    }
+    _lastLedgerReport = now;
+    ledgerReportsSent++;
+    unawaited(
+      ch
+          .send(ReportSeq(id: _newId(), seq: _ledgerContig, epoch: epoch))
+          .catchError((Object _) {
+            // Lost to a teardown race — the next gap/tail report re-sends.
+          }),
+    );
+  }
+
+  /// Plan/145 — public hook for the ask-recovery card's Retry: re-report NOW
+  /// (the 1s throttle could otherwise delay the sheet replay visibly).
+  void reportLedgerNow() => _reportLedgerSeq(force: true);
+
+  /// Plan/145 — the tail healer: while a chat is open, re-report the cursor
+  /// every [ledgerTailReportEvery]. This is the ONLY mechanism that heals a
+  /// loss at the END of the stream: a blocked ask_user turn emits no further
+  /// frame that could reveal the gap (the 2026-10-21 screenshot case).
+  /// Refcounted — chat open/leave can overlap during navigation transitions.
+  void setChatForeground(bool value) {
+    _chatForegroundCount += value ? 1 : -1;
+    if (_chatForegroundCount < 0) _chatForegroundCount = 0;
+    if (value && _chatForegroundCount == 1) {
+      _ledgerTailTimer ??= Timer.periodic(ledgerTailReportEvery, (_) {
+        if (_conn.status is! StatusOnline) return;
+        if (_ledgerEpoch == null) return;
+        _reportLedgerSeq();
+      });
+    } else if (!value && _chatForegroundCount == 0) {
+      _ledgerTailTimer?.cancel();
+      _ledgerTailTimer = null;
+    }
+  }
+
+  /// Plan/145 — re-baseline the cursor from a session_history snapshot. The
+  /// snapshot covers every frame up to [SessionHistory.currentSeq], so the
+  /// cursor jumps there and older held frames drop (the merge just delivered
+  /// their content). See the stamping contract in protocol.dart.
+  ///
+  /// Returns true when the cursor advanced. The CALLER persists it — only
+  /// after the snapshot rows actually landed (see the SessionHistory case):
+  /// persisting here would let a crash in between restore a cursor that
+  /// acknowledges history the message box never received, suppressing its
+  /// replay.
+  bool _ledgerBaselineFromHistory(SessionHistory h) {
+    final current = h.currentSeq;
+    if (current == null) return false; // pre-145 Pi
+    if (_ledgerEpoch != h.sessionStartedAt) {
+      _ledgerEpoch = h.sessionStartedAt;
+      _ledgerContig = current;
+      if (_ledgerHeld.isNotEmpty) {
+        ledgerHeldDropped += _ledgerHeld.length;
+        _ledgerHeld.clear();
+      }
+      return true;
+    }
+    if (current > _ledgerContig) {
+      _ledgerContig = current;
+      final stale = _ledgerHeld.keys.where((k) => k <= current).toList();
+      for (final k in stale) {
+        _ledgerHeld.remove(k);
+        ledgerDupsDropped++;
+      }
+      _drainLedgerHeld();
+      return true;
+    }
+    return false;
+  }
+
   SyncService(
     this._conn,
     this._boxes, {
     this.pendingSendTimeout = const Duration(seconds: 20),
     this.localHistoryMax,
     this.syncRetryDelay = const Duration(seconds: 6),
+    this.ledgerHoldEscapeAfter = _defaultLedgerHoldEscapeAfter,
+    this.ledgerTailReportEvery = _defaultLedgerTailReportEvery,
   }) {
     _connSub = _conn.statusStream.listen(_onStatus);
     _roomsSub = _conn.roomsStream.listen((_) {
@@ -301,6 +642,9 @@ class SyncService extends Service {
     _pendingSyncs.clear();
     _gapFillPages = 0;
     _cancelSyncRetryTimer();
+    // Plan/145 — the new room has its own ledger; the first stamped frame
+    // (or the history snapshot) re-baselines it.
+    _resetLedger();
     _activeEpk = epk;
     _activeRoomId = room;
     await _loadIndex();
@@ -768,7 +1112,12 @@ class SyncService extends Service {
       await activate(peer.remoteEpk, _conn.activeRoomId);
     }
     _syncDebounce?.cancel();
-    _syncDebounce = Timer(const Duration(milliseconds: 200), requestSync);
+    _syncDebounce = Timer(const Duration(milliseconds: 200), () {
+      requestSync();
+      // Plan/145 — re-report the ledger cursor on every online edge: the Pi
+      // replays any frames lost during the flap straight from its journal.
+      _reportLedgerSeq(force: true);
+    });
     if (_pendingSyncRequest) requestSync();
   }
 
@@ -782,6 +1131,27 @@ class SyncService extends Service {
     // direct test calls without an origin aren't gated.
     if (originEpk != null && _activeEpk != null && originEpk != _activeEpk) {
       return;
+    }
+    // Plan/145 — delivery-ledger gate: stamped broadcast frames apply
+    // strictly in (epoch, seq) order; duplicates drop, ahead-of-gap frames
+    // hold until the Pi's journal replay fills the hole. Unstamped frames
+    // (unicast answers, pre-145 Pis) bypass the gate untouched.
+    final stamped = msg.ledgerSeq != null && msg.ledgerEpoch != null;
+    if (stamped) {
+      // Plan/145 (review): before activation finished loading this room's
+      // durable cursor, queue instead of gating — the adopt branch would
+      // otherwise run on an empty baseline and silently skip the resume
+      // hole the saved cursor should have detected.
+      if (!_ledgerReady) {
+        if (_preLedgerQueue.length < _preLedgerQueueCap) {
+          _preLedgerQueue.add(msg);
+        } else {
+          ledgerHeldDropped++;
+        }
+        return;
+      }
+      ledgerFramesStamped++;
+      if (!_ledgerGate(msg)) return;
     }
     switch (msg) {
       case AgentChunk(:final inReplyTo, :final delta):
@@ -812,6 +1182,9 @@ class SyncService extends Service {
         // Reconciliation fallback: heal a lost tail when the Pi's cumulative
         // turn text extends what we actually streamed.
         _reconcileTurnText(inReplyTo, text);
+        // Plan/145 (verification round) — turn end is the primary safe point
+        // for the durable cursor.
+        _persistLedgerCursor();
 
       case AgentMessage(:final inReplyTo, :final text):
         // ignore: discarded_futures
@@ -1037,7 +1410,29 @@ class SyncService extends Service {
           _pendingSyncs.remove(msg.inReplyTo);
           if (_pendingSyncs.isEmpty) _cancelSyncRetryTimer();
         }
-        _applyHistory(msg, wasLoadMore: rec?.limit != null);
+        // Plan/145 — re-baseline the ledger cursor to the snapshot (closes
+        // the race with frames broadcast during the sync computation).
+        // Review: the cursor is persisted only AFTER the snapshot rows
+        // landed — a crash in between must not restore a cursor that
+        // acknowledges history the message box never received.
+        final baselineAdvanced = _ledgerBaselineFromHistory(msg);
+        _applyHistory(msg, wasLoadMore: rec?.limit != null).then((_) {
+          if (baselineAdvanced) _persistLedgerCursor();
+        });
+
+      case SyncNeeded(:final reason):
+        // Plan/145 — the Pi's journal can't cover our gap (ring overflow) or
+        // the epoch moved: heal via a full session_sync. Held frames flush
+        // through the escape path so nothing stalls behind the hole.
+        ledgerSyncNeeded++;
+        debugPrint('[ledger] sync_needed ($reason) — full session_sync');
+        if (_ledgerHeld.isNotEmpty) {
+          _ledgerHoldTimer?.cancel();
+          _ledgerHoldTimer = null;
+          _ledgerHoldEscape();
+        } else {
+          requestSync();
+        }
 
       case ErrorMessage(:final code, :final message):
         if (code.contains('unknown_peer')) {
@@ -1107,6 +1502,9 @@ class SyncService extends Service {
       case StartSessionResult():
         break;
     }
+    // Plan/145 — with this frame applied, held followers may now be
+    // contiguous (a journal replay just filled the hole).
+    if (stamped) _drainLedgerHeld();
   }
 
   /// Plan/32 — persist a compaction as a system row so it renders a system
@@ -1232,6 +1630,39 @@ class SyncService extends Service {
         final mapKey = _key(row.role, row.id);
         final existingSeq = _idToSeq[mapKey];
         if (existingSeq == null) {
+          // Plan/145 (verification round) — text that was live-streamed sits
+          // in the box under a throwaway `agent_<uuid>` id (finalize rows are
+          // per-segment; history rows are per-block with amsg ids / legacy
+          // reply ids — different id spaces). Exact-text match (bounded to a
+          // 5-minute window) ⇒ the sync row is the authoritative copy of the
+          // same message: re-key the streamed row IN PLACE (same seq = same
+          // chronology) instead of appending a duplicate bubble. Without
+          // this, every post-turn re-sync duplicated the streamed text — and
+          // a mid-turn reconnect (lost tail) duplicated the head AND dropped
+          // the tail blocks that shared the legacy reply id.
+          if (row.role == MsgRole.assistant) {
+            MapEntry<String, int>? streamed;
+            for (final e in _idToSeq.entries) {
+              if (!e.key.startsWith('assistant:agent_')) continue;
+              final rec = MessageRecord.fromJson(_coerce(box.get(e.value)));
+              if (rec.text == row.text &&
+                  (rec.ts.difference(row.ts).abs())
+                      .compareTo(const Duration(minutes: 5)) <
+                      0) {
+                streamed = e;
+                break;
+              }
+            }
+            if (streamed != null) {
+              _idToSeq.remove(streamed.key);
+              _idToSeq[mapKey] = streamed.value;
+              await box.put(
+                streamed.value,
+                row.copyWith(seq: streamed.value).toJson(),
+              );
+              continue;
+            }
+          }
           // New to this box → append. `_nextSeq` is a monotonic storage
           // identity; it stays chronological for the initial sync + live
           // appends (the only paths in this step). Backward paging
@@ -1384,10 +1815,13 @@ class SyncService extends Service {
               ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
             ),
           );
-        case AgentMessageEvt(:final inReplyTo, :final text):
+        case AgentMessageEvt(:final inReplyTo, :final id, :final text):
           out.add(
             MessageRecord(
-              id: inReplyTo,
+              // Plan/145 (verification round) — prefer the unique block id;
+              // `inReplyTo` is shared by every block of a turn and collapses
+              // them on the merge (first block wins, rest dropped).
+              id: id ?? inReplyTo,
               seq: seq++,
               role: MsgRole.assistant,
               text: text,
@@ -1483,7 +1917,32 @@ class SyncService extends Service {
         if (r.role == MsgRole.user && r.pending) _armSendTimeout(r.id, r.ts);
       }
       _indexLoaded = true;
+      // Plan/145 (verification round) — resume the room's persisted ledger
+      // cursor: a process death mid-stream must still detect its hole.
+      final ledgerRaw = _boxes
+          .runtimeBox()
+          .get('ledger:${LocalBoxes.sessionKey(epk, room)}');
+      if (ledgerRaw is Map) {
+        _persistedLedgerEpoch = (ledgerRaw['epoch'] as num?)?.toInt();
+        _persistedLedgerContig = (ledgerRaw['contig'] as num?)?.toInt() ?? 0;
+      } else {
+        _persistedLedgerEpoch = null;
+        _persistedLedgerContig = 0;
+      }
+      _ledgerReady = true;
+      _flushPreLedgerQueue();
     });
+  }
+
+  /// Replays the pre-activation queue in arrival order once the durable
+  /// cursor is known (see [_ledgerReady]).
+  void _flushPreLedgerQueue() {
+    if (_preLedgerQueue.isEmpty) return;
+    final queued = _preLedgerQueue.toList();
+    _preLedgerQueue.clear();
+    for (final m in queued) {
+      _onServerMessage(m);
+    }
   }
 
   Future<void> _upsert(
@@ -1865,6 +2324,8 @@ class SyncService extends Service {
     _flushTimer?.cancel();
     _syncDebounce?.cancel();
     _runDoneSyncDebounce?.cancel();
+    _ledgerHoldTimer?.cancel();
+    _ledgerTailTimer?.cancel();
     _cancelSyncRetryTimer();
     _cancelAllSendTimers();
     _connSub?.cancel();

@@ -665,7 +665,7 @@ void main() {
   );
 
   group('Plan/137 — ask recovery card + route_error', () {
-    test('pending ask_user without a sheet shows the recovery card (after '
+    test('waiting meta without a sheet shows the recovery card (after '
         'the anti-flash delay), and the arriving sheet hides it', () async {
       final ch = _FakeChannel();
       final storage = _FakeStorage();
@@ -688,40 +688,60 @@ void main() {
       final vm = ChatViewModel(read, sync, conn, prefs, storage);
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      // Turn opens, the agent calls ask_user — but the question frame is
-      // lost (the incident this plan fixes).
+      // Seed the room — meta updates for an unannounced room are ignored.
+      ch.pushControl(
+        const RoomAnnounced(peer: 'epk_chat', roomId: 'main', startedAt: 1),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      // Plan/145 — the 2026-10-21 incident: the ask_user turn starts and
+      // BOTH the tool-start frame and the sheet frame die in one flap.
+      // Only the durable waiting_for_input room meta survives — the card
+      // must key off THAT, not off a ToolEvent row in the local DB.
       ch.push(UserInput(id: 'ask-u1', text: 'plan m6'));
       await Future<void>.delayed(const Duration(milliseconds: 50));
-      ch.push(ToolRequest(
-        toolCallId: 'tc_ask1',
-        tool: 'ask_user',
-        args: null,
+      ch.pushControl(const RoomMetaUpdated(
+        peer: 'epk_chat',
+        roomId: 'main',
+        hasModel: false,
+        hasThinking: false,
+        waitingForInput: true,
       ));
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
       // Anti-flash window: not yet.
       expect((vm.state as ChatReady).askRecovery, isFalse,
-          reason: 'request frame may still be in flight');
+          reason: 'the sheet frame may still be in flight');
 
       // After the delay the card appears — nothing else fires while the
       // agent is blocked in the tool.
       await Future<void>.delayed(const Duration(milliseconds: 3500));
       expect((vm.state as ChatReady).askRecovery, isTrue);
 
-      // Retry path works: the sheet arriving (bridge replay) hides it.
-      ch.push(const ExtensionUiRequest(
+      // Retry path works: the sheet arriving (journal/bridge replay) hides it.
+      ch.push(ExtensionUiRequest(
         id: 'tool:tc_ask1',
         method: ExtensionUiMethod.select,
         title: 'Direction',
-        options: ['Alpha', 'Beta'],
+        options: const ['Alpha', 'Beta'],
       ));
       await Future<void>.delayed(const Duration(milliseconds: 50));
       expect((vm.state as ChatReady).askRecovery, isFalse,
           reason: 'open sheet is the answer path, no card needed');
       expect((vm.state as ChatReady).pendingUiRequest?.id, 'tool:tc_ask1');
 
-      // And once the tool completes, no card even without a sheet.
-      ch.push(ToolResult(toolCallId: 'tc_ask1', result: 'answered'));
+      // The flow resolves AND the meta clears → no card without a sheet.
+      ch.push(ExtensionUiRequest(
+        id: 'tool:tc_ask1',
+        method: ExtensionUiMethod.notify,
+      ));
+      ch.pushControl(const RoomMetaUpdated(
+        peer: 'epk_chat',
+        roomId: 'main',
+        hasModel: false,
+        hasThinking: false,
+        waitingForInput: false,
+      ));
       await Future<void>.delayed(const Duration(milliseconds: 50));
       expect((vm.state as ChatReady).askRecovery, isFalse);
 
@@ -730,8 +750,8 @@ void main() {
       conn.dispose();
     }, timeout: const Timeout(Duration(seconds: 30)));
 
-    test('a SECOND ask_user flow re-arms the recovery timer (PR #59 review #1)',
-        () async {
+    test('no ToolEvent at all: a foreign ctx.ui prompt still surfaces the '
+        'card (the screenshot deadlock)', () async {
       final ch = _FakeChannel();
       final storage = _FakeStorage();
       final conn = ConnectionManager(
@@ -753,34 +773,96 @@ void main() {
       final vm = ChatViewModel(read, sync, conn, prefs, storage);
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      // Flow 1: pending, no sheet → card after the delay; then answered.
-      ch.push(UserInput(id: 'ask-a1', text: 'first question'));
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-      ch.push(ToolRequest(
-        toolCallId: 'tc_a1',
-        tool: 'ask_user',
-        args: null,
+      // Seed the room — meta updates for an unannounced room are ignored.
+      ch.pushControl(
+        const RoomAnnounced(peer: 'epk_chat', roomId: 'main', startedAt: 1),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      // NO ask_user ToolRequest ever arrives (both frames lost). Only the
+      // durable meta says "waiting" — the old event-derived condition could
+      // never fire here.
+      ch.pushControl(const RoomMetaUpdated(
+        peer: 'epk_chat',
+        roomId: 'main',
+        hasModel: false,
+        hasThinking: false,
+        waitingForInput: true,
       ));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect((vm.state as ChatReady).askRecovery, isFalse);
       await Future<void>.delayed(const Duration(milliseconds: 3500));
       expect((vm.state as ChatReady).askRecovery, isTrue,
-          reason: 'first flow armed and fired its timer');
-      ch.push(ToolResult(toolCallId: 'tc_a1', result: 'answered'));
+          reason: 'waiting + no sheet + online is enough — no DB row needed');
+
+      vm.dispose();
+      sync.dispose();
+      conn.dispose();
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('a SECOND waiting window re-arms the recovery timer '
+        '(PR #59 review #1)', () async {
+      final ch = _FakeChannel();
+      final storage = _FakeStorage();
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      final boxes = LocalBoxes();
+      final msgBox = await boxes.msgsBox(_peer.remoteEpk, 'main');
+      await msgBox.clear();
+      final sync = SyncService(conn, boxes);
+      final read = SessionReadRepository(boxes);
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+      await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: 'main');
+
+      conn.adopt(ch, _peer);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      final vm = ChatViewModel(read, sync, conn, prefs, storage);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // Seed the room — meta updates for an unannounced room are ignored.
+      ch.pushControl(
+        const RoomAnnounced(peer: 'epk_chat', roomId: 'main', startedAt: 1),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+
+      const metaWaiting = RoomMetaUpdated(
+        peer: 'epk_chat',
+        roomId: 'main',
+        hasModel: false,
+        hasThinking: false,
+        waitingForInput: true,
+      );
+      const metaIdle = RoomMetaUpdated(
+        peer: 'epk_chat',
+        roomId: 'main',
+        hasModel: false,
+        hasThinking: false,
+        waitingForInput: false,
+      );
+
+      // Window 1: waiting, no sheet → card after the delay; then resolved.
+      ch.pushControl(metaWaiting);
+      await Future<void>.delayed(const Duration(milliseconds: 3500));
+      expect((vm.state as ChatReady).askRecovery, isTrue,
+          reason: 'first window armed and fired its timer');
+      ch.pushControl(metaIdle);
       await Future<void>.delayed(const Duration(milliseconds: 50));
       expect((vm.state as ChatReady).askRecovery, isFalse);
 
-      // Flow 2 with NO other state change in between: the one-shot timer
+      // Window 2 with NO other state change in between: the one-shot timer
       // must re-arm. Pre-fix the slot stayed non-null after the first fire,
       // so nothing recomputed and the second card never appeared.
-      ch.push(UserInput(id: 'ask-a2', text: 'second question'));
+      ch.pushControl(metaWaiting);
       await Future<void>.delayed(const Duration(milliseconds: 50));
-      ch.push(ToolRequest(
-        toolCallId: 'tc_a2',
-        tool: 'ask_user',
-        args: null,
-      ));
+      expect((vm.state as ChatReady).askRecovery, isFalse,
+          reason: 'a fresh window re-arms the anti-flash debounce');
       await Future<void>.delayed(const Duration(milliseconds: 3500));
       expect((vm.state as ChatReady).askRecovery, isTrue,
-          reason: 'second flow must arm its own delayed recompute');
+          reason: 'second window must arm its own delayed recompute');
 
       vm.dispose();
       sync.dispose();

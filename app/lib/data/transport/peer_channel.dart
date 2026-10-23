@@ -118,6 +118,14 @@ class PlainPeerChannel implements IChannel, IControlLink, ITransportSecurityInfo
   static final Queue<String> _seenIds = Queue<String>();
   static final Set<String> _seenIdsSet = <String>{};
 
+  /// Plan/145 (G3) — delivery telemetry: frames dropped by the generic
+  /// decode/cast catch in [_handleFrame] (previously fully silent) and frames
+  /// rejected as unknown types. Read by the diagnostics surfaces; resettable
+  /// in tests. Static so they survive channel re-creation on reconnect — a
+  /// flap is exactly when drops happen.
+  static int decodeDrops = 0;
+  static int unsupportedTypeDrops = 0;
+
   bool _seenBefore(dynamic id) {
     // Only String ids participate (action replies correlate via in_reply_to
     // and carry no id — see _handleFrame). null/absent → never a replay.
@@ -160,7 +168,15 @@ class PlainPeerChannel implements IChannel, IControlLink, ITransportSecurityInfo
       // case (a duplicate of an already-RESOLVED flow) is dropped one layer
       // up: SyncService tracks resolved ids (it observes the completing
       // notify) and refuses to resurrect them.
-      if (msg is! ExtensionUiRequest) {
+      // Plan/145 (review): STAMPED frames bypass this LRU — the SyncService
+      // ledger gate dedups them by (epoch, seq) and must see every copy to
+      // count dups / advance the cursor. Distinct stamped frames can share
+      // an id (steer_consumed carries the user_message's id), so the LRU
+      // would swallow a real frame AND every journal replay of it: the gate
+      // below would never see that seq, hold all later traffic, and force
+      // escapes even on a lossless connection.
+      final stamped = msg.ledgerSeq != null;
+      if (!stamped && msg is! ExtensionUiRequest) {
         Object? id;
         try {
           id = (msg as dynamic).id;
@@ -175,6 +191,7 @@ class PlainPeerChannel implements IChannel, IControlLink, ITransportSecurityInfo
       }
       if (!_controller.isClosed) _controller.add(msg);
     } on UnsupportedTypeException {
+      unsupportedTypeDrops++;
       // Forward-compat: surface unknown server types as ErrorMessage.
       if (!_controller.isClosed) {
         _controller.add(
@@ -182,9 +199,9 @@ class PlainPeerChannel implements IChannel, IControlLink, ITransportSecurityInfo
         );
       }
     } catch (_) {
-      // Malformed frame — drop silently. Previous diagnostic logging
-      // for cast / decode errors lived here; we trust upstream codecs
-      // now that the channel pipeline is stable.
+      decodeDrops++;
+      // Malformed frame — dropped. The decodeDrops counter (plan/145 G3)
+      // makes this visible on the diagnostics surface.
     }
   }
 }

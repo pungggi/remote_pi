@@ -33,6 +33,8 @@ const SERVER_TYPES = new Set<ServerMessage["type"]>([
   "list_projects_result",
   // Plan/124 — reply to start_session_request (revive offline session).
   "start_session_result",
+  // Plan/145 — delivery-ledger fallback nudge (journal overflow / epoch move).
+  "sync_needed",
 ]);
 
 export class DecodeError extends Error {

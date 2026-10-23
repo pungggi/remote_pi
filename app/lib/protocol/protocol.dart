@@ -924,6 +924,27 @@ class SessionSync extends ClientMessage {
   };
 }
 
+/// Plan/145 — delivery-ledger report: tells the Pi the last contiguously
+/// applied broadcast `seq` (under `epoch`). The Pi replays the missing
+/// journal range unicast, or answers `sync_needed` when the ring no longer
+/// covers the gap (or the epoch moved). Sent on gap detection and as a
+/// periodic tail check while a chat is open — the latter is the healer for
+/// the blocked-turn case, where no further frame would ever reveal the loss.
+class ReportSeq extends ClientMessage {
+  final String id;
+  final int seq;
+  final int epoch;
+  ReportSeq({required this.id, required this.seq, required this.epoch});
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'report_seq',
+    'id': id,
+    'seq': seq,
+    'epoch': epoch,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Plan/28 — Typed app actions
 // ---------------------------------------------------------------------------
@@ -1222,11 +1243,24 @@ class StartSessionRequest extends ClientMessage {
 // Sealed: all subtypes in this file — switch exhaustiveness enforced by compiler.
 
 sealed class ServerMessage {
-  const ServerMessage();
+  // Plan/145 — non-const: the delivery-ledger stamp below is mutable state
+  // attached post-construction in [ServerMessage.fromJson]. No subclass ever
+  // had a const constructor, so dropping `const` here is source-compatible.
+  ServerMessage();
+
+  /// Plan/145 — delivery-ledger stamp carried by owner-bound broadcast
+  /// frames (pi-extension `_broadcastToActive`). `ledgerSeq` is a per-room
+  /// monotone int; `ledgerEpoch` is the Pi's `session_started_at`. Both null
+  /// on unicast query answers (session_history, pending-requests replays, …)
+  /// and on pre-145 extensions — the SyncService gate only engages when BOTH
+  /// are present, so a mixed old/new deployment degrades to the heuristic
+  /// healers instead of false gap alarms.
+  int? ledgerSeq;
+  int? ledgerEpoch;
 
   factory ServerMessage.fromJson(Map<String, dynamic> json) {
     final type = json['type'] as String?;
-    return switch (type) {
+    final ServerMessage msg = switch (type) {
       'agent_chunk' => AgentChunk.fromJson(json),
       'agent_done' => AgentDone.fromJson(json),
       'tool_request' => ToolRequest.fromJson(json),
@@ -1277,9 +1311,17 @@ sealed class ServerMessage {
       // the SDK's extension_ui_request RPC contract; optional `ask` envelope
       // carries pi-ask's full question so the app renders multi/preview/notes.
       'extension_ui_request' => ExtensionUiRequest.fromJson(json),
+      // Plan/145 — the journal can't cover our reported gap (frames fell out
+      // of the ring) or the epoch moved on: fall back to a full session_sync.
+      'sync_needed' => SyncNeeded.fromJson(json),
       // forward-compat: unknown types are not fatal — callers catch and log
       _ => throw UnsupportedTypeException(type ?? ''),
     };
+    // Plan/145 — attach the delivery-ledger stamp (absent on unicasts and on
+    // pre-145 extensions). Never parsed per-subclass: it is envelope metadata.
+    msg.ledgerSeq = (json['seq'] as num?)?.toInt();
+    msg.ledgerEpoch = (json['epoch'] as num?)?.toInt();
+    return msg;
   }
 }
 
@@ -1710,6 +1752,13 @@ class SessionHistory extends ServerMessage {
   /// Absent when nothing older remains. `truncated` mirrors `has_more`.
   final String? nextBefore;
 
+  /// Plan/145 — the room's ledger seq at snapshot time. The SyncService
+  /// re-baselines its contiguous-applied cursor to this after merging, which
+  /// closes the sync race (a frame broadcast DURING the sync computation is
+  /// either inside the snapshot — its live copy drops via the seq rule — or
+  /// applies cleanly as `currentSeq + 1`). Null on pre-145 extensions.
+  final int? currentSeq;
+
   /// Plan/140 C — `true` when the keeper (durable-history mirror) served
   /// this page: no live agent is behind the session. The chat shows an
   /// offline banner; any live frame (chunk/done) clears it. Old keepers
@@ -1722,6 +1771,7 @@ class SessionHistory extends ServerMessage {
     required this.eos,
     this.truncated = false,
     this.nextBefore,
+    this.currentSeq,
     this.offline = false,
   });
 
@@ -1737,8 +1787,20 @@ class SessionHistory extends ServerMessage {
         (j['has_more'] as bool?) ??
         false,
     nextBefore: j['next_before'] as String?,
+    currentSeq: (j['current_seq'] as num?)?.toInt(),
     offline: (j['offline'] as bool?) ?? false,
   );
+}
+
+/// Plan/145 — the Pi's journal cannot cover our reported gap (`overflow`:
+/// frames fell out of the ring) or the epoch moved on (`epoch`: restart or
+/// session reset). The SyncService falls back to a full `session_sync`.
+class SyncNeeded extends ServerMessage {
+  final String reason;
+  SyncNeeded({required this.reason});
+
+  factory SyncNeeded.fromJson(Map<String, dynamic> j) =>
+      SyncNeeded(reason: (j['reason'] as String?) ?? 'overflow');
 }
 
 sealed class SessionHistoryEvent {
@@ -1769,6 +1831,7 @@ sealed class SessionHistoryEvent {
       'agent_message' => AgentMessageEvt(
         ts: ts,
         inReplyTo: j['in_reply_to'] as String,
+        id: j['id'] as String?,
         text: j['text'] as String,
       ),
       // Plan/32 — compaction replayed from history so the system bubble
@@ -1825,10 +1888,17 @@ class ToolResultEvt extends SessionHistoryEvent {
 
 class AgentMessageEvt extends SessionHistoryEvent {
   final String inReplyTo;
+
+  /// Plan/145 (verification round) — unique stable row key for this text
+  /// block (`amsg_<ts>` from the new ext). Null on events from pre-fix
+  /// extensions: the row then keys by [inReplyTo] — which collapses
+  /// multi-block turns (all blocks share the last user message id).
+  final String? id;
   final String text;
   const AgentMessageEvt({
     required super.ts,
     required this.inReplyTo,
+    this.id,
     required this.text,
   });
 }
@@ -2453,7 +2523,9 @@ class ExtensionUiRequest extends ServerMessage {
   final String? notifyType; // notify
   final AskEnrichmentWire? ask;
 
-  const ExtensionUiRequest({
+  // Non-const: ServerMessage carries the mutable plan/145 ledger stamp.
+  // No call site ever constructed this const.
+  ExtensionUiRequest({
     required this.id,
     required this.method,
     this.title,

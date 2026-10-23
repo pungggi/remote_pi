@@ -204,6 +204,12 @@ export type ClientMessage =
   // server now honors `limit` up to a payload-guard max instead of clamping
   // to the old 30-event window.
   | { type: "session_sync"; id: string; limit?: number; before?: string }
+  // Plan/145 — delivery ledger: the app reports the last contiguously applied
+  // broadcast `seq` (under `epoch`) so the Pi can replay the missing range from
+  // its in-memory journal instead of waiting for a turn-boundary heuristic.
+  // Answered with the replayed frames themselves, or one `sync_needed` when
+  // the journal can't cover the gap.
+  | { type: "report_seq"; id: string; seq: number; epoch: number }
   // Plan/28 — Typed app actions on the paired Pi session. Each carries a
   // structured payload (no string parsing) and gets either `action_ok` or
   // `action_error` back. Visible side-effects (chat output, model change
@@ -309,7 +315,17 @@ export type SessionHistoryEvent =
   | {
       ts: number;
       type: "agent_message";
+      // Reply context: the id of the user message this answers (stable across
+      // re-syncs). NOTE: all text blocks of one turn share this value — it is
+      // NOT a unique row key.
       in_reply_to: string;
+      // Plan/145 (verification round) — the UNIQUE, stable row key for this
+      // text block: `amsg_<message-ts>` / `amsg_<message-ts>_<n>` for the
+      // n-th extra block of a multi-block assistant message. Older apps key
+      // rows by `in_reply_to` and collapse multi-block turns (first block
+      // wins); newer apps prefer `id` when present. Absent only on events
+      // from pre-fix extensions.
+      id?: string;
       text: string;
       usage?: Usage;
     }
@@ -444,6 +460,12 @@ export type ServerMessage =
       // clients/servers; `truncated` mirrors `has_more`.
       next_before?: string;
       has_more?: boolean;
+      // Plan/145 — the room's ledger seq at snapshot time. The app re-baselines
+      // its contiguous-applied cursor to this after merging the history, which
+      // closes the sync race: a frame broadcast DURING the sync computation is
+      // either inside the snapshot (its live copy is dropped by the seq rule)
+      // or applies cleanly as `current_seq + 1`.
+      current_seq?: number;
     }
   // Plan/28 — Replies for typed app actions.
   // `action_ok` / `action_error` carry the original `ActionName` so the
@@ -516,6 +538,10 @@ export type ServerMessage =
       room_id?: string;
       message?: string;
     }
+  // Plan/145 — the journal cannot cover the client's reported gap (the
+  // missing frames fell out of the ring) or the epoch moved on: the app must
+  // fall back to a full `session_sync`.
+  | { type: "sync_needed"; reason: "epoch" | "overflow" }
   // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors
   // RpcExtensionUIRequest (select/confirm/input/editor/notify); the optional
   // `ask` envelope carries pi-ask's full question so the app renders richly.
@@ -620,3 +646,20 @@ export interface WireProject {
 }
 
 export type ByeReason = "peer_stop" | "session_replaced" | "shutdown";
+
+/**
+ * Plan/145 — a broadcast frame after stamping in `_broadcastToActive`.
+ *
+ * Stamping contract:
+ * - ONLY owner-bound broadcasts (frames fanned out via `_broadcastToActive`,
+ *   including the extension-ui bridge trampoline) carry `seq`/`epoch`.
+ * - Per-sender query answers (`session_history`, `pendingRequests()` replays,
+ *   attach-time queued state, `pair_ok`, …) are NEVER stamped: they are not
+ *   stream members, so a stamp would look like a gap to the receiver.
+ * - `seq` is a per-room monotone int starting at 1; `epoch` is
+ *   `ext.sessionStartedAt` (already the app's Pi-restart detector). A session
+ *   reset restamps the epoch and restarts the seq at 1.
+ * - Old extensions don't stamp (both keys absent) and old apps ignore the
+ *   keys: the ledger degrades gracefully to the pre-145 heuristic healers.
+ */
+export type JournaledFrame = ServerMessage & { seq: number; epoch: number };
