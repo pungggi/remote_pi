@@ -11,6 +11,8 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+## [1.4.2] — 2026-10-23
+
 ### Added
 
 - **Context pressure at a glance (plan/147)** — every online session tile
@@ -29,6 +31,10 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   mojibake wherever an em dash or symbol belonged (double-encoded file
   written in the 1.4.1 backfill). All 58 broken runs repaired; the
   symbols (— ⚠ ❚❚ ▶ ▲ ▼ ·) render properly again.
+- **Model switch keeps its own context window** — switching a session to
+  a different model no longer briefly labels the new model with the
+  previous model's window size and stale fill bar; usage resets until
+  the first response on the new model.
 
 ## [1.4.1] — 2026-10-23
 
