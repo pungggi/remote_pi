@@ -316,10 +316,26 @@ function _currentModelName(): string | undefined {
  * otherwise never surface their model.
  */
 function _setCurrentModel(name: string): void {
+  // PR #67 review — a model switch invalidates the cached context usage:
+  // its tokens/contextWindow describe the PREVIOUS model. Drop it (cache
+  // AND wire — `context_usage: null` rides the same Option<Option> clear
+  // semantics as `git` on the relay) so apps never label the new model
+  // with the old window (`new-model · 200k`) until the first response on
+  // the new model publishes fresh usage.
+  const modelChanged =
+    ext.currentModel !== undefined && ext.currentModel !== name;
   ext.currentModel = name;
-  if (ext.myRoomMeta) ext.myRoomMeta = { ...ext.myRoomMeta, model: name };
+  if (ext.myRoomMeta) {
+    const next = { ...ext.myRoomMeta, model: name };
+    if (modelChanged) delete next.context_usage;
+    ext.myRoomMeta = next;
+  }
   if (ext.relay && ext.myRoomId) {
-    ext.relay.sendControl({ type: "room_meta_update", room_id: ext.myRoomId, meta: { model: name } });
+    ext.relay.sendControl({
+      type: "room_meta_update",
+      room_id: ext.myRoomId,
+      meta: modelChanged ? { model: name, context_usage: null } : { model: name },
+    });
   }
 }
 
