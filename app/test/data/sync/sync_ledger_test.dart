@@ -287,6 +287,72 @@ void main() {
   });
 
   group('cold-start resume (persistence)', () {
+    test('stamped frames arriving before activation queue behind the '
+        'durable cursor load (no premature adopt over the saved hole)',
+        () async {
+      // A first service ends its turn at seq 4 — the durable safe point.
+      final s = await setup();
+      s.ch.push(
+        AgentDone(inReplyTo: 't1')
+          ..ledgerSeq = 4
+          ..ledgerEpoch = _epoch,
+      );
+      await _settle();
+
+      // Second service, same room/epoch. Simulate the pre-load window with
+      // the seam (the real window sits between the listener install in
+      // _onStatus and the Hive-backed _loadIndex completing).
+      final s2 = await setup(epkOverride: s.epk);
+      s2.sync.ledgerReadyForTest = false;
+      s2.ch.push(stampedChunk(6, 'f')); // arrives DURING the load
+      await _settle();
+      expect(
+        s2.sync.preLedgerQueueLength,
+        1,
+        reason: 'queued, not gated against an unloaded cursor',
+      );
+      expect(s2.sync.streaming?.buffer ?? '', isNot(contains('f')));
+
+      // The load completes → flush gates against the LOADED cursor.
+      s2.sync.ledgerReadyForTest = true;
+      await _settle();
+      expect(s2.sync.preLedgerQueueLength, 0);
+      expect(s2.sync.ledgerContig, 4, reason: 'resumed cursor, not adopted 5');
+      expect(s2.sync.ledgerHeldCount, 1, reason: 'seq 6 held behind the hole');
+      final reports = s2.ch.sent.whereType<ReportSeq>().toList();
+      expect(reports, isNotEmpty);
+      expect(reports.last.seq, 4);
+      s2.sync.dispose();
+      s2.conn.dispose();
+      s.sync.dispose();
+      s.conn.dispose();
+    });
+
+    test('durable cursor moves only at safe points (not on bare chunk flow)',
+        () async {
+      final s = await setup();
+      s.ch.push(stampedChunk(1, 'a'));
+      s.ch.push(stampedChunk(2, 'b'));
+      await _settle();
+      expect(s.sync.ledgerContig, 2);
+      // Chunk text still lives only in the streaming buffer — the durable
+      // cursor must NOT cover it (a process death would skip its replay).
+      final key = 'ledger:${LocalBoxes.sessionKey(s.epk, 'main')}';
+      expect(LocalBoxes().runtimeBox().get(key), isNull);
+      // Turn end = safe point → persists.
+      s.ch.push(
+        AgentDone(inReplyTo: 't1')
+          ..ledgerSeq = 3
+          ..ledgerEpoch = _epoch,
+      );
+      await _settle();
+      final raw = LocalBoxes().runtimeBox().get(key);
+      expect(raw, isA<Map>());
+      expect((raw! as Map)['contig'], 3);
+      s.sync.dispose();
+      s.conn.dispose();
+    });
+
     test('process death mid-stream: same-epoch resume detects the hole and '
         'the journal replay heals in order', () async {
       final s = await setup();

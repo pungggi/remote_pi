@@ -220,6 +220,16 @@ class SyncService extends Service {
   /// mid-stream hole DETECTABLE after a process death (the (b1) loss).
   int? _persistedLedgerEpoch;
   int _persistedLedgerContig = 0;
+
+  /// Plan/145 (review) — the ledger gate stays CLOSED until [_loadIndex] has
+  /// read the durable cursor for the active room. Stamped frames arriving
+  /// earlier (the message subscription can go live before activation
+  /// finishes) queue here and replay in arrival order once the cursor is
+  /// known — otherwise the gate's adopt branch runs on an empty baseline
+  /// and silently skips the very gap the saved cursor should have detected.
+  bool _ledgerReady = false;
+  final List<ServerMessage> _preLedgerQueue = [];
+  static const int _preLedgerQueueCap = 512;
   int? _lastPersistedLedgerEpoch;
   int _lastPersistedLedgerContig = -1;
 
@@ -259,6 +269,18 @@ class SyncService extends Service {
   int get ledgerContig => _ledgerContig;
   int get ledgerHeldCount => _ledgerHeld.length;
 
+  /// Test seams (plan/145 review): activation-race queue visibility.
+  bool get ledgerReady => _ledgerReady;
+  int get preLedgerQueueLength => _preLedgerQueue.length;
+
+  /// Test seam (plan/145 review): simulates the pre-/post-activation ledger
+  /// window; setting true flushes the pre-activation queue like [_loadIndex].
+  @visibleForTesting
+  set ledgerReadyForTest(bool v) {
+    _ledgerReady = v;
+    if (v) _flushPreLedgerQueue();
+  }
+
   void _resetLedger() {
     _ledgerEpoch = null;
     _ledgerContig = 0;
@@ -268,6 +290,12 @@ class SyncService extends Service {
     _persistedLedgerContig = 0;
     _lastPersistedLedgerEpoch = null;
     _lastPersistedLedgerContig = -1;
+    // Closed again until the incoming room's _loadIndex finishes.
+    _ledgerReady = false;
+    if (_preLedgerQueue.isNotEmpty) {
+      ledgerHeldDropped += _preLedgerQueue.length;
+      _preLedgerQueue.clear();
+    }
     if (_ledgerHeld.isNotEmpty) {
       ledgerHeldDropped += _ledgerHeld.length;
       _ledgerHeld.clear();
@@ -332,6 +360,14 @@ class SyncService extends Service {
 
   /// Apply held frames that became contiguous. Runs after every applied
   /// stamped frame and after a history re-baseline.
+  ///
+  /// Plan/145 (review): NEVER persists the durable cursor. This method runs
+  /// after every stamped agent_chunk, and chunk text lives only in
+  /// `_streaming`/`_chunkBuf` until finalization — persisting here (even
+  /// only when frames drained) would let a process death restore a cursor
+  /// past text that never reached the message box and suppress its replay.
+  /// The in-memory cursor may run ahead; the durable one only moves at real
+  /// safe points (agent_done, hold escape, history baseline).
   void _drainLedgerHeld() {
     while (true) {
       final next = _ledgerHeld.remove(_ledgerContig + 1);
@@ -343,7 +379,6 @@ class SyncService extends Service {
       _ledgerHoldTimer?.cancel();
       _ledgerHoldTimer = null;
     }
-    _persistLedgerCursor();
   }
 
   void _armLedgerHoldTimer() {
@@ -374,7 +409,7 @@ class SyncService extends Service {
   }
 
   /// Plan/145 (verification round) — durable cursor for THIS (epk, room),
-  /// written at safe points only (agent_done, hold drain/escape, history
+  /// written at safe points only (agent_done, hold escape, history
   /// baseline): a process death mid-stream must not silently skip the
   /// un-persisted hole on restart (see the adopt branch in [_ledgerGate]).
   /// Per-frame writes were deliberately rejected; these points bound the
@@ -455,9 +490,15 @@ class SyncService extends Service {
   /// snapshot covers every frame up to [SessionHistory.currentSeq], so the
   /// cursor jumps there and older held frames drop (the merge just delivered
   /// their content). See the stamping contract in protocol.dart.
-  void _ledgerBaselineFromHistory(SessionHistory h) {
+  ///
+  /// Returns true when the cursor advanced. The CALLER persists it — only
+  /// after the snapshot rows actually landed (see the SessionHistory case):
+  /// persisting here would let a crash in between restore a cursor that
+  /// acknowledges history the message box never received, suppressing its
+  /// replay.
+  bool _ledgerBaselineFromHistory(SessionHistory h) {
     final current = h.currentSeq;
-    if (current == null) return; // pre-145 Pi
+    if (current == null) return false; // pre-145 Pi
     if (_ledgerEpoch != h.sessionStartedAt) {
       _ledgerEpoch = h.sessionStartedAt;
       _ledgerContig = current;
@@ -465,8 +506,7 @@ class SyncService extends Service {
         ledgerHeldDropped += _ledgerHeld.length;
         _ledgerHeld.clear();
       }
-      _persistLedgerCursor();
-      return;
+      return true;
     }
     if (current > _ledgerContig) {
       _ledgerContig = current;
@@ -476,8 +516,9 @@ class SyncService extends Service {
         ledgerDupsDropped++;
       }
       _drainLedgerHeld();
-      _persistLedgerCursor();
+      return true;
     }
+    return false;
   }
 
   SyncService(
@@ -1097,6 +1138,18 @@ class SyncService extends Service {
     // (unicast answers, pre-145 Pis) bypass the gate untouched.
     final stamped = msg.ledgerSeq != null && msg.ledgerEpoch != null;
     if (stamped) {
+      // Plan/145 (review): before activation finished loading this room's
+      // durable cursor, queue instead of gating — the adopt branch would
+      // otherwise run on an empty baseline and silently skip the resume
+      // hole the saved cursor should have detected.
+      if (!_ledgerReady) {
+        if (_preLedgerQueue.length < _preLedgerQueueCap) {
+          _preLedgerQueue.add(msg);
+        } else {
+          ledgerHeldDropped++;
+        }
+        return;
+      }
       ledgerFramesStamped++;
       if (!_ledgerGate(msg)) return;
     }
@@ -1359,8 +1412,13 @@ class SyncService extends Service {
         }
         // Plan/145 — re-baseline the ledger cursor to the snapshot (closes
         // the race with frames broadcast during the sync computation).
-        _ledgerBaselineFromHistory(msg);
-        _applyHistory(msg, wasLoadMore: rec?.limit != null);
+        // Review: the cursor is persisted only AFTER the snapshot rows
+        // landed — a crash in between must not restore a cursor that
+        // acknowledges history the message box never received.
+        final baselineAdvanced = _ledgerBaselineFromHistory(msg);
+        _applyHistory(msg, wasLoadMore: rec?.limit != null).then((_) {
+          if (baselineAdvanced) _persistLedgerCursor();
+        });
 
       case SyncNeeded(:final reason):
         // Plan/145 — the Pi's journal can't cover our gap (ring overflow) or
@@ -1871,7 +1929,20 @@ class SyncService extends Service {
         _persistedLedgerEpoch = null;
         _persistedLedgerContig = 0;
       }
+      _ledgerReady = true;
+      _flushPreLedgerQueue();
     });
+  }
+
+  /// Replays the pre-activation queue in arrival order once the durable
+  /// cursor is known (see [_ledgerReady]).
+  void _flushPreLedgerQueue() {
+    if (_preLedgerQueue.isEmpty) return;
+    final queued = _preLedgerQueue.toList();
+    _preLedgerQueue.clear();
+    for (final m in queued) {
+      _onServerMessage(m);
+    }
   }
 
   Future<void> _upsert(

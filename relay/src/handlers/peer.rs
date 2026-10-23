@@ -591,7 +591,9 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     &dest_room,
                                     Message::Text(fwd_line.clone()),
                                     conn_id,
-                                ) {
+                                )
+                                .await
+                                {
                                     // Plan/141 — undeliverable NOW does not mean
                                     // undeliverable FOREVER: park the (already
                                     // rewritten) envelope in the dest room's

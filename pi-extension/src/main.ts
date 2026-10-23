@@ -1476,7 +1476,47 @@ function _maybeResumeTurnForOwner(channel: PlainPeerChannel): void {
       ? ext.turnText.slice(0, ext.turnText.length - pending.length)
       : ext.turnText;
   if (head !== "") {
-    channel.send({ type: "agent_chunk", in_reply_to: turn, delta: head });
+    // Plan/145 (review, follow-up): replay the turn's ORIGINAL journaled
+    // chunk frames when the ring still holds them — deltas concatenate to
+    // exactly `head` (turnText minus the coalesced pending). Original stamps
+    // keep EVERY owner's ledger consistent: a new-seq unicast head would
+    // punch a hole into every other connected owner's stream (their next
+    // frame gaps → they report → the journal replay hands them the head's
+    // FULL text again → duplicate on a lossless connection). Replayed
+    // originals carry the seqs those owners already have (drop as dups) and
+    // fill the attaching owner's gaps in order through its gate.
+    const turnChunks = ext.roomJournal.filter(
+      (f) =>
+        f.type === "agent_chunk" &&
+        (f as { in_reply_to?: string }).in_reply_to === turn,
+    );
+    const covered =
+      turnChunks.length > 0 &&
+      turnChunks.map((f) => (f as { delta: string }).delta).join("") === head;
+    if (covered) {
+      for (const f of turnChunks) {
+        try {
+          channel.send(f);
+        } catch {
+          /* best-effort per channel */
+        }
+      }
+    } else {
+      // Journal can't cover the accumulated text (turn started with no
+      // owner attached, or the ring rotated past the turn's start): fall
+      // back to a stamped NEW-seq head. Safe for co-owners: any of them
+      // gaps on its next frame, reports, and the replay UNDERFLOWS (the
+      // ring no longer reaches its cursor) → sync_needed, never the head —
+      // so the head text is never duplicated onto a connected owner.
+      // Stamped so the attaching owner's gate dedups its later replay.
+      channel.send(
+        _stampBroadcast({
+          type: "agent_chunk",
+          in_reply_to: turn,
+          delta: head,
+        }),
+      );
+    }
   }
 }
 
@@ -4987,6 +5027,14 @@ async function _handleSessionSync(
   let events: SessionHistoryEvent[] = [];
   let hasMore = false;
   let nextBefore: string | undefined;
+  // Plan/145 (review): capture the ledger watermark BEFORE the async page.
+  // Frames broadcast during the await are absent from the snapshot (it only
+  // covers completed transcript messages), so reading ext.roomSeq AFTER the
+  // await would acknowledge frames the app never received — its cursor would
+  // jump past the hole and no report/replay could ever fill it. The pre-await
+  // watermark can only UNDERSTATE coverage (those frames sit in the journal
+  // and replay on the next report_seq) — never overstate it.
+  const seqWatermark = ext.roomSeq;
   try {
     const page = await _pageHistory(msg.before, msg.limit);
     events = page.events;
@@ -5014,7 +5062,7 @@ async function _handleSessionSync(
     // Plan/145 — the app re-baselines its ledger cursor to this after the
     // merge, closing the sync race (a frame broadcast mid-compute is either
     // in the snapshot or applies as current_seq + 1).
-    current_seq: ext.roomSeq,
+    current_seq: seqWatermark,
   };
   if (nextBefore !== undefined) reply.next_before = nextBefore;
   sender.send(reply);
