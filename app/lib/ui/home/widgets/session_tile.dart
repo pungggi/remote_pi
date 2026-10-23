@@ -12,7 +12,17 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 /// Renders an inline presence dot (plano 12) driven by
 /// [ConnectionManager.presenceStream]: green = online, grey = offline,
 /// no dot = relay hasn't reported yet.
+///
+/// Plan/147 — when the room publishes `context_usage`, a subtle
+/// full-height background wedge (width = used fraction of the model's
+/// context window) paints behind the row, so scanning the online list
+/// shows at a glance which sessions are filling up their context.
 class SessionTile extends StatelessWidget {
+  /// Plan/tablet + Plan/147 — width of the left selection bar. Three
+  /// places must agree on it: the border itself, where the context
+  /// fill wedge starts (past the bar), and the content inset trim.
+  static const double _leftBarWidth = 3;
+
   final PeerRecord peer;
 
   /// `true` when the room is announced live on the relay AND the
@@ -77,6 +87,7 @@ class SessionTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final contextFraction = _contextFraction(room?.contextUsage);
     return Material(
       color: colors.bg,
       child: InkWell(
@@ -90,42 +101,60 @@ class SessionTile extends StatelessWidget {
             border: Border(
               left: BorderSide(
                 color: isSelected ? colors.accent : Colors.transparent,
-                width: 3,
+                width: _leftBarWidth,
               ),
             ),
           ),
-          child: Padding(
-            // Trim the left inset by the 3px accent bar so content stays
-            // aligned whether selected or not.
-            padding: EdgeInsets.fromLTRB(isSelected ? 15 : 18, 14, 18, 14),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                _Avatar(name: _avatarName()),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: _TitleBlock(peer: peer, room: room, git: git),
+          child: Stack(
+            children: [
+              // Plan/147 — context fill: a full-height wedge behind the
+              // row whose width mirrors the model's context-window usage.
+              // Starts past the 3px left border (accent when selected,
+              // transparent otherwise) so it aligns with the content.
+              if (contextFraction != null)
+                Positioned.fill(
+                  left: _leftBarWidth,
+                  child: _ContextFill(
+                    fraction: contextFraction,
+                    tint: _contextTint(colors, contextFraction),
+                  ),
                 ),
-                if (room?.keeper ?? false) ...[
-                  // Plan/140 C — durable-history mirror: the room is served
-                  // from the transcript by the PC's keeper; no live agent.
-                  Icon(LucideIcons.archive, size: 13, color: colors.muted),
-                  const SizedBox(width: 8),
-                ],
-                if (notifyOnDone) ...[
-                  // Plan/132 — muted bell so it never competes with the
-                  // presence dot; it's a state marker, not an alert.
-                  Icon(LucideIcons.bell, size: 13, color: colors.muted),
-                  const SizedBox(width: 8),
-                ],
-                _PresenceDot(
-                  isLive: isLive,
-                  isReconnecting: isReconnecting,
-                  isWorking: isWorking,
-                  isWaitingForInput: isWaitingForInput,
+              Padding(
+                // Trim the left inset by the selection bar so content
+                // stays aligned whether selected or not.
+                padding: EdgeInsets.fromLTRB(
+                  isSelected ? 18 - _leftBarWidth : 18, 14, 18, 14,
                 ),
-              ],
-            ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    _Avatar(name: _avatarName()),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: _TitleBlock(peer: peer, room: room, git: git),
+                    ),
+                    if (room?.keeper ?? false) ...[
+                      // Plan/140 C — durable-history mirror: the room is served
+                      // from the transcript by the PC's keeper; no live agent.
+                      Icon(LucideIcons.archive, size: 13, color: colors.muted),
+                      const SizedBox(width: 8),
+                    ],
+                    if (notifyOnDone) ...[
+                      // Plan/132 — muted bell so it never competes with the
+                      // presence dot; it's a state marker, not an alert.
+                      Icon(LucideIcons.bell, size: 13, color: colors.muted),
+                      const SizedBox(width: 8),
+                    ],
+                    _PresenceDot(
+                      isLive: isLive,
+                      isReconnecting: isReconnecting,
+                      isWorking: isWorking,
+                      isWaitingForInput: isWaitingForInput,
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -308,7 +337,7 @@ class _TitleBlockState extends State<_TitleBlock> {
           overflow: TextOverflow.ellipsis,
         );
     Widget modelLine() => Text(
-          _truncateModel(model!),
+          _modelLabel(model!, widget.room?.contextUsage?.contextWindow),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
@@ -345,8 +374,83 @@ class _TitleBlockState extends State<_TitleBlock> {
   }
 }
 
-String _truncateModel(String name) =>
-    name.length <= 24 ? name : '${name.substring(0, 21)}…';
+/// `claude-sonnet-4-5 · 200k` — model display name plus the model's
+/// context window (from the live `context_usage` meta), so a glance at
+/// the Home list shows WHICH model runs and how much runway it has.
+/// Windows below 1k render no suffix — `(400/1000).round()` would paint
+/// a misleading `· 0k`. Without usage the plain truncated name renders,
+/// exactly as before.
+String _modelLabel(String name, int? contextWindow) {
+  final suffix = (contextWindow == null || contextWindow < 1000)
+      ? ''
+      : ' · ${(contextWindow / 1000).round()}k';
+  final trimmed = name.length <= 24 ? name : '${name.substring(0, 21)}…';
+  return '$trimmed$suffix';
+}
+
+/// Plan/147 — fraction of the model's context window in use, or null
+/// when unknown (`context_usage` starts flowing after the first LLM
+/// response). Prefers the SDK-reported `percent`, falls back to
+/// `tokens / contextWindow`; a null `percent` right after compaction
+/// still yields a bar from raw token counts.
+double? _contextFraction(ContextUsage? usage) {
+  if (usage == null) return null;
+  final double? raw = usage.percent != null
+      ? usage.percent! / 100
+      : usage.tokens != null
+          ? usage.tokens! / usage.contextWindow
+          : null;
+  if (raw == null) return null;
+  return raw.clamp(0.0, 1.0);
+}
+
+/// Pressure tint for the context fill — same 70/90 thresholds as the
+/// chat-header meter (plan/115) so both gauges always tell the same
+/// story. Alphas stay low on purpose: the bar must read as a subtle
+/// background hint and never compete with the selected-tile highlight.
+///
+/// The tint switches INSTANTLY between bands (no color tween): pressure
+/// bands are discrete states — like the chat pill — while the width
+/// animation below already eases the continuous part of the signal.
+Color _contextTint(AppColors colors, double fraction) {
+  if (fraction >= 0.9) return colors.error.withValues(alpha: 0.10);
+  if (fraction >= 0.7) return colors.warning.withValues(alpha: 0.08);
+  return colors.accent.withValues(alpha: 0.05);
+}
+
+/// Plan/147 — the context-window fill behind a tile: a full-height wedge
+/// anchored left, its width the used fraction of the model's context
+/// window. The width eases between values so a long-running turn visibly
+/// "fills" the tile instead of snapping at response boundaries.
+class _ContextFill extends StatelessWidget {
+  final double fraction;
+  final Color tint;
+
+  const _ContextFill({required this.fraction, required this.tint});
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: AnimatedFractionallySizedBox(
+        key: const ValueKey('session-tile-context-fill'),
+        widthFactor: fraction.clamp(0.0, 1.0),
+        heightFactor: 1.0,
+        duration: const Duration(milliseconds: 400),
+        curve: Curves.easeOutCubic,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: tint,
+            // Soft right edge: reads as a gauge, not a stuck overlay;
+            // flush on the left where it meets the tile border.
+            borderRadius:
+                const BorderRadius.horizontal(right: Radius.circular(6)),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _Avatar extends StatelessWidget {
   final String name;

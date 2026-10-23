@@ -13,6 +13,15 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
+- **Home tiles: context-window gauge (plan/147)** — a subtle full-height
+  background wedge per tile (width = used fraction of the model's context
+  window; accent/warning/error tint at the 70/90 pressure thresholds, the
+  same as the chat-header meter) plus the max context window behind the
+  model name in the subtitle (`claude-sonnet-4-5 · 200k`). Pure view-layer
+  change on the existing `room_meta.context_usage` feed — no protocol
+  change; the fraction falls back to `tokens/contextWindow` when `percent`
+  is null right after compaction, and rooms without usage keep the old
+  look.
 - **Home session tiles alternate git branch and model (shipped in app 1.4.1)**
   — the tile subtitle flips every 3 s between the posh-git summary
   (branch / ahead / behind / dirty / stash) and the selected model when a
@@ -129,6 +138,15 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   a durable value in `SyncService` (mirroring `streaming`/`working`), so a
   missed request surfaces when the chat next opens; a flow that already resolved
   is correctly not re-surfaced.
+
+### Fixed
+
+- **app/assets/CHANGELOG.md was double-encoded** — the 1.4.1 backfill
+  (e4ae5690) wrote the asset through a PS redirect, turning every non-ASCII
+  char into mojibake (`â€”` for `—`, etc.); the in-app changelog viewer
+  displayed the garbage. A one-shot cp1252→UTF-8 round-trip repaired all
+  58 runs; shipped 1.4.1 APKs were unaffected (the release tag predates
+  the backfill).
 
 ---
 
