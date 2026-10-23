@@ -13,6 +13,15 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
+- **Home session tiles alternate git branch and model (shipped in app 1.4.1)**
+  — the tile subtitle flips every 3 s between the posh-git summary
+  (branch / ahead / behind / dirty / stash) and the selected model when a
+  session publishes both, driven by a single ref-counted `_SubtitleClock`
+  so every tile switches in lock-step (one coordinated alternation, not
+  per-tile flicker). 300 ms crossfade; static precedence
+  (git → model → "Last paired") when only one signal exists. The git
+  snapshot used to fully replace the model subtitle, so the selected LLM
+  was never visible in the session list while a git status was known.
 - **Mermaid diagram previews via `show_file` (plan/144)** — the agent can now
   push a Mermaid source file (`.mmd`/`.mermaid`, or any file with
   `kind: "mermaid"`) to the phone, where it renders as an actual diagram

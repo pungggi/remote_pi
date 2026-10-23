@@ -11,180 +11,210 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+## [1.4.1] â€” 2026-10-23
+
 ### Added
 
-- **Mermaid diagram previews** — when the agent shows you a diagram source
-  (`.mmd` file), tapping the bubble now opens the rendered diagram instead of
-  raw text: pan and pinch-zoom, dark/light to match the app, and it works
+- **Session list alternates branch and model** â€” each session's second line
+  now flips between the git branch summary and the selected model every
+  3 seconds, in lock-step across all sessions: one glance covers what every
+  agent is working on and which model it runs. Sessions that publish only
+  one of the two keep showing that one.
+
+- **Mermaid diagram previews** â€” when the agent shows you a diagram source
+  (`.mmd` file), tapping the bubble now opens the rendered diagram instead
+  of raw text: pan and pinch-zoom, dark/light to match the app, and it works
   fully offline (the renderer ships inside the app). Broken diagram syntax
   shows a readable error rather than hanging.
 
-- **Completion notifications** — long-press a session and flip "Notify when
+- **Completion notifications** â€” long-press a session and flip "Notify when
   finished": when that session's agent run ends while the app is
   backgrounded (and the background connection is alive), you get a system
   notification naming the session; tapping it opens that chat. Tasks started
   from the computer's terminal count too. No message content ever travels in
   the notification. Requires the relay + Pi extension shipped with this
-  release (older relays silently drop the marker — everything else keeps
+  release (older relays silently drop the marker â€” everything else keeps
   working).
+
+- **"Pi is waiting for you" notifications** â€” whenever an agent blocks on a
+  question or confirmation at the terminal, you get a system notification
+  (foreground and background alike); tapping it opens that chat. The banner
+  clears itself when the prompt is answered. Covers any extension's prompt,
+  not just pi-ask's.
+
+- **Chat archive for offline sessions** â€” sessions served from the PC's
+  transcript archive keep their history readable even when no live agent is
+  attached; archived rooms carry a badge and never mix with live ones.
+
+- **Text size setting** â€” adjust the app's text size in Settings.
 
 ### Fixed
 
-- **Insecure-connection banner trusts Tailscale overlay dials** — pointing
+- **No more lost replies while the phone is offline** â€” commands and replies
+  that crossed while the phone had no connection are held in a per-room
+  mailbox on the relay and delivered on reconnect; a delivery ledger with
+  journal replay recovers anything a flaky link would have dropped.
+
+- **Insecure-connection banner trusts Tailscale overlay dials** â€” pointing
   the app at the relay over the tailnet (`http://100.x.y.z:3000`, a
   `*.ts.net` name, or a `fd7a:115c:a1e0::` address) no longer shows the
   warning: that traffic is WireGuard-encrypted regardless of the plain
   `http://` scheme. The banner previously stayed up even when you followed
   its own advice ("use an overlay (Tailscale) relay").
 
-## [1.4.0] — 2026-08-24
+- **Background crash shortly after leaving the app fixed (Android 15)** â€”
+  the keep-alive foreground service now reaches the foreground state before
+  its timeout window closes, so background connectivity no longer dies with
+  a crash.
+
+## [1.4.0] â€” 2026-08-24
 
 ### Added
 
-- **Pause button in the chat navigation pill** — tap ❚❚ to freeze the view
+- **Pause button in the chat navigation pill** â€” tap âšâš to freeze the view
   wherever it is while the agent keeps working: streamed replies, new
-  messages and tool calls no longer move what you're reading. Tap ▶ (or
+  messages and tool calls no longer move what you're reading. Tap â–¶ (or
   jump-to-newest) to catch up and follow the live reply again like before.
 
-## [1.3.6] — 2026-08-21
+## [1.3.6] â€” 2026-08-21
 
 ### Fixed
 
-- **Everything missed while offline now loads automatically** — messages
+- **Everything missed while offline now loads automatically** â€” messages
   generated while the phone was away (any gap length) are backfilled: sync
   replies lost to a flaky connection are re-requested, history keeps paging
   older until it reaches what you already have, and every app resume triggers
   a catch-up sync.
 
-## [1.3.5] — 2026-08-21
+## [1.3.5] â€” 2026-08-21
 
 ### Fixed
 
-- **Reading older messages while a reply is streaming finally works** — the
+- **Reading older messages while a reply is streaming finally works** â€” the
   view used to snap back to the newest message every time the reply grew,
   making it impossible to scroll up during generation. The viewport now stays
   exactly where you left it (your scroll gesture is no longer interrupted),
   and follows the live reply again once you scroll back to the bottom.
 
-## [1.3.4] — 2026-08-21
+## [1.3.4] â€” 2026-08-21
 
 ### Fixed
 
-- **Responses no longer stay invisible until you re-enter the chat** — if the
+- **Responses no longer stay invisible until you re-enter the chat** â€” if the
   app connected while a reply was already being generated (chat opened
   mid-turn, phone reconnected after the screen turned off), the stream and
   its "done" signal were never delivered. The PC now replays the in-flight
   text the moment the app attaches and resumes streaming live from there.
-- **"Jump to message" works again for far-away messages** — tapping a user
+- **"Jump to message" works again for far-away messages** â€” tapping a user
   message in the session navigator now scrolls there even when the target is
   beyond the lazily-built list window, hopping one screen at a time.
 
 ### Performance
 
-- **Smoother streaming on long replies** — text deltas are coalesced into
+- **Smoother streaming on long replies** â€” text deltas are coalesced into
   short frames on the PC side, cutting per-frame signature work on the phone
   by 3-6x with no visible change in granularity.
 
-## [1.3.3] — 2026-08-21
+## [1.3.3] â€” 2026-08-21
 
 ### Fixed
 
-- **Fresh pairings complete reliably again** — the phone's first-contact
+- **Fresh pairings complete reliably again** â€” the phone's first-contact
   envelope was addressed to a key hash the PC rejected, making pairing
   time out for good measure.
-- **No more freezes or battery drain while the agent replies** — Ed25519
+- **No more freezes or battery drain while the agent replies** â€” Ed25519
   signature verification moved to a background isolate (previously it ran
   on the UI thread; a long reply could peg the CPU and stall the app).
-- **Projects screen and quick actions no longer time out** — replies that
+- **Projects screen and quick actions no longer time out** â€” replies that
   carry no message id (project list, worktrees, layout changes) were being
   silently swallowed by replay dedup.
 
-## [1.3.2] — 2026-08-16
+## [1.3.2] â€” 2026-08-16
 
 ### Fixed
 
-- **Fresh installs no longer time out** — a failed first mesh-blob publish
+- **Fresh installs no longer time out** â€” a failed first mesh-blob publish
   is now retried on every poll tick and app resume instead of never
   (the relay's mesh gate needs the blob to authorize presence/rooms).
-- **UI freeze during agent replies fixed** — inbound frames are processed
+- **UI freeze during agent replies fixed** â€” inbound frames are processed
   in parallel again; per-frame debug logging removed.
 
-## [1.3.1] — 2026-08-14
+## [1.3.1] â€” 2026-08-14
 
 ### Security
 
-- **Hardened message signatures (plan 130 follow-up)** — signatures now
+- **Hardened message signatures (plan 130 follow-up)** â€” signatures now
   also bind the recipient Pi (a relay can no longer redirect a signed
   command to another of your machines) and carry a timestamp so captured
   messages can't be replayed. Older apps and Pis keep working during the
   upgrade; a relay attempting to strip or downgrade signatures is detected
   and the frames are rejected.
-- **Replay protection survives reconnects** — duplicate message IDs are
+- **Replay protection survives reconnects** â€” duplicate message IDs are
   remembered across connection drops on both sides.
-- **Subscription re-validation on the relay** — revoked mesh members stop
+- **Subscription re-validation on the relay** â€” revoked mesh members stop
   receiving presence/room updates within ~2 minutes instead of keeping
   them indefinitely.
-- **Symlink-proof remote working-directory policy** — remote terminal and
+- **Symlink-proof remote working-directory policy** â€” remote terminal and
   session starts can no longer escape the configured project roots via
   symlinked paths.
 
-## [1.3.0] — 2026-08-14
+## [1.3.0] â€” 2026-08-14
 
 ### Security
 
-- **Signed messages (plan 130)** — every message between the app and the
+- **Signed messages (plan 130)** â€” every message between the app and the
   Pi is now cryptographically signed by the sender's device key. A
   compromised or malicious relay can no longer impersonate your paired
   Pi (or the app): after the first verified signed message, unsigned
-  frames from that peer are rejected automatically. Transition-safe —
+  frames from that peer are rejected automatically. Transition-safe â€”
   pairs with an older Pi keep working until both sides upgrade.
-- **Insecure-connection warning** — while connected over a plaintext
+- **Insecure-connection warning** â€” while connected over a plaintext
   `ws://` relay (the default home-LAN dial), a persistent banner on Home
   warns that traffic is readable on this network. Use an `https://` or
   overlay (Tailscale) relay to clear it.
-- **Hardened relay** — message-size limits, an auth-handshake timeout,
+- **Hardened relay** â€” message-size limits, an auth-handshake timeout,
   and mesh-membership gating for presence/room metadata (other relay
   clients can no longer see your PC's sessions without being paired into
   your mesh). Requires relay 0.3.x deployed alongside.
 
 ### Added
 
-- **Steer vs Follow-up choice while working (plan 127)** — while the agent
+- **Steer vs Follow-up choice while working (plan 127)** â€” while the agent
   is working, a segmented **[Steer | Follow-up]** toggle above the composer
-  lets you queue a message as the **next** turn (clock icon, "queued · next
+  lets you queue a message as the **next** turn (clock icon, "queued Â· next
   turn") instead of injecting into the running one (route icon; steer stays
   the default). Follow-ups drain in order when the current turn ends and
   render consistently across paired devices.
 
 ---
 
-## [0.2.0] — 2026-07-30
+## [0.2.0] â€” 2026-07-30
 
 ### Added
 
-- **PC mesh foundation** — the app is no longer tied to one PC. Pair
+- **PC mesh foundation** â€” the app is no longer tied to one PC. Pair
   multiple machines into a mesh of coding agents. The Owner-key syncs
   across your devices via platform credential stores (iCloud / Google),
   so reinstalling the app restores your peers automatically.
-- **Cross-PC messaging** — send messages between coding agents on
+- **Cross-PC messaging** â€” send messages between coding agents on
   different PCs through the relay. Prefix addressing (`<pc>:<agent>`)
   routes envelopes across machines, with delivery ACKs so you know when
   a message arrived.
-- **Daemon mode** — Pi can run as a background daemon so your mesh stays
+- **Daemon mode** â€” Pi can run as a background daemon so your mesh stays
   alive even when no terminal is open.
-- **Multi-device chat** — pair multiple phones to the same Pi. Messages
+- **Multi-device chat** â€” pair multiple phones to the same Pi. Messages
   echo to every paired device so all views stay in sync.
-- **Copy agent replies** — one tap on any assistant bubble copies the
+- **Copy agent replies** â€” one tap on any assistant bubble copies the
   full reply to clipboard.
-- **Jump to your messages** — ▲/▼ pill in the chat transcript jumps
+- **Jump to your messages** â€” â–²/â–¼ pill in the chat transcript jumps
   between your own questions instead of scrolling.
-- **Pin projects to top** — tap the pin icon on any project to keep it
+- **Pin projects to top** â€” tap the pin icon on any project to keep it
   at the top of the Projects list.
-- **About & What's new** — Settings now shows the app version and an
+- **About & What's new** â€” Settings now shows the app version and an
   in-app changelog so you know what changed after an update.
-- **Start session** — long-press an offline session to bring it back to
+- **Start session** â€” long-press an offline session to bring it back to
   life in its original working directory, with the full conversation
-  history intact. Not a permanent pin — the session goes offline again
+  history intact. Not a permanent pin â€” the session goes offline again
   after a PC restart.
 
 ### Changed
@@ -199,7 +229,7 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 - Pending message bubbles no longer get stuck after a network hiccup.
 - Chat title no longer flashes the default on open.
 - App no longer silently drops session history sync on cold start.
-- Relay control frames deduplicated — fixes Android CPU spikes with
+- Relay control frames deduplicated â€” fixes Android CPU spikes with
   multiple connected devices.
 - Pairing no longer rejects a second phone pairing to the same Pi.
 
@@ -211,7 +241,7 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
 
-## [0.1.3] — 2026-05-22
+## [0.1.3] â€” 2026-05-22
 
 ### Added
 
