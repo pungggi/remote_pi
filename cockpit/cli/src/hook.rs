@@ -241,13 +241,12 @@ mod tests {
 
     #[test]
     fn subagente_e_compactacao_do_codex_sao_inertes() {
-        for ev in [
-            "SubagentStart",
-            "SubagentStop",
-            "PreCompact",
-            "PostCompact",
-        ] {
-            assert_eq!(status_for(ev, &json!({})), None, "{ev} não deve mover a aba");
+        for ev in ["SubagentStart", "SubagentStop", "PreCompact", "PostCompact"] {
+            assert_eq!(
+                status_for(ev, &json!({})),
+                None,
+                "{ev} não deve mover a aba"
+            );
         }
     }
 
@@ -278,10 +277,7 @@ mod tests {
 
     #[test]
     fn harness_aceita_as_duas_formas() {
-        assert_eq!(
-            harness_from(&["--harness".into(), "codex".into()]),
-            "codex"
-        );
+        assert_eq!(harness_from(&["--harness".into(), "codex".into()]), "codex");
         assert_eq!(harness_from(&["--harness=codex".into()]), "codex");
     }
 

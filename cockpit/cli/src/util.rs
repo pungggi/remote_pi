@@ -103,7 +103,14 @@ mod tests {
 
     #[test]
     fn resolve_path_mantem_absoluto_intacto() {
-        assert_eq!(resolve_path("/tmp/x"), "/tmp/x");
+        // Absoluto é relativo à plataforma: "/tmp/x" não é absoluto no
+        // Windows (sem letra de drive) e cairia no join com o cwd — o
+        // equivalente lá é um caminho com drive.
+        if cfg!(windows) {
+            assert_eq!(resolve_path("C:/tmp/x"), "C:/tmp/x");
+        } else {
+            assert_eq!(resolve_path("/tmp/x"), "/tmp/x");
+        }
     }
 
     #[test]

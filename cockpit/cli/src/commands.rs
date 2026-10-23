@@ -238,7 +238,10 @@ pub fn browse_url(args: &[String]) -> ! {
     }
 
     let Some(url) = url.filter(|u| !u.is_empty()) else {
-        die(&format!("cockpit browse: missing <url>\n\n{BROWSE_HELP}"), 2)
+        die(
+            &format!("cockpit browse: missing <url>\n\n{BROWSE_HELP}"),
+            2,
+        )
     };
 
     let mut cmd_args = Map::new();

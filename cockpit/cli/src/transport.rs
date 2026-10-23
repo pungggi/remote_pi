@@ -61,6 +61,11 @@ impl Write for Conn {
 /// não estão setadas (não estamos dentro de um terminal do Cockpit).
 /// Flavor assado no binário pelo build (ver `build.rs`). `Some("debug")` no
 /// build de desenvolvimento.
+///
+/// `#[cfg(unix)]`: único consumidor é [candidate_sockets]; sem isto o Windows
+/// (que conecta por porta TCP, não por socket) vê um const morto e o clippy
+/// `-D warnings` quebra o job da matriz windows-latest.
+#[cfg(unix)]
 const FLAVOR: Option<&str> = option_env!("COCKPIT_FLAVOR");
 
 /// Sockets a tentar, em ordem: o do ambiente (injetado pelo app na PTY da aba)
