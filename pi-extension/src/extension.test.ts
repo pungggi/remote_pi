@@ -7605,6 +7605,49 @@ describe("model meta", () => {
     expect(updates[0]!.meta?.model).toBe("internal-fallback-id");
   });
 
+  test("PR #67 review: a model switch clears cached context_usage on the wire", async () => {
+    // Usage belongs to the model that produced it. After a switch the
+    // cached tokens/contextWindow describe the PREVIOUS model, so
+    // `_setCurrentModel` must tombstone `context_usage: null` alongside
+    // the new name (same Option<Option> clear semantics as `git`) —
+    // otherwise the Home tile labels e.g. a 1M-window model `· 200k`
+    // until the next response republishes fresh usage.
+    captureHandler("remote-pi");
+    // Seed the SDK-side usage source the connect-time hello reads
+    // (main.ts:3547) so ext.myRoomMeta carries context_usage up front.
+    const onSessionStart = captureEventHandler("session_start");
+    onSessionStart(
+      { type: "session_start" },
+      {
+        ui: { notify: vi.fn() },
+        cwd: "/tmp/remote-pi-model-switch-usage",
+        abort: vi.fn(),
+        getContextUsage: () => ({ tokens: 100000, contextWindow: 200000, percent: 50 }),
+      } as never,
+    );
+    await _connectForTest(makeMockCtx("/tmp/remote-pi-model-switch-usage"));
+
+    const onModelSelect = captureEventHandler("model_select");
+    // First select: no previous model recorded → no invalidation to do.
+    onModelSelect({ type: "model_select", model: { name: "old-model" } });
+    // Second select = the switch under test.
+    onModelSelect({ type: "model_select", model: { name: "new-model" } });
+
+    const updates = relayRef.current!.sendControl.mock.calls
+      .map((c) => c[0] as { type: string; meta?: { model?: string; context_usage?: unknown } })
+      .filter((f) => f.type === "room_meta_update" && f.meta?.model);
+    expect(updates).toHaveLength(2);
+    expect(updates[0]!.meta?.model).toBe("old-model");
+    // Whether the FIRST select counts as a switch depends on whether
+    // connect seeded a default model (settings fallback) — but either
+    // way it must never pair a LIVE usage blob with a model change.
+    if ("context_usage" in (updates[0]!.meta ?? {})) {
+      expect(updates[0]!.meta?.context_usage).toBeNull();
+    }
+    expect(updates[1]!.meta?.model).toBe("new-model");
+    expect(updates[1]!.meta?.context_usage).toBeNull();
+  });
+
   test("model_select with no model (undefined) is silently ignored", async () => {
     captureHandler("remote-pi");
     await _connectForTest(makeMockCtx("/tmp/remote-pi-model-noop"));

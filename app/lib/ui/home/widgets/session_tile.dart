@@ -404,17 +404,23 @@ double? _contextFraction(ContextUsage? usage) {
   return raw.clamp(0.0, 1.0);
 }
 
-/// Pressure tint for the context fill — same 70/90 thresholds as the
-/// chat-header meter (plan/115) so both gauges always tell the same
-/// story. Alphas stay low on purpose: the bar must read as a subtle
-/// background hint and never compete with the selected-tile highlight.
+/// Pressure tint for the context fill. The 17/24/35/50 ladder is
+/// user-tuned (plan/147 device review): a pi session gets compacted or
+/// wrapped LONG before the raw window fills, so by the time the chat
+/// meter would call 70% "warm", this list already needs to point at the
+/// session — 50% of the window is "compact now" territory.
+///
+/// Prominence rises monotonically: the alpha steps up at EVERY threshold
+/// and the hue escalates accent → warning → error.
 ///
 /// The tint switches INSTANTLY between bands (no color tween): pressure
 /// bands are discrete states — like the chat pill — while the width
 /// animation below already eases the continuous part of the signal.
 Color _contextTint(AppColors colors, double fraction) {
-  if (fraction >= 0.9) return colors.error.withValues(alpha: 0.10);
-  if (fraction >= 0.7) return colors.warning.withValues(alpha: 0.08);
+  if (fraction >= 0.50) return colors.error.withValues(alpha: 0.18);
+  if (fraction >= 0.35) return colors.warning.withValues(alpha: 0.14);
+  if (fraction >= 0.24) return colors.warning.withValues(alpha: 0.10);
+  if (fraction >= 0.17) return colors.accent.withValues(alpha: 0.09);
   return colors.accent.withValues(alpha: 0.05);
 }
 

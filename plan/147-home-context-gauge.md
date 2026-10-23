@@ -40,10 +40,12 @@ All changes live in `app/lib/ui/home/widgets/session_tile.dart`:
   SDK `percent`, falls back to `tokens / contextWindow` (covers the
   post-compaction window where `percent` is null but tokens flow
   again).
-- `_contextTint(colors, fraction)` — pressure tint with the SAME 70/90
-  thresholds as the chat-header meter: accent @ 0.05 alpha below 70%,
-  warning @ 0.08 at 70–90%, error @ 0.10 at ≥ 90%. Low alphas keep it
-  a background hint, never competing with the selected-tile highlight.
+- `_contextTint(colors, fraction)` — pressure tint on the user-tuned
+  17/24/35/50 ladder (device-review tuning: sessions are compacted long
+  before the window fills, so 50% is already "compact now"):
+  accent @ 0.05 below 17%, accent @ 0.09 at 17–24%, warning @ 0.10 at
+  24–35%, warning @ 0.14 at 35–50%, error @ 0.18 at ≥ 50%. Alpha rises
+  monotonically; hue escalates accent → warning → error.
 - `_ContextFill` — `AnimatedFractionallySizedBox` wedge behind the row
   content (400ms ease-out-cubic), full tile height, anchored left past
   the 3px selection border, soft rounded right edge.
@@ -61,10 +63,13 @@ All changes live in `app/lib/ui/home/widgets/session_tile.dart`:
 ### Acceptance criteria
 
 - Online sessions with usage show a wedge whose width tracks
-  `percent`; a tile at 80% renders visibly wider than one at 20%.
-- Tint shifts warning-ward at ≥ 70% and error-ward at ≥ 90%.
+  `percent`; a tile at 40% renders visibly wider than one at 15%.
+- Tint escalates at 17/24/35/50 (distinct at every band, monotonically
+  more prominent — see the ladder test).
 - Rooms without usage (fresh session, keeper mirror, offline cache)
   render exactly as before — no bar, no suffix.
+- Usage is never attributed across a model switch (live update, explicit
+  tombstone, and rooms-snapshot paths).
 - `flutter analyze` clean; `flutter test test/ui/home` green.
 
 ## DoD
@@ -90,6 +95,17 @@ All changes live in `app/lib/ui/home/widgets/session_tile.dart`:
   1.4.1 backfill (e4ae5690): every em dash/symbol showed as mojibake in
   the in-app viewer. Repaired via a verified cp1252→UTF-8 round-trip
   (58 runs); shipped APKs unaffected.
+- PR #67 review (augmentcode): a model-only `room_meta_update` preserved
+  the previous model's `context_usage`, labeling e.g. a 1M-window model
+  `· 200k` until the next response. Fixed at all three layers: the
+  extension `_setCurrentModel` now tombstones `context_usage: null`
+  alongside a model switch (Option<Option> clear semantics, same as
+  `git`), the app's live-update merge clears cached usage on a model
+  change, and the rooms-snapshot merge keeps local usage only when it
+  belongs to the displayed model (offline-during-switch window).
+- Device review (user): the 70/90 pressure bands fired too late for how
+  early sessions actually fill — retuned to the 17/24/35/50 ladder with
+  monotonically rising prominence.
 
 ## Next plans
 

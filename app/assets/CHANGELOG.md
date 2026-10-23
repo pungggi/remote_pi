@@ -15,12 +15,13 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 - **Context pressure at a glance (plan/147)** — every online session tile
   carries a subtle full-height background bar whose width mirrors how
-  much of the model's context window is used. The tint stays in the
-  accent family below 70%, shifts to warning at 70% and error at 90% —
-  the same thresholds as the in-chat meter. The alternating model line
-  now also shows the window size behind the model name
-  (`claude-sonnet-4-5 · 200k`). Sessions without usage data yet render
-  exactly as before.
+  much of the model's context window is used. The tint escalates in
+  steps at 17%, 24%, 35% and 50% of the window (accent → warning →
+  error, more prominent at each step): sessions are compacted long
+  before the raw window fills, so half-full already means act now.
+  The alternating model line now also shows the window size behind the
+  model name (`claude-sonnet-4-5 · 200k`). Sessions without usage data
+  yet render exactly as before.
 
 ### Fixed
 

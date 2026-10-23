@@ -1084,8 +1084,17 @@ class ConnectionManager extends Service {
         // snapshot.
         final nextGit = hasGit ? git : current.git;
         // Plan/115 — context-usage patch: same has-flag convention as git.
-        final nextContextUsage =
-            hasContextUsage ? contextUsage : current.contextUsage;
+        // PR #67 review — a model-only update that CHANGES the model
+        // invalidates the cached usage: its tokens/window describe the
+        // previous model, so keeping them would label e.g. a 1M-window
+        // model `· 200k`. Clear instead; the first response on the new
+        // model republishes fresh usage (and the extension sends an
+        // explicit `context_usage: null` alongside its model switch).
+        final nextContextUsage = hasContextUsage
+            ? contextUsage
+            : hasModel && model != current.model
+            ? null
+            : current.contextUsage;
         if (current.model == nextModel &&
             current.thinking == nextThinking &&
             current.working == nextWorking &&
@@ -1115,6 +1124,15 @@ class ConnectionManager extends Service {
         for (final r in rooms) {
           final preservedName = byId[r.roomId]?.name ?? r.name;
           final preservedModel = r.model ?? byId[r.roomId]?.model;
+          // PR #67 review — the locally cached usage may only survive a
+          // snapshot that omits it when it belongs to the model we're
+          // about to display: a snapshot carrying a DIFFERENT model (the
+          // switch happened while this app was offline; the extension
+          // already cleared its side) must not pair the old window with
+          // the new model name.
+          final preservedUsage = byId[r.roomId]?.model == preservedModel
+              ? byId[r.roomId]?.contextUsage
+              : null;
           // Plan/28 Wave D — same convention as model: keep the
           // previously-known thinking when the snapshot omits it.
           final preservedThinking = r.thinking ?? byId[r.roomId]?.thinking;
@@ -1137,7 +1155,7 @@ class ConnectionManager extends Service {
             // Plan/134 — same authoritative read for the blocking-prompt
             // flag (never emits a transition event — app-open replay).
             waitingForInput: r.waitingForInput,
-            contextUsage: r.contextUsage ?? byId[r.roomId]?.contextUsage,
+            contextUsage: r.contextUsage ?? preservedUsage,
             // Plan/140 C — the snapshot is authoritative for the keeper
             // marker too (the relay's `rooms_of` carries the live meta).
             keeper: r.keeper,

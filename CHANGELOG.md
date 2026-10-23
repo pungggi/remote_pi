@@ -15,13 +15,17 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 - **Home tiles: context-window gauge (plan/147)** — a subtle full-height
   background wedge per tile (width = used fraction of the model's context
-  window; accent/warning/error tint at the 70/90 pressure thresholds, the
-  same as the chat-header meter) plus the max context window behind the
-  model name in the subtitle (`claude-sonnet-4-5 · 200k`). Pure view-layer
-  change on the existing `room_meta.context_usage` feed — no protocol
-  change; the fraction falls back to `tokens/contextWindow` when `percent`
-  is null right after compaction, and rooms without usage keep the old
-  look.
+  window; user-tuned 17/24/35/50 pressure ladder, accent → warning →
+  error with rising prominence at each step) plus the max context window
+  behind the model name in the subtitle (`claude-sonnet-4-5 · 200k`).
+  View-layer change on the existing `room_meta.context_usage` feed; the
+  fraction falls back to `tokens/contextWindow` when `percent` is null
+  right after compaction, and rooms without usage keep the old look.
+  Review fix: usage never survives a model switch anymore — the
+  extension tombstones `context_usage: null` alongside the new model, and
+  both app merge paths (live update + rooms snapshot) drop cached usage
+  that belongs to a different model, so a fresh model is never labeled
+  with the previous model's window.
 - **Home session tiles alternate git branch and model (shipped in app 1.4.1)**
   — the tile subtitle flips every 3 s between the posh-git summary
   (branch / ahead / behind / dirty / stash) and the selected model when a
