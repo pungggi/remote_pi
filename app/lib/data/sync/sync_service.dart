@@ -1170,8 +1170,12 @@ class SyncService extends Service {
         _reconcileStreamedText += delta;
         _chunkBuffer.write(delta);
         _chunkReplyTo = inReplyTo;
-        _flushTimer?.cancel();
-        _flushTimer = Timer(const Duration(milliseconds: 16), _flushChunks);
+        // Keep the first timer running: restarting it for every chunk would
+        // starve UI updates for as long as the producer stays busy (#136).
+        _flushTimer ??= Timer(const Duration(milliseconds: 16), () {
+          _flushTimer = null;
+          _flushChunks();
+        });
         _setWorking(true, replyTo: inReplyTo);
 
       case AgentDone(:final inReplyTo, :final text):
