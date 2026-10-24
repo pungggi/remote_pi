@@ -2,7 +2,8 @@ import 'package:app/data/actions/actions_repository.dart' show ActionFailure;
 import 'package:app/data/preferences/preferences.dart' show KeepAliveMode;
 import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/pairing/storage.dart';
-import 'package:app/protocol/protocol.dart' show RoomInfo, OpenTerminalResult;
+import 'package:app/protocol/protocol.dart'
+    show RoomInfo, OpenTerminalResult, WireWorktree;
 import 'package:app/routing/adaptive.dart';
 import 'package:app/routing/routes.dart';
 import 'package:app/ui/core/themes/themes.dart';
@@ -426,6 +427,14 @@ class HomePage extends StatelessWidget {
     HomeItem it, {
     required bool isLive,
   }) {
+    // Plan/148 — the cleanup entry needs the PC's worktree registry. Kick the
+    // fetch as the sheet opens; the FutureBuilder further down rebuilds that
+    // single entry when the list lands, so the menu never waits on the PC (a
+    // dead link would otherwise delay the whole sheet by the connect timeout).
+    final worktrees = vm.refreshWorktrees(
+      it.peer.remoteEpk,
+      targetRoomId: it.room.roomId,
+    );
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: context.colors.bg,
@@ -533,6 +542,35 @@ class HomePage extends StatelessWidget {
                   _openTerminal(context, vm, it);
                 },
               ),
+              // Plan/148 — one-tap cleanup of a dead session's worktree +
+              // branch, offered exactly where the clutter is visible. Gated by
+              // the VM: tracked worktree, room offline (keeper mirrors count as
+              // offline), folder not owned by another LIVE session. Renders
+              // nothing until the registry fetch resolves.
+              FutureBuilder<void>(
+                future: worktrees,
+                builder: (_, _) {
+                  final match = vm.worktreeMatchFor(it);
+                  if (match == null || !vm.canCleanupWorktree(it)) {
+                    return const SizedBox.shrink();
+                  }
+                  return ListTile(
+                    leading: Icon(LucideIcons.folderX, color: colors.error),
+                    title: Text(
+                      'Delete worktree & branch',
+                      style: TextStyle(color: colors.text),
+                    ),
+                    subtitle: Text(
+                      '${match.branch} · deletes the folder on the computer.',
+                      style: TextStyle(color: colors.muted, fontSize: 11),
+                    ),
+                    onTap: () {
+                      Navigator.of(sheetCtx).pop();
+                      _deleteWorktree(context, vm, it, match);
+                    },
+                  );
+                },
+              ),
               ListTile(
                 leading: Icon(LucideIcons.pencil, color: colors.accent),
                 title: Text(
@@ -572,6 +610,44 @@ class HomePage extends StatelessWidget {
         );
       },
     );
+  }
+
+  /// Plan/148 — confirm + execute the worktree cleanup for an offline session.
+  /// The dialog names branch/base/folder (destructive and irreversible); on
+  /// success the VM also drops the phone-side record, so the tile disappears
+  /// while the toast reports the server's message. On a git refusal nothing
+  /// was removed and the tile stays, which is the only safe failure mode.
+  Future<void> _deleteWorktree(
+    BuildContext context,
+    HomeViewModel vm,
+    HomeItem it,
+    WireWorktree worktree,
+  ) async {
+    // Capture the messenger first: the dialog runs on the root navigator and
+    // the toast must survive the action's await regardless of navigation.
+    final messenger = ScaffoldMessenger.of(context);
+    final confirmed = await showCleanupWorktreeDialog(
+      context,
+      sessionTitle: _titleFor(it.peer, it.room),
+      worktree: worktree,
+    );
+    if (!confirmed) return;
+    try {
+      final res = await vm.cleanupWorktree(
+        epk: it.peer.remoteEpk,
+        roomId: it.room.roomId,
+        worktreeId: worktree.id,
+      );
+      _toast(
+        messenger,
+        res.ok ? 'Worktree and branch removed' : res.message,
+        isError: !res.ok,
+      );
+    } on ActionFailure catch (e) {
+      _toast(messenger, e.message, isError: true);
+    } catch (_) {
+      _toast(messenger, 'Could not remove worktree', isError: true);
+    }
   }
 
   /// Plan/108 — open a terminal (worktree + `pi` tab) for a specific

@@ -11,6 +11,17 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Clean up dead sessions (plan/148)**: long-press an offline tile and pick
+  "Delete worktree & branch" to remove the worktree folder and its branch on
+  the computer in one tap, without opening the session. The confirmation names
+  the branch, base repo and folder before anything is deleted. A dirty
+  worktree is refused by git: nothing is removed and the message is shown, so
+  uncommitted work cannot be lost silently. Archive (keeper) sessions are
+  included; only a session that is still running blocks the entry. The tile
+  disappears as soon as the computer confirms.
+
 ## [1.4.2] — 2026-10-23
 
 ### Added

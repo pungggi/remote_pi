@@ -200,6 +200,26 @@ class _RecordingActions implements IActionsRepository {
     roomId: 'device-room',
     message: '',
   );
+
+  // Plan/148 — worktree registry + remove bookkeeping.
+  List<WireWorktree> worktrees = const [];
+  final List<String> removedIds = [];
+  RemoveWorktreeResult nextRemoveResult = RemoveWorktreeResult(
+    inReplyTo: 'x',
+    ok: true,
+    message: 'removed',
+  );
+
+  @override
+  Future<List<WireWorktree>> listWorktrees({String? base}) async => base == null
+      ? worktrees
+      : worktrees.where((w) => w.base == base).toList();
+
+  @override
+  Future<RemoveWorktreeResult> removeWorktree(String worktreeId) async {
+    removedIds.add(worktreeId);
+    return nextRemoveResult;
+  }
   @override
   Future<GitStatus?> gitStatus() async => null;
   @override
@@ -228,6 +248,116 @@ class _StartCall {
   final String cwd;
   final String? name;
   _StartCall({required this.cwd, this.name});
+}
+
+// ---- Plan/148 — offline worktree cleanup harness ---------------------------
+
+/// The folder Piper created for this session (a tracked worktree path).
+const _kWorktreeCwd = '/src/remote_pi_w1';
+const _kWorktree = WireWorktree(
+  id: 'w1',
+  base: '/src/remote_pi',
+  path: _kWorktreeCwd,
+  branch: 'work/w1',
+  createdAt: '2026-10-23T10:00:00Z',
+);
+
+class _CleanupHarness {
+  final _ControllableChannel ch;
+  final _FakeStorage storage;
+  final ConnectionManager conn;
+  final Preferences prefs;
+  final _RecordingActions actions;
+  final HomeViewModel vm;
+
+  _CleanupHarness({
+    required this.ch,
+    required this.storage,
+    required this.conn,
+    required this.prefs,
+    required this.actions,
+    required this.vm,
+  });
+
+  HomeItem item(String roomId) => (vm.state as HomeList)
+      .items(normalizeEpk: HomeViewModel.normalizeEpkForLookup)
+      .firstWhere((i) => i.room.roomId == roomId);
+
+  bool hasRoom(String roomId) => (vm.state as HomeList)
+      .items(normalizeEpk: HomeViewModel.normalizeEpkForLookup)
+      .any((i) => i.room.roomId == roomId);
+
+  Future<void> dispose() async {
+    vm.dispose();
+    await conn.disconnect();
+    conn.dispose();
+  }
+}
+
+/// Builds a Home with one session room `r1` in a tracked worktree, plus the
+/// supervisor's device room (the only room that answers once `r1` is dead).
+Future<_CleanupHarness> _cleanupHarness({
+  bool roomOffline = true,
+  bool keeper = false,
+  String roomCwd = _kWorktreeCwd,
+  List<WireWorktree> worktrees = const [_kWorktree],
+  String? secondRoomCwd,
+  bool secondRoomOffline = true,
+  bool deviceLive = true,
+}) async {
+  final ch = _ControllableChannel();
+  final storage = _FakeStorage([_peerA]);
+  final conn = ConnectionManager(
+    factory: (_, _) async => ch,
+    storage: storage,
+    emitDebounce: Duration.zero,
+  );
+  final prefs = Preferences(_FakeSecureStorage());
+  final actions = _RecordingActions()..worktrees = worktrees;
+  final vm = HomeViewModel(storage, prefs, conn, actions, _stubCompletion());
+  await conn.connectTo(_peerA);
+  await Future<void>.delayed(const Duration(milliseconds: 10));
+
+  if (deviceLive) {
+    ch.pushControl(
+      const RoomAnnounced(peer: 'epk_A', roomId: kDeviceRoom, startedAt: 1),
+    );
+  }
+  ch.pushControl(
+    RoomAnnounced(
+      peer: 'epk_A',
+      roomId: 'r1',
+      startedAt: 2,
+      cwd: roomCwd,
+      keeper: keeper,
+    ),
+  );
+  if (secondRoomCwd != null) {
+    ch.pushControl(
+      RoomAnnounced(
+        peer: 'epk_A',
+        roomId: 'r2',
+        startedAt: 3,
+        cwd: secondRoomCwd,
+      ),
+    );
+    if (secondRoomOffline) {
+      ch.pushControl(const RoomEnded(peer: 'epk_A', roomId: 'r2', sinceTs: 4));
+    }
+  }
+  if (roomOffline) {
+    ch.pushControl(const RoomEnded(peer: 'epk_A', roomId: 'r1', sinceTs: 5));
+  }
+  await Future<void>.delayed(const Duration(milliseconds: 10));
+
+  return _CleanupHarness(
+    ch: ch,
+    storage: storage,
+    conn: conn,
+    prefs: prefs,
+    actions: actions,
+    vm: vm,
+  );
 }
 
 ConnectionManager _conn({_FakeStorage? storage}) {
@@ -787,6 +917,172 @@ void main() {
       vm.dispose();
       await conn.disconnect();
       conn.dispose();
+    });
+  });
+
+  group('HomeViewModel — worktree cleanup gating (plan/148)', () {
+    test('offline session whose cwd is a tracked worktree → offered', () async {
+      final h = await _cleanupHarness();
+      await h.vm.refreshWorktrees('epk_A', targetRoomId: 'r1');
+
+      final it = h.item('r1');
+      expect(h.vm.worktreeMatchFor(it)?.id, 'w1');
+      expect(h.vm.canCleanupWorktree(it), isTrue);
+
+      // The fetch rode the device daemon — the session room is dead.
+      expect(h.vm.isRoomLive('epk_A', 'r1'), isFalse);
+      expect(h.conn.activeRoomId, kDeviceRoom);
+
+      await h.dispose();
+    });
+
+    test('a LIVE room is never offered (its worktree is busy)', () async {
+      final h = await _cleanupHarness(roomOffline: false);
+      await h.vm.refreshWorktrees('epk_A', targetRoomId: 'r1');
+
+      expect(h.vm.isRoomLive('epk_A', 'r1'), isTrue);
+      expect(h.vm.canCleanupWorktree(h.item('r1')), isFalse);
+
+      await h.dispose();
+    });
+
+    test(
+      'a keeper-held (archive) room counts as offline → offered '
+      '(user decision 2026-10-23)',
+      () async {
+        final h = await _cleanupHarness(roomOffline: false, keeper: true);
+        await h.vm.refreshWorktrees('epk_A', targetRoomId: 'r1');
+
+        // The relay still has a connection in that room (the keeper), but it
+        // is a history mirror, not an agent — cleanup stays available.
+        expect(h.vm.isRoomLive('epk_A', 'r1'), isTrue);
+        expect(h.vm.canCleanupWorktree(h.item('r1')), isTrue);
+
+        await h.dispose();
+      },
+    );
+
+    test('nothing is offered before the registry was fetched', () async {
+      final h = await _cleanupHarness();
+
+      // No refreshWorktrees call → no cache → no match, no entry. A stale or
+      // missing list must never enable a destructive action.
+      expect(h.vm.worktreeMatchFor(h.item('r1')), isNull);
+      expect(h.vm.canCleanupWorktree(h.item('r1')), isFalse);
+
+      await h.dispose();
+    });
+
+    test('a folder that is not a tracked worktree → not offered', () async {
+      final h = await _cleanupHarness(worktrees: const []);
+      await h.vm.refreshWorktrees('epk_A', targetRoomId: 'r1');
+
+      expect(h.vm.canCleanupWorktree(h.item('r1')), isFalse);
+
+      await h.dispose();
+    });
+
+    test('another LIVE room on the same folder blocks the cleanup', () async {
+      final h = await _cleanupHarness(
+        secondRoomCwd: _kWorktreeCwd,
+        secondRoomOffline: false,
+      );
+      await h.vm.refreshWorktrees('epk_A', targetRoomId: 'r1');
+
+      expect(h.vm.isRoomLive('epk_A', 'r2'), isTrue);
+      expect(h.vm.canCleanupWorktree(h.item('r1')), isFalse);
+
+      await h.dispose();
+    });
+
+    test('a second OFFLINE room on the same folder does not block', () async {
+      final h = await _cleanupHarness(
+        secondRoomCwd: _kWorktreeCwd,
+        secondRoomOffline: true,
+      );
+      await h.vm.refreshWorktrees('epk_A', targetRoomId: 'r1');
+
+      expect(h.vm.isRoomLive('epk_A', 'r2'), isFalse);
+      expect(h.vm.canCleanupWorktree(h.item('r1')), isTrue);
+
+      await h.dispose();
+    });
+  });
+
+  group('HomeViewModel — worktree cleanup execution (plan/148)', () {
+    test('removes the worktree and drops the phone-side tile', () async {
+      final h = await _cleanupHarness();
+      await h.vm.refreshWorktrees('epk_A', targetRoomId: 'r1');
+
+      final res = await h.vm.cleanupWorktree(
+        epk: 'epk_A',
+        roomId: 'r1',
+        worktreeId: 'w1',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(res.ok, isTrue);
+      expect(h.actions.removedIds, ['w1']);
+      // Same-frame disappearance: the delete path ran through
+      // ConnectionManager.deleteCachedRoom.
+      expect(h.hasRoom('r1'), isFalse);
+
+      await h.dispose();
+    });
+
+    test('a git refusal keeps the registry entry and the tile', () async {
+      final h = await _cleanupHarness();
+      await h.vm.refreshWorktrees('epk_A', targetRoomId: 'r1');
+      h.actions.nextRemoveResult = RemoveWorktreeResult(
+        inReplyTo: 'x',
+        ok: false,
+        message: 'worktree is dirty — nothing removed',
+      );
+
+      final res = await h.vm.cleanupWorktree(
+        epk: 'epk_A',
+        roomId: 'r1',
+        worktreeId: 'w1',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(res.ok, isFalse);
+      expect(res.message, contains('dirty'));
+      expect(h.hasRoom('r1'), isTrue);
+      // Cache still matches → the user can retry after committing.
+      expect(h.vm.worktreeMatchFor(h.item('r1'))?.id, 'w1');
+
+      await h.dispose();
+    });
+
+    test(
+      'a session that came back online aborts before dispatching the remove',
+      () async {
+        final h = await _cleanupHarness(roomOffline: false);
+        await h.vm.refreshWorktrees('epk_A', targetRoomId: 'r1');
+
+        await expectLater(
+          h.vm.cleanupWorktree(epk: 'epk_A', roomId: 'r1', worktreeId: 'w1'),
+          throwsA(isA<ActionFailure>()),
+        );
+        expect(h.actions.removedIds, isEmpty);
+        expect(h.hasRoom('r1'), isTrue);
+
+        await h.dispose();
+      },
+    );
+
+    test('unreachable PC → ActionFailure, nothing removed', () async {
+      final h = await _cleanupHarness(deviceLive: false);
+      // No device room and the target room is dead → nobody can answer.
+      await expectLater(
+        h.vm.cleanupWorktree(epk: 'epk_A', roomId: 'r1', worktreeId: 'w1'),
+        throwsA(isA<ActionFailure>()),
+      );
+      expect(h.actions.removedIds, isEmpty);
+      expect(h.hasRoom('r1'), isTrue);
+
+      await h.dispose();
     });
   });
 }
