@@ -2,7 +2,8 @@ import 'package:app/data/actions/actions_repository.dart' show ActionFailure;
 import 'package:app/data/preferences/preferences.dart' show KeepAliveMode;
 import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/pairing/storage.dart';
-import 'package:app/protocol/protocol.dart' show RoomInfo, OpenTerminalResult;
+import 'package:app/protocol/protocol.dart'
+    show RoomInfo, OpenTerminalResult, WireWorktree;
 import 'package:app/routing/adaptive.dart';
 import 'package:app/routing/routes.dart';
 import 'package:app/ui/core/themes/themes.dart';
@@ -426,15 +427,24 @@ class HomePage extends StatelessWidget {
     HomeItem it, {
     required bool isLive,
   }) {
+    // Plan/148 (PR #70 review) — NO worktree fetch here: opening the menu must
+    // never route the shared connection, or the chat visible in the tablet
+    // split view would have its next send routed to whatever room the fetch
+    // used. The cleanup entry shows optimistically on offline tiles; the
+    // route + registry fetch + match happen at TAP time in _deleteWorktree,
+    // where the modal barrier blocks the chat for the whole detour.
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: context.colors.bg,
       builder: (sheetCtx) {
         final colors = sheetCtx.colors;
+        // Scrollable: the menu is now tall enough to overflow the sheet cap
+        // on small screens (PR #70 review).
         return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
               // Plan/132 — per-session completion notification toggle.
               // Lives at the top (the session's own setting) and keeps the
               // sheet open so the user can see the state flip. Stateful so
@@ -533,6 +543,28 @@ class HomePage extends StatelessWidget {
                   _openTerminal(context, vm, it);
                 },
               ),
+              // Plan/148 — one-tap cleanup of a dead session's worktree +
+              // branch, offered exactly where the clutter is visible. Shown on
+              // offline tiles (keeper mirrors count as offline); whether the
+              // folder is really a tracked worktree is validated at tap time —
+              // the menu itself never touches the shared connection (PR #70
+              // review).
+              if (!isLive && vm.mayOfferCleanup(it))
+                ListTile(
+                  leading: Icon(LucideIcons.folderX, color: colors.error),
+                  title: Text(
+                    'Delete worktree & branch',
+                    style: TextStyle(color: colors.text),
+                  ),
+                  subtitle: Text(
+                    'Removes this session\'s worktree folder on the computer.',
+                    style: TextStyle(color: colors.muted, fontSize: 11),
+                  ),
+                  onTap: () {
+                    Navigator.of(sheetCtx).pop();
+                    _deleteWorktree(context, vm, it);
+                  },
+                ),
               ListTile(
                 leading: Icon(LucideIcons.pencil, color: colors.accent),
                 title: Text(
@@ -568,10 +600,76 @@ class HomePage extends StatelessWidget {
                       },
               ),
             ],
+            ),
           ),
         );
       },
     );
+  }
+
+  /// Plan/148 — confirm + execute the worktree cleanup for an offline session.
+  /// Tap time is the first moment the shared connection may be routed (PR #70
+  /// review): resolve the registry match, confirm naming branch/base/folder,
+  /// then remove. On success the VM also drops the phone-side record, so the
+  /// tile disappears while the toast reports the server's message. On a git
+  /// refusal nothing was removed and the tile stays — the only safe failure
+  /// mode. An untracked folder (main checkout) resolves to a toast, not an
+  /// error.
+  Future<void> _deleteWorktree(
+    BuildContext context,
+    HomeViewModel vm,
+    HomeItem it,
+  ) async {
+    // Capture the messenger first: dialogs run on the root navigator and
+    // the toasts must survive the awaits regardless of navigation.
+    final messenger = ScaffoldMessenger.of(context);
+    _toast(messenger, 'Checking worktree…', isError: false);
+    final WireWorktree worktree;
+    try {
+      final found = await vm.findWorktreeFor(
+        epk: it.peer.remoteEpk,
+        roomId: it.room.roomId,
+      );
+      if (found == null) {
+        _toast(
+          messenger,
+          'This session\'s folder is not a tracked worktree — '
+          'nothing to clean up.',
+          isError: false,
+        );
+        return;
+      }
+      worktree = found;
+    } on ActionFailure catch (e) {
+      _toast(messenger, e.message, isError: true);
+      return;
+    } catch (_) {
+      _toast(messenger, 'Could not reach the computer', isError: true);
+      return;
+    }
+    if (!context.mounted) return;
+    final confirmed = await showCleanupWorktreeDialog(
+      context,
+      sessionTitle: _titleFor(it.peer, it.room),
+      worktree: worktree,
+    );
+    if (!confirmed) return;
+    try {
+      final res = await vm.cleanupWorktree(
+        epk: it.peer.remoteEpk,
+        roomId: it.room.roomId,
+        worktree: worktree,
+      );
+      _toast(
+        messenger,
+        res.ok ? 'Worktree and branch removed' : res.message,
+        isError: !res.ok,
+      );
+    } on ActionFailure catch (e) {
+      _toast(messenger, e.message, isError: true);
+    } catch (_) {
+      _toast(messenger, 'Could not remove worktree', isError: true);
+    }
   }
 
   /// Plan/108 — open a terminal (worktree + `pi` tab) for a specific

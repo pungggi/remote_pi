@@ -11,8 +11,32 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Home: "Offline" filter tab reset to "Online" on every rooms persist** —
+  `HomeViewModel._load()` (triggered via `PairingStorage.notifyListeners` from
+  each non-identical `room_announced` persist in `ConnectionManager`) rebuilt
+  the `HomeList` without the current `filter`, so any working-flag flip or
+  keeper re-announce snapped the tab back to its default while the user read
+  the offline list. `_load()` now carries the selected tab across reloads;
+  only the first load (still `HomeLoading`) uses the `online` default.
+  Regression test: `storage reloads preserve the selected tab`.
+
 ### Added
 
+- **Offline session cleanup from the Home list (plan/148)**: long-press an
+  offline tile, pick "Delete worktree & branch", confirm: the PC's device
+  daemon runs `git worktree remove` + `git branch -D` + registry prune for
+  that session's worktree, and the phone drops its cached room record in the
+  same frame. Gating: the room's cwd must match a tracked worktree, the
+  session must not be running, and no other LIVE session may own the folder;
+  keeper-held (archive) rooms are eligible because transcripts live in
+  `~/.pi/agent/sessions/<cwd>`, not in the worktree. Dirty worktrees are
+  refused by git (nothing removed, message surfaced), and a session that
+  comes back online between opening the menu and confirming aborts the
+  action. Path matching normalizes separators (Windows `\` vs Pi `/`) and
+  compares drive-letter paths case-insensitively. New public widget
+  `CleanupWorktreeDialog` in `app/lib/ui/home/widgets/`.
 - **Home tiles: context-window gauge (plan/147)** — a subtle full-height
   background wedge per tile (width = used fraction of the model's context
   window; user-tuned 17/24/35/50 pressure ladder, accent → warning →
