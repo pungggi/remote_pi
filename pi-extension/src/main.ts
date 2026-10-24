@@ -460,7 +460,7 @@ function _publishWaitingForUser(
           ...(title ? { title } : {}),
         },
         display: false,
-      });
+      }, { triggerTurn: false });
     } catch {
       // ext.pi stale (session replaced) or runtime not yet bound — same
       // discipline as _emitRelayState (upstream #55): swallow, the next
@@ -2126,7 +2126,7 @@ function _emitRelayState(force = false): void {
         ...(ext.myRoomId ? { room: ext.myRoomId } : {}),
       },
       display: false,
-    });
+    }, { triggerTurn: false });
   } catch {
     // ext.pi stale (session replaced) or extension runtime not yet bound.
   }
@@ -2249,7 +2249,7 @@ async function _renameAgent(newName: string): Promise<void> {
       : `Mesh name reassigned: "${newName}" → "${assigned}" (collision)`,
     details: { requested: newName, assigned, changed: assigned !== newName },
     display: false,
-  });
+  }, { triggerTurn: false });
 }
 
 /**
@@ -2811,7 +2811,7 @@ async function _handlePairRequest(
     content: `Paired with ${inner.device_name}`,
     details: { name: inner.device_name, peerId: appPeerId, pairedAt },
     display: false,
-  });
+  }, { triggerTurn: false });
 }
 
 // ── Extension factory (default export) ───────────────────────────────────────
@@ -4734,7 +4734,7 @@ async function _cmdJoin(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<void
         : `Mesh name reassigned: "${requestedName}" → "${assigned}" (collision)`,
       details: { requested: requestedName, assigned, changed: assigned !== requestedName },
       display: false,
-    });
+    }, { triggerTurn: false });
     ctx.ui.notify(
       `[remote-pi] Joined local mesh as "${assigned}" (${peer.currentRole()})`,
       "info",

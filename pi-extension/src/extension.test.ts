@@ -5584,6 +5584,8 @@ describe("remote-pi:name-assigned event", () => {
     expect(ev).toBeDefined();
     expect(ev!.display).toBe(false);
     expect(ev!.details).toMatchObject({ changed: false });
+    const call = sendMessage.mock.calls.find((c) => c[0]?.customType === "remote-pi:name-assigned");
+    expect(call?.[1]).toEqual({ triggerTurn: false });
     expect(typeof ev!.details!["requested"]).toBe("string");
     // No collision in this isolated broker → assigned === requested.
     expect(ev!.details!["assigned"]).toBe(ev!.details!["requested"]);
@@ -5669,6 +5671,10 @@ describe("relay control channel + relay-state event", () => {
     expect(ev).toBeDefined();
     expect(ev!.display).toBe(false);
     expect(ev!.details).toMatchObject({ status: "disconnected", connected: false });
+    // Pure-data events are stripped from LLM context, so they must never start
+    // or extend a turn (a mid-stream steer would leave a trailing assistant message).
+    const call = sendMessage.mock.calls.find((c) => c[0]?.customType === "remote-pi:relay-state");
+    expect(call?.[1]).toEqual({ triggerTurn: false });
   });
 
   test("relay:on → relay up + 'connected'; relay:off → relay down + 'disconnected'", async () => {
@@ -7451,10 +7457,15 @@ describe("model meta", () => {
     onPromptStart({ type: "ui_prompt_start", reason: "ui_prompt", kind: "select", title: "Pick one" });
     onPromptEnd({ type: "ui_prompt_end", reason: "ui_prompt", kind: "select" });
 
-    const msgs = sendMessage.mock.calls
-      .map((c) => c[0] as { customType?: string; content?: string; display?: boolean; details?: Record<string, unknown> })
-      .filter((m) => m?.customType === "remote-pi:ui-prompt");
+    const promptCalls = sendMessage.mock.calls
+      .filter((c) => (c[0] as { customType?: string }).customType === "remote-pi:ui-prompt");
+    const msgs = promptCalls
+      .map((c) => c[0] as { customType?: string; content?: string; display?: boolean; details?: Record<string, unknown> });
     expect(msgs).toHaveLength(2);
+    expect(promptCalls.map((c) => c[1])).toEqual([
+      { triggerTurn: false },
+      { triggerTurn: false },
+    ]);
     expect(msgs[0]!.display).toBe(false);
     expect(msgs[0]!.details).toMatchObject({ waiting: true, kind: "select", title: "Pick one" });
     expect(msgs[0]!.content).toContain("Pick one");
