@@ -11,6 +11,8 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+## [1.4.3] — 2026-10-24
+
 ### Added
 
 - **Session info slot (plan/149)**: the round letter avatar becomes a small
