@@ -199,6 +199,9 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
         injector.get<SyncService>().requestSync();
         // ignore: unawaited_futures
         meshSync.pullOnDemand();
+        // A frozen process cannot run retry timers. Recover now instead of
+        // making the user wait out a backoff scheduled before backgrounding.
+        injector.get<ConnectionManager>().onForeground();
         // Fix (2026-08-16): also reconcile a missing blob on resume — a
         // fresh install whose first publish failed transiently recovers
         // on the very next app-open instead of waiting for the poll tick.

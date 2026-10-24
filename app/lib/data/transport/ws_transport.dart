@@ -454,8 +454,14 @@ class WsTransport implements PeerTransport, IControlLink, ITransportSecurityInfo
 
   @override
   Future<void> close() async {
+    // Close the socket first: cancelling the subscription can wait for the
+    // underlying stream teardown, which may itself depend on this close.
+    try {
+      await _ws.sink.close();
+    } catch (_) {
+      // Best effort: still release the local subscription and controllers.
+    }
     await _sub?.cancel();
-    await _ws.sink.close();
     _queue.close();
     if (!_controlController.isClosed) await _controlController.close();
   }
