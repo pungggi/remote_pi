@@ -28,8 +28,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Plan/140 D — silence window before a half-open connection is reaped
     // (default 150 s, floor 10 s). See `relay::resolve_reap_silence_secs`.
-    let reap_silence_secs =
-        relay::resolve_reap_silence_secs(std::env::var("REMOTEPI_REAP_SILENCE_SECS").ok().as_deref());
+    let reap_silence_secs = relay::resolve_reap_silence_secs(
+        std::env::var("REMOTEPI_REAP_SILENCE_SECS").ok().as_deref(),
+    );
     info!(reap_silence_secs, "half-open connection reap window");
 
     // Read (and memoize) the outer-envelope size ceiling once at startup, then
@@ -55,8 +56,9 @@ async fn main() -> anyhow::Result<()> {
     // phone-offline window); both knobs are env-tunable.
     let mailbox_ttl_secs =
         relay::resolve_mailbox_ttl_secs(std::env::var("REMOTEPI_MAILBOX_TTL_SECS").ok().as_deref());
-    let mailbox_max_frames =
-        relay::resolve_mailbox_max_frames(std::env::var("REMOTEPI_MAILBOX_MAX_FRAMES").ok().as_deref());
+    let mailbox_max_frames = relay::resolve_mailbox_max_frames(
+        std::env::var("REMOTEPI_MAILBOX_MAX_FRAMES").ok().as_deref(),
+    );
     info!(mailbox_ttl_secs, mailbox_max_frames, "room mailbox bounds");
     let registry = Arc::new(relay::PeerRegistry::with_mailbox(
         presence.clone(),
@@ -96,8 +98,9 @@ async fn main() -> anyhow::Result<()> {
         control_reply_dedup_ttl: std::time::Duration::from_secs(dedup_ttl_secs),
     };
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(std::time::Duration::from_secs(relay::DEFAULT_HEARTBEAT_SECS));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+            relay::DEFAULT_HEARTBEAT_SECS,
+        ));
         interval.tick().await; // first tick is immediate; skip it
         loop {
             interval.tick().await;

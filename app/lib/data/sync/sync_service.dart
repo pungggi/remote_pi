@@ -1069,6 +1069,9 @@ class SyncService extends Service {
       await box.clear();
       _idToSeq.clear();
       _nextSeq = 0;
+      // Plan/149 (PR #71 review) — seqs restart at 0; a stale read marker
+      // would suppress the new conversation's unread until seq passes it.
+      _boxes.clearReadMarker(epk, room);
       _indexLoaded = true;
       final idx = _boxes.sessionsIndexBox();
       await idx.delete(LocalBoxes.sessionKey(epk, room));
@@ -1500,6 +1503,9 @@ class SyncService extends Service {
       // Plan/124 — start-session (revive) reply is owned by ActionsRepository
       // (Home session menu), not the message sync.
       case StartSessionResult():
+      // Plan/149 — set-session-ref reply is owned by ActionsRepository
+      // (Link Issue / PR sheet), not the message sync.
+      case SetSessionRefResult():
         break;
     }
     // Plan/145 — with this frame applied, held followers may now be
@@ -1624,6 +1630,9 @@ class SyncService extends Service {
         await box.clear();
         _idToSeq.clear();
         _nextSeq = 0;
+        // Plan/149 (PR #71 review) — the local seq space restarts; the
+        // durable read marker must restart with it (see clearActiveSession).
+        _boxes.clearReadMarker(epk, room);
       }
 
       for (final row in rows) {

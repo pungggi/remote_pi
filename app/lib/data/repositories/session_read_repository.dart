@@ -15,6 +15,19 @@ class SessionReadRepository extends Repository {
 
   final LocalBoxes _boxes;
 
+  /// Plan/149 — advance the session's read marker to [seq] (chat open /
+  /// live delivery while the chat is on screen). Best-effort: opening the
+  /// box lazily is fine, the marker write is idempotent and never moves
+  /// backwards (see [LocalBoxes.markRead]).
+  Future<void> markReadUpTo(String epk, String roomId, int seq) async {
+    // seq 0 IS a real position (seqs allocate from zero; a missing marker
+    // reads as -1) — marking it must work, or a one-row session stays
+    // unread forever (PR #71 review).
+    if (seq < 0) return;
+    await _boxes.msgsBox(epk, roomId); // ensure open so unreadCount sees it
+    _boxes.markRead(epk, roomId, seq);
+  }
+
   /// Reactive ordered message list for `(epk, roomId)`. Emits the current
   /// snapshot on listen, then an updated list per row change.
   Stream<List<MessageRecord>> watchMessages(String epk, String roomId) {

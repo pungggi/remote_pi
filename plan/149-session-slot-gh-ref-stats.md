@@ -110,13 +110,13 @@ the worktree is alive, three turns with no ref means it is junk.
 
 ## DoD
 
-- [ ] Extension counters + ingest + registry persistence
-- [ ] Relay `gh_ref` / `stats` fields
-- [ ] Dart protocol + phone cache
-- [ ] `_SessionSlot` widget + fallback chain + tap-to-open
-- [ ] Unread marker read/write
-- [ ] Plan/148 dialog bridge
-- [ ] Tests: protocol parse, precedence, scan false-positive guard,
+- [x] Extension counters + ingest + registry persistence
+- [x] Relay `gh_ref` / `stats` fields
+- [x] Dart protocol + phone cache
+- [x] `_SessionSlot` widget + fallback chain + tap-to-open
+- [x] Unread marker read/write
+- [x] Plan/148 dialog bridge
+- [x] Tests: protocol parse, precedence, scan false-positive guard,
       fallback chain, offline cache, counter throttle
 - [ ] Device review
 

@@ -261,6 +261,22 @@ export type ClientMessage =
   // `name` scopes the room for custom-named sessions (omit/default → legacy
   // cwd-only room).
   | { type: "start_session_request"; id: string; cwd: string; name?: string | null }
+  // Plan/149 — store (or clear, gh_ref null) the GitHub ref for a session
+  // room. Served by BOTH the live session extension (when room_id is its own
+  // room: updates room_meta + registry) and the device daemon (any other
+  // room_id: registry-only write, so the manual link works while the session
+  // is offline). `gh_ref.source` is forced to "manual" — this is the only
+  // user-driven ingest path.
+  | {
+      type: "set_session_ref_request";
+      id: string;
+      room_id: string;
+      gh_ref: WireGhRef | null;
+      /** Fallback cwd for rooms never registered on the PC (sessions that
+       *  predate plan/140): lets the daemon CREATE the registry entry.
+       *  Null/omitted for rooms the app knows are registered. */
+      cwd?: string | null;
+    }
   // Plan/100 — interactive extension prompt response (ask_user via pi-ask).
   // Mirrors RpcExtensionUIResponse; the optional `ask` envelope carries
   // pi-ask's structured answer so multi/preview/notes survive the round-trip.
@@ -538,6 +554,13 @@ export type ServerMessage =
       room_id?: string;
       message?: string;
     }
+  // Plan/149 — reply to set_session_ref_request.
+  | {
+      type: "set_session_ref_result";
+      in_reply_to: string;
+      ok: boolean;
+      message?: string;
+    }
   // Plan/145 — the journal cannot cover the client's reported gap (the
   // missing frames fell out of the ring) or the epoch moved on: the app must
   // fall back to a full `session_sync`.
@@ -643,6 +666,41 @@ export interface WireWorktree {
 export interface WireProject {
   path: string;
   name: string;
+}
+
+/**
+ * Plan/149 — one GitHub ref slot (a PR or an Issue number + URL).
+ * `state` (open|closed|merged) is only known when the ref came from
+ * `gh pr view`; manual / chat-sourced refs carry null.
+ */
+export interface WireGhRefSlot {
+  number: number;
+  url?: string | null;
+  state?: string | null;
+}
+
+/**
+ * Plan/149 — the GitHub ref linked to a session (`room_meta.gh_ref`, and
+ * mirrored in the plan/140 rooms registry). Both slots are kept; the PR
+ * wins the display. `source` records how it got here and drives the
+ * ingest precedence manual > gh > chat-suggestion.
+ */
+export interface WireGhRef {
+  pr?: WireGhRefSlot | null;
+  issue?: WireGhRefSlot | null;
+  /** "manual" | "gh" | "chat" — opaque to the relay. */
+  source?: string | null;
+}
+
+/**
+ * Plan/149 — session activity counters (`room_meta.stats`). Counted in the
+ * extension (turns on agent_end, user_msgs on message_end role=user) and
+ * pushed only at turn boundaries. The rooms registry is the durable source;
+ * this is the live view.
+ */
+export interface WireSessionStats {
+  turns: number;
+  user_msgs: number;
 }
 
 export type ByeReason = "peer_stop" | "session_replaced" | "shutdown";

@@ -84,6 +84,14 @@ class _FakeActionsRepository implements IActionsRepository {
       );
 
   @override
+  Future<SetSessionRefResult> setSessionRef({
+    required String roomId,
+    required GhRef? ghRef,
+    String? cwd,
+  }) async =>
+      SetSessionRefResult(inReplyTo: '', ok: true, message: '');
+
+  @override
   Stream<ActiveRoomMeta> get activeRoomMetaStream =>
       _metaController.stream;
 

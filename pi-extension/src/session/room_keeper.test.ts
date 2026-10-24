@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RoomKeeper, sessionStartedAtFromFileName, type KeeperRelayClient } from "./room_keeper.js";
 import { encodeCwd } from "./file_index.js";
-import { upsertRoom } from "./rooms_registry.js";
+import { upsertRoom, upsertRoomMeta } from "./rooms_registry.js";
 import { generateEd25519Keypair } from "../pairing/crypto.js";
 import { RoomAlreadyOpenError } from "../transport/relay_client.js";
 
@@ -31,6 +31,13 @@ class FakeRelay implements KeeperRelayClient {
 
   send(line: string): void {
     this.sent.push(line);
+  }
+
+  /** Plan/149 — captured control frames (room_meta_update pushes). */
+  readonly controlFrames: object[] = [];
+
+  sendControl(frame: object): void {
+    this.controlFrames.push(frame);
   }
 
   close(): void {
@@ -215,6 +222,53 @@ describe("RoomKeeper (plan/140)", () => {
     writeFileSync(registryPath, JSON.stringify(aged), "utf8");
     await new Promise((r) => setTimeout(r, 80));
     expect(fake.closed).toBe(true);
+    await keeper.stop();
+  });
+
+  it("plan/149: announces gh_ref / stats from the registry and pushes a meta refresh when they change", async () => {
+    const { keeper, fake, cwd, registryPath } = makeKeeper({ sweepIntervalMs: 30 });
+    upsertRoom(
+      {
+        cwd,
+        roomId: "keptRoom",
+        lastSeenAt: Date.now(),
+        ghRef: { pr: { number: 45, url: "https://github.com/o/r/pull/45", state: null }, issue: null, source: "manual" },
+        stats: { turns: 3, user_msgs: 7 },
+      },
+      registryPath,
+    );
+    await keeper.start();
+
+    // The hello carries the registry's slot content…
+    expect(fake.connectCalls[0]!.roomMeta).toMatchObject({
+      keeper: true,
+      gh_ref: { pr: { number: 45 } },
+      stats: { turns: 3, user_msgs: 7 },
+    });
+    expect(fake.controlFrames.length).toBe(0); // nothing changed yet
+
+    // …a manual link / turn counter lands in the registry while we hold the
+    // room: the next sweep pushes a room_meta_update (presence, not a
+    // broadcast) and re-baselines.
+    upsertRoomMeta(
+      "keptRoom",
+      {
+        ghRef: { pr: { number: 46, url: "https://github.com/o/r/pull/46", state: "OPEN" }, issue: null, source: "manual" },
+        stats: { turns: 4, user_msgs: 8 },
+      },
+      registryPath,
+    );
+    await new Promise((r) => setTimeout(r, 80));
+    expect(fake.controlFrames.length).toBe(1);
+    const frame = fake.controlFrames[0] as { type?: string; room_id?: string; meta?: Record<string, unknown> };
+    expect(frame.type).toBe("room_meta_update");
+    expect(frame.room_id).toBe("keptRoom");
+    expect(frame.meta!["gh_ref"]).toMatchObject({ pr: { number: 46 } });
+    expect(frame.meta!["stats"]).toEqual({ turns: 4, user_msgs: 8 });
+
+    // No further pushes without another change.
+    await new Promise((r) => setTimeout(r, 80));
+    expect(fake.controlFrames.length).toBe(1);
     await keeper.stop();
   });
 });

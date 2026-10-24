@@ -1,12 +1,15 @@
 import 'dart:async';
 
 import 'package:app/data/actions/actions_repository.dart';
+import 'package:app/data/local/boxes.dart';
 import 'package:app/data/notifications/session_completion_notifications.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
+import 'package:flutter/foundation.dart';
+import 'package:hive_flutter/hive_flutter.dart' show BoxX;
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
 import 'package:app/ui/home/states/home_state.dart';
 
@@ -31,6 +34,11 @@ class HomeViewModel extends ViewModel<HomeState> {
   final Preferences _prefs;
   final ConnectionManager _conn;
   final IActionsRepository _actions;
+
+  /// Plan/149 — local box facade for unread counts (msgs rows past the
+  /// read marker). Optional so existing tests construct the VM unchanged;
+  /// defaults to the shared global-boxes facade.
+  final LocalBoxes _boxes;
 
   /// Plan/132 — per-session completion-notification toggles. The vm
   /// re-emits its HomeList when a toggle flips so the tile bell badges
@@ -67,8 +75,9 @@ class HomeViewModel extends ViewModel<HomeState> {
     this._prefs,
     this._conn,
     this._actions,
-    this._completion,
-  ) : super(const HomeLoading()) {
+    this._completion, {
+    LocalBoxes? boxes,
+  }) : _boxes = boxes ?? LocalBoxes(), super(const HomeLoading()) {
     _relayConnected = _conn.status is StatusOnline;
     _load();
     _presenceSub = _conn.presenceStream.listen(_onPresence);
@@ -184,6 +193,30 @@ class HomeViewModel extends ViewModel<HomeState> {
   Future<bool> setNotifyOnDone(String epk, String roomId, bool value) =>
       _completion.setEnabled(epk, roomId, value);
 
+  /// Plan/149 — unread message count for a session tile (msgs box rows
+  /// past the read marker). Never cached: the box rows are the SSOT.
+  int unreadCount(String epk, String roomId) => _boxes.unreadCount(epk, roomId);
+
+  /// Plan/149 — listenable that fires whenever the session's unread can
+  /// change: the msgs box (row delivery) and the read-markers box (chat
+  /// open). A not-yet-open msgs box is opened lazily and triggers a Home
+  /// re-emit so the next build merges it in.
+  Listenable unreadListenable(String epk, String roomId) {
+    final markers = _boxes.readMarkersBox().listenable();
+    if (_boxes.isMsgsBoxOpen(epk, roomId)) {
+      return Listenable.merge([
+        _boxes.openMsgsBox(epk, roomId).listenable(),
+        markers,
+      ]);
+    }
+    unawaited(
+      _boxes.msgsBox(epk, roomId).then((_) {
+        if (!_disposed) _reemitHomeList();
+      }),
+    );
+    return markers;
+  }
+
   /// Keep-alive mode as it affects completion notifications: `off` means
   /// the process is frozen in background and banners can never fire — the
   /// menu shows a hint pointing at Settings.
@@ -205,6 +238,30 @@ class HomeViewModel extends ViewModel<HomeState> {
     // (state is still HomeLoading) starts on the default tab.
     final current = state;
     final filter = current is HomeList ? current.filter : HomeFilter.online;
+    // Plan/149 / PR #71 review — open every room's msgs box BEFORE emitting
+    // the HomeList: a tile's unread listenable merges the msgs box only
+    // when it is already open, and ViewModel.emit suppresses identical
+    // states, so a tile built against a closed box (cold start, offline
+    // session) would show 0 unread and NEVER rebuild onto the merged
+    // listenable. openBox is idempotent for open boxes, so reloads after
+    // the first pay nothing. Boxes open with the RAW peer epk — the same
+    // form the chat/SyncService writer uses. Skipped entirely when the
+    // boxes namespace was never initialized (Hive-less environments).
+    if (LocalBoxes.isInitialized) {
+      for (final p in peers) {
+        final rooms =
+            _conn.roomsSnapshot[toStandardB64(p.remoteEpk)] ??
+            const <RoomInfo>[];
+        for (final r in rooms) {
+          try {
+            await _boxes.msgsBox(p.remoteEpk, r.roomId);
+          } catch (_) {
+            /* best-effort — this tile's unread stays 0 */
+          }
+        }
+      }
+    }
+    if (_disposed) return;
     // Make sure the relay is pushing updates for everyone we know about;
     // the call is idempotent so this is safe even mid-session. The same
     // subscribe also covers rooms (plan 17 — replay block in
@@ -727,6 +784,60 @@ class HomeViewModel extends ViewModel<HomeState> {
     final dispatchRoom = (!targetLive && deviceLive) ? kDeviceRoom : roomId;
     _conn.switchRoom(dispatchRoom);
     return _actions.openTerminal(cwd: cwd, runPi: runPi, branch: branch);
+  }
+
+  /// Plan/149 — store (or clear, [ghRef] null) the GitHub ref linked to a
+  /// session. Routes like [openTerminal]: switch to the tapped session's
+  /// peer, then dispatch to the session's own room when live, else to the
+  /// device daemon (which writes the rooms registry directly, so the link
+  /// works while the session is offline). [cwd] is the fallback for rooms
+  /// never registered on the PC (pre-plan/140 sessions).
+  ///
+  /// Throws [ActionFailure] on transport issues; `ok:false` in the result
+  /// carries the Pi's user-presentable reason.
+  Future<SetSessionRefResult> setSessionRef({
+    required String epk,
+    required String roomId,
+    required GhRef? ghRef,
+    String? cwd,
+  }) async {
+    final peers = await _storage.listPeers();
+    if (_disposed) {
+      throw const ActionFailure('cancelled');
+    }
+    final match = peers.where((p) => p.remoteEpk == epk).cast<PeerRecord?>();
+    if (match.isEmpty) {
+      throw const ActionFailure('peer not found');
+    }
+    final peer = match.first!;
+    final samePeer = _conn.activePeer?.remoteEpk == epk;
+    if (!samePeer || !_relayConnected) {
+      await _conn.switchTo(peer);
+      if (_disposed) {
+        throw const ActionFailure('cancelled');
+      }
+      if (_conn.status is! StatusOnline) {
+        await _waitForOnline(kTerminalOpenConnectTimeout);
+      }
+    }
+    // The session's own room applies the ref live (meta push + registry);
+    // when it is offline, the device daemon takes the registry-only path.
+    // PR #71 review — `isRoomRealLive`, NOT `isRoomLive`: a keeper-held
+    // (offline) room counts as live for STATE purposes, but the keeper
+    // only serves `session_sync`; a request routed at it times out. The
+    // request must reach the device daemon's connection instead.
+    final targetLive = _conn.isRoomRealLive(epk, roomId);
+    final deviceLive = _conn.isRoomRealLive(epk, kDeviceRoom);
+    if (!targetLive && !deviceLive) {
+      final label = _peerLabelForError();
+      throw ActionFailure(
+        'Could not reach $label — no live Pi or device daemon to store the '
+        'link.',
+      );
+    }
+    final dispatchRoom = (!targetLive && deviceLive) ? kDeviceRoom : roomId;
+    _conn.switchRoom(dispatchRoom);
+    return _actions.setSessionRef(roomId: roomId, ghRef: ghRef, cwd: cwd);
   }
 
   /// Plan/124 — bring an OFFLINE session back to life in its own cwd (no new

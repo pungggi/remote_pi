@@ -240,6 +240,26 @@ class _RecordingActions implements IActionsRepository {
     startCalls.add(_StartCall(cwd: cwd, name: name));
     return nextStartResult;
   }
+
+  // Plan/149 (PR #71 review) — session-ref link routing recorder.
+  final List<({String roomId, GhRef? ghRef, String? cwd})> setSessionRefCalls =
+      [];
+  SetSessionRefResult nextSetRefResult = SetSessionRefResult(
+    inReplyTo: 'x',
+    ok: true,
+    message: '',
+  );
+
+  @override
+  Future<SetSessionRefResult> setSessionRef({
+    required String roomId,
+    required GhRef? ghRef,
+    String? cwd,
+  }) async {
+    setSessionRefCalls.add((roomId: roomId, ghRef: ghRef, cwd: cwd));
+    return nextSetRefResult;
+  }
+
   @override
   dynamic noSuchMethod(Invocation i) => super.noSuchMethod(i);
 }
@@ -1241,6 +1261,51 @@ void main() {
       );
       expect(h.actions.removedIds, isEmpty);
       expect(h.hasRoom('r1'), isTrue);
+
+      await h.dispose();
+    });
+  });
+
+  group('HomeViewModel - session-ref routing (plan/149, PR #71 review)', () {
+    test(
+      'keeper-held target routes to the DEVICE daemon room, not the keeper',
+      () async {
+        // r1 is held by the supervisor's keeper mirror: `isRoomLive` is
+        // true (it announces durable state) but the keeper only serves
+        // session_sync â€” the request must reach the device daemon instead.
+        final h = await _cleanupHarness(roomOffline: false, keeper: true);
+        expect(h.vm.isRoomLive('epk_A', 'r1'), isTrue);
+        expect(h.conn.isRoomRealLive('epk_A', 'r1'), isFalse);
+        expect(h.conn.isRoomRealLive('epk_A', kDeviceRoom), isTrue);
+
+        final res = await h.vm.setSessionRef(
+          epk: 'epk_A',
+          roomId: 'r1',
+          ghRef: null,
+        );
+        expect(res.ok, isTrue);
+        // Dispatched over the device daemon's room ...
+        expect(h.conn.activeRoomId, kDeviceRoom);
+        // ... but carrying the TARGET room in the payload (the daemon's
+        // handler takes the registry-only path for it).
+        expect(h.actions.setSessionRefCalls.single.roomId, 'r1');
+
+        await h.dispose();
+      },
+    );
+
+    test('REAL live target dispatches in its own room', () async {
+      final h = await _cleanupHarness(roomOffline: false, keeper: false);
+      expect(h.conn.isRoomRealLive('epk_A', 'r1'), isTrue);
+
+      final res = await h.vm.setSessionRef(
+        epk: 'epk_A',
+        roomId: 'r1',
+        ghRef: null,
+      );
+      expect(res.ok, isTrue);
+      expect(h.conn.activeRoomId, 'r1');
+      expect(h.actions.setSessionRefCalls.single.roomId, 'r1');
 
       await h.dispose();
     });

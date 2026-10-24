@@ -43,11 +43,9 @@ async fn envelope_sig_is_forwarded_verbatim() {
 
     // ...and the legacy unsigned shape still round-trips without a `sig`
     // field (back-compat on the wire).
-    ws_a.send(Message::text(
-        json!({"peer": peer_b, "ct": ct}).to_string(),
-    ))
-    .await
-    .unwrap();
+    ws_a.send(Message::text(json!({"peer": peer_b, "ct": ct}).to_string()))
+        .await
+        .unwrap();
     let received2 = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_b.next())
         .await
         .expect("timed out waiting for second forwarded message")
@@ -71,8 +69,7 @@ async fn oversized_ws_message_is_rejected() {
     use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
     let sk = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
     ws.send(Message::text(
-        json!({"type": "hello", "pubkey": B64.encode(sk.verifying_key().to_bytes())})
-            .to_string(),
+        json!({"type": "hello", "pubkey": B64.encode(sk.verifying_key().to_bytes())}).to_string(),
     ))
     .await
     .unwrap();
@@ -90,7 +87,10 @@ async fn oversized_ws_message_is_rejected() {
     .unwrap();
 
     // A frame above the cap → tungstenite should error/close the stream.
-    let oversized = format!("{{\"peer\":\"x\",\"ct\":\"{}\"}}", "A".repeat(MAX_WS_MESSAGE_BYTES));
+    let oversized = format!(
+        "{{\"peer\":\"x\",\"ct\":\"{}\"}}",
+        "A".repeat(MAX_WS_MESSAGE_BYTES)
+    );
     let send_result = ws.send(Message::text(oversized)).await;
     let closed = send_result.is_err()
         || tokio::time::timeout(tokio::time::Duration::from_millis(500), ws.next())
@@ -141,12 +141,11 @@ async fn dest_offline_nacks_with_route_error_then_rate_limits() {
     let (mut ws_a, _) = connect_and_auth(port).await;
 
     let dest = "bm9uZXhpc3RlbnRwZWVy";
-    ws_a
-        .send(Message::text(
-            json!({"peer": dest, "room": "deadroom", "ct": "aGVsbG8="}).to_string(),
-        ))
-        .await
-        .unwrap();
+    ws_a.send(Message::text(
+        json!({"peer": dest, "room": "deadroom", "ct": "aGVsbG8="}).to_string(),
+    ))
+    .await
+    .unwrap();
 
     let nack = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_a.next())
         .await
@@ -160,14 +159,12 @@ async fn dest_offline_nacks_with_route_error_then_rate_limits() {
 
     // Same destination again inside the 5 s window → suppressed (silence,
     // not a duplicate NACK).
-    ws_a
-        .send(Message::text(
-            json!({"peer": dest, "room": "deadroom", "ct": "aGVsbG8="}).to_string(),
-        ))
-        .await
-        .unwrap();
-    let result =
-        tokio::time::timeout(tokio::time::Duration::from_millis(200), ws_a.next()).await;
+    ws_a.send(Message::text(
+        json!({"peer": dest, "room": "deadroom", "ct": "aGVsbG8="}).to_string(),
+    ))
+    .await
+    .unwrap();
+    let result = tokio::time::timeout(tokio::time::Duration::from_millis(200), ws_a.next()).await;
     assert!(
         result.is_err(),
         "expected no duplicate route_error within the TTL, got {:?}",
@@ -175,12 +172,11 @@ async fn dest_offline_nacks_with_route_error_then_rate_limits() {
     );
 
     // A DIFFERENT dead destination is not suppressed by the first NACK.
-    ws_a
-        .send(Message::text(
-            json!({"peer": dest, "room": "otherroom", "ct": "aGVsbG8="}).to_string(),
-        ))
-        .await
-        .unwrap();
+    ws_a.send(Message::text(
+        json!({"peer": dest, "room": "otherroom", "ct": "aGVsbG8="}).to_string(),
+    ))
+    .await
+    .unwrap();
     let nack2 = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_a.next())
         .await
         .expect("timed out waiting for second route_error (different room)")
@@ -199,12 +195,11 @@ async fn successful_forward_never_nacks() {
     let (mut ws_a, _) = connect_and_auth(port).await;
     let (mut ws_b, peer_b) = connect_and_auth_with_room(port, &random_key(), "alive").await;
 
-    ws_a
-        .send(Message::text(
-            json!({"peer": peer_b, "room": "alive", "ct": "aGVsbG8="}).to_string(),
-        ))
-        .await
-        .unwrap();
+    ws_a.send(Message::text(
+        json!({"peer": peer_b, "room": "alive", "ct": "aGVsbG8="}).to_string(),
+    ))
+    .await
+    .unwrap();
 
     let received = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_b.next())
         .await
@@ -214,8 +209,7 @@ async fn successful_forward_never_nacks() {
     let v: serde_json::Value = serde_json::from_str(received.to_text().unwrap()).unwrap();
     assert_eq!(v["ct"], "aGVsbG8=");
 
-    let result =
-        tokio::time::timeout(tokio::time::Duration::from_millis(200), ws_a.next()).await;
+    let result = tokio::time::timeout(tokio::time::Duration::from_millis(200), ws_a.next()).await;
     assert!(
         result.is_err(),
         "sender must not receive anything on success, got {:?}",
@@ -323,8 +317,7 @@ async fn mailbox_keeper_does_not_consume_backlog() {
         .unwrap();
     ws_keeper
         .send(Message::text(
-            json!({"type": "auth", "sig": B64.encode(phone.sign(&nonce).to_bytes())})
-                .to_string(),
+            json!({"type": "auth", "sig": B64.encode(phone.sign(&nonce).to_bytes())}).to_string(),
         ))
         .await
         .unwrap();
@@ -360,8 +353,7 @@ async fn mailbox_is_capped_at_max_frames() {
     for i in 0..105 {
         ws_ext
             .send(Message::text(
-                json!({"peer": phone_peer, "room": "chat", "ct": format!("m-{i:03}")})
-                    .to_string(),
+                json!({"peer": phone_peer, "room": "chat", "ct": format!("m-{i:03}")}).to_string(),
             ))
             .await
             .unwrap();
@@ -373,11 +365,9 @@ async fn mailbox_is_capped_at_max_frames() {
     let mut first: Option<String> = None;
     let mut count = 0usize;
     while count <= 105 {
-        match tokio::time::timeout(std::time::Duration::from_millis(250), ws_phone2.next()).await
-        {
+        match tokio::time::timeout(std::time::Duration::from_millis(250), ws_phone2.next()).await {
             Ok(Some(Ok(frame))) => {
-                let v: serde_json::Value =
-                    serde_json::from_str(frame.to_text().unwrap()).unwrap();
+                let v: serde_json::Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
                 if v.get("ct").is_some() {
                     if first.is_none() {
                         first = v["ct"].as_str().map(String::from);
@@ -388,7 +378,10 @@ async fn mailbox_is_capped_at_max_frames() {
             _ => break,
         }
     }
-    assert_eq!(count, 100, "mailbox must deliver exactly the capped 100 frames");
+    assert_eq!(
+        count, 100,
+        "mailbox must deliver exactly the capped 100 frames"
+    );
     assert_eq!(first.as_deref(), Some("m-005"), "oldest frames are evicted");
 }
 
@@ -449,8 +442,7 @@ async fn auth_timeout_closes_half_handshake() {
     use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
     let sk = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
     ws.send(Message::text(
-        json!({"type": "hello", "pubkey": B64.encode(sk.verifying_key().to_bytes())})
-            .to_string(),
+        json!({"type": "hello", "pubkey": B64.encode(sk.verifying_key().to_bytes())}).to_string(),
     ))
     .await
     .unwrap();
@@ -570,5 +562,8 @@ async fn silent_half_open_connection_is_reaped() {
             }
         }
     }
-    assert!(ended, "silent half-open connection must be reaped by the relay");
+    assert!(
+        ended,
+        "silent half-open connection must be reaped by the relay"
+    );
 }

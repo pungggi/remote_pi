@@ -443,7 +443,10 @@ async fn rooms_check_identical_reply_after_ttl_is_delivered() {
     // Immediate identical follow-up — still inside the TTL window → suppressed.
     ws_app.send(Message::text(check.clone())).await.unwrap();
     let dup = tokio::time::timeout(tokio::time::Duration::from_millis(250), ws_app.next()).await;
-    assert!(dup.is_err(), "within-TTL identical reply must be suppressed");
+    assert!(
+        dup.is_err(),
+        "within-TTL identical reply must be suppressed"
+    );
 
     // Past the TTL, identical request → reply MUST arrive (the self-heal
     // poll contract).
@@ -456,7 +459,10 @@ async fn rooms_check_identical_reply_after_ttl_is_delivered() {
         .unwrap();
     let v2: serde_json::Value = serde_json::from_str(again.to_text().unwrap()).unwrap();
     assert_eq!(v2["type"], "rooms");
-    assert_eq!(v2, v1, "relay state unchanged — reply is identical but delivered");
+    assert_eq!(
+        v2, v1,
+        "relay state unchanged — reply is identical but delivered"
+    );
 }
 
 /// After a real room change (room_meta_update with a new model), the next

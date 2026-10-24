@@ -1,7 +1,5 @@
 mod common;
-use common::{
-    connect_and_auth, connect_and_auth_with_key, make_mesh_siblings, start_relay,
-};
+use common::{connect_and_auth, connect_and_auth_with_key, make_mesh_siblings, start_relay};
 
 use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt, StreamExt};
@@ -327,7 +325,10 @@ async fn presence_check_identical_reply_after_ttl_is_delivered() {
     // Immediate identical follow-up — inside the TTL → suppressed.
     ws_b.send(Message::text(check.clone())).await.unwrap();
     let dup = tokio::time::timeout(tokio::time::Duration::from_millis(250), ws_b.next()).await;
-    assert!(dup.is_err(), "within-TTL identical reply must be suppressed");
+    assert!(
+        dup.is_err(),
+        "within-TTL identical reply must be suppressed"
+    );
 
     // Past the TTL → identical reply is delivered anyway.
     tokio::time::sleep(tokio::time::Duration::from_millis(1_200)).await;

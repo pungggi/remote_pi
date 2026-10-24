@@ -127,23 +127,28 @@ class ChatPage extends StatelessWidget {
     // the user can read and scroll the conversation while answering.
     final ready = state is ChatReady ? state : null;
     final uiRequest = ready?.pendingUiRequest;
-    if (uiRequest == null) return scaffold;
-    return Stack(
-      children: [
-        scaffold,
-        Positioned.fill(
-          // Keyed by request id: a new flow must get a fresh State — question
-          // ids repeat across flows (e.g. "goal"), so reusing the State would
-          // leak old selections/custom text into the new modal.
-          child: ExtensionUiSheet(
-            key: ValueKey(uiRequest.id),
-            request: uiRequest,
-            error: ready?.pendingUiError,
-            onRespond: vm.respondExtensionUi,
-          ),
-        ),
-      ],
-    );
+    final body = uiRequest == null
+        ? scaffold
+        : Stack(
+            children: [
+              scaffold,
+              Positioned.fill(
+                // Keyed by request id: a new flow must get a fresh State — question
+                // ids repeat across flows (e.g. "goal"), so reusing the State would
+                // leak old selections/custom text into the new modal.
+                child: ExtensionUiSheet(
+                  key: ValueKey(uiRequest.id),
+                  request: uiRequest,
+                  error: ready?.pendingUiError,
+                  onRespond: vm.respondExtensionUi,
+                ),
+              ),
+            ],
+          );
+    // Plan/149 (PR #71 review) — forward app lifecycle changes to the VM:
+    // the durable read marker may only advance while the chat is actually
+    // visible, so backgrounded keep-alive deliveries stay unread.
+    return _ChatLifecycle(child: body);
   }
 
   Widget _buildTopBar(BuildContext context, ChatState state) {
@@ -2059,4 +2064,43 @@ String _relativeAge(String iso) {
   if (d.inMinutes < 60) return '${d.inMinutes}m ago';
   if (d.inHours < 24) return '${d.inHours}h ago';
   return '${d.inDays}d ago';
+}
+
+/// Plan/149 (PR #71 review) - forwards app lifecycle changes to
+/// [ChatViewModel.onAppLifecycleStateChanged]: the durable read marker may
+/// only advance while the chat is visible (foreground), so keep-alive
+/// deliveries that land while the phone is locked stay unread.
+class _ChatLifecycle extends StatefulWidget {
+  final Widget child;
+
+  const _ChatLifecycle({required this.child});
+
+  @override
+  State<_ChatLifecycle> createState() => _ChatLifecycleState();
+}
+
+class _ChatLifecycleState extends State<_ChatLifecycle>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // The ChatViewModel outlives this widget (router-scoped); read resolves
+    // the same instance the page watches.
+    // ignore: avoid_manual_providers_as_generated_provider_dependency
+    context.read<ChatViewModel>().onAppLifecycleStateChanged(state);
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }

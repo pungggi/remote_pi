@@ -6,6 +6,7 @@ import 'package:app/protocol/protocol.dart'
     show RoomInfo, OpenTerminalResult, WireWorktree;
 import 'package:app/routing/adaptive.dart';
 import 'package:app/routing/routes.dart';
+import 'package:app/ui/chat/widgets/linkify.dart' show openUrl;
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/core/widgets/branch_name_dialog.dart';
 import 'package:app/ui/home/states/home_state.dart';
@@ -397,24 +398,43 @@ class HomePage extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        SessionTile(
-          peer: it.peer,
-          isLive: isLive,
-          isReconnecting: isReconnecting,
-          isWorking: isWorking,
-          isWaitingForInput: isWaitingForInput,
-          isSelected: isSelected,
-          notifyOnDone: vm.notifyOnDone(it.peer.remoteEpk, it.room.roomId),
-          room: it.room,
-          git: it.room.git ??
-              state.gitByKey[
-                  '${toStandardB64(it.peer.remoteEpk)}|${it.room.roomId}'],
-          onOpen: () => _open(context, vm, it.peer, it.room),
-          onLongPress: () => _showSessionMenu(context, vm, it, isLive: isLive),
+        // Plan/149 — rebuild the tile when unread changes (msgs row
+        // delivery or read-marker advance), independent of rooms stream
+        // updates. The listenable merges the session's msgs box and the
+        // read-markers box.
+        ListenableBuilder(
+          listenable: vm.unreadListenable(it.peer.remoteEpk, it.room.roomId),
+          builder: (context, _) => SessionTile(
+            peer: it.peer,
+            isLive: isLive,
+            isReconnecting: isReconnecting,
+            isWorking: isWorking,
+            isWaitingForInput: isWaitingForInput,
+            isSelected: isSelected,
+            notifyOnDone: vm.notifyOnDone(it.peer.remoteEpk, it.room.roomId),
+            room: it.room,
+            git: it.room.git ??
+                state.gitByKey[
+                    '${toStandardB64(it.peer.remoteEpk)}|${it.room.roomId}'],
+            unread: vm.unreadCount(it.peer.remoteEpk, it.room.roomId),
+            onOpenRef: _openRefUrl(context, it.room),
+            onOpen: () => _open(context, vm, it.peer, it.room),
+            onLongPress: () =>
+                _showSessionMenu(context, vm, it, isLive: isLive),
+          ),
         ),
         Divider(color: colors.border, height: 1),
       ],
     );
+  }
+
+  /// Plan/149 — the slot tap opens the linked GitHub ref (PR wins over
+  /// issue). No URL on the slot → the tap falls through to the row
+  /// (open chat).
+  VoidCallback? _openRefUrl(BuildContext context, RoomInfo room) {
+    final url = room.ghRef?.display?.url;
+    if (url == null || url.isEmpty) return null;
+    return () => openUrl(context, url);
   }
 
   // ---------------------------------------------------------------------------
@@ -543,6 +563,24 @@ class HomePage extends StatelessWidget {
                   _openTerminal(context, vm, it);
                 },
               ),
+              // Plan/149 — link (or clear) the session's GitHub ref. Works
+              // online (live session) AND offline (device daemon writes the
+              // rooms registry), so the entry is always offered.
+              ListTile(
+                leading: Icon(LucideIcons.link, color: colors.accent),
+                title: Text(
+                  'Link Issue / PR',
+                  style: TextStyle(color: colors.text),
+                ),
+                subtitle: Text(
+                  'Pin this session to a GitHub PR or issue.',
+                  style: TextStyle(color: colors.muted, fontSize: 11),
+                ),
+                onTap: () {
+                  Navigator.of(sheetCtx).pop();
+                  _linkRef(context, vm, it);
+                },
+              ),
               // Plan/148 — one-tap cleanup of a dead session's worktree +
               // branch, offered exactly where the clutter is visible. Shown on
               // offline tiles (keeper mirrors count as offline); whether the
@@ -607,6 +645,39 @@ class HomePage extends StatelessWidget {
     );
   }
 
+  /// Plan/149 — open the Link Issue / PR sheet for a session. The sheet
+  /// collects the ref (suggestion, manual paste, or remove) and dispatches
+  /// [HomeViewModel.setSessionRef]; the tile updates via the rooms push on
+  /// its own. `ok:false` (e.g. unknown room) is toasted, not thrown.
+  Future<void> _linkRef(
+    BuildContext context,
+    HomeViewModel vm,
+    HomeItem it,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    await showLinkRefSheet(
+      context,
+      title: _titleFor(it.peer, it.room),
+      current: it.room.ghRef,
+      suggestion: it.room.ghSuggestion,
+      onApply: (ref) async {
+        try {
+          final res = await vm.setSessionRef(
+            epk: it.peer.remoteEpk,
+            roomId: it.room.roomId,
+            ghRef: ref,
+            cwd: it.room.cwd,
+          );
+          if (!res.ok && res.message.isNotEmpty) {
+            _toast(messenger, res.message, isError: true);
+          }
+        } on ActionFailure catch (e) {
+          _toast(messenger, e.message, isError: true);
+        }
+      },
+    );
+  }
+
   /// Plan/148 — confirm + execute the worktree cleanup for an offline session.
   /// Tap time is the first moment the shared connection may be routed (PR #70
   /// review): resolve the registry match, confirm naming branch/base/folder,
@@ -652,6 +723,7 @@ class HomePage extends StatelessWidget {
       context,
       sessionTitle: _titleFor(it.peer, it.room),
       worktree: worktree,
+      ghRef: it.room.ghRef,
     );
     if (!confirmed) return;
     try {

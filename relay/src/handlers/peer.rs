@@ -7,6 +7,7 @@ use axum::extract::{ConnectInfo, State};
 use axum::response::Response;
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use futures_util::{SinkExt, StreamExt};
+use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
 use tracing::{info, warn};
@@ -203,6 +204,11 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             .and_then(|v| v.as_bool());
         // Opaque context-usage blob (the relay forwards it verbatim).
         let context_usage = room_meta_val.and_then(|m| m.get("context_usage")).cloned();
+        // Plan/149 — GitHub ref / chat suggestion / activity stats (all
+        // opaque passthrough; see RoomMeta::gh_ref).
+        let gh_ref = room_meta_val.and_then(|m| m.get("gh_ref")).cloned();
+        let gh_suggestion = room_meta_val.and_then(|m| m.get("gh_suggestion")).cloned();
+        let stats = room_meta_val.and_then(|m| m.get("stats")).cloned();
         let started_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -218,6 +224,9 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             git,
             keeper,
             context_usage,
+            gh_ref,
+            gh_suggestion,
+            stats,
             started_at,
         }
     };
@@ -499,6 +508,28 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     let context_usage_patch = meta_obj
                                         .and_then(|m| m.get("context_usage"))
                                         .map(|v| Some(v.clone()));
+                                    // Plan/149 — GitHub ref / chat suggestion /
+                                    // activity stats passthrough (opaque).
+                                    // JSON null normalizes to clear-to-null
+                                    // (Some(None)); absent key = preserve.
+                                    let mut gh_ref_patch = meta_obj
+                                        .and_then(|m| m.get("gh_ref"))
+                                        .map(|v| Some(v.clone()));
+                                    if let Some(Some(Value::Null)) = &gh_ref_patch {
+                                        gh_ref_patch = Some(None);
+                                    }
+                                    let mut gh_suggestion_patch = meta_obj
+                                        .and_then(|m| m.get("gh_suggestion"))
+                                        .map(|v| Some(v.clone()));
+                                    if let Some(Some(Value::Null)) = &gh_suggestion_patch {
+                                        gh_suggestion_patch = Some(None);
+                                    }
+                                    let mut stats_patch = meta_obj
+                                        .and_then(|m| m.get("stats"))
+                                        .map(|v| Some(v.clone()));
+                                    if let Some(Some(Value::Null)) = &stats_patch {
+                                        stats_patch = Some(None);
+                                    }
                                     // Plan/132 — run-completion marker: opaque,
                                     // broadcast-only passthrough (never stored on
                                     // RoomMeta — see `RoomMetaPatch::run_done`).
@@ -511,6 +542,9 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                         waiting_for_input: waiting_for_input_patch,
                                         git: git_patch,
                                         context_usage: context_usage_patch,
+                                        gh_ref: gh_ref_patch,
+                                        gh_suggestion: gh_suggestion_patch,
+                                        stats: stats_patch,
                                         run_done: run_done_patch,
                                     };
                                     if !registry

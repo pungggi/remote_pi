@@ -69,6 +69,14 @@ class SessionTile extends StatelessWidget {
   /// the state is visible at a glance on the Home list.
   final bool notifyOnDone;
 
+  /// Plan/149 — unread message count (msgs box rows past the session's
+  /// read marker). Drives the slot's third line + accent tint.
+  final int unread;
+
+  /// Plan/149 — opens the linked GitHub ref's URL (slot tap). Null when
+  /// the ref has no URL (display-only slot).
+  final VoidCallback? onOpenRef;
+
   const SessionTile({
     super.key,
     required this.peer,
@@ -82,6 +90,8 @@ class SessionTile extends StatelessWidget {
     this.isSelected = false,
     this.onLongPress,
     this.notifyOnDone = false,
+    this.unread = 0,
+    this.onOpenRef,
   });
 
   @override
@@ -128,7 +138,18 @@ class SessionTile extends StatelessWidget {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    _Avatar(name: _avatarName()),
+                    // Plan/149 — the session slot replaces the avatar as
+                    // soon as the session has ANY slot content (linked ref,
+                    // stats, unread). A bare session keeps its initial.
+                    if (_slotHasContent)
+                      _SessionSlot(
+                        ghRef: room?.ghRef,
+                        stats: room?.stats,
+                        unread: unread,
+                        onOpen: onOpenRef,
+                      )
+                    else
+                      _Avatar(name: _avatarName()),
                     const SizedBox(width: 14),
                     Expanded(
                       child: _TitleBlock(peer: peer, room: room, git: git),
@@ -173,6 +194,109 @@ class SessionTile extends StatelessWidget {
     }
     if (peer.nickname?.isNotEmpty == true) return peer.nickname!;
     return peer.sessionName;
+  }
+
+  /// Plan/149 — slot content exists when anything but "nothing" would
+  /// render: a linked ref, known stats, or unread messages. Otherwise the
+  /// tile keeps the plain initial avatar.
+  bool get _slotHasContent =>
+      (room?.ghRef?.display != null) || (room?.stats != null) || unread > 0;
+}
+
+/// Plan/149 — the session slot: a 44×44 rounded square with three mono
+/// lines instead of a letter avatar. Line assignment:
+///
+///   with ref:   [PR #70 / #12] [T3]        [M7 · 2]
+///   without:    [T3]           [M7]       [2]
+///
+/// Unknown values (pre-149 extension: no stats) render as `·`; a session
+/// with neither ref, stats nor unread keeps the initial avatar (never an
+/// empty square). Tapping opens the ref's URL when it has one.
+class _SessionSlot extends StatelessWidget {
+  final GhRef? ghRef;
+  final SessionStats? stats;
+  final int unread;
+  final VoidCallback? onOpen;
+
+  const _SessionSlot({
+    required this.ghRef,
+    required this.stats,
+    required this.unread,
+    this.onOpen,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final display = ghRef?.display;
+    final hasRef = display != null;
+    final s = stats;
+
+    final String l1;
+    final String l2;
+    final String l3;
+    if (hasRef) {
+      l1 = ghRef!.label;
+      l2 = s != null ? 'T${s.turns}' : '·';
+      // PR #71 review — without stats (pre-149 extension / legacy tile), a
+      // positive unread must still surface on the ref line, not collapse
+      // to '·' (linking a session must never hide its unread).
+      l3 = s != null
+          ? (unread > 0 ? 'M${s.userMsgs}·$unread' : 'M${s.userMsgs}')
+          : (unread > 0 ? '$unread' : '·');
+    } else {
+      l1 = s != null ? 'T${s.turns}' : '·';
+      l2 = s != null ? 'M${s.userMsgs}' : '·';
+      l3 = unread > 0 ? '$unread' : '·';
+    }
+
+    return GestureDetector(
+      // No URL → the slot is display-only; the row tap still opens the
+      // chat (never swallow the tap).
+      onTap: onOpen,
+      behavior: onOpen != null ? HitTestBehavior.opaque : HitTestBehavior.deferToChild,
+      child: Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(10),
+          color: unread > 0
+              ? colors.accent.withValues(alpha: 0.10)
+              : colors.surface,
+          border: Border.all(
+            color: unread > 0 ? colors.accent : colors.border,
+          ),
+        ),
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 3),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _slotLine(l1, colors, emphasis: true),
+            const SizedBox(height: 1),
+            _slotLine(l2, colors),
+            const SizedBox(height: 1),
+            _slotLine(l3, colors, emphasis: unread > 0),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _slotLine(String text, AppColors colors, {bool emphasis = false}) {
+    return Text(
+      text,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      // No explicit lineHeight: with three 8.5px lines the default leading
+      // already stacks them inside 44px; forcing one clips the last line.
+      style: TextStyle(
+        color: emphasis ? colors.accent : colors.text,
+        fontFamily: kMonoFamily,
+        fontSize: 8.5,
+        fontWeight: emphasis ? FontWeight.w600 : FontWeight.w400,
+      ),
+    );
   }
 }
 

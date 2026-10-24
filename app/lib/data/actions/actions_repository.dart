@@ -156,6 +156,16 @@ abstract class IActionsRepository extends Repository {
   /// unavailable (e.g. only the Cockpit is running, no supervisor).
   Future<StartSessionResult> startSession({required String cwd, String? name});
 
+  /// Plan/149 — store (or clear, [ghRef] null) the GitHub ref linked to a
+  /// session. [cwd] is the fallback for rooms never registered on the PC
+  /// (pre-plan/140 sessions). `ok:false` in the result carries the Pi's
+  /// user-presentable reason; throws [ActionFailure] only on offline/timeout.
+  Future<SetSessionRefResult> setSessionRef({
+    required String roomId,
+    required GhRef? ghRef,
+    String? cwd,
+  });
+
   /// Snapshot of the active room's meta. Recomputed on every rooms
   /// snapshot and on every connection-status change.
   ActiveRoomMeta get activeRoomMeta;
@@ -369,6 +379,24 @@ class ActionsRepository extends Repository implements IActionsRepository {
             );
           }
         }
+      // Plan/149 — set-session-ref reply (Link Issue / PR sheet).
+      case SetSessionRefResult(
+        :final inReplyTo,
+        :final ok,
+        :final message,
+      ):
+        final p = _pending.remove(inReplyTo);
+        if (p == null) return;
+        p.timeout.cancel();
+        if (!p.completer.isCompleted) {
+          p.completer.complete(
+            SetSessionRefResult(
+              inReplyTo: inReplyTo,
+              ok: ok,
+              message: message,
+            ),
+          );
+        }
       default:
         // All other ServerMessages are owned by SessionRepository.
         break;
@@ -531,6 +559,21 @@ class ActionsRepository extends Repository implements IActionsRepository {
   Future<StartSessionResult> startSession({required String cwd, String? name}) =>
       _dispatch<StartSessionResult>(
         (id) => StartSessionRequest(id: id, cwd: cwd, name: name),
+      );
+
+  @override
+  Future<SetSessionRefResult> setSessionRef({
+    required String roomId,
+    required GhRef? ghRef,
+    String? cwd,
+  }) =>
+      _dispatch<SetSessionRefResult>(
+        (id) => SetSessionRefRequest(
+          id: id,
+          roomId: roomId,
+          ghRef: ghRef,
+          cwd: cwd,
+        ),
       );
 
   Future<T> _dispatch<T>(ClientMessage Function(String id) builder) async {

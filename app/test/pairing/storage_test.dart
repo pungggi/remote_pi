@@ -3,7 +3,8 @@
 // `wipeAll()` helper that the OwnerIdentityBridge calls on sync-reset.
 
 import 'package:app/pairing/storage.dart';
-import 'package:app/protocol/protocol.dart' show PiHarness;
+import 'package:app/protocol/protocol.dart'
+    show GhRef, GhRefSlot, PiHarness, SessionStats;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -304,6 +305,45 @@ void main() {
       await storage.wipeAll();
 
       expect(notifications, 1);
+    });
+  });
+
+  group('plan/149 — PersistedRoom carries the session slot offline', () {
+    test('ghRef + stats survive a save/load roundtrip', () async {
+      final storage = PairingStorage(_FakeSecureStorage());
+      await storage.saveRooms('epk-a', [
+        PersistedRoom(
+          roomId: 'main',
+          startedAt: 1700000000000,
+          ghRef: GhRef(
+            pr: const GhRefSlot(
+              number: 70,
+              url: 'https://github.com/o/r/pull/70',
+              state: 'OPEN',
+            ),
+            source: 'manual',
+          ),
+          stats: const SessionStats(turns: 3, userMsgs: 7),
+        ),
+      ]);
+
+      final rooms = await storage.loadRooms('epk-a');
+      expect(rooms, hasLength(1));
+      expect(rooms[0].ghRef?.pr?.number, 70);
+      expect(rooms[0].ghRef?.pr?.state, 'OPEN');
+      expect(rooms[0].ghRef?.source, 'manual');
+      expect(rooms[0].stats?.turns, 3);
+      expect(rooms[0].stats?.userMsgs, 7);
+    });
+
+    test('old cache entries (no slot keys) still load', () async {
+      final storage = PairingStorage(_FakeSecureStorage());
+      await storage.saveRooms('epk-a', const [
+        PersistedRoom(roomId: 'main', startedAt: 1700000000000),
+      ]);
+      final rooms = await storage.loadRooms('epk-a');
+      expect(rooms[0].ghRef, isNull);
+      expect(rooms[0].stats, isNull);
     });
   });
 }

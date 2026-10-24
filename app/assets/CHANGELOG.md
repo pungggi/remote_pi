@@ -11,7 +11,32 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Session info slot (plan/149)**: the round letter avatar becomes a small
+  44px rounded square with three mono lines: the linked GitHub PR or issue
+  (tap it to open the link), the turn count, and message + unread counts.
+  Works online and for offline/archived sessions alike; sessions without
+  any data keep the familiar initial letter.
+- **Link a session to a PR or issue**: long-press a session and choose
+  "Link Issue / PR" — paste a GitHub URL, accept the suggestion detected
+  from the chat, or remove an existing link. Links work while the session
+  is offline, too. Deleting a worktree (plan/148) now shows the linked ref
+  and warns when its PR is still open.
+- **Unread counts per session**: the third slot line shows how many new
+  messages arrived since you last opened that session, kept entirely on
+  this phone so it stays right even while the computer is off.
+
 ### Fixed
+
+- **Review fixes for the session slot**: linking an offline session now
+  reaches the computer's device daemon instead of the offline mirror (the
+  link used to time out). Unread is smarter: the very first message of a
+  session counts, a fresh conversation no longer inherits an old read
+  marker, sessions with a link but no stats still show their unread, and
+  the Home list loads its message boxes up front so offline tiles show
+  their cached unread immediately. Messages that arrive while your phone
+  is locked stay unread until you open the chat again.
 
 - **"Offline" tab snapped back to "Online"**: every session metadata change
   re-persists the rooms cache, which reloaded the Home list and silently reset

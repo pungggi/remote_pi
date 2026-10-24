@@ -864,6 +864,73 @@ hoje. `truncated` continua presente como alias.
 
 ---
 
+## Slot de sessão (`gh_ref` + `stats`) — 2026-10-24 (plano 149)
+
+O avatar redondo da Home vira um **slot de informação**: referência GitHub
+(PR/Issue) e contadores de atividade, online **e** offline (keeper).
+
+### Wire
+
+Três campos opacos novos em `room_meta` (a relay apenas repassa — mesmo
+padrão de `context_usage`, plano 115):
+
+```jsonc
+// extension → relay (hello roomMeta e room_meta_update)
+{ "gh_ref": {                       // ou null = limpar
+    "pr":    { "number": 70, "url": "https://github.com/o/r/pull/70", "state": "OPEN" },
+    "issue": { "number": 12, "url": "...", "state": null },
+    "source": "manual" },           // manual | gh | chat
+  "gh_suggestion": { "...": "..." },// source:"chat"; efêmero, nunca persistido no PC
+  "stats": { "turns": 3, "user_msgs": 7 } }
+```
+
+Semântica de patch idêntica a `git`: chave ausente preserva; chave presente
+com `null` limpa. O anúncio (`room_announced`, snapshot `rooms`) carrega o
+valor atual; keeper republica a cópia durável do registro `rooms.json`.
+
+### Regras da extension
+
+- **Contadores**: `turns` incrementa no `agent_end`, `user_msgs` no
+  `message_end` (role=user). Push **só na fronteira de turno** (throttle,
+  igual a `working`). O registro `rooms.json` é a fonte durável (semeia os
+  contadores no reconnect via `max(registry, atual)`).
+- **Ingest de ref, três vias** com precedência `manual > gh > chat`:
+  1. manual: `set_session_ref_request` do app (URL completa ou
+     `owner/repo#123`; `#123` puro é rejeitado — ambíguo entre repos);
+  2. `gh pr view --json number,url,state` no cadence do git refresh (60s);
+     falha (sem binário/auth/repo) não muda nada e não gera erro;
+  3. varredura de chat (user+assistant): URLs completas e `owner/repo#123`
+     viram **sugestão** (`gh_suggestion`, source `chat`) — nunca escrita
+     silenciosa. Aplicar ou limpar a ref descarta a sugestão pendente.
+- `set_session_ref_request` roteia como plan/148: `room_id` == sala própria
+  → aplica ao vivo (push + registro); outro `room_id` → escrita só no
+  registro (cobre sessões offline; `cwd` opcional cria a entrada para salas
+  nunca registradas, pré-plan/140). Resposta `set_session_ref_result`
+  `{ ok, message? }`.
+
+### App
+
+- `RoomInfo` ganha `ghRef`/`ghSuggestion`/`stats` (leitura flat e aninhada
+  em `meta`, has-flags no patch). Cache local (`PersistedRoom`) guarda
+  `gh_ref` + `stats` — nunca a sugestão.
+- Slot de 44px, 3 linhas mono: com ref `PR45`/`#12` + `T<n>` + `M<n>·unread`;
+  sem ref: `T<n>` + `M<n>` + unread; desconhecido renderiza `·`; sem nada,
+  cai no avatar de inicial legado. Toque na ref abre a URL.
+- **Unread é local ao telefone**: marcador `lastReadSeq` por `(epk, roomId)`
+  (box durável `read_markers`), unread = linhas da box de mensagens acima do
+  marcador — nunca um contador (plano 111 devolve só 30 eventos; contadores
+  derivados de sync seriam sistematicamente baixos).
+- Sheet "Link Issue / PR" no menu long-press: sugestão em um toque, entrada
+  manual, remover link. Dialog de cleanup (plan/148) mostra a ref e avisa
+  quando a PR ligada ainda está aberta.
+
+### Compatibilidade
+
+Extensão velha: sem campos → slot cai no avatar. Relay velha: campos opacos
+ignorados, nada quebra. App velha: ignora as chaves novas.
+
+---
+
 ## Implementações de referência
 
 - **Relay** (Rust, axum): [`relay/src/`](relay/src/)

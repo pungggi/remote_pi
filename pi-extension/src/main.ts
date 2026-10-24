@@ -43,7 +43,14 @@ import type {
 import { SettingsManager, convertToPng } from "@earendil-works/pi-coding-agent";
 import { type Ed25519Keypair } from "./pairing/crypto.js";
 import { buildQRUri, qrSession, renderQRAscii, clampPairTtlMs, TOKEN_TTL_MS } from "./pairing/qr.js";
-import { piperHomeDir, upsertRoom } from "./session/rooms_registry.js";
+import { piperHomeDir, readRoomsRegistry, upsertRoom, upsertRoomMeta, type RoomsRegistryEntry } from "./session/rooms_registry.js";
+import {
+  applyRefWithPrecedence,
+  ghPrViewRef,
+  mergeManualRef,
+  sameRef,
+  scanTextForRefSuggestion,
+} from "./session/ref_ingest.js";
 import {
   addPeer,
   getOrCreateEd25519Keypair,
@@ -101,9 +108,10 @@ import {
   handleListModels,
   type ActionCtx,
   type ActionModelRegistry,
+  type ActionReplySender,
 } from "./actions/handlers.js";
 import { handleGitStatus, getGitStatus } from "./actions/git_status.js";
-import type { WireGitStatus } from "./protocol/types.js";
+import type { WireGhRef, WireGitStatus, WireSessionStats } from "./protocol/types.js";
 import { handleOpenTerminal, handleListWorktrees, handleRemoveWorktree } from "./actions/open_terminal.js";
 import { handleStartSession } from "./actions/start_session.js";
 import { handleListProjects } from "./projects/handlers.js";
@@ -480,6 +488,86 @@ function _refreshContextUsage(): void {
 }
 
 /**
+ * Plan/149 — push the session-slot counters (`room_meta.stats`) and persist
+ * them into the rooms registry (the durable source the keeper serves while
+ * the room is dark). Called ONLY at turn boundaries (agent_end): the plan
+ * forbids per-message pushes. The registry upsert is best-effort — a room
+ * that was never relay-registered has no entry and simply isn't
+ * keeper-eligible yet.
+ */
+function _publishStats(): void {
+  const stats: WireSessionStats = { turns: ext.statsTurns, user_msgs: ext.statsUserMsgs };
+  if (ext.myRoomMeta) ext.myRoomMeta = { ...ext.myRoomMeta, stats };
+  if (ext.relay && ext.myRoomId) {
+    ext.relay.sendControl({ type: "room_meta_update", room_id: ext.myRoomId, meta: { stats } });
+  }
+  try {
+    if (ext.myRoomId) upsertRoomMeta(ext.myRoomId, { stats });
+  } catch { /* best-effort registry write */ }
+}
+
+/** Plan/149 — bump the user-message counter (message_end, role=user). No
+ *  push: the value rides the next turn boundary ([_publishStats]). */
+function _bumpStatsUserMsgs(): void {
+  ext.statsUserMsgs += 1;
+}
+
+/**
+ * Plan/149 — seed the session-slot state (gh_ref + counters) from the rooms
+ * registry at relay-connect time. `pi --continue` in the same cwd is the
+ * same ROOM, so the totals resume instead of restarting from zero. The
+ * counters take the max(registry, current): current counts messages that
+ * happened since the last persisted turn boundary (pre-connect turns in
+ * this process) and must not be clobbered by the older registry value.
+ * Returns the seeded ref for the hello roomMeta (null when none).
+ */
+function _seedSessionSlotFromRegistry(roomId: string): WireGhRef | null {
+  let entry: RoomsRegistryEntry | null;
+  try {
+    entry = readRoomsRegistry().get(roomId) ?? null;
+  } catch {
+    entry = null;
+  }
+  if (!entry) return null;
+  ext.statsTurns = Math.max(ext.statsTurns, entry.stats?.turns ?? 0);
+  ext.statsUserMsgs = Math.max(ext.statsUserMsgs, entry.stats?.user_msgs ?? 0);
+  return entry.ghRef ?? null;
+}
+
+/** Plan/149 — chat-scan suggestion hook (message_end for user + assistant
+ *  rows). A credible mention becomes `room_meta.gh_suggestion` — visible in
+ *  the app's sheet as a one-tap link, never auto-applied. Bare `#123` never
+ *  matches (see ref_ingest). Pushed on change only; NOT persisted (ephemeral
+ *  by design — a re-opened chat re-scans nothing, and stale suggestions die
+ *  with the session). */
+function _maybeSuggestRefFromText(text: string): void {
+  if (!text) return;
+  const found = scanTextForRefSuggestion(text);
+  if (!found) return;
+  if (!ext.myRoomMeta) return;
+  if (sameRef(ext.myRoomMeta.gh_suggestion ?? null, found)) return;
+  ext.myRoomMeta = { ...ext.myRoomMeta, gh_suggestion: found };
+  if (ext.relay && ext.myRoomId) {
+    ext.relay.sendControl({ type: "room_meta_update", room_id: ext.myRoomId, meta: { gh_suggestion: found } });
+  }
+}
+
+/** Plan/149 — best-effort plain-text extraction from a message content
+ *  (string or block array). Used only for the chat-scan suggester; a missing
+ *  extractor path just yields "" (no suggestion), never an error. */
+function _contentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  let out = "";
+  for (const raw of content) {
+    if (!raw || typeof raw !== "object") continue;
+    const block = raw as { type?: string; text?: unknown };
+    if (block.type === "text" && typeof block.text === "string") out += block.text + "\n";
+  }
+  return out;
+}
+
+/**
  * Plan/132: publish the run-completion marker as `room_meta.run_done`
  * (opaque blob — the relay forwards it verbatim as a broadcast-only field,
  * never persisting it; the phone turns it into a local notification for
@@ -526,6 +614,11 @@ function _republishRoomMeta(): void {
   if (ext.myRoomMeta.thinking !== undefined) meta.thinking = ext.myRoomMeta.thinking;
   if (ext.myRoomMeta.git !== undefined) meta.git = ext.myRoomMeta.git;
   if (ext.myRoomMeta.context_usage !== undefined) meta.context_usage = ext.myRoomMeta.context_usage;
+  // Plan/149 — re-sync the session-slot fields for apps that missed the
+  // change while disconnected.
+  if (ext.myRoomMeta.gh_ref !== undefined) meta.gh_ref = ext.myRoomMeta.gh_ref;
+  if (ext.myRoomMeta.gh_suggestion !== undefined) meta.gh_suggestion = ext.myRoomMeta.gh_suggestion;
+  if (ext.myRoomMeta.stats !== undefined) meta.stats = ext.myRoomMeta.stats;
   ext.relay.sendControl({ type: "room_meta_update", room_id: ext.myRoomId, meta });
 }
 
@@ -1274,7 +1367,18 @@ let _probeSendLast = 0;
  *  unwritable home must never break the relay connect path. */
 function _registerRoomForKeeper(cwd: string, roomId: string): void {
   try {
-    upsertRoom({ cwd, roomId, lastSeenAt: Date.now() });
+    upsertRoom({
+      cwd,
+      roomId,
+      lastSeenAt: Date.now(),
+      // Plan/149 / PR #71 review — carry the slot fields the hello just
+      // announced (or the reconnect replays): pre-connect turns exist only
+      // in memory until the next agent_end; without this, stopping the
+      // process right after connect loses them from the registry (keeper
+      // announcements + the next `pi --continue` would show stale totals).
+      ...(ext.myRoomMeta?.gh_ref !== undefined ? { ghRef: ext.myRoomMeta.gh_ref } : {}),
+      ...(ext.myRoomMeta?.stats !== undefined ? { stats: ext.myRoomMeta.stats } : {}),
+    });
   } catch { /* best-effort */ }
 }
 
@@ -1926,6 +2030,23 @@ async function _attemptReconnect(
     // Replay the same room identity from _cmdStart. Without this the relay
     // would log this WS as a default-room peer and the app would see a
     // phantom "legacy session" appear (regression of plano 17 + 18).
+    //
+    // PR #71 review — re-seed the slot fields from the registry BEFORE the
+    // replay: the registry is the durable truth and may have moved on while
+    // we were offline (e.g. a manual ref applied via the device daemon's
+    // registry-only path). The seed takes max(registry, current) for the
+    // counters and returns the registry's gh_ref only when one EXISTS — a
+    // registry without a ref keeps our cached one (our own applies always
+    // sync meta + registry together, so divergence means an offline update).
+    if (ext.myRoomId) {
+      const reseeded = _seedSessionSlotFromRegistry(ext.myRoomId);
+      if (ext.myRoomMeta && reseeded && !sameRef(ext.myRoomMeta.gh_ref ?? null, reseeded)) {
+        ext.myRoomMeta = { ...ext.myRoomMeta, gh_ref: reseeded };
+      }
+      if (ext.myRoomMeta && (ext.statsTurns > 0 || ext.statsUserMsgs > 0)) {
+        ext.myRoomMeta = { ...ext.myRoomMeta, stats: { turns: ext.statsTurns, user_msgs: ext.statsUserMsgs } };
+      }
+    }
     _relayLog(ext.myRoomId, "reconnect-attempt", url);
     await relay.connect({
       ...(ext.myRoomId ? { roomId: ext.myRoomId } : {}),
@@ -2843,6 +2964,18 @@ export function onMessageEnd(event: MessageEndEvent): void {
   if (m.role === "user" && _anyPeerActive()) {
     _broadcastConsumedSteerForUserContent(m.content);
   }
+  if (m.role === "user") {
+    // Plan/149 — count every persisted user message (terminal, app, RPC:
+    // message_end fires once per row). No push — the counter rides the next
+    // turn boundary.
+    _bumpStatsUserMsgs();
+    _maybeSuggestRefFromText(_contentText(m.content));
+  }
+  if (m.role === "assistant") {
+    // Plan/149 — scan assistant rows too: the agent pastes PR links far more
+    // often than the user does.
+    _maybeSuggestRefFromText(_contentText(m.content));
+  }
   if (m.role === "user" || m.role === "assistant" || m.role === "toolResult") {
     ext.messageBuffer.push(m as unknown as BufferMsg);
   }
@@ -2869,6 +3002,10 @@ export function onMessageEnd(event: MessageEndEvent): void {
 }
 
 export function onAgentEnd(): void {
+  // Plan/149 — turn boundary: bump the turn counter and push the counters
+  // (the ONLY stats push point — never per message).
+  ext.statsTurns += 1;
+  _publishStats();
   // Buffer is fed by `message_end`; here we only finalize the outbound
   // turn signal to every connected owner. No buffer mutation.
   // Flush coalesced text FIRST — the phone finalizes the streaming
@@ -3535,7 +3672,12 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
     ext.currentThinking = ext.pi?.getThinkingLevel() as ThinkingLevel | undefined;
   } catch { /* defensive — never block /remote-pi start on this */ }
 
-  const roomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; git?: WireGitStatus | null; context_usage?: WireContextUsage | null } = { name: sessionName, cwd };
+  // Plan/149 — seed the session-slot state from the rooms registry: a
+  // `pi --continue` in the same cwd is the same ROOM, so gh_ref and the
+  // activity counters resume instead of restarting from zero.
+  const seededGhRef = _seedSessionSlotFromRegistry(roomId);
+
+  const roomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; git?: WireGitStatus | null; context_usage?: WireContextUsage | null; gh_ref?: WireGhRef | null; stats?: WireSessionStats | null } = { name: sessionName, cwd };
   const modelName = _currentModelName();
   if (modelName) roomMeta.model = modelName;
   if (ext.currentThinking) roomMeta.thinking = ext.currentThinking;
@@ -3546,6 +3688,12 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   // Seed context-window usage so the chat header shows it on connect.
   const helloUsage = ext.lastEventCtx?.getContextUsage?.();
   if (helloUsage) roomMeta.context_usage = helloUsage;
+  // Plan/149 — seeded ref + counters ride the hello (keeper rooms announce
+  // the same fields from the registry on their side).
+  if (seededGhRef) roomMeta.gh_ref = seededGhRef;
+  if (ext.statsTurns > 0 || ext.statsUserMsgs > 0) {
+    roomMeta.stats = { turns: ext.statsTurns, user_msgs: ext.statsUserMsgs };
+  }
   // Persist so _attemptReconnect can replay the same hello payload — without
   // this, reconnect issues a bare hello and the relay creates a "default room"
   // entry that surfaces in the app as a phantom legacy session.
@@ -4993,6 +5141,84 @@ export function _routeClientMessageFrom(
     case "start_session_request":
       handleStartSession(sender, msg);
       break;
+    // Plan/149 — store (or clear) a session's GitHub ref. Two paths in one
+    // handler: the LIVE session (room_id is ours → room_meta push + registry)
+    // and the device daemon (any other room_id → registry-only, so the manual
+    // link works while the session is offline).
+    case "set_session_ref_request":
+      handleSetSessionRef(sender, msg);
+      break;
+  }
+}
+
+/** Plan/149 — set_session_ref_request handler (see the switch case above). */
+function handleSetSessionRef(
+  sender: ActionReplySender,
+  msg: Extract<ClientMessage, { type: "set_session_ref_request" }>,
+): void {
+  // PR #71 review — two-slot contract: a manual input (pasted URL/#N or an
+  // accepted chat suggestion) carries ONE populated slot. mergeManualRef
+  // retains the OTHER slot of the stored ref, so accepting a PR after
+  // linking an issue keeps both instead of replacing the whole ref.
+  let manualRef: WireGhRef | null = msg.gh_ref ? { ...msg.gh_ref, source: "manual" as const } : null;
+  try {
+    if (ext.myRoomId && msg.room_id === ext.myRoomId) {
+      // Live-session path: update the cached meta, push the patch, persist.
+      // Applying a (or clearing the) ref also drops any pending chat
+      // suggestion — it was just consumed or explicitly overruled.
+      manualRef = mergeManualRef(ext.myRoomMeta?.gh_ref ?? null, manualRef);
+      if (ext.myRoomMeta) {
+        ext.myRoomMeta = { ...ext.myRoomMeta, gh_ref: manualRef, gh_suggestion: null };
+      }
+      if (ext.relay && ext.myRoomId) {
+        ext.relay.sendControl({
+          type: "room_meta_update",
+          room_id: ext.myRoomId,
+          meta: { gh_ref: manualRef, gh_suggestion: null },
+        });
+      }
+      try { upsertRoomMeta(msg.room_id, { ghRef: manualRef }); } catch { /* best-effort */ }
+      sender.send({ type: "set_session_ref_result", in_reply_to: msg.id, ok: true });
+      return;
+    }
+    // Device-daemon path: registry-only write (the target room's meta
+    // refreshes when its session reconnects or the keeper re-announces).
+    // The merge reads the registry entry's CURRENT ref (the offline truth).
+    let currentRef: WireGhRef | null = null;
+    if (manualRef) {
+      try {
+        currentRef = readRoomsRegistry().get(msg.room_id)?.ghRef ?? null;
+      } catch { /* best-effort read; merge degrades to replace */ }
+      manualRef = mergeManualRef(currentRef, manualRef);
+    }
+    let updated: RoomsRegistryEntry | null;
+    try {
+      updated = upsertRoomMeta(
+        msg.room_id,
+        { ghRef: manualRef },
+        undefined,
+        msg.cwd ?? undefined,
+      );
+    } catch {
+      updated = null;
+    }
+    if (!updated) {
+      sender.send({
+        type: "set_session_ref_result",
+        in_reply_to: msg.id,
+        ok: false,
+        message: "unknown room (never registered on this PC)",
+      });
+      return;
+    }
+    sender.send({ type: "set_session_ref_result", in_reply_to: msg.id, ok: true });
+  } catch (err) {
+    sender.send({
+      type: "set_session_ref_result",
+      in_reply_to: msg.id,
+      ok: false,
+      message: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 

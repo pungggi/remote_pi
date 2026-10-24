@@ -178,13 +178,15 @@ pub const DEFAULT_MAILBOX_MAX_FRAMES: usize = 100;
 /// default. (No floor — even 0 is a legitimate "disable the mailbox"
 /// setting for constrained hosts.)
 pub fn resolve_mailbox_ttl_secs(raw: Option<&str>) -> u64 {
-    raw.and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(DEFAULT_MAILBOX_TTL_SECS)
+    raw.and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_MAILBOX_TTL_SECS)
 }
 
 /// Plan/141 — resolve the per-room frame cap from
 /// `REMOTEPI_MAILBOX_MAX_FRAMES`.
 pub fn resolve_mailbox_max_frames(raw: Option<&str>) -> usize {
-    raw.and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(DEFAULT_MAILBOX_MAX_FRAMES)
+    raw.and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MAILBOX_MAX_FRAMES)
 }
 
 // Allows mesh handlers to keep using `State<Arc<MeshStore>>` instead of
@@ -210,7 +212,8 @@ pub async fn prune_unauthorized_subscriptions(state: &AppState) -> usize {
         pairs: Vec<(String, String)>,
         state: &AppState,
     ) -> std::collections::HashMap<String, Vec<String>> {
-        let mut out: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let mut out: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
         for (target, subscriber) in pairs {
             if target == subscriber {
                 continue; // self-watch is always allowed
@@ -240,8 +243,7 @@ pub async fn prune_unauthorized_subscriptions(state: &AppState) -> usize {
         state.presence.unsubscribe(&subscriber, targets).await;
     }
 
-    let rooms_pruned =
-        collect_unauthorized(state.rooms.subscription_pairs().await, state).await;
+    let rooms_pruned = collect_unauthorized(state.rooms.subscription_pairs().await, state).await;
     for (subscriber, targets) in rooms_pruned {
         pruned += targets.len();
         tracing::info!(
