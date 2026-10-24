@@ -1500,6 +1500,9 @@ class SyncService extends Service {
       // Plan/124 — start-session (revive) reply is owned by ActionsRepository
       // (Home session menu), not the message sync.
       case StartSessionResult():
+      // Plan/149 — set-session-ref reply is owned by ActionsRepository
+      // (Link Issue / PR sheet), not the message sync.
+      case SetSessionRefResult():
         break;
     }
     // Plan/145 — with this frame applied, held followers may now be

@@ -7732,3 +7732,160 @@ describe("model meta", () => {
     }
   });
 });
+
+// ── Plan/149: session slot (gh_ref + stats) ──────────────────────────────────
+
+describe("plan/149 session slot (gh_ref + stats)", () => {
+  let tmpHome: string;
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    _knownPeers.length = 0;
+    _addedPeers.length = 0;
+    _removedPeers.length = 0;
+    _consumeCalls.length = 0;
+    _setRelayCalls.length = 0;
+    _savedRelayUrl = null;
+    _tokenStatus = "ok";
+    relayRef.current = null;
+    relayInstances.length = 0;
+    _defaultConnectImpl = async () => undefined;
+    const qr = await import("./pairing/qr.js");
+    (qr.qrSession.consumeToken as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (token: string) => { _consumeCalls.push(token); return _tokenStatus; },
+    );
+    const stop = captureHandler("remote-pi stop");
+    await stop("", makeMockCtx());
+    // Hermetic registry: route all rooms.json reads/writes into a temp home.
+    tmpHome = mkdtempSync(join(tmpdir(), "plan149-home-"));
+    process.env["REMOTE_PI_HOME"] = tmpHome;
+  });
+  afterEach(() => {
+    delete process.env["REMOTE_PI_HOME"];
+    rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  function ctrlFrames(): Array<{ type?: string; room_id?: string; meta?: Record<string, unknown> }> {
+    return relayRef.current!.sendControl.mock.calls
+      .map((c) => c[0] as { type?: string; room_id?: string; meta?: Record<string, unknown> })
+      .filter((f) => f.type === "room_meta_update");
+  }
+
+  test("agent_end pushes stats at turn boundaries; message_end user rows do NOT (throttle)", async () => {
+    await _pairForTest("owner149a__1234567890");
+    const onMsgEnd = captureEventHandler("message_end");
+    const onEnd = captureEventHandler("agent_end");
+    const roomId = relayRef.current!.connect.mock.calls[0]![0]!.roomId as string;
+
+    // Two user messages inside one turn: no stats push may happen at
+    // message_end (turn boundary only).
+    const ctrlBefore = ctrlFrames().filter((f) => f.meta && "stats" in f.meta!).length;
+    onMsgEnd({ message: { role: "user", content: "first" } } as unknown as Parameters<typeof onMsgEnd>[0]);
+    onMsgEnd({ message: { role: "user", content: "second" } } as unknown as Parameters<typeof onMsgEnd>[0]);
+    await new Promise((r) => setImmediate(r));
+    expect(
+      ctrlFrames().filter((f) => f.meta && "stats" in f.meta!),
+    ).toHaveLength(ctrlBefore);
+
+    // Turn boundary: exactly ONE stats push carrying the counters.
+    onEnd({} as unknown as Parameters<typeof onEnd>[0]);
+    await new Promise((r) => setImmediate(r));
+    const statsFrames = ctrlFrames().filter((f) => f.meta && "stats" in f.meta!);
+    expect(statsFrames).toHaveLength(ctrlBefore + 1);
+    expect(statsFrames[statsFrames.length - 1]!.room_id).toBe(roomId);
+    const stats = statsFrames[statsFrames.length - 1]!.meta!["stats"] as { turns: number; user_msgs: number };
+    expect(stats.turns).toBe(1);
+    expect(stats.user_msgs).toBe(2);
+  });
+
+  test("chat text with a GitHub PR URL only SUGGESTS (no meta push without confirmation)", async () => {
+    await _pairForTest("owner149b__1234567890");
+    const onMsgEnd = captureEventHandler("message_end");
+    const ctrlBefore = ctrlFrames().filter((f) => f.meta && "gh_ref" in f.meta!).length;
+
+    onMsgEnd({
+      message: { role: "user", content: "see https://github.com/o/r/pull/45" },
+    } as unknown as Parameters<typeof onMsgEnd>[0]);
+    await new Promise((r) => setImmediate(r));
+
+    // No gh_ref push: the phone gets a suggestion entry instead, never a
+    // silent override (URLs are chat-only until confirmed).
+    expect(
+      ctrlFrames().filter((f) => f.meta && "gh_ref" in f.meta!),
+    ).toHaveLength(ctrlBefore);
+  });
+
+  test("set_session_ref on the LIVE room: manual ref applied, pushed, persisted, ok:true", async () => {
+    await _pairForTest("owner149c__1234567890");
+    const roomId = relayRef.current!.connect.mock.calls[0]![0]!.roomId as string;
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+    const ctrlBefore = ctrlFrames().length;
+
+    await routeClientMessage(
+      {
+        type: "set_session_ref_request",
+        id: "ref-1",
+        room_id: roomId,
+        gh_ref: { pr: { number: 70, url: "https://github.com/o/r/pull/70", state: null }, issue: null },
+      },
+      { abort: () => undefined },
+    );
+
+    // (1) reply ok
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore).map((c) => c[0] as string).map(decodeSentCt);
+    const reply = sent.find((d) => d.inner.type === "set_session_ref_result");
+    expect(reply?.inner).toMatchObject({ type: "set_session_ref_result", in_reply_to: "ref-1", ok: true });
+
+    // (2) presence push carries the manual ref
+    const frames = ctrlFrames().slice(ctrlBefore);
+    const gh = frames.find((f) => f.meta && "gh_ref" in f.meta!);
+    expect(gh).toBeTruthy();
+    expect(gh!.room_id).toBe(roomId);
+    expect(gh!.meta!["gh_ref"]).toMatchObject({ source: "manual", pr: { number: 70 } });
+
+    // (3) durable: registry entry updated for offline/keeper tiles
+    const { readRoomsRegistry, roomsRegistryPath } = await import("./session/rooms_registry.js");
+    const entry = readRoomsRegistry(roomsRegistryPath()).get(roomId);
+    expect(entry?.ghRef).toMatchObject({ source: "manual", pr: { number: 70 } });
+  });
+
+  test("set_session_ref for a keeper-held (offline) room: registry-only, no live push", async () => {
+    await _pairForTest("owner149d__1234567890");
+    const { upsertRoom, readRoomsRegistry, roomsRegistryPath } = await import("./session/rooms_registry.js");
+    upsertRoom({ cwd: "C:\\kept", roomId: "keptRoom149", lastSeenAt: Date.now() });
+    const ctrlBefore = ctrlFrames().length;
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+
+    await routeClientMessage(
+      {
+        type: "set_session_ref_request",
+        id: "ref-2",
+        room_id: "keptRoom149",
+        gh_ref: { issue: { number: 12, url: "https://github.com/o/r/issues/12", state: null }, pr: null },
+      },
+      { abort: () => undefined },
+    );
+
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore).map((c) => c[0] as string).map(decodeSentCt);
+    expect(sent.find((d) => d.inner.type === "set_session_ref_result")?.inner).toMatchObject({ ok: true });
+    // No live push for a room we don't hold (the keeper re-announces on sweep).
+    expect(ctrlFrames()).toHaveLength(ctrlBefore);
+    const entry = readRoomsRegistry(roomsRegistryPath()).get("keptRoom149");
+    expect(entry?.ghRef).toMatchObject({ source: "manual", issue: { number: 12 } });
+  });
+
+  test("set_session_ref unknown room → ok:false with a helpful message", async () => {
+    await _pairForTest("owner149e__1234567890");
+    const sendsBefore = relayRef.current!.send.mock.calls.length;
+
+    await routeClientMessage(
+      { type: "set_session_ref_request", id: "ref-3", room_id: "ghostRoom", gh_ref: null },
+      { abort: () => undefined },
+    );
+
+    const sent = relayRef.current!.send.mock.calls.slice(sendsBefore).map((c) => c[0] as string).map(decodeSentCt);
+    const reply = sent.find((d) => d.inner.type === "set_session_ref_result")?.inner as { ok?: boolean; message?: string };
+    expect(reply?.ok).toBe(false);
+    expect(reply?.message).toContain("unknown room");
+  });
+});
+

@@ -53,6 +53,25 @@ pub struct RoomMeta {
     /// it). `None` = not reported yet. Mirrors `git` (Plan/107b) passthrough.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_usage: Option<serde_json::Value>,
+    /// Plan/149 — GitHub ref linked to this session (opaque JSON blob:
+    /// `{pr?: {number, url?, state?}, issue?: {…}, source}`; source is
+    /// `manual` | `gh` | `chat`). The relay never inspects it; the registry
+    /// (plan/140 rooms.json) is the durable source on the PC, this is the
+    /// live view for subscribers. `None` = not reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gh_ref: Option<serde_json::Value>,
+    /// Plan/149 — chat-scan SUGGESTION for a ref (same opaque shape as
+    /// `gh_ref`, `source: "chat"`). Never auto-applied: the app renders it
+    /// as a one-tap "Link" affordance, and applying it goes through the
+    /// manual path. Ephemeral ext-side state — NOT persisted in the rooms
+    /// registry — but it rides the relay like any other meta field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gh_suggestion: Option<serde_json::Value>,
+    /// Plan/149 — activity counters (`{turns, user_msgs}`) the extension
+    /// pushes at turn boundaries (never per message). Opaque passthrough;
+    /// the PC rooms registry is the durable source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stats: Option<serde_json::Value>,
     pub started_at: i64,
 }
 
@@ -81,6 +100,12 @@ pub struct RoomMetaPatch {
     /// Opaque context-usage snapshot (JSON value passthrough). Same
     /// `Option<Option<_>>` semantics as `git`.
     pub context_usage: Option<Option<serde_json::Value>>,
+    /// Plan/149 — opaque GitHub-ref passthrough (see `RoomMeta::gh_ref`).
+    pub gh_ref: Option<Option<serde_json::Value>>,
+    /// Plan/149 — opaque chat-scan suggestion passthrough.
+    pub gh_suggestion: Option<Option<serde_json::Value>>,
+    /// Plan/149 — opaque activity-stats passthrough.
+    pub stats: Option<Option<serde_json::Value>>,
     /// Plan/132 — run-completion marker (opaque JSON passthrough:
     /// `{turn_id, ended_at}`). **Broadcast-only**: unlike every other field
     /// it is never written to `RoomMeta`, never persisted, and never carried
@@ -104,6 +129,9 @@ impl RoomMetaPatch {
             && self.waiting_for_input.is_none()
             && self.git.is_none()
             && self.context_usage.is_none()
+            && self.gh_ref.is_none()
+            && self.gh_suggestion.is_none()
+            && self.stats.is_none()
             && self.run_done.is_none()
     }
 }

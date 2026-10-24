@@ -82,6 +82,14 @@ class _FakeRepo implements IActionsRepository {
       );
 
   @override
+  Future<SetSessionRefResult> setSessionRef({
+    required String roomId,
+    required GhRef? ghRef,
+    String? cwd,
+  }) async =>
+      SetSessionRefResult(inReplyTo: '', ok: true, message: '');
+
+  @override
   Future<void> compact() async {
     compactCalls++;
     if (failCompact) throw const ActionFailure('compact boom');

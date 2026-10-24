@@ -34,7 +34,7 @@ import type { AcquiredLock } from "./session/cwd_lock.js";
 import type { FileIndex } from "./session/file_index.js";
 import type { ExtensionUiBridge } from "./extension_ui_bridge.js";
 import type { Ed25519Keypair } from "./pairing/crypto.js";
-import type { JournaledFrame, QueuedMessageItem, ThinkingLevel, WireGitStatus } from "./protocol/types.js";
+import type { JournaledFrame, QueuedMessageItem, ThinkingLevel, WireGhRef, WireGitStatus, WireSessionStats } from "./protocol/types.js";
 
 // ── Shared light constants (plan/143: live here so BOTH the thin entry and
 //    the lazy runtime can import them without pulling heavy modules) ──
@@ -142,6 +142,15 @@ export interface ExtensionState {
     waiting_for_input?: boolean;
     git?: WireGitStatus | null;
     context_usage?: WireContextUsage | null;
+    /** Plan/149 — GitHub ref linked to this session (manual/gh-sourced).
+     *  Mirrors the rooms-registry entry; pushed at change time. */
+    gh_ref?: WireGhRef | null;
+    /** Plan/149 — chat-scan suggestion (source "chat"). Ephemeral: never
+     *  persisted to the registry, only carried in room_meta so the app can
+     *  offer a one-tap link. */
+    gh_suggestion?: WireGhRef | null;
+    /** Plan/149 — activity counters, pushed ONLY at turn boundaries. */
+    stats?: WireSessionStats | null;
   } | null;
   currentModel: string | undefined;
   currentThinking: ThinkingLevel | undefined;
@@ -163,6 +172,11 @@ export interface ExtensionState {
   // epoch is restamped: `_resetSessionForNew`, `resetExtensionState`).
   roomSeq: number;
   roomJournal: JournaledFrame[];
+  /** Plan/149 — running session-slot counters (cumulative per room, seeded
+   *  from the rooms registry at relay connect so a `pi --continue` resumes
+   *  the totals). Pushed ONLY at turn boundaries — never per message. */
+  statsTurns: number;
+  statsUserMsgs: number;
 
   // mesh
   meshNode: MeshNode | null;
@@ -252,6 +266,11 @@ export const ext: ExtensionState = {
   waitingBridgeFlow: false,
   roomSeq: 0,
   roomJournal: [],
+  /** Plan/149 — running session-slot counters (cumulative per room, seeded
+   *  from the rooms registry at relay connect so a `pi --continue` resumes
+   *  the totals). Pushed ONLY at turn boundaries — never per message. */
+  statsTurns: 0,
+  statsUserMsgs: 0,
 
   // mesh
   meshNode: null,
@@ -349,6 +368,10 @@ export function resetExtensionState(): void {
     waitingBridgeFlow: false,
     roomSeq: 0,
     roomJournal: [],
+    // Plan/149 — counters reset with the room lifecycle (a reset re-seeds
+    // from the registry at the next relay connect).
+    statsTurns: 0,
+    statsUserMsgs: 0,
     meshNode: null,
     sessionName: null,
     sessionPeerCount: 0,

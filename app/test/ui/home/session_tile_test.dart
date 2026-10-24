@@ -236,4 +236,102 @@ void main() {
       },
     );
   });
+
+  group('session slot (plan/149)', () {
+    testWidgets(
+      'nothing to show → plain initial avatar (never an empty square)',
+      (tester) async {
+        await _pump(
+          tester,
+          room: const RoomInfo(roomId: 'r1', startedAt: 1, name: 'alpha'),
+        );
+        expect(find.text('A'), findsOneWidget); // initial
+        expect(find.text('·'), findsNothing); // no slot dot lines
+      },
+    );
+
+    testWidgets('ref + stats → three mono lines, PR wins the display',
+        (tester) async {
+      await _pump(
+        tester,
+        room: const RoomInfo(
+          roomId: 'r1',
+          startedAt: 1,
+          ghRef: GhRef(
+            pr: GhRefSlot(
+              number: 70,
+              url: 'https://github.com/o/r/pull/70',
+            ),
+          ),
+          stats: SessionStats(turns: 3, userMsgs: 7),
+        ),
+      );
+      expect(find.text('PR #70'), findsOneWidget);
+      expect(find.text('T3'), findsOneWidget);
+      expect(find.text('M7'), findsOneWidget);
+    });
+
+    testWidgets('unread renders as its own line without a ref',
+        (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SessionTile(
+              peer: _peer(),
+              isLive: true,
+              onOpen: () {},
+              unread: 2,
+              room: const RoomInfo(
+                roomId: 'r1',
+                startedAt: 1,
+                stats: SessionStats(turns: 1, userMsgs: 4),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(find.text('T1'), findsOneWidget);
+      expect(find.text('M4'), findsOneWidget);
+      expect(find.text('2'), findsOneWidget);
+    });
+
+    testWidgets('ref + stats + unread → msgs line carries the unread count',
+        (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SessionTile(
+              peer: _peer(),
+              isLive: true,
+              onOpen: () {},
+              unread: 2,
+              room: const RoomInfo(
+                roomId: 'r1',
+                startedAt: 1,
+                ghRef: GhRef(issue: GhRefSlot(number: 12)),
+                stats: SessionStats(turns: 1, userMsgs: 4),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(find.text('#12'), findsOneWidget);
+      expect(find.text('M4·2'), findsOneWidget);
+    });
+
+    testWidgets('no ref → turns/msgs/unread stack, zero unread renders ·',
+        (tester) async {
+      await _pump(
+        tester,
+        room: const RoomInfo(
+          roomId: 'r1',
+          startedAt: 1,
+          stats: SessionStats(turns: 9, userMsgs: 12),
+        ),
+      );
+      expect(find.text('T9'), findsOneWidget);
+      expect(find.text('M12'), findsOneWidget);
+      expect(find.text('·'), findsOneWidget); // unread line, zero
+    });
+  });
 }

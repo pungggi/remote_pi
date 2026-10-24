@@ -1,6 +1,7 @@
 import 'dart:convert';
 
-import 'package:app/protocol/protocol.dart' show PiHarness;
+import 'package:app/protocol/protocol.dart'
+    show GhRef, PiHarness, SessionStats;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -23,6 +24,12 @@ class PersistedRoom {
   /// Plan 18 — last-known model the Pi-extension is running with.
   /// Persisted so the subtitle survives cold starts.
   final String? model;
+  /// Plan/149 — last-known GitHub ref (durable PC-side state; survives
+  /// cold starts and powers the offline tile). Not the ephemeral
+  /// suggestion — that is never cached.
+  final GhRef? ghRef;
+  /// Plan/149 — last-known activity counters.
+  final SessionStats? stats;
 
   const PersistedRoom({
     required this.roomId,
@@ -31,6 +38,8 @@ class PersistedRoom {
     this.cwd,
     this.localName,
     this.model,
+    this.ghRef,
+    this.stats,
   });
 
   Map<String, dynamic> toJson() => {
@@ -40,6 +49,8 @@ class PersistedRoom {
     'started_at': startedAt,
     'local_name': localName,
     'model': model,
+    if (ghRef != null) 'gh_ref': ghRef!.toJson(),
+    if (stats != null) 'stats': stats!.toJson(),
   };
 
   factory PersistedRoom.fromJson(Map<String, dynamic> j) => PersistedRoom(
@@ -49,6 +60,12 @@ class PersistedRoom {
     startedAt: (j['started_at'] as num).toInt(),
     localName: j['local_name'] as String?,
     model: j['model'] as String?,
+    ghRef: j['gh_ref'] is Map<String, dynamic>
+        ? GhRef.fromJson(j['gh_ref'] as Map<String, dynamic>)
+        : null,
+    stats: j['stats'] is Map<String, dynamic>
+        ? SessionStats.fromJson(j['stats'] as Map<String, dynamic>)
+        : null,
   );
 
   PersistedRoom copyWith({
@@ -57,6 +74,8 @@ class PersistedRoom {
     int? startedAt,
     Object? localName = _unset,
     Object? model = _unset,
+    Object? ghRef = _unset,
+    Object? stats = _unset,
   }) => PersistedRoom(
     roomId: roomId,
     name: name ?? this.name,
@@ -68,6 +87,12 @@ class PersistedRoom {
     model: identical(model, _unset)
         ? this.model
         : model as String?,
+    ghRef: identical(ghRef, _unset)
+        ? this.ghRef
+        : ghRef as GhRef?,
+    stats: identical(stats, _unset)
+        ? this.stats
+        : stats as SessionStats?,
   );
 }
 

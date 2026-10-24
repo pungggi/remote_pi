@@ -21,6 +21,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { WireGhRef, WireSessionStats } from "../protocol/types.js";
 
 export interface RoomsRegistryEntry {
   /** Absolute cwd of the pi session that owns the room. */
@@ -29,6 +30,12 @@ export interface RoomsRegistryEntry {
   roomId: string;
   /** Epoch ms of the last relay connect that held this room. */
   lastSeenAt: number;
+  /** Plan/149 — GitHub ref linked to the session (manual/gh-sourced).
+   *  Durable source of truth for offline + keeper tiles. */
+  ghRef?: WireGhRef | null;
+  /** Plan/149 — activity counters (turns / user_msgs). Updated at turn
+   *  boundaries by the live session; served by the keeper while dark. */
+  stats?: WireSessionStats | null;
 }
 
 /** Mirror of the on-disk shape: a plain object keyed by roomId. */
@@ -65,10 +72,48 @@ export function readRoomsRegistry(path: string = roomsRegistryPath()): Map<strin
       const e = v as Partial<RoomsRegistryEntry>;
       if (typeof e.cwd !== "string" || typeof e.roomId !== "string") continue;
       const lastSeenAt = typeof e.lastSeenAt === "number" ? e.lastSeenAt : 0;
-      out.set(roomId, { cwd: e.cwd, roomId, lastSeenAt });
+      const out2: RoomsRegistryEntry = { cwd: e.cwd, roomId, lastSeenAt };
+      const ghRef = sanitizeGhRef(e.ghRef);
+      const stats = sanitizeStats(e.stats);
+      if (ghRef) out2.ghRef = ghRef;
+      if (stats) out2.stats = stats;
+      out.set(roomId, out2);
     }
   }
   return out;
+}
+
+/** Best-effort shape guard for a registry-loaded ref (corrupt file → null). */
+function sanitizeGhRef(v: unknown): WireGhRef | null {
+  if (!v || typeof v !== "object") return null;
+  const r = v as Partial<WireGhRef>;
+  const pr = sanitizeSlot(r.pr);
+  const issue = sanitizeSlot(r.issue);
+  if (!pr && !issue) return null;
+  return {
+    pr,
+    issue,
+    source: typeof r.source === "string" ? r.source : null,
+  };
+}
+
+function sanitizeSlot(v: unknown): WireGhRef["pr"] {
+  if (!v || typeof v !== "object") return null;
+  const s = v as { number?: unknown; url?: unknown; state?: unknown };
+  if (typeof s.number !== "number" || !Number.isFinite(s.number)) return null;
+  return {
+    number: s.number,
+    url: typeof s.url === "string" ? s.url : null,
+    state: typeof s.state === "string" ? s.state : null,
+  };
+}
+
+/** Best-effort shape guard for registry-loaded stats (corrupt file → null). */
+function sanitizeStats(v: unknown): WireSessionStats | null {
+  if (!v || typeof v !== "object") return null;
+  const s = v as { turns?: unknown; user_msgs?: unknown };
+  if (typeof s.turns !== "number" || typeof s.user_msgs !== "number") return null;
+  return { turns: s.turns, user_msgs: s.user_msgs };
 }
 
 /** Upserts one entry and persists (best-effort; returns the entry). */
@@ -77,9 +122,55 @@ export function upsertRoom(
   path: string = roomsRegistryPath(),
 ): RoomsRegistryEntry {
   const map = readRoomsRegistry(path);
-  map.set(entry.roomId, { ...entry, lastSeenAt: Math.max(entry.lastSeenAt, map.get(entry.roomId)?.lastSeenAt ?? 0) });
+  const prev = map.get(entry.roomId);
+  map.set(entry.roomId, {
+    ...entry,
+    lastSeenAt: Math.max(entry.lastSeenAt, prev?.lastSeenAt ?? 0),
+    ghRef: entry.ghRef !== undefined ? entry.ghRef : prev?.ghRef ?? null,
+    stats: entry.stats !== undefined ? entry.stats : prev?.stats ?? null,
+  });
   writeRoomsRegistry(map, path);
   return map.get(entry.roomId)!;
+}
+
+/** Plan/149 — merge ONLY the gh_ref / stats fields into an existing entry
+ *  (creating a bare entry when `ensureCwd` is given and the room was never
+ *  registered — e.g. a manual link from the device daemon for a room whose
+ *  last connect predates the registry write). `lastSeenAt` and `cwd` of an
+ *  existing entry are preserved: only the plan/149 fields move. Returns null
+ *  when the room is unknown and no `ensureCwd` was provided (caller decides). */
+export function upsertRoomMeta(
+  roomId: string,
+  patch: { ghRef?: WireGhRef | null; stats?: WireSessionStats | null },
+  path: string = roomsRegistryPath(),
+  ensureCwd?: string,
+): RoomsRegistryEntry | null {
+  const map = readRoomsRegistry(path);
+  const prev = map.get(roomId);
+  if (!prev) {
+    if (!ensureCwd) return null;
+    const created: RoomsRegistryEntry = {
+      cwd: ensureCwd,
+      roomId,
+      // A user-linked room is worth keeping: a fresh lastSeenAt makes it
+      // keeper-eligible (durable history + the ref while dark) instead of
+      // being pruned as ancient on the next sweep.
+      lastSeenAt: Date.now(),
+      ghRef: patch.ghRef !== undefined ? patch.ghRef : null,
+      stats: patch.stats !== undefined ? patch.stats : null,
+    };
+    map.set(roomId, created);
+    writeRoomsRegistry(map, path);
+    return created;
+  }
+  const next: RoomsRegistryEntry = {
+    ...prev,
+    ghRef: patch.ghRef !== undefined ? patch.ghRef : prev.ghRef,
+    stats: patch.stats !== undefined ? patch.stats : prev.stats,
+  };
+  map.set(roomId, next);
+  writeRoomsRegistry(map, path);
+  return next;
 }
 
 /** Drops entries older than `maxAgeMs` (by lastSeenAt). Persists when changed. */

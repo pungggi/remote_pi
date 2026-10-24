@@ -213,6 +213,11 @@ class ChatViewModel extends ViewModel<ChatState> {
     _msgsSub = _read.watchMessages(epk, roomId).listen(_onMessages);
     _runtimeSub = _read.watchRuntime(epk, roomId).listen(_onRuntime);
 
+    // Plan/149 — opening the chat marks the session read. The initial
+    // watchMessages snapshot then re-marks to the newest seq below (it
+    // fires immediately after listen), covering the "opened an already-
+    // caught-up session" case in one path.
+
     _bootstrapping = false;
     _sync.requestSync();
     _recompute();
@@ -220,6 +225,17 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   void _onMessages(List<MessageRecord> rows) {
     _messages = [for (final r in rows) r.toChatMessage()];
+    // Plan/149 — the chat is on screen: everything delivered up to the
+    // newest row counts as read (marker only ever moves forward; older
+    // backward-paged rows can't un-read newer ones).
+    final epk = _activePeer?.remoteEpk;
+    if (epk != null && rows.isNotEmpty) {
+      _read.markReadUpTo(
+        epk,
+        _activeRoomId,
+        rows.reduce((a, b) => a.seq >= b.seq ? a : b).seq,
+      );
+    }
     _recompute();
   }
 

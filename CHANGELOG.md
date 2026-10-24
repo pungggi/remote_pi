@@ -11,6 +11,37 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Home session slot: GitHub ref + activity stats (plan/149)** — the 40px
+  letter avatar becomes a 44px rounded-square info slot with three mono
+  lines. With a linked ref: `PR #70` / `#12` (PR slot wins the display,
+  both slots kept), tap opens the URL. Without: turns / user-msgs / unread.
+  Unknown values render `·`; a session with neither ref nor stats nor
+  unread keeps the legacy initial avatar. New opaque `room_meta` keys
+  `gh_ref` {pr, issue, source}, `gh_suggestion` (source `chat`, ephemeral,
+  never persisted PC-side) and `stats` {turns, user_msgs}; relay passes
+  them through with `git`-style absent-preserve / null-clear patch
+  semantics, and the room keeper re-announces the registry's durable copy
+  for offline tiles. **Ingest precedence manual > gh > chat**: manual via
+  the new `set_session_ref_request`/`_result` pair (live room applies +
+  pushes, any other room writes the plan/140 rooms registry directly —
+  works offline, optional `cwd` creates the entry for pre-140 sessions);
+  `gh pr view --json number,url,state` runs on the git-refresh cadence
+  (missing binary/auth/repo changes nothing, errors nothing); the chat
+  scan (user+assistant rows) only ever *suggests* from full GitHub URLs
+  and `owner/repo#123` — a bare `#123` is rejected as ambiguous.
+  Counters: turns on `agent_end`, user messages on `message_end`
+  (role=user), pushed **only at turn boundaries**, seeded from the
+  registry on reconnect (`max(registry, current)`). Unread is
+  phone-local: a durable `read_markers` Hive box stores the last-read seq
+  per `(epk, roomId)` (written on chat open, forward-only); unread = msgs
+  box rows past the marker — never a stored counter (plan/111's 30-event
+  sync would make phone-side totals systematically low). The plan/148
+  cleanup dialog names the linked ref and warns when the PR's state is
+  open/unknown. New public widgets: `_SessionSlot` (in `session_tile.dart`),
+  `showLinkRefSheet` (in `link_ref_sheet.dart`).
+
 ### Fixed
 
 - **Home: "Offline" filter tab reset to "Online" on every rooms persist** —

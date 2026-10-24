@@ -8,6 +8,9 @@
 //   DURABLE  msgs_<epk>__<roomId>   key = seq (int)        → MessageRecord
 //   DURABLE  sessions_index         key = <epk>:<roomId>   → SessionIndexRecord
 //   DURABLE  notify_prefs           key = <epk>:<roomId>   → bool (Plan 132)
+//   DURABLE  read_markers           key = <epk>:<roomId>   → int (Plan/149:
+//                                 last-read seq; unread = msgs box rows
+//                                 past it — NEVER a counter, plan/111=30 ev)
 //   VOLATILE runtime  (wiped@boot)  key = <epk>:<roomId>   → RuntimeRecord
 
 import 'package:app/data/transport/epk_encoding.dart';
@@ -17,6 +20,7 @@ const String _kNamespace = 'rp_v2';
 const String _kSessionsIndex = 'sessions_index';
 const String _kRuntime = 'runtime';
 const String _kNotifyPrefs = 'notify_prefs';
+const String _kReadMarkers = 'read_markers';
 
 /// Facade over the v2 Hive boxes. A single instance is shared by the
 /// [SyncService] (writer) and the read repositories (readers) so they observe
@@ -47,6 +51,9 @@ class LocalBoxes {
     await Hive.openBox<dynamic>(_kSessionsIndex);
     // Plan/132 — per-session completion-notification toggles (durable).
     await Hive.openBox<dynamic>(_kNotifyPrefs);
+    // Plan/149 — per-session last-read seq markers (durable; unread
+    // survives restarts).
+    await Hive.openBox<dynamic>(_kReadMarkers);
     final runtime = await Hive.openBox<dynamic>(_kRuntime);
     await runtime.clear(); // VOLATILE — zero on boot (#3)
   }
@@ -58,6 +65,37 @@ class LocalBoxes {
   /// Plan/132 — per-session completion-notification toggles. Key is
   /// `<epk>:<roomId>` (same shape as [sessionKey]); value is a `bool`.
   Box<dynamic> notifyPrefsBox() => Hive.box<dynamic>(_kNotifyPrefs);
+
+  /// Plan/149 — per-session last-read seq markers. Key is
+  /// `<epk>:<roomId>`; value is the highest seq the user actually saw
+  /// (written on chat open). Unread = msgs box rows with seq > marker,
+  /// counted on demand — never stored (plan/111 verdict: derived state
+  /// drifts; the box rows are the SSOT).
+  Box<dynamic> readMarkersBox() => Hive.box<dynamic>(_kReadMarkers);
+
+  /// Plan/149 — number of unread messages for a session: msgs box rows
+  /// with `seq > lastReadSeq`. Returns 0 for unknown sessions / empty
+  /// boxes. Sync-ish: only touches the already-open boxes; callers that
+  /// might hit a cold session should await [msgsBox] first.
+  int unreadCount(String epk, String roomId) {
+    if (!isMsgsBoxOpen(epk, roomId)) return 0;
+    final box = openMsgsBox(epk, roomId);
+    final lastRead = readMarkersBox().get(sessionKey(epk, roomId)) as int?;
+    var n = 0;
+    for (final k in box.keys) {
+      if (k is int && k > (lastRead ?? 0)) n++;
+    }
+    return n;
+  }
+
+  /// Plan/149 — mark a session read up to [upToSeq] (chat open). Never
+  /// moves the marker backwards (a racing delivery for an older replayed
+  /// seq must not clear newer unread).
+  void markRead(String epk, String roomId, int upToSeq) {
+    final markers = readMarkersBox();
+    final current = markers.get(sessionKey(epk, roomId)) as int? ?? 0;
+    if (upToSeq > current) markers.put(sessionKey(epk, roomId), upToSeq);
+  }
 
   /// Per-session message box. Lazily opened; idempotent (returns the already
   /// open box on subsequent calls).

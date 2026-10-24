@@ -69,6 +69,9 @@ async function mapAgentMessages(): Promise<MapMessages> {
 export interface KeeperRelayClient {
   connect(options?: { roomId?: string; roomMeta?: Record<string, unknown> }): Promise<void>;
   send(line: string): void;
+  /** Plan/149 — control-frame send (room_meta_update for registry-sourced
+   *  gh_ref / stats refreshes on held rooms). */
+  sendControl(frame: object): void;
   close(): void;
   on(event: "message", fn: (line: string) => void): unknown;
   on(event: "close", fn: () => void): unknown;
@@ -117,6 +120,9 @@ interface HeldRoom {
   channelSinks: Map<string, (line: string) => void>;
   /** Cached file index for the room's transcript. */
   index: FileIndex | null;
+  /** Plan/149 — the gh_ref / stats snapshot last announced (hello or meta
+   *  push) for this held room; a registry change past this pushes an update. */
+  announcedMeta: { ghRef: RoomsRegistryEntry["ghRef"]; stats: RoomsRegistryEntry["stats"] };
 }
 
 const DEFAULT_MAX_AGE_MS = 14 * 24 * 3_600_000;
@@ -190,6 +196,21 @@ export class RoomKeeper {
     for (const roomId of [...this.held.keys()]) {
       if (!desired.has(roomId)) this._release(roomId, "stale");
     }
+    // Plan/149 — refresh gh_ref / stats on HELD rooms whose registry entry
+    // changed since we announced (e.g. a manual link the device daemon just
+    // wrote, or the last turn's counters a dying session persisted). The
+    // keeper stays read-only for MESSAGES; a room_meta_update control frame
+    // is presence, not a broadcast.
+    for (const room of this.held.values()) {
+      const entry = registry.get(room.entry.roomId);
+      if (!entry) continue;
+      if (
+        JSON.stringify(entry.ghRef ?? null) !== JSON.stringify(room.announcedMeta.ghRef ?? null) ||
+        JSON.stringify(entry.stats ?? null) !== JSON.stringify(room.announcedMeta.stats ?? null)
+      ) {
+        this._pushMeta(room, entry.ghRef ?? null, entry.stats ?? null);
+      }
+    }
     for (const roomId of desired) {
       if (this.held.has(roomId)) continue;
       if ((this.suppressedUntil.get(roomId) ?? 0) > this.now) continue;
@@ -215,13 +236,22 @@ export class RoomKeeper {
     const make = this.opts.makeClient ?? ((url: string, kp: Ed25519Keypair) =>
       new RelayClient(url, kp) as unknown as KeeperRelayClient);
     const relay = make(toWebSocketUrl(this.opts.relayUrl), this.opts.keypair);
+    // Plan/149 — the keeper serves the registry's gh_ref / stats with the
+    // announce (offline tiles keep their slot content, plan/149 scope).
+    const roomMeta: Record<string, unknown> = {
+      name: basename(entry.cwd) || entry.cwd,
+      cwd: entry.cwd,
+      keeper: true,
+    };
+    if (entry.ghRef) roomMeta["gh_ref"] = entry.ghRef;
+    if (entry.stats) roomMeta["stats"] = entry.stats;
     try {
       await relay.connect({
         roomId: entry.roomId,
         // Plan/140 C — the keeper marker rides the hello's room_meta so the
         // relay announces this room as a durable-history mirror, letting the
         // app badge it "Pi offline / archive" instead of a live session.
-        roomMeta: { name: basename(entry.cwd) || entry.cwd, cwd: entry.cwd, keeper: true },
+        roomMeta,
       });
     } catch (err) {
       try { relay.close(); } catch { /* best-effort */ }
@@ -236,7 +266,14 @@ export class RoomKeeper {
       return;
     }
 
-    const room: HeldRoom = { entry, relay, channels: new Map(), channelSinks: new Map(), index: null };
+    const room: HeldRoom = {
+      entry,
+      relay,
+      channels: new Map(),
+      channelSinks: new Map(),
+      index: null,
+      announcedMeta: { ghRef: entry.ghRef ?? null, stats: entry.stats ?? null },
+    };
     this.held.set(entry.roomId, room);
     relay.on("close", () => {
       if (this.held.get(entry.roomId) === room) {
@@ -249,6 +286,23 @@ export class RoomKeeper {
     // served immediately (unknown senders trigger a refresh and retry).
     void this._refreshPaired();
     this.log(`room-keeper: holding ${entry.roomId} (${entry.cwd})`);
+  }
+
+  /** Plan/149 — push a gh_ref / stats update for a held room and record it
+   *  as the announced baseline (so the next sweep only pushes on change). */
+  private _pushMeta(
+    room: HeldRoom,
+    ghRef: RoomsRegistryEntry["ghRef"],
+    stats: RoomsRegistryEntry["stats"],
+  ): void {
+    const meta: Record<string, unknown> = { gh_ref: ghRef, stats };
+    try {
+      room.relay.sendControl({ type: "room_meta_update", room_id: room.entry.roomId, meta });
+      room.announcedMeta = { ghRef, stats };
+      this.log(`room-keeper: meta refresh ${room.entry.roomId}`);
+    } catch {
+      // Socket tearing down — the next sweep retries after reconnect.
+    }
   }
 
   /** Envelope dispatch: paired senders only — history is sensitive and the

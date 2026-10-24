@@ -43,6 +43,12 @@ sealed class ControlInbound {
         final rawGit = j['git'] ?? metaJson?['git'];
         final rawContextUsage =
             j['context_usage'] ?? metaJson?['context_usage'];
+        // Plan/149 — session slot (gh_ref / gh_suggestion / stats), same
+        // both-places read as git/context_usage.
+        final rawGhRef = j['gh_ref'] ?? metaJson?['gh_ref'];
+        final rawGhSuggestion =
+            j['gh_suggestion'] ?? metaJson?['gh_suggestion'];
+        final rawStats = j['stats'] ?? metaJson?['stats'];
         // Plan/140 C — keeper marker (durable-history mirror, no live agent).
         final rawKeeper = (j['keeper'] as bool?) ??
             (metaJson?['keeper'] as bool?) ?? false;
@@ -65,6 +71,15 @@ sealed class ControlInbound {
               ? ContextUsage.fromJson(rawContextUsage)
               : null,
           keeper: rawKeeper,
+          ghRef: rawGhRef is Map<String, dynamic>
+              ? GhRef.fromJson(rawGhRef)
+              : null,
+          ghSuggestion: rawGhSuggestion is Map<String, dynamic>
+              ? GhRef.fromJson(rawGhSuggestion)
+              : null,
+          stats: rawStats is Map<String, dynamic>
+              ? SessionStats.fromJson(rawStats)
+              : null,
         );
       }(),
       'room_ended' => RoomEnded(
@@ -93,9 +108,18 @@ sealed class ControlInbound {
         final hasThinking = meta?.containsKey('thinking') ?? false;
         final hasGit = meta?.containsKey('git') ?? false;
         final hasContextUsage = meta?.containsKey('context_usage') ?? false;
+        // Plan/149 — has-flags for the session-slot keys (gh_ref and stats
+        // can be explicitly null = cleared, so presence-of-key matters).
+        final hasGhRef = meta?.containsKey('gh_ref') ?? false;
+        final hasGhSuggestion =
+            meta?.containsKey('gh_suggestion') ?? false;
+        final hasStats = meta?.containsKey('stats') ?? false;
         final rawThinking = meta?['thinking'] as String?;
         final rawGit = meta?['git'];
         final rawContextUsage = meta?['context_usage'];
+        final rawGhRef = meta?['gh_ref'];
+        final rawGhSuggestion = meta?['gh_suggestion'];
+        final rawStats = meta?['stats'];
         final rawRunDone = meta?['run_done'];
         return RoomMetaUpdated(
           peer: j['peer'] as String,
@@ -131,6 +155,19 @@ sealed class ControlInbound {
           hasThinking: hasThinking,
           hasGit: hasGit,
           hasContextUsage: hasContextUsage,
+          ghRef: hasGhRef && rawGhRef is Map<String, dynamic>
+              ? GhRef.fromJson(rawGhRef)
+              : null,
+          ghSuggestion:
+              hasGhSuggestion && rawGhSuggestion is Map<String, dynamic>
+                  ? GhRef.fromJson(rawGhSuggestion)
+                  : null,
+          stats: hasStats && rawStats is Map<String, dynamic>
+              ? SessionStats.fromJson(rawStats)
+              : null,
+          hasGhRef: hasGhRef,
+          hasGhSuggestion: hasGhSuggestion,
+          hasStats: hasStats,
         );
       }(),
       _ => null,
@@ -277,6 +314,19 @@ class RoomInfo {
   /// chat history (served from the transcript) with an offline banner.
   final bool keeper;
 
+  /// Plan/149 — GitHub ref linked to this session (PR wins the display,
+  /// both slots kept). `null` = none linked (yet).
+  final GhRef? ghRef;
+
+  /// Plan/149 — ephemeral chat-scan suggestion (source 'chat'): shown as a
+  /// one-tap entry in the Link sheet, NEVER auto-applied. Not persisted
+  /// PC-side; disappears on the next announce that doesn't carry it.
+  final GhRef? ghSuggestion;
+
+  /// Plan/149 — activity counters (turns / user_msgs) pushed at turn
+  /// boundaries. `null` on pre-149 extensions.
+  final SessionStats? stats;
+
   const RoomInfo({
     required this.roomId,
     required this.startedAt,
@@ -289,6 +339,9 @@ class RoomInfo {
     this.git,
     this.contextUsage,
     this.keeper = false,
+    this.ghRef,
+    this.ghSuggestion,
+    this.stats,
   });
 
   factory RoomInfo.fromJson(Map<String, dynamic> j) {
@@ -311,6 +364,15 @@ class RoomInfo {
       contextUsage: j['context_usage'] is Map<String, dynamic>
           ? ContextUsage.fromJson(j['context_usage'] as Map<String, dynamic>)
           : null,
+      ghRef: j['gh_ref'] is Map<String, dynamic>
+          ? GhRef.fromJson(j['gh_ref'] as Map<String, dynamic>)
+          : null,
+      ghSuggestion: j['gh_suggestion'] is Map<String, dynamic>
+          ? GhRef.fromJson(j['gh_suggestion'] as Map<String, dynamic>)
+          : null,
+      stats: j['stats'] is Map<String, dynamic>
+          ? SessionStats.fromJson(j['stats'] as Map<String, dynamic>)
+          : null,
     );
   }
 
@@ -325,6 +387,9 @@ class RoomInfo {
     'waiting_for_input': waitingForInput,
     if (git != null) 'git': git!.toJson(),
     if (contextUsage != null) 'context_usage': contextUsage!.toJson(),
+    if (ghRef != null) 'gh_ref': ghRef!.toJson(),
+    if (ghSuggestion != null) 'gh_suggestion': ghSuggestion!.toJson(),
+    if (stats != null) 'stats': stats!.toJson(),
   };
 
   RoomInfo copyWith({
@@ -337,6 +402,9 @@ class RoomInfo {
     bool? waitingForInput,
     Object? git = _kRoomInfoUnset,
     Object? contextUsage = _kRoomInfoUnset,
+    Object? ghRef = _kRoomInfoUnset,
+    Object? ghSuggestion = _kRoomInfoUnset,
+    Object? stats = _kRoomInfoUnset,
   }) => RoomInfo(
     roomId: roomId,
     name: name ?? this.name,
@@ -352,6 +420,13 @@ class RoomInfo {
     contextUsage: identical(contextUsage, _kRoomInfoUnset)
         ? this.contextUsage
         : contextUsage as ContextUsage?,
+    ghRef: identical(ghRef, _kRoomInfoUnset) ? this.ghRef : ghRef as GhRef?,
+    ghSuggestion: identical(ghSuggestion, _kRoomInfoUnset)
+        ? this.ghSuggestion
+        : ghSuggestion as GhRef?,
+    stats: identical(stats, _kRoomInfoUnset)
+        ? this.stats
+        : stats as SessionStats?,
   );
 
   @override
@@ -366,7 +441,10 @@ class RoomInfo {
       other.working == working &&
       other.waitingForInput == waitingForInput &&
       other.git == git &&
-      other.contextUsage == contextUsage;
+      other.contextUsage == contextUsage &&
+      other.ghRef == ghRef &&
+      other.ghSuggestion == ghSuggestion &&
+      other.stats == stats;
 
   @override
   int get hashCode => Object.hash(
@@ -380,6 +458,9 @@ class RoomInfo {
     waitingForInput,
     git,
     contextUsage,
+    ghRef,
+    ghSuggestion,
+    stats,
   );
 }
 
@@ -417,6 +498,16 @@ class RoomAnnounced extends ControlInbound {
   /// room-keeper (durable-history mirror, no live agent). Never patched
   /// after announce; `false` on old relays that don't forward the flag.
   final bool keeper;
+
+  /// Plan/149 — GitHub ref linked to the session at announce time (keeper
+  /// re-announces carry the registry's durable copy for offline tiles).
+  final GhRef? ghRef;
+
+  /// Plan/149 — ephemeral chat-scan suggestion at announce time.
+  final GhRef? ghSuggestion;
+
+  /// Plan/149 — activity counters at announce time.
+  final SessionStats? stats;
   const RoomAnnounced({
     required this.peer,
     required this.roomId,
@@ -430,6 +521,9 @@ class RoomAnnounced extends ControlInbound {
     this.git,
     this.contextUsage,
     this.keeper = false,
+    this.ghRef,
+    this.ghSuggestion,
+    this.stats,
   });
 }
 
@@ -526,6 +620,21 @@ class RoomMetaUpdated extends ControlInbound {
   /// nullable-as-absent: an object key is either absent or present, so no
   /// `hasRunDone` flag is needed.
   final RunDoneMarker? runDone;
+
+  /// Plan/149 — GitHub ref patch from `meta.gh_ref`. `gh_ref` CAN be
+  /// explicitly null (= cleared), so [hasGhRef] distinguishes "key absent"
+  /// (preserve) from "key present" (apply, even if null).
+  final GhRef? ghRef;
+  final bool hasGhRef;
+
+  /// Plan/149 — chat-scan suggestion patch from `meta.gh_suggestion`
+  /// (nullable-as-cleared, same convention as [ghRef]).
+  final GhRef? ghSuggestion;
+  final bool hasGhSuggestion;
+
+  /// Plan/149 — stats patch from `meta.stats` (nullable-as-cleared).
+  final SessionStats? stats;
+  final bool hasStats;
   const RoomMetaUpdated({
     required this.peer,
     required this.roomId,
@@ -536,10 +645,16 @@ class RoomMetaUpdated extends ControlInbound {
     this.git,
     this.contextUsage,
     this.runDone,
+    this.ghRef,
+    this.ghSuggestion,
+    this.stats,
     this.hasModel = true,
     this.hasThinking = true,
     this.hasGit = true,
     this.hasContextUsage = true,
+    this.hasGhRef = true,
+    this.hasGhSuggestion = true,
+    this.hasStats = true,
   });
 }
 
@@ -1238,6 +1353,33 @@ class StartSessionRequest extends ClientMessage {
   };
 }
 
+/// Plan/149 — store (or clear, [ghRef] null) the GitHub ref linked to a
+/// session. Routes to the room's live Pi when it holds the room, else to
+/// the PC's rooms registry (offline / keeper-held sessions). [cwd] is the
+/// fallback for rooms never registered on the PC (pre-plan/140 sessions):
+/// it lets the device daemon CREATE the registry entry.
+class SetSessionRefRequest extends ClientMessage {
+  final String id;
+  final String roomId;
+  final GhRef? ghRef;
+  final String? cwd;
+  SetSessionRefRequest({
+    required this.id,
+    required this.roomId,
+    required this.ghRef,
+    this.cwd,
+  });
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'set_session_ref_request',
+    'id': id,
+    'room_id': roomId,
+    'gh_ref': ghRef?.toJson(),
+    if (cwd != null && cwd!.isNotEmpty) 'cwd': cwd,
+  };
+}
+
 // --- ServerMessage (extension → app) ---
 // 1 pairing = 1 session: no session_id on any message.
 // Sealed: all subtypes in this file — switch exhaustiveness enforced by compiler.
@@ -1307,6 +1449,8 @@ sealed class ServerMessage {
       'change_layout_result' => ChangeLayoutResult.fromJson(json),
       // Plan/124 — reply to StartSessionRequest (revive offline session).
       'start_session_result' => StartSessionResult.fromJson(json),
+      // Plan/149 — reply to SetSessionRefRequest (Link Issue / PR sheet).
+      'set_session_ref_result' => SetSessionRefResult.fromJson(json),
       // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors
       // the SDK's extension_ui_request RPC contract; optional `ask` envelope
       // carries pi-ask's full question so the app renders multi/preview/notes.
@@ -2021,6 +2165,168 @@ class ModelsList extends ServerMessage {
 /// Plan/107 — parsed git status of the session cwd (mirrors pi-posh-git's
 /// footer data). Surfaced via [GitStatusResult]; rendered as a posh-git-style
 /// summary line in the session-info dialog.
+/// Plan/149 — one slot of a GitHub ref (PR or issue) linked to a session.
+class GhRefSlot {
+  final int number;
+  final String? url;
+  /// `OPEN` / `MERGED` / `CLOSED` (PR) or `open` / `closed` (issue);
+  /// `null` until gh reports it.
+  final String? state;
+  const GhRefSlot({required this.number, this.url, this.state});
+
+  factory GhRefSlot.fromJson(Map<String, dynamic> j) => GhRefSlot(
+    number: (j['number'] as num?)?.toInt() ?? 0,
+    url: j['url'] as String?,
+    state: j['state'] as String?,
+  );
+
+  Map<String, dynamic> toJson() => {
+    'number': number,
+    if (url != null) 'url': url,
+    if (state != null) 'state': state,
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is GhRefSlot &&
+      other.number == number &&
+      other.url == url &&
+      other.state == state;
+
+  @override
+  int get hashCode => Object.hash(number, url, state);
+}
+
+/// Plan/149 — the GitHub ref linked to a session (`room_meta.gh_ref`).
+/// Both slots are kept; the PR wins the display. `source` records how it
+/// got here (`manual` / `gh` / `chat`) and drives the PC-side precedence.
+class GhRef {
+  final GhRefSlot? pr;
+  final GhRefSlot? issue;
+  final String? source;
+  const GhRef({this.pr, this.issue, this.source});
+
+  factory GhRef.fromJson(Map<String, dynamic> j) => GhRef(
+    pr: j['pr'] is Map<String, dynamic>
+        ? GhRefSlot.fromJson(j['pr'] as Map<String, dynamic>)
+        : null,
+    issue: j['issue'] is Map<String, dynamic>
+        ? GhRefSlot.fromJson(j['issue'] as Map<String, dynamic>)
+        : null,
+    source: j['source'] as String?,
+  );
+
+  Map<String, dynamic> toJson() => {
+    if (pr != null) 'pr': pr!.toJson(),
+    if (issue != null) 'issue': issue!.toJson(),
+    if (source != null) 'source': source,
+  };
+
+  /// The slot that wins the display (PR > issue; null when empty).
+  GhRefSlot? get display => pr ?? issue;
+
+  /// Human label for the tile / dialogs, e.g. `"PR #70"` / `"#12"`.
+  String get label {
+    final d = display;
+    if (d == null) return '';
+    return pr != null ? 'PR #${d.number}' : '#${d.number}';
+  }
+
+  /// Plan/149 — app-side manual parse (the Link sheet's text field).
+  /// Accepts a full GitHub PR / issue URL (also buried in prose) or
+  /// `owner/repo#123`; a bare `#123` is REJECTED (never enough on its own —
+  /// plan/149 decision) as is anything that isn't a GitHub ref. Mirrors the
+  /// Pi-side `parseManualRefInput` so both ends agree on what counts.
+  static GhRef? tryParseInput(String raw) {
+    final text = raw.trim();
+    if (text.isEmpty) return null;
+
+    GhRefSlot slot(int number, String url) =>
+        GhRefSlot(number: number, url: url, state: null);
+
+    // Full GitHub URLs (PR first: /pull/ is never an issue path).
+    final prUrl = RegExp(
+      r'https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/(\d+)',
+    ).firstMatch(text);
+    if (prUrl != null) {
+      final n = int.tryParse(prUrl.group(3)!) ?? 0;
+      if (n > 0) {
+        return GhRef(
+          pr: slot(n, prUrl.group(0)!),
+          issue: null,
+          source: 'manual',
+        );
+      }
+    }
+    final issueUrl = RegExp(
+      r'https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/(\d+)',
+    ).firstMatch(text);
+    if (issueUrl != null) {
+      final n = int.tryParse(issueUrl.group(3)!) ?? 0;
+      if (n > 0) {
+        return GhRef(
+          pr: null,
+          issue: slot(n, issueUrl.group(0)!),
+          source: 'manual',
+        );
+      }
+    }
+    // owner/repo#123 → issue slot (the URL is derived).
+    final short = RegExp(
+      r'\b([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#(\d+)\b',
+    ).firstMatch(text);
+    if (short != null) {
+      final n = int.tryParse(short.group(3)!) ?? 0;
+      if (n > 0) {
+        final owner = short.group(1)!;
+        final repo = short.group(2)!;
+        return GhRef(
+          pr: null,
+          issue: slot(n, 'https://github.com/$owner/$repo/issues/$n'),
+          source: 'manual',
+        );
+      }
+    }
+    return null;
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is GhRef &&
+      other.pr == pr &&
+      other.issue == issue &&
+      other.source == source;
+
+  @override
+  int get hashCode => Object.hash(pr, issue, source);
+}
+
+/// Plan/149 — session activity counters (`room_meta.stats`). Counted in the
+/// extension (turns on agent_end, user_msgs on message_end role=user) and
+/// pushed only at turn boundaries. The PC's rooms registry is the durable
+/// source; this is the live view.
+class SessionStats {
+  final int turns;
+  final int userMsgs;
+  const SessionStats({required this.turns, required this.userMsgs});
+
+  factory SessionStats.fromJson(Map<String, dynamic> j) => SessionStats(
+    turns: (j['turns'] as num?)?.toInt() ?? 0,
+    userMsgs: (j['user_msgs'] as num?)?.toInt() ?? 0,
+  );
+
+  Map<String, dynamic> toJson() => {'turns': turns, 'user_msgs': userMsgs};
+
+  @override
+  bool operator ==(Object other) =>
+      other is SessionStats &&
+      other.turns == turns &&
+      other.userMsgs == userMsgs;
+
+  @override
+  int get hashCode => Object.hash(turns, userMsgs);
+}
+
 class GitStatus {
   final String branch;
   final String? upstream;
@@ -2332,6 +2638,27 @@ class StartSessionResult extends ServerMessage {
         inReplyTo: j['in_reply_to'] as String,
         ok: j['ok'] as bool? ?? false,
         roomId: j['room_id'] as String?,
+        message: (j['message'] as String?) ?? '',
+      );
+}
+
+/// Plan/149 — reply to [SetSessionRefRequest]. `ok:false` carries a
+/// user-presentable reason (e.g. "unknown room (never registered on this
+/// PC)").
+class SetSessionRefResult extends ServerMessage {
+  final String inReplyTo;
+  final bool ok;
+  final String message;
+  SetSessionRefResult({
+    required this.inReplyTo,
+    required this.ok,
+    required this.message,
+  });
+
+  factory SetSessionRefResult.fromJson(Map<String, dynamic> j) =>
+      SetSessionRefResult(
+        inReplyTo: j['in_reply_to'] as String,
+        ok: j['ok'] as bool? ?? false,
         message: (j['message'] as String?) ?? '',
       );
 }

@@ -881,6 +881,9 @@ class ConnectionManager extends Service {
         :final git,
         :final contextUsage,
         :final keeper,
+        :final ghRef,
+        :final ghSuggestion,
+        :final stats,
       ):
         final key = toStandardB64(peer);
         final list = _roomsByPeer[key] ?? <RoomInfo>[];
@@ -926,6 +929,13 @@ class ConnectionManager extends Service {
           // (without the flag) flips the tile back to live; a keeper
           // re-taking a dark room re-marks it.
           keeper: keeper,
+          // Plan/149 — announce is authoritative for the session slot:
+          // live sessions carry registry+live state, keepers the durable
+          // registry copy. Pre-149 extensions never set one, so wire-wins
+          // (null clears) cannot lose data.
+          ghRef: ghRef,
+          ghSuggestion: ghSuggestion,
+          stats: stats,
         );
         final liveAlready = _liveRoomIds[key]?.contains(roomId) ?? false;
         final identicalEntry = existingIdx >= 0 && list[existingIdx] == next;
@@ -1004,6 +1014,12 @@ class ConnectionManager extends Service {
         :final contextUsage,
         :final hasContextUsage,
         :final runDone,
+        :final ghRef,
+        :final hasGhRef,
+        :final ghSuggestion,
+        :final hasGhSuggestion,
+        :final stats,
+        :final hasStats,
       ):
         final key = toStandardB64(peer);
         // Plan/132 — forward the run-completion marker FIRST: it is an event,
@@ -1095,12 +1111,22 @@ class ConnectionManager extends Service {
             : hasModel && model != current.model
             ? null
             : current.contextUsage;
+        // Plan/149 — session-slot patches: has-flag convention (gh_ref and
+        // stats can be explicitly null = cleared; absence preserves).
+        final nextGhRef = hasGhRef ? ghRef : current.ghRef;
+        final nextGhSuggestion = hasGhSuggestion
+            ? ghSuggestion
+            : current.ghSuggestion;
+        final nextStats = hasStats ? stats : current.stats;
         if (current.model == nextModel &&
             current.thinking == nextThinking &&
             current.working == nextWorking &&
             current.waitingForInput == nextWaitingFlag &&
             current.git == nextGit &&
-            current.contextUsage == nextContextUsage) {
+            current.contextUsage == nextContextUsage &&
+            current.ghRef == nextGhRef &&
+            current.ghSuggestion == nextGhSuggestion &&
+            current.stats == nextStats) {
           break; // dedup: nothing actually changed
         }
         list[idx] = current.copyWith(
@@ -1110,6 +1136,9 @@ class ConnectionManager extends Service {
           waitingForInput: nextWaitingFlag,
           git: nextGit,
           contextUsage: nextContextUsage,
+          ghRef: nextGhRef,
+          ghSuggestion: nextGhSuggestion,
+          stats: nextStats,
         );
         roomsDirty = true;
         // ignore: unawaited_futures
@@ -1140,6 +1169,11 @@ class ConnectionManager extends Service {
           // snapshot omits it (the relay's rooms_of carries git, but a
           // partial snapshot shouldn't blank the tile).
           final preservedGit = r.git ?? byId[r.roomId]?.git;
+          // Plan/149 — preserve the last-known ref/stats when the snapshot
+          // omits them (old relay), same convention as model/thinking/git.
+          // `gh_suggestion` is ephemeral and never cached: snapshot wins.
+          final preservedGhRef = r.ghRef ?? byId[r.roomId]?.ghRef;
+          final preservedStats = r.stats ?? byId[r.roomId]?.stats;
           byId[r.roomId] = RoomInfo(
             roomId: r.roomId,
             name: preservedName,
@@ -1159,6 +1193,9 @@ class ConnectionManager extends Service {
             // Plan/140 C — the snapshot is authoritative for the keeper
             // marker too (the relay's `rooms_of` carries the live meta).
             keeper: r.keeper,
+            ghRef: preservedGhRef,
+            ghSuggestion: r.ghSuggestion,
+            stats: preservedStats,
           );
         }
         final newList = byId.values.toList();
@@ -1368,6 +1405,11 @@ class ConnectionManager extends Service {
               cwd: c.cwd,
               startedAt: c.startedAt,
               model: c.model,
+              // Plan/149 — durable session-slot state from the cache
+              // (offline tiles keep their ref + counters). Suggestions
+              // are ephemeral and never restored.
+              ghRef: c.ghRef,
+              stats: c.stats,
             ),
           )
           .toList();
@@ -1408,6 +1450,8 @@ class ConnectionManager extends Service {
             startedAt: r.startedAt,
             localName: localById[r.roomId],
             model: r.model,
+            ghRef: r.ghRef,
+            stats: r.stats,
           ),
         )
         .toList();

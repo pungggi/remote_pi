@@ -7,6 +7,7 @@ import {
   readRoomsRegistry,
   roomsRegistryPath,
   upsertRoom,
+  upsertRoomMeta,
 } from "./rooms_registry.js";
 
 function tempPath(): string {
@@ -67,5 +68,86 @@ describe("rooms_registry (plan/140)", () => {
     writeFileSync(corrupt, "{not json", "utf8");
     expect(readRoomsRegistry(corrupt).size).toBe(0);
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("rooms_registry plan/149 fields (gh_ref / stats)", () => {
+  it("round-trips ghRef and stats through the file", () => {
+    const p = tempPath();
+    upsertRoom(
+      {
+        cwd: "C:\proj",
+        roomId: "roomAAA",
+        lastSeenAt: 1000,
+        ghRef: { pr: { number: 45, url: "https://github.com/o/r/pull/45", state: "open" }, source: "manual" },
+        stats: { turns: 3, user_msgs: 7 },
+      },
+      p,
+    );
+    const e = readRoomsRegistry(p).get("roomAAA")!;
+    expect(e.ghRef).toEqual({
+      pr: { number: 45, url: "https://github.com/o/r/pull/45", state: "open" },
+      issue: null,
+      source: "manual",
+    });
+    expect(e.stats).toEqual({ turns: 3, user_msgs: 7 });
+  });
+
+  it("drops corrupt gh_ref / stats shapes instead of throwing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rooms-meta-corrupt-"));
+    const p = join(dir, "rooms.json");
+    writeFileSync(
+      p,
+      JSON.stringify({
+        roomAAA: { cwd: "C:\proj", roomId: "roomAAA", lastSeenAt: 1, ghRef: { pr: { number: "nope" } }, stats: { turns: "x" } },
+      }),
+      "utf8",
+    );
+    const e = readRoomsRegistry(p).get("roomAAA")!;
+    expect(e.ghRef).toBeUndefined();
+    expect(e.stats).toBeUndefined();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("upsertRoomMeta merges ONLY the plan/149 fields (cwd + lastSeenAt preserved)", () => {
+    const p = tempPath();
+    upsertRoom({ cwd: "C:\proj", roomId: "roomAAA", lastSeenAt: 5000 }, p);
+    const updated = upsertRoomMeta("roomAAA", { stats: { turns: 4, user_msgs: 9 } }, p)!;
+    expect(updated.cwd).toBe("C:\proj");
+    expect(updated.lastSeenAt).toBe(5000);
+    expect(updated.stats).toEqual({ turns: 4, user_msgs: 9 });
+    expect(updated.ghRef ?? null).toBeNull();
+
+    // A plain re-register (upsertRoom without the fields) preserves them.
+    upsertRoom({ cwd: "C:\proj", roomId: "roomAAA", lastSeenAt: 9000 }, p);
+    const after = readRoomsRegistry(p).get("roomAAA")!;
+    expect(after.lastSeenAt).toBe(9000);
+    expect(after.stats).toEqual({ turns: 4, user_msgs: 9 });
+  });
+
+  it("upsertRoomMeta unknown room → null; with ensureCwd it creates a fresh keeper-eligible entry", () => {
+    const p = tempPath();
+    expect(upsertRoomMeta("ghost", { ghRef: null }, p)).toBeNull();
+
+    const created = upsertRoomMeta(
+      "legacyRoom",
+      { ghRef: { issue: { number: 12, url: "https://github.com/o/r/issues/12", state: null }, source: "manual" } },
+      p,
+      "C:\legacy",
+    )!;
+    expect(created.cwd).toBe("C:\legacy");
+    expect(created.ghRef!.issue!.number).toBe(12);
+    // Fresh lastSeenAt: not pruned as ancient on the next sweep.
+    expect(created.lastSeenAt).toBeGreaterThan(Date.now() - 60_000);
+  });
+
+  it("clears ghRef via an explicit null patch", () => {
+    const p = tempPath();
+    upsertRoom(
+      { cwd: "C:\proj", roomId: "roomAAA", lastSeenAt: 1, ghRef: { issue: { number: 12 }, source: "manual" } },
+      p,
+    );
+    const updated = upsertRoomMeta("roomAAA", { ghRef: null }, p)!;
+    expect(updated.ghRef ?? null).toBeNull();
   });
 });
