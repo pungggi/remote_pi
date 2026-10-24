@@ -233,6 +233,7 @@ const {
   _restartSupervisorCommand,
   _routeClientMessageFrom,
   _deliverMeshMessageToAgentForTest,
+  _activateMeshDeliveryOwnerForTest,
 } = await import("./main.js");
 const {
   default: extension,
@@ -1239,64 +1240,107 @@ void _getActivePeerCountForTest;
 // ── agent-network mesh delivery ──────────────────────────────────────────────
 
 describe("agent-network mesh delivery", () => {
-  test("holds messages until agent_end listeners finish and starts one turn for the batch", async () => {
-    const harness = captureEventHarness();
-    const sendMessage = vi.fn();
-    _setPiForTest({ sendMessage, sendUserMessage: () => undefined });
-    harness.handler("agent_start")({ type: "agent_start" });
+  const sessions: Array<ReturnType<typeof captureEventHarness>> = [];
+  const session = () => {
+    const value = captureEventHarness();
+    sessions.push(value);
+    return value;
+  };
+  const sent = (harness: ReturnType<typeof captureEventHarness>) =>
+    harness.pi.sendMessage as unknown as ReturnType<typeof vi.fn>;
+  const envelope = (id: string) => ({
+    id,
+    from: "/work/repo@worker",
+    re: null,
+    body: { id },
+  });
+  const meshContents = (sendMessage: ReturnType<typeof vi.fn>) => sendMessage.mock.calls
+    .map(([message]) => message as { customType?: string; content?: string })
+    .filter((message) => message.customType === "remote-pi:mesh-message")
+    .map((message) => message.content ?? "");
 
-    _deliverMeshMessageToAgentForTest({
-      id: "mesh-message-1",
-      from: "/work/repo@reviewer",
-      re: null,
-      body: { status: "first" },
-    });
-    _deliverMeshMessageToAgentForTest({
-      id: "mesh-message-2",
-      from: "/work/repo@worker",
-      re: "mesh-message-1",
-      body: { status: "second" },
-    });
+  afterEach(async () => {
+    vi.useRealTimers();
+    for (const harness of sessions.splice(0)) {
+      await harness.handler("session_shutdown")({ type: "session_shutdown" });
+    }
+    _setPiForTest(null);
+    _setDisposedForTest(false);
+  });
+
+  test("a second factory can neither redirect the owner nor release its busy FIFO (#216)", async () => {
+    vi.useFakeTimers();
+    const a = session();
+    let aIdle = true;
+    const aCtx = { isIdle: () => aIdle };
+    a.handler("session_start")({ type: "session_start" }, aCtx);
+    _activateMeshDeliveryOwnerForTest(a.pi);
+    const aSend = sent(a);
+
+    // This second factory replaces ext.pi, just as the dropped child session
+    // from issue #216 did. It never becomes the mesh owner.
+    const b = session();
+    const bSend = sent(b);
+    _deliverMeshMessageToAgentForTest(envelope("first"));
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(meshContents(aSend)).toEqual([expect.stringContaining("first")]);
+    expect(bSend).not.toHaveBeenCalled();
+
+    aIdle = false;
+    a.handler("agent_start")({ type: "agent_start" }, aCtx);
+    _deliverMeshMessageToAgentForTest(envelope("second"));
     await Promise.resolve();
 
-    expect(sendMessage).not.toHaveBeenCalled();
+    // B's lifecycle cannot confirm A's wake or release A's pending message.
+    const bCtx = { isIdle: () => true };
+    b.handler("agent_start")({ type: "agent_start" }, bCtx);
+    b.handler("agent_end")({ type: "agent_end" }, bCtx);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(meshContents(aSend)).toEqual([expect.stringContaining("first")]);
 
-    harness.handler("agent_end")({ type: "agent_end" });
-    expect(sendMessage).not.toHaveBeenCalled();
-
-    harness.handler("agent_start")({ type: "agent_start" });
-    await new Promise<void>((resolve) => setTimeout(resolve, 5));
-    expect(sendMessage).not.toHaveBeenCalled();
-
-    harness.handler("agent_end")({ type: "agent_end" });
-    await new Promise<void>((resolve) => setTimeout(resolve, 5));
-    expect(sendMessage).toHaveBeenCalledTimes(2);
-    expect(sendMessage.mock.calls[0]).toEqual([
-      expect.objectContaining({
-        customType: "remote-pi:mesh-message",
-        display: true,
-        content: expect.stringContaining("mesh-message-1"),
-      }),
-      { triggerTurn: false },
+    a.handler("agent_end")({ type: "agent_end" }, aCtx);
+    aIdle = true;
+    await vi.advanceTimersByTimeAsync(10);
+    expect(meshContents(aSend)).toEqual([
+      expect.stringContaining("first"),
+      expect.stringContaining("second"),
     ]);
-    expect(sendMessage.mock.calls[1]).toEqual([
-      expect.objectContaining({
-        customType: "remote-pi:mesh-message",
-        display: true,
-        content: expect.stringContaining("mesh-message-2"),
-      }),
-      { triggerTurn: true, deliverAs: "followUp" },
-    ]);
+    expect(bSend).not.toHaveBeenCalled();
+  });
 
-    harness.handler("agent_end")({ type: "agent_end" });
-    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  test("shutdown drops outgoing work instead of leaking it into a replacement", async () => {
+    vi.useFakeTimers();
+    const a = session();
+    const aCtx = { isIdle: () => false };
+    a.handler("session_start")({ type: "session_start" }, aCtx);
+    a.handler("agent_start")({ type: "agent_start" }, aCtx);
+    _activateMeshDeliveryOwnerForTest(a.pi);
+    const aSend = sent(a);
+    _deliverMeshMessageToAgentForTest(envelope("old-session"));
+    await Promise.resolve();
+    await a.handler("session_shutdown")({ type: "session_shutdown" });
+
+    const b = session();
+    _setDisposedForTest(false); // fresh replacement module
+    b.handler("session_start")({ type: "session_start" }, { isIdle: () => true });
+    _activateMeshDeliveryOwnerForTest(b.pi);
+    const bSend = sent(b);
+    _deliverMeshMessageToAgentForTest(envelope("replacement-session"));
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(aSend).not.toHaveBeenCalled();
+    expect(meshContents(bSend)).toEqual([expect.stringContaining("replacement-session")]);
+    expect(meshContents(bSend)[0]).not.toContain("old-session");
   });
 });
 
 // ── user_input mirroring (local terminal / RPC) ───────────────────────────────
 
 type AnyEvent = { type: string; [k: string]: unknown };
-type EventHandler = (event: AnyEvent) => unknown;
+type EventHandler = (event: AnyEvent, ctx?: unknown) => unknown;
 
 function captureEventHandler(eventName: string): EventHandler {
   let captured: EventHandler | undefined;
@@ -1314,6 +1358,7 @@ function captureEventHandler(eventName: string): EventHandler {
 }
 
 function captureEventHarness(): {
+  pi: ExtensionAPI;
   handler: (eventName: string) => EventHandler;
   emitBus: (channel: string, data: unknown) => void;
   busListenerCount: (channel: string) => number;
@@ -1340,10 +1385,11 @@ function captureEventHarness(): {
     registerTool: () => undefined, registerShortcut: () => undefined,
     registerFlag: () => undefined, getFlag: () => undefined,
     registerMessageRenderer: () => undefined,
-    sendMessage: () => undefined, sendUserMessage: () => undefined,
+    sendMessage: vi.fn(), sendUserMessage: () => undefined,
   } as unknown as ExtensionAPI;
   (extension as ExtensionFactory)(pi);
   return {
+    pi,
     handler(eventName: string) {
       const h = handlers.get(eventName);
       if (!h) throw new Error(`event "${eventName}" handler not registered`);

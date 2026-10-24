@@ -491,8 +491,8 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     if (ext.myRoomMeta) ext.myRoomMeta = { ...ext.myRoomMeta, thinking: level };
   });
 
-  pi.on("agent_start", () => {
-    if (mainLoaded || !runtimeIdle()) { fwd((m) => m.onAgentStart()); return; }
+  pi.on("agent_start", (_event, ctx) => {
+    if (mainLoaded || !runtimeIdle()) { fwd((m) => m.onAgentStart(pi, ctx)); return; }
     ext.agentRunActive = true;
     ext.agentRunGeneration += 1;
     ext.turnText = "";      // a fresh run's replayable text starts empty
@@ -528,8 +528,8 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
       ext.messageBuffer.push(m as unknown as BufferMsg);
     }
   });
-  pi.on("agent_end", () => {
-    if (mainLoaded || !runtimeIdle()) { fwd((m) => m.onAgentEnd()); return; }
+  pi.on("agent_end", (_event, ctx) => {
+    if (mainLoaded || !runtimeIdle()) { fwd((m) => m.onAgentEnd(pi, ctx)); return; }
     flushPendingReceivedImagePreviews();  // empty pre-relay — kept for fidelity
     ext.turnText = "";
     ext.turnTextTurn = null;
@@ -617,6 +617,9 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // reset, bridge rebind, disposed re-arm, relay auto-start) forwards.
   pi.on("session_start", (_event, ctx) => {
     ext.lastEventCtx = ctx;
+    // Delivery state is light and per-pi. Capture idle even when the heavy
+    // runtime correctly stays unloaded for this unconfigured/idle session.
+    ext.meshDelivery.for(pi).captureContext(ctx);
     // Daemon: always init (supervisor sets REMOTE_PI_DIRECT_CONFIG so a config
     // is present at process.cwd()). Interactive: only init when the
     // session_start ctx announces its cwd AND a local config already exists
@@ -692,8 +695,11 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // onSessionShutdown (disposed flag, generation revocation, _goIdle) must run
   // before this handler returns, exactly as it did in the monolith.
   pi.on("session_shutdown", () => {
+    // Dispose synchronously: even a deferred runtime import must not allow an
+    // outgoing queue to wake after this session has been replaced.
+    ext.meshDelivery.dispose(pi);
     const m = mainLoaded;
-    if (m) return m.onSessionShutdown();
+    if (m) return m.onSessionShutdown(pi);
     if (runtimeIdle()) {
       // Inline teardown (plan/143) — mirrors main.onSessionShutdown's
       // synchronous prefix: disposed flag + generation revocation + bridge
@@ -709,7 +715,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
       ext.lastEventCtx = null;
       return Promise.resolve();
     }
-    return _main().then((loaded) => { mainLoaded = loaded; return loaded.onSessionShutdown(); });
+    return _main().then((loaded) => { mainLoaded = loaded; return loaded.onSessionShutdown(pi); });
   });
 
   // ── Commands ──────────────────────────────────────────────────────────────
