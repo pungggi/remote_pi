@@ -1,15 +1,15 @@
 {
-  "version": "1.4.2",
-  "date": "2026-10-23",
-  "notes": "Piper (app) 1.4.2",
+  "version": "1.4.3",
+  "date": "2026-10-24",
+  "notes": "Piper (app) 1.4.3",
   "artifacts": [
     {
       "platform": "android",
       "arch": "universal",
       "format": "apk",
-      "url": "https://github.com/pungggi/remote_pi/releases/download/app-v1.4.2/RemotePi.apk",
-      "sha256": "dadee7d0ee815fd08ea9ff8919448ac71543debc82f9ba4e531eab2ffc80972e",
-      "size": 83921146
+      "url": "https://github.com/pungggi/remote_pi/releases/download/app-v1.4.3/RemotePi.apk",
+      "sha256": "f63bb3252c6f49dd6c65fd46475220cc085ac89b44308254e75cff635d3434fa",
+      "size": 84250190
     }
   ]
 }
