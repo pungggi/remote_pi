@@ -20,7 +20,10 @@ class SessionReadRepository extends Repository {
   /// box lazily is fine, the marker write is idempotent and never moves
   /// backwards (see [LocalBoxes.markRead]).
   Future<void> markReadUpTo(String epk, String roomId, int seq) async {
-    if (seq <= 0) return;
+    // seq 0 IS a real position (seqs allocate from zero; a missing marker
+    // reads as -1) — marking it must work, or a one-row session stays
+    // unread forever (PR #71 review).
+    if (seq < 0) return;
     await _boxes.msgsBox(epk, roomId); // ensure open so unreadCount sees it
     _boxes.markRead(epk, roomId, seq);
   }

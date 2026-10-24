@@ -105,6 +105,15 @@ export function applyRefWithPrecedence(
       // plan's storage rule). A different PR number never replaces it.
       if (current.pr) {
         if (incoming.pr && incoming.pr.number === current.pr.number) {
+          // PR #N alone is NOT identity: a manual `other/repo/pull/45`
+          // must not be "refreshed" with the cwd repo's unrelated PR #45
+          // (PR #71 review). Both URLs present and different
+          // `github.com/<owner>/<repo>/` prefixes → different repository →
+          // keep the manual ref untouched. A missing URL cannot
+          // disambiguate, so it keeps the legacy refresh behavior.
+          if (!sameRepo(current.pr.url, incoming.pr.url)) {
+            return { next: current, changed: false };
+          }
           const merged: WireGhRef = {
             ...current,
             pr: { ...current.pr, url: incoming.pr.url ?? current.pr.url, state: incoming.pr.state ?? current.pr.state },
@@ -139,12 +148,50 @@ function urlFor(owner: string, repo: string, kind: string, n: string): string {
   return `https://github.com/${owner}/${repo}/${kind}/${n}`;
 }
 
+/** Repository identity of a slot URL: the `github.com/<owner>/<repo>/`
+ *  prefix, lowercased. Returns null for missing/unparseable URLs. */
+function repoOf(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const m = /^https?:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\//.exec(url);
+  if (!m) return null;
+  return `${m[1]!.toLowerCase()}/${m[2]!.toLowerCase()}`;
+}
+
+/** `true` when both slots plausibly belong to the SAME repository. A null
+ *  side (no URL to parse) cannot disambiguate → true (legacy behavior). */
+function sameRepo(a: string | null | undefined, b: string | null | undefined): boolean {
+  const ra = repoOf(a);
+  const rb = repoOf(b);
+  if (!ra || !rb) return true;
+  return ra === rb;
+}
+
 /** Structural equality of two refs (slot fields compared one by one so an
  *  undefined slot equals a null slot). */
 export function sameRef(a: WireGhRef | null | undefined, b: WireGhRef | null | undefined): boolean {
   if (!a && !b) return true;
   if (!a || !b) return false;
   return sameSlot(a.pr, b.pr) && sameSlot(a.issue, b.issue) && (a.source ?? null) === (b.source ?? null);
+}
+
+/** Merges a single-slot manual ref over the stored ref: the populated
+ *  slot replaces ONLY its own kind; the OTHER slot is retained (the plan's
+ *  two-slot rule — "PR wins display, both stay"). A null/empty input stays
+ *  a clear; an input with BOTH slots replaces wholesale (explicit intent).
+ *  PR #71 review: without this, accepting a PR after linking an issue
+ *  silently deleted the issue. */
+export function mergeManualRef(
+  current: WireGhRef | null | undefined,
+  incoming: WireGhRef | null,
+): WireGhRef | null {
+  if (!incoming) return null;
+  const hasPr = incoming.pr != null;
+  const hasIssue = incoming.issue != null;
+  if (!hasPr && !hasIssue) return null;
+  if (hasPr && hasIssue) return incoming;
+  if (hasPr && current?.issue) return { ...incoming, issue: current.issue };
+  if (hasIssue && current?.pr) return { ...incoming, pr: current.pr };
+  return incoming;
 }
 
 function sameSlot(a: WireGhRefSlot | null | undefined, b: WireGhRefSlot | null | undefined): boolean {

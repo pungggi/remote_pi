@@ -127,7 +127,8 @@ mod tests {
     #[test]
     fn dual_sig_fields_round_trip() {
         // v2 wire: v1 sig + v2 sig2 + ts coexist; all forwarded verbatim.
-        let line = r#"{"peer":"abc","ct":"AAA=","sig":"U0lH","sig2":"U0lHMg==","ts":1739577600000}"#;
+        let line =
+            r#"{"peer":"abc","ct":"AAA=","sig":"U0lH","sig2":"U0lHMg==","ts":1739577600000}"#;
         let env = parse_line(line).unwrap();
         assert_eq!(env.sig.as_deref(), Some("U0lH"));
         assert_eq!(env.sig2.as_deref(), Some("U0lHMg=="));
@@ -143,10 +144,14 @@ mod tests {
     #[test]
     fn ts_round_trips_and_defaults_to_none() {
         // v2 frames carry the sender's epoch-ms next to sig — forwarded verbatim.
-        let v2 = parse_line(r#"{"peer":"abc","ct":"AAA=","sig":"U0lH","ts":1739577600000}"#)
-            .unwrap();
+        let v2 =
+            parse_line(r#"{"peer":"abc","ct":"AAA=","sig":"U0lH","ts":1739577600000}"#).unwrap();
         assert_eq!(v2.ts, Some(1_739_577_600_000));
-        assert!(serde_json::to_string(&v2).unwrap().contains("\"ts\":1739577600000"));
+        assert!(
+            serde_json::to_string(&v2)
+                .unwrap()
+                .contains("\"ts\":1739577600000")
+        );
         // Legacy frames omit it entirely.
         let legacy = parse_line(r#"{"peer":"abc","ct":"AAA="}"#).unwrap();
         assert!(legacy.ts.is_none());

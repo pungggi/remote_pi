@@ -29,6 +29,15 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Fixed
 
+- **Review fixes for the session slot**: linking an offline session now
+  reaches the computer's device daemon instead of the offline mirror (the
+  link used to time out). Unread is smarter: the very first message of a
+  session counts, a fresh conversation no longer inherits an old read
+  marker, sessions with a link but no stats still show their unread, and
+  the Home list loads its message boxes up front so offline tiles show
+  their cached unread immediately. Messages that arrive while your phone
+  is locked stay unread until you open the chat again.
+
 - **"Offline" tab snapped back to "Online"**: every session metadata change
   re-persists the rooms cache, which reloaded the Home list and silently reset
   the selected filter tab to its default. The selected tab now survives

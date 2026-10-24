@@ -22,7 +22,12 @@ fn pk_b64(key: &ed25519_dalek::SigningKey) -> String {
     B64.encode(key.verifying_key().to_bytes())
 }
 
-async fn publish_owner_blob(port: u16, owner: &ed25519_dalek::SigningKey, members: &[String], version: u64) {
+async fn publish_owner_blob(
+    port: u16,
+    owner: &ed25519_dalek::SigningKey,
+    members: &[String],
+    version: u64,
+) {
     let owner_pk = pk_b64(owner);
     let blob = serde_json::json!({
         "issued_at": 1_700_000_000_000_u64,
@@ -46,8 +51,17 @@ async fn publish_owner_blob(port: u16, owner: &ed25519_dalek::SigningKey, member
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     let url = format!("http://127.0.0.1:{port}/mesh/{hash}");
-    let resp = reqwest::Client::new().post(&url).json(&envelope).send().await.unwrap();
-    assert!(resp.status().is_success(), "blob publish failed: {}", resp.status());
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .json(&envelope)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "blob publish failed: {}",
+        resp.status()
+    );
 }
 
 async fn test_state() -> relay::AppState {

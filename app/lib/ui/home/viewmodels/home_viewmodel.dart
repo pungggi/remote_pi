@@ -238,6 +238,30 @@ class HomeViewModel extends ViewModel<HomeState> {
     // (state is still HomeLoading) starts on the default tab.
     final current = state;
     final filter = current is HomeList ? current.filter : HomeFilter.online;
+    // Plan/149 / PR #71 review — open every room's msgs box BEFORE emitting
+    // the HomeList: a tile's unread listenable merges the msgs box only
+    // when it is already open, and ViewModel.emit suppresses identical
+    // states, so a tile built against a closed box (cold start, offline
+    // session) would show 0 unread and NEVER rebuild onto the merged
+    // listenable. openBox is idempotent for open boxes, so reloads after
+    // the first pay nothing. Boxes open with the RAW peer epk — the same
+    // form the chat/SyncService writer uses. Skipped entirely when the
+    // boxes namespace was never initialized (Hive-less environments).
+    if (LocalBoxes.isInitialized) {
+      for (final p in peers) {
+        final rooms =
+            _conn.roomsSnapshot[toStandardB64(p.remoteEpk)] ??
+            const <RoomInfo>[];
+        for (final r in rooms) {
+          try {
+            await _boxes.msgsBox(p.remoteEpk, r.roomId);
+          } catch (_) {
+            /* best-effort — this tile's unread stays 0 */
+          }
+        }
+      }
+    }
+    if (_disposed) return;
     // Make sure the relay is pushing updates for everyone we know about;
     // the call is idempotent so this is safe even mid-session. The same
     // subscribe also covers rooms (plan 17 — replay block in
@@ -798,8 +822,12 @@ class HomeViewModel extends ViewModel<HomeState> {
     }
     // The session's own room applies the ref live (meta push + registry);
     // when it is offline, the device daemon takes the registry-only path.
-    final targetLive = _conn.isRoomLive(epk, roomId);
-    final deviceLive = _conn.isRoomLive(epk, kDeviceRoom);
+    // PR #71 review — `isRoomRealLive`, NOT `isRoomLive`: a keeper-held
+    // (offline) room counts as live for STATE purposes, but the keeper
+    // only serves `session_sync`; a request routed at it times out. The
+    // request must reach the device daemon's connection instead.
+    final targetLive = _conn.isRoomRealLive(epk, roomId);
+    final deviceLive = _conn.isRoomRealLive(epk, kDeviceRoom);
     if (!targetLive && !deviceLive) {
       final label = _peerLabelForError();
       throw ActionFailure(

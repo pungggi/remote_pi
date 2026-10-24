@@ -207,9 +207,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
         // Plan/149 — GitHub ref / chat suggestion / activity stats (all
         // opaque passthrough; see RoomMeta::gh_ref).
         let gh_ref = room_meta_val.and_then(|m| m.get("gh_ref")).cloned();
-        let gh_suggestion = room_meta_val
-            .and_then(|m| m.get("gh_suggestion"))
-            .cloned();
+        let gh_suggestion = room_meta_val.and_then(|m| m.get("gh_suggestion")).cloned();
         let stats = room_meta_val.and_then(|m| m.get("stats")).cloned();
         let started_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)

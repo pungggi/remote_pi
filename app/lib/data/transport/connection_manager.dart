@@ -1317,6 +1317,19 @@ class ConnectionManager extends Service {
     return live != null && live.contains(roomId);
   }
 
+  /// Plan/149 (PR #71 review) — `true` when a REAL session (not the
+  /// supervisor's keeper mirror) holds `(epk, roomId)`. [isRoomLive]
+  /// counts keeper-held rooms as live (they announce durable state), but
+  /// the keeper only serves `session_sync` — routing any other control
+  /// request (e.g. `set_session_ref_request`) at a keeper mirror just
+  /// times out. Callers that need a live HANDLER, not just live state,
+  /// must use this.
+  bool isRoomRealLive(String epk, String roomId) {
+    if (!isRoomLive(epk, roomId)) return false;
+    final key = toStandardB64(epk);
+    return !(_roomsByPeer[key]?.any((r) => r.roomId == roomId && r.keeper) ?? false);
+  }
+
   /// Plan/32 — `true` when the relay's last room-meta broadcast for
   /// `(epk, roomId)` carried `working: true` (an in-flight agent turn).
   /// Unlike the DB session-index signal (which only covers the single

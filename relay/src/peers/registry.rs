@@ -76,7 +76,13 @@ impl PeerRegistry {
         rooms: Arc<RoomManager>,
         metrics: Arc<FirehoseMetrics>,
     ) -> Self {
-        Self::with_mailbox(presence, rooms, metrics, 100, std::time::Duration::from_secs(1800))
+        Self::with_mailbox(
+            presence,
+            rooms,
+            metrics,
+            100,
+            std::time::Duration::from_secs(1800),
+        )
     }
 
     /// Same as [`PeerRegistry::new`], with explicit mailbox bounds (tests).
@@ -358,8 +364,7 @@ impl PeerRegistry {
     #[cfg(test)]
     pub fn sender_count(&self, peer_id: &str, room_id: &str) -> usize {
         let lock = self.senders.lock().unwrap();
-        lock
-            .get(&(peer_id.to_string(), room_id.to_string()))
+        lock.get(&(peer_id.to_string(), room_id.to_string()))
             .map(|v| v.len())
             .unwrap_or(0)
     }
@@ -434,8 +439,12 @@ impl PeerRegistry {
     /// full state of the mutable fields — subscribers replace their cached
     /// `meta` wholesale instead of merging field-by-field. Nullable fields
     /// that are still `None` after the patch are omitted from `meta` (matching
-    /// the `skip_serializing_if` convention used for `RoomMeta` itself); the
+    /// the `skip_serializing_if` convention used for `RoomMeta` itself), the
     /// non-nullable `working` bool is always present in the broadcast.
+    /// Plan/149 exception — a plan/149 key (`gh_ref`/`gh_suggestion`/
+    /// `stats`) explicitly cleared by the patch is broadcast as an explicit
+    /// `null` instead of being omitted: downstream treats absent = preserve,
+    /// so omission would never propagate the clear (PR #71 review).
     ///
     /// Plan/132 exception — `patch.run_done` is **broadcast-only**: it is
     /// never written to the stored metas, it rides the broadcast verbatim
@@ -614,15 +623,41 @@ impl PeerRegistry {
             if let Some(cu) = &current_context_usage {
                 meta_obj.insert("context_usage".to_string(), cu.clone());
             }
-            // Plan/149 — opaque ref / suggestion / stats (only when present).
-            if let Some(r) = &current_gh_ref {
-                meta_obj.insert("gh_ref".to_string(), r.clone());
+            // Plan/149 — opaque ref / suggestion / stats. Present values
+            // ride along; a key explicitly cleared by THIS patch (`null`)
+            // is broadcast as an explicit `null`, NOT omitted: downstream
+            // patch semantics are absent = preserve, so omission would
+            // silently keep the stale value on every subscriber
+            // (PR #71 review). Keys that were never set stay omitted.
+            match &current_gh_ref {
+                Some(r) => {
+                    meta_obj.insert("gh_ref".to_string(), r.clone());
+                }
+                None => {
+                    if matches!(&patch.gh_ref, Some(None)) {
+                        meta_obj.insert("gh_ref".to_string(), serde_json::Value::Null);
+                    }
+                }
             }
-            if let Some(s) = &current_gh_suggestion {
-                meta_obj.insert("gh_suggestion".to_string(), s.clone());
+            match &current_gh_suggestion {
+                Some(s) => {
+                    meta_obj.insert("gh_suggestion".to_string(), s.clone());
+                }
+                None => {
+                    if matches!(&patch.gh_suggestion, Some(None)) {
+                        meta_obj.insert("gh_suggestion".to_string(), serde_json::Value::Null);
+                    }
+                }
             }
-            if let Some(st) = &current_stats {
-                meta_obj.insert("stats".to_string(), st.clone());
+            match &current_stats {
+                Some(st) => {
+                    meta_obj.insert("stats".to_string(), st.clone());
+                }
+                None => {
+                    if matches!(&patch.stats, Some(None)) {
+                        meta_obj.insert("stats".to_string(), serde_json::Value::Null);
+                    }
+                }
             }
             // Plan/132 — run-completion marker: forwarded verbatim from the
             // patch, never from stored state (it is not stored).
@@ -728,15 +763,27 @@ mod tests {
 
         assert_ne!(conn_main, conn_work);
 
-        assert!(reg.forward(&peer, "main", Message::Text("to_main".into()), EXTERNAL).await);
+        assert!(
+            reg.forward(&peer, "main", Message::Text("to_main".into()), EXTERNAL)
+                .await
+        );
         assert_eq!(rx_main.try_recv().unwrap().to_text().unwrap(), "to_main");
 
-        assert!(reg.forward(&peer, "work", Message::Text("to_work".into()), EXTERNAL).await);
+        assert!(
+            reg.forward(&peer, "work", Message::Text("to_work".into()), EXTERNAL)
+                .await
+        );
         assert_eq!(rx_work.try_recv().unwrap().to_text().unwrap(), "to_work");
 
         reg.unregister(&peer, "work", conn_work).await;
-        assert!(!reg.forward(&peer, "work", Message::Text("gone".into()), EXTERNAL).await);
-        assert!(reg.forward(&peer, "main", Message::Text("still_there".into()), EXTERNAL).await);
+        assert!(
+            !reg.forward(&peer, "work", Message::Text("gone".into()), EXTERNAL)
+                .await
+        );
+        assert!(
+            reg.forward(&peer, "main", Message::Text("still_there".into()), EXTERNAL)
+                .await
+        );
         let _ = rx_main.try_recv();
     }
 
@@ -755,12 +802,18 @@ mod tests {
         assert_ne!(conn1, conn2);
 
         // Send "from" conn1 → only conn2 receives.
-        assert!(reg.forward(&peer, "main", Message::Text("hi".into()), conn1).await);
+        assert!(
+            reg.forward(&peer, "main", Message::Text("hi".into()), conn1)
+                .await
+        );
         assert!(rx1.try_recv().is_err(), "sender must not echo");
         assert_eq!(rx2.try_recv().unwrap().to_text().unwrap(), "hi");
 
         // Send "from" conn2 → only conn1 receives.
-        assert!(reg.forward(&peer, "main", Message::Text("hi2".into()), conn2).await);
+        assert!(
+            reg.forward(&peer, "main", Message::Text("hi2".into()), conn2)
+                .await
+        );
         assert_eq!(rx1.try_recv().unwrap().to_text().unwrap(), "hi2");
         assert!(rx2.try_recv().is_err());
     }
@@ -785,7 +838,10 @@ mod tests {
         drop(rx_dead);
 
         // First forward: live conn receives; the dead one is evicted inline.
-        assert!(reg.forward(&peer, "main", Message::Text("one".into()), EXTERNAL).await);
+        assert!(
+            reg.forward(&peer, "main", Message::Text("one".into()), EXTERNAL)
+                .await
+        );
         assert_eq!(rx_live.try_recv().unwrap().to_text().unwrap(), "one");
         assert_eq!(reg.sender_count(&peer, "main"), 1);
 
@@ -819,11 +875,16 @@ mod tests {
         drop(rx_pi);
 
         // The forward evicts the dead sender and empties the room.
-        assert!(!reg.forward(&pi, "main", Message::Text("x".into()), EXTERNAL).await);
+        assert!(
+            !reg.forward(&pi, "main", Message::Text("x".into()), EXTERNAL)
+                .await
+        );
         assert_eq!(reg.sender_count(&pi, "main"), 0);
 
         // The app subscribed to the pi's rooms receives room_ended.
-        let msg = rx_app.try_recv().expect("subscriber must receive room_ended");
+        let msg = rx_app
+            .try_recv()
+            .expect("subscriber must receive room_ended");
         let v: serde_json::Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
         assert_eq!(v["type"], "room_ended");
         assert_eq!(v["peer"], pi);
@@ -847,7 +908,10 @@ mod tests {
 
         reg.unregister(&peer, "main", conn2).await;
 
-        assert!(reg.forward(&peer, "main", Message::Text("ping".into()), EXTERNAL).await);
+        assert!(
+            reg.forward(&peer, "main", Message::Text("ping".into()), EXTERNAL)
+                .await
+        );
         assert_eq!(rx1.try_recv().unwrap().to_text().unwrap(), "ping");
         assert!(
             rx2.try_recv().is_err(),
@@ -869,7 +933,10 @@ mod tests {
         let _ = reg.register(peer.clone(), make_meta("main"), tx1).await;
         let _ = reg.register(peer.clone(), make_meta("main"), tx2).await;
 
-        assert!(reg.forward(&peer, "main", Message::Text("from_pi".into()), EXTERNAL).await);
+        assert!(
+            reg.forward(&peer, "main", Message::Text("from_pi".into()), EXTERNAL)
+                .await
+        );
         assert_eq!(rx1.try_recv().unwrap().to_text().unwrap(), "from_pi");
         assert_eq!(rx2.try_recv().unwrap().to_text().unwrap(), "from_pi");
     }
@@ -884,10 +951,16 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
         let conn = reg.register(peer.clone(), make_meta("main"), tx).await;
 
-        assert!(!reg.forward(&peer, "main", Message::Text("echo".into()), conn).await);
+        assert!(
+            !reg.forward(&peer, "main", Message::Text("echo".into()), conn)
+                .await
+        );
         assert!(rx.try_recv().is_err());
 
-        assert!(reg.forward(&peer, "main", Message::Text("hi".into()), EXTERNAL).await);
+        assert!(
+            reg.forward(&peer, "main", Message::Text("hi".into()), EXTERNAL)
+                .await
+        );
         assert_eq!(rx.try_recv().unwrap().to_text().unwrap(), "hi");
     }
 
@@ -907,12 +980,18 @@ mod tests {
 
         // Stale unregister of conn_a is a no-op.
         reg.unregister(&peer, "main", conn_a).await;
-        assert!(reg.forward(&peer, "main", Message::Text("alive".into()), EXTERNAL).await);
+        assert!(
+            reg.forward(&peer, "main", Message::Text("alive".into()), EXTERNAL)
+                .await
+        );
         assert_eq!(rx_b.try_recv().unwrap().to_text().unwrap(), "alive");
 
         // Correct unregister removes the last conn → entry gone.
         reg.unregister(&peer, "main", conn_b).await;
-        assert!(!reg.forward(&peer, "main", Message::Text("gone".into()), EXTERNAL).await);
+        assert!(
+            !reg.forward(&peer, "main", Message::Text("gone".into()), EXTERNAL)
+                .await
+        );
     }
 
     /// First register from an offline peer with a presence subscriber must
@@ -1024,8 +1103,7 @@ mod tests {
             "source": "manual"
         });
         let stats_v = serde_json::json!({ "turns": 3, "user_msgs": 7 });
-        let suggestion_v =
-            serde_json::json!({ "pr": { "number": 9 }, "source": "chat" });
+        let suggestion_v = serde_json::json!({ "pr": { "number": 9 }, "source": "chat" });
 
         // Set all three in one patch.
         assert!(
@@ -1067,8 +1145,12 @@ mod tests {
             assert_eq!(v["meta"]["stats"], stats2);
         }
 
-        // Clear-to-null (Some(None)) drops the key from the broadcast and
-        // the stored meta (rooms_of no longer reports it).
+        // Clear-to-null (Some(None)) empties the stored meta (rooms_of no
+        // longer reports it) and — because downstream patches treat absent
+        // = preserve — the broadcast MUST carry the key as an explicit
+        // `null`, not omit it (PR #71 review).
+        //
+        // `stats` is absent from this patch, so it is preserved as-is.
         assert!(
             reg.update_room_meta(
                 &pi,
@@ -1083,8 +1165,8 @@ mod tests {
         );
         {
             let v = recv_meta(&mut rx_app);
-            assert!(v["meta"].get("gh_ref").is_none());
-            assert!(v["meta"].get("gh_suggestion").is_none());
+            assert_eq!(v["meta"]["gh_ref"], serde_json::Value::Null);
+            assert_eq!(v["meta"]["gh_suggestion"], serde_json::Value::Null);
             assert_eq!(v["meta"]["stats"], stats2);
         }
         for r in reg.rooms_of(&pi) {

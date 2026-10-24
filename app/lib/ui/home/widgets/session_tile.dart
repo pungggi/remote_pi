@@ -238,9 +238,12 @@ class _SessionSlot extends StatelessWidget {
     if (hasRef) {
       l1 = ghRef!.label;
       l2 = s != null ? 'T${s.turns}' : '·';
+      // PR #71 review — without stats (pre-149 extension / legacy tile), a
+      // positive unread must still surface on the ref line, not collapse
+      // to '·' (linking a session must never hide its unread).
       l3 = s != null
           ? (unread > 0 ? 'M${s.userMsgs}·$unread' : 'M${s.userMsgs}')
-          : '·';
+          : (unread > 0 ? '$unread' : '·');
     } else {
       l1 = s != null ? 'T${s.turns}' : '·';
       l2 = s != null ? 'M${s.userMsgs}' : '·';

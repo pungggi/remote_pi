@@ -319,6 +319,34 @@ void main() {
       expect(find.text('M4·2'), findsOneWidget);
     });
 
+    testWidgets(
+      'ref WITHOUT stats still surfaces unread on the third line (PR #71 review)',
+      (tester) async {
+        // A legacy/pre-149 tile that got a ref linked must not collapse its
+        // unread to '·' — linking a session never hides its unread.
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: SessionTile(
+                peer: _peer(),
+                isLive: true,
+                onOpen: () {},
+                unread: 2,
+                room: const RoomInfo(
+                  roomId: 'r1',
+                  startedAt: 1,
+                  ghRef: GhRef(pr: GhRefSlot(number: 70)),
+                ),
+              ),
+            ),
+          ),
+        );
+        expect(find.text('PR #70'), findsOneWidget);
+        expect(find.text('2'), findsOneWidget);
+        expect(find.text('·'), findsOneWidget); // T-line placeholder only
+      },
+    );
+
     testWidgets('no ref → turns/msgs/unread stack, zero unread renders ·',
         (tester) async {
       await _pump(

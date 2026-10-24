@@ -12,6 +12,7 @@ import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/states/chat_state.dart';
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
+import 'package:flutter/widgets.dart';
 
 /// Plan/31 — ChatViewModel is now a thin composer over the local SSOT.
 ///
@@ -50,6 +51,16 @@ class ChatViewModel extends ViewModel<ChatState> {
   String _activeRoomId = 'main';
   bool _bootstrapping = true;
   bool _disposed = false;
+
+  /// Plan/149 (PR #71 review) — the chat VM + its message subscription stay
+  /// alive while the phone is locked / the app is backgrounded: keep-alive
+  /// deliveries keep firing [_onMessages]. Advancing the durable read marker
+  /// then would mark messages the user has NOT seen. Lifecycle-gated: only
+  /// deliveries while the app is at least `inactive` (foreground, maybe
+  /// transiently obscured) count as seen; `paused`/`hidden`/`detached`
+  /// accumulate in [_newestSeq] and are marked the moment the chat returns.
+  bool _chatVisible = true;
+  int? _newestSeq;
 
   List<ChatMessage> _messages = const [];
   StreamingMessage? _streaming;
@@ -227,16 +238,33 @@ class ChatViewModel extends ViewModel<ChatState> {
     _messages = [for (final r in rows) r.toChatMessage()];
     // Plan/149 — the chat is on screen: everything delivered up to the
     // newest row counts as read (marker only ever moves forward; older
-    // backward-paged rows can't un-read newer ones).
+    // backward-paged rows can't un-read newer ones). PR #71 review: gated
+    // on [_chatVisible] — a backgrounded app must not burn unread for
+    // keep-alive deliveries the user hasn't seen.
     final epk = _activePeer?.remoteEpk;
-    if (epk != null && rows.isNotEmpty) {
-      _read.markReadUpTo(
-        epk,
-        _activeRoomId,
-        rows.reduce((a, b) => a.seq >= b.seq ? a : b).seq,
-      );
+    if (rows.isNotEmpty) {
+      _newestSeq = rows.reduce((a, b) => a.seq >= b.seq ? a : b).seq;
+      if (_chatVisible && epk != null) {
+        _read.markReadUpTo(epk, _activeRoomId, _newestSeq!);
+      }
     }
     _recompute();
+  }
+
+  /// Plan/149 (PR #71 review) — app-lifecycle hook, forwarded by the
+  /// chat page's WidgetsBindingObserver. Returning to the foreground
+  /// re-marks the session read up to everything delivered while invisible
+  /// — the user is looking at the transcript again.
+  void onAppLifecycleStateChanged(AppLifecycleState state) {
+    _chatVisible = state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
+    if (_chatVisible && !_disposed) {
+      final epk = _activePeer?.remoteEpk;
+      final newest = _newestSeq;
+      if (epk != null && newest != null) {
+        _read.markReadUpTo(epk, _activeRoomId, newest);
+      }
+    }
   }
 
   /// Debounce for the ask-recovery card: the waiting meta and the sheet

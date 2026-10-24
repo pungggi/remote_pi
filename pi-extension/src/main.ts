@@ -47,6 +47,7 @@ import { piperHomeDir, readRoomsRegistry, upsertRoom, upsertRoomMeta, type Rooms
 import {
   applyRefWithPrecedence,
   ghPrViewRef,
+  mergeManualRef,
   sameRef,
   scanTextForRefSuggestion,
 } from "./session/ref_ingest.js";
@@ -1366,7 +1367,18 @@ let _probeSendLast = 0;
  *  unwritable home must never break the relay connect path. */
 function _registerRoomForKeeper(cwd: string, roomId: string): void {
   try {
-    upsertRoom({ cwd, roomId, lastSeenAt: Date.now() });
+    upsertRoom({
+      cwd,
+      roomId,
+      lastSeenAt: Date.now(),
+      // Plan/149 / PR #71 review — carry the slot fields the hello just
+      // announced (or the reconnect replays): pre-connect turns exist only
+      // in memory until the next agent_end; without this, stopping the
+      // process right after connect loses them from the registry (keeper
+      // announcements + the next `pi --continue` would show stale totals).
+      ...(ext.myRoomMeta?.gh_ref !== undefined ? { ghRef: ext.myRoomMeta.gh_ref } : {}),
+      ...(ext.myRoomMeta?.stats !== undefined ? { stats: ext.myRoomMeta.stats } : {}),
+    });
   } catch { /* best-effort */ }
 }
 
@@ -2018,6 +2030,23 @@ async function _attemptReconnect(
     // Replay the same room identity from _cmdStart. Without this the relay
     // would log this WS as a default-room peer and the app would see a
     // phantom "legacy session" appear (regression of plano 17 + 18).
+    //
+    // PR #71 review — re-seed the slot fields from the registry BEFORE the
+    // replay: the registry is the durable truth and may have moved on while
+    // we were offline (e.g. a manual ref applied via the device daemon's
+    // registry-only path). The seed takes max(registry, current) for the
+    // counters and returns the registry's gh_ref only when one EXISTS — a
+    // registry without a ref keeps our cached one (our own applies always
+    // sync meta + registry together, so divergence means an offline update).
+    if (ext.myRoomId) {
+      const reseeded = _seedSessionSlotFromRegistry(ext.myRoomId);
+      if (ext.myRoomMeta && reseeded && !sameRef(ext.myRoomMeta.gh_ref ?? null, reseeded)) {
+        ext.myRoomMeta = { ...ext.myRoomMeta, gh_ref: reseeded };
+      }
+      if (ext.myRoomMeta && (ext.statsTurns > 0 || ext.statsUserMsgs > 0)) {
+        ext.myRoomMeta = { ...ext.myRoomMeta, stats: { turns: ext.statsTurns, user_msgs: ext.statsUserMsgs } };
+      }
+    }
     _relayLog(ext.myRoomId, "reconnect-attempt", url);
     await relay.connect({
       ...(ext.myRoomId ? { roomId: ext.myRoomId } : {}),
@@ -5127,12 +5156,17 @@ function handleSetSessionRef(
   sender: ActionReplySender,
   msg: Extract<ClientMessage, { type: "set_session_ref_request" }>,
 ): void {
-  const manualRef = msg.gh_ref ? { ...msg.gh_ref, source: "manual" as const } : null;
+  // PR #71 review — two-slot contract: a manual input (pasted URL/#N or an
+  // accepted chat suggestion) carries ONE populated slot. mergeManualRef
+  // retains the OTHER slot of the stored ref, so accepting a PR after
+  // linking an issue keeps both instead of replacing the whole ref.
+  let manualRef: WireGhRef | null = msg.gh_ref ? { ...msg.gh_ref, source: "manual" as const } : null;
   try {
     if (ext.myRoomId && msg.room_id === ext.myRoomId) {
       // Live-session path: update the cached meta, push the patch, persist.
       // Applying a (or clearing the) ref also drops any pending chat
       // suggestion — it was just consumed or explicitly overruled.
+      manualRef = mergeManualRef(ext.myRoomMeta?.gh_ref ?? null, manualRef);
       if (ext.myRoomMeta) {
         ext.myRoomMeta = { ...ext.myRoomMeta, gh_ref: manualRef, gh_suggestion: null };
       }
@@ -5149,6 +5183,14 @@ function handleSetSessionRef(
     }
     // Device-daemon path: registry-only write (the target room's meta
     // refreshes when its session reconnects or the keeper re-announces).
+    // The merge reads the registry entry's CURRENT ref (the offline truth).
+    let currentRef: WireGhRef | null = null;
+    if (manualRef) {
+      try {
+        currentRef = readRoomsRegistry().get(msg.room_id)?.ghRef ?? null;
+      } catch { /* best-effort read; merge degrades to replace */ }
+      manualRef = mergeManualRef(currentRef, manualRef);
+    }
     let updated: RoomsRegistryEntry | null;
     try {
       updated = upsertRoomMeta(

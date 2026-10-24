@@ -1,5 +1,5 @@
-// Plan/31 — ChatViewModel is a thin composer over the SSOT. A message written
-// to the DB (via the channel → SyncService) must surface in ChatState.
+﻿// Plan/31 â€” ChatViewModel is a thin composer over the SSOT. A message written
+// to the DB (via the channel â†’ SyncService) must surface in ChatState.
 
 import 'dart:async';
 import 'dart:io';
@@ -15,6 +15,7 @@ import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/chat/states/chat_state.dart';
 import 'package:app/ui/chat/viewmodels/chat_viewmodel.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
@@ -136,8 +137,8 @@ void main() {
     final vm = ChatViewModel(read, sync, conn, prefs, storage);
     await Future<void>.delayed(const Duration(milliseconds: 50));
 
-    // The Pi rebroadcasts a user message → SyncService writes a row →
-    // SessionReadRepository emits → ChatViewModel recomposes.
+    // The Pi rebroadcasts a user message â†’ SyncService writes a row â†’
+    // SessionReadRepository emits â†’ ChatViewModel recomposes.
     ch.push(UserInput(id: 'u1', text: 'hello from db'));
     await Future<void>.delayed(const Duration(milliseconds: 50));
 
@@ -150,13 +151,13 @@ void main() {
     );
 
     // BUG fix (smoke): the chat "working" pill must be on for the whole turn,
-    // not just the token-streaming window — and the composer locks + the send
+    // not just the token-streaming window â€” and the composer locks + the send
     // button becomes "stop" (cancelTargetId points at the in-flight turn).
-    expect(vm.isWorking, isTrue, reason: 'turn started → working');
+    expect(vm.isWorking, isTrue, reason: 'turn started â†’ working');
     expect(vm.cancelTargetId, 'u1', reason: 'stop button cancels this turn');
     ch.push(AgentDone(inReplyTo: 'u1'));
     await Future<void>.delayed(const Duration(milliseconds: 50));
-    expect(vm.isWorking, isFalse, reason: 'agent_done → idle');
+    expect(vm.isWorking, isFalse, reason: 'agent_done â†’ idle');
     expect(vm.cancelTargetId, isNull, reason: 'no turn to cancel when idle');
 
     vm.dispose();
@@ -249,7 +250,7 @@ void main() {
       expect(vm.isWaitingForInput, isFalse, reason: 'idle before the prompt');
       final before = vm.state;
 
-      // Blocking prompt opens — relay broadcasts waiting_for_input=true.
+      // Blocking prompt opens â€” relay broadcasts waiting_for_input=true.
       ch.pushControl(const RoomMetaUpdated(
         peer: 'epk_chat',
         roomId: 'main',
@@ -270,7 +271,7 @@ void main() {
           reason: 'ChatReady identity must include isWaitingForInput');
       expect((during as ChatReady).isWaitingForInput, isTrue);
 
-      // Prompt answered — flag clears and the state recomposes again.
+      // Prompt answered â€” flag clears and the state recomposes again.
       ch.pushControl(const RoomMetaUpdated(
         peer: 'epk_chat',
         roomId: 'main',
@@ -438,7 +439,7 @@ void main() {
   });
 
   test(
-    'an empty session reaches ChatReady with no messages → the chat shows the '
+    'an empty session reaches ChatReady with no messages â†’ the chat shows the '
     'default "Nothing here" placeholder (plan/32)',
     () async {
       final ch = _FakeChannel();
@@ -448,7 +449,7 @@ void main() {
         storage: storage,
       );
       final boxes = LocalBoxes();
-      // The msgs box is shared across tests in this file (setUpAll) — start
+      // The msgs box is shared across tests in this file (setUpAll) â€” start
       // this one from a clean slate so "empty session" really is empty.
       (await boxes.msgsBox(_peer.remoteEpk, 'main')).clear();
       final sync = SyncService(conn, boxes);
@@ -465,7 +466,7 @@ void main() {
       final state = vm.state;
       expect(state, isA<ChatReady>());
       state as ChatReady;
-      // Empty + nothing streaming → _buildBody renders the default Pi-icon +
+      // Empty + nothing streaming â†’ _buildBody renders the default Pi-icon +
       // "Nothing here" placeholder (shown whenever the body is empty).
       expect(state.messages, isEmpty);
       expect(state.streaming, isNull);
@@ -504,7 +505,7 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 20));
     expect(vm.isWorking, isFalse);
 
-    // The relay broadcasts meta.working=true for this room (turn_start) —
+    // The relay broadcasts meta.working=true for this room (turn_start) â€”
     // no local send/echo, purely the per-room signal that also drives Home.
     ch.pushControl(
       const RoomMetaUpdated(
@@ -572,7 +573,7 @@ void main() {
   });
 
   test(
-    'model_set → room_meta_updated rebuilds ChatReady with the new model '
+    'model_set â†’ room_meta_updated rebuilds ChatReady with the new model '
     '(UI bug: model was a side-channel, ChatReady.== skipped notifyListeners)',
     () async {
       final ch = _FakeChannel();
@@ -611,7 +612,7 @@ void main() {
       );
       expect(vm.activeRoom?.model, 'old-model');
 
-      // Pure model flip — nothing else in ChatReady changes. Pre-fix this
+      // Pure model flip â€” nothing else in ChatReady changes. Pre-fix this
       // produced an equal ChatReady and ViewModel.emit skipped notifyListeners,
       // so the AppBar / composer kept showing old-model while the PC switched.
       ch.pushControl(
@@ -632,7 +633,7 @@ void main() {
       expect(
         (vm.state as ChatReady).model,
         'new-model',
-        reason: 'ChatReady.model is part of state identity → rebuild fires',
+        reason: 'ChatReady.model is part of state identity â†’ rebuild fires',
       );
 
       // Same for a pure context-usage tick (plan/115 header gauge).
@@ -664,7 +665,7 @@ void main() {
     },
   );
 
-  group('Plan/137 — ask recovery card + route_error', () {
+  group('Plan/137 â€” ask recovery card + route_error', () {
     test('waiting meta without a sheet shows the recovery card (after '
         'the anti-flash delay), and the arriving sheet hides it', () async {
       final ch = _FakeChannel();
@@ -688,15 +689,15 @@ void main() {
       final vm = ChatViewModel(read, sync, conn, prefs, storage);
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      // Seed the room — meta updates for an unannounced room are ignored.
+      // Seed the room â€” meta updates for an unannounced room are ignored.
       ch.pushControl(
         const RoomAnnounced(peer: 'epk_chat', roomId: 'main', startedAt: 1),
       );
       await Future<void>.delayed(const Duration(milliseconds: 30));
 
-      // Plan/145 — the 2026-10-21 incident: the ask_user turn starts and
+      // Plan/145 â€” the 2026-10-21 incident: the ask_user turn starts and
       // BOTH the tool-start frame and the sheet frame die in one flap.
-      // Only the durable waiting_for_input room meta survives — the card
+      // Only the durable waiting_for_input room meta survives â€” the card
       // must key off THAT, not off a ToolEvent row in the local DB.
       ch.push(UserInput(id: 'ask-u1', text: 'plan m6'));
       await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -713,7 +714,7 @@ void main() {
       expect((vm.state as ChatReady).askRecovery, isFalse,
           reason: 'the sheet frame may still be in flight');
 
-      // After the delay the card appears — nothing else fires while the
+      // After the delay the card appears â€” nothing else fires while the
       // agent is blocked in the tool.
       await Future<void>.delayed(const Duration(milliseconds: 3500));
       expect((vm.state as ChatReady).askRecovery, isTrue);
@@ -730,7 +731,7 @@ void main() {
           reason: 'open sheet is the answer path, no card needed');
       expect((vm.state as ChatReady).pendingUiRequest?.id, 'tool:tc_ask1');
 
-      // The flow resolves AND the meta clears → no card without a sheet.
+      // The flow resolves AND the meta clears â†’ no card without a sheet.
       ch.push(ExtensionUiRequest(
         id: 'tool:tc_ask1',
         method: ExtensionUiMethod.notify,
@@ -773,14 +774,14 @@ void main() {
       final vm = ChatViewModel(read, sync, conn, prefs, storage);
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      // Seed the room — meta updates for an unannounced room are ignored.
+      // Seed the room â€” meta updates for an unannounced room are ignored.
       ch.pushControl(
         const RoomAnnounced(peer: 'epk_chat', roomId: 'main', startedAt: 1),
       );
       await Future<void>.delayed(const Duration(milliseconds: 30));
 
       // NO ask_user ToolRequest ever arrives (both frames lost). Only the
-      // durable meta says "waiting" — the old event-derived condition could
+      // durable meta says "waiting" â€” the old event-derived condition could
       // never fire here.
       ch.pushControl(const RoomMetaUpdated(
         peer: 'epk_chat',
@@ -793,7 +794,7 @@ void main() {
       expect((vm.state as ChatReady).askRecovery, isFalse);
       await Future<void>.delayed(const Duration(milliseconds: 3500));
       expect((vm.state as ChatReady).askRecovery, isTrue,
-          reason: 'waiting + no sheet + online is enough — no DB row needed');
+          reason: 'waiting + no sheet + online is enough â€” no DB row needed');
 
       vm.dispose();
       sync.dispose();
@@ -823,7 +824,7 @@ void main() {
       final vm = ChatViewModel(read, sync, conn, prefs, storage);
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      // Seed the room — meta updates for an unannounced room are ignored.
+      // Seed the room â€” meta updates for an unannounced room are ignored.
       ch.pushControl(
         const RoomAnnounced(peer: 'epk_chat', roomId: 'main', startedAt: 1),
       );
@@ -844,7 +845,7 @@ void main() {
         waitingForInput: false,
       );
 
-      // Window 1: waiting, no sheet → card after the delay; then resolved.
+      // Window 1: waiting, no sheet â†’ card after the delay; then resolved.
       ch.pushControl(metaWaiting);
       await Future<void>.delayed(const Duration(milliseconds: 3500));
       expect((vm.state as ChatReady).askRecovery, isTrue,
@@ -913,13 +914,13 @@ void main() {
       final after = (vm.state as ChatReady).messages;
       final cleared = after.whereType<UserMsg>().singleWhere((m) => m.id == 'steer-1');
       expect(cleared.steering, isFalse,
-          reason: 'route_error must end the unbounded steering… spinner');
+          reason: 'route_error must end the unbounded steeringâ€¦ spinner');
       expect(
         after.whereType<AssistantMsg>().map((m) => m.text).any(
           (t) => t.contains('Not delivered'),
         ),
         isTrue,
-        reason: 'the ⚠ row explains why the message went nowhere',
+        reason: 'the âš  row explains why the message went nowhere',
       );
 
       vm.dispose();
@@ -927,4 +928,52 @@ void main() {
       conn.dispose();
     });
   });
+  test(
+    'backgrounded app does not burn unread: marker frozen until resume (PR #71 review)',
+    () async {
+      final ch = _FakeChannel();
+      final storage = _FakeStorage();
+      final conn = ConnectionManager(
+        factory: (_, _) async => ch,
+        storage: storage,
+      );
+      final boxes = LocalBoxes();
+      final sync = SyncService(conn, boxes);
+      final read = SessionReadRepository(boxes);
+      final prefs = Preferences(_FakeSecureStorage());
+      // A dedicated room: markers are DURABLE and this suite shares one
+      // Hive dir, so 'main' may already carry a marker from earlier tests.
+      const room = 'bg149';
+      await prefs.setSelectedPeerEpk(_peer.remoteEpk);
+      await prefs.setSelectedRoom(epk: _peer.remoteEpk, roomId: room);
+      boxes.clearReadMarker(_peer.remoteEpk, room);
+
+      conn.adopt(ch, _peer);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      final vm = ChatViewModel(read, sync, conn, prefs, storage);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // Phone locked / app backgrounded: the VM + message subscription
+      // stay alive, so keep-alive deliveries still land in the DB...
+      vm.onAppLifecycleStateChanged(AppLifecycleState.paused);
+      ch.push(UserInput(id: 'bg-1', text: 'delivered while locked'));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(
+        (vm.state as ChatReady).messages.whereType<UserMsg>(),
+        isNotEmpty,
+        reason: 'delivery landed in the transcript',
+      );
+      // ...but the durable read marker must NOT advance for them.
+      expect(boxes.unreadCount(_peer.remoteEpk, room), 1);
+
+      // Returning to the chat marks everything delivered while invisible.
+      vm.onAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(boxes.unreadCount(_peer.remoteEpk, room), 0);
+
+      vm.dispose();
+      sync.dispose();
+      conn.dispose();
+    },
+  );
 }

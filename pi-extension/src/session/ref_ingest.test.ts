@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyRefWithPrecedence,
   ghPrViewRef,
+  mergeManualRef,
   parseManualRefInput,
   sameRef,
   scanTextForRefSuggestion,
@@ -126,6 +127,30 @@ describe("applyRefWithPrecedence (manual > gh > chat)", () => {
     expect(next.source).toBe("manual"); // provenance stays manual
   });
 
+  it("gh NEVER refreshes a manual PR of a DIFFERENT repository with the same number (PR #71 review)", () => {
+    const cur = {
+      // Manually linked other/repo PR #45.
+      pr: { number: 45, url: "https://github.com/other/repo/pull/45", state: null },
+      issue: null as null,
+      source: "manual" as const,
+    };
+    // cwd repo happens to have its own unrelated PR #45.
+    const { next, changed } = applyRefWithPrecedence(cur, ghRef(45, "MERGED"));
+    expect(changed).toBe(false);
+    expect(next).toEqual(cur); // manual URL/state untouched
+  });
+
+  it("gh still refreshes when one side has no URL to disambiguate the repo", () => {
+    const cur = {
+      pr: { number: 45, url: null, state: null },
+      issue: null as null,
+      source: "manual" as const,
+    };
+    const { next, changed } = applyRefWithPrecedence(cur, ghRef(45, "MERGED"));
+    expect(changed).toBe(true);
+    expect(next.pr?.state).toBe("MERGED");
+  });
+
   it("gh ADDS a PR beside a manual issue link (both slots kept)", () => {
     const cur = manualIssue(12);
     const { next, changed } = applyRefWithPrecedence(cur, ghRef(45));
@@ -158,6 +183,50 @@ describe("applyRefWithPrecedence (manual > gh > chat)", () => {
     expect(
       sameRef({ pr: { number: 1, url: null, state: null } }, { pr: { number: 1 } }),
     ).toBe(true);
+  });
+});
+
+describe("mergeManualRef (two-slot contract, PR #71 review)", () => {
+  const prRef = (n: number) => ({
+    pr: { number: n, url: `https://github.com/o/r/pull/${n}`, state: null },
+    issue: null as null,
+    source: "manual" as const,
+  });
+  const issueRef = (n: number) => ({
+    pr: null as null,
+    issue: { number: n, url: `https://github.com/o/r/issues/${n}`, state: null },
+    source: "manual" as const,
+  });
+
+  it("a manual PR RETAINS the existing issue slot", () => {
+    const next = mergeManualRef(issueRef(12), prRef(71));
+    expect(next?.pr?.number).toBe(71);
+    expect(next?.issue?.number).toBe(12);
+    expect(next?.source).toBe("manual");
+  });
+
+  it("a manual issue RETAINS the existing PR slot", () => {
+    const next = mergeManualRef(prRef(30), issueRef(44));
+    expect(next?.pr?.number).toBe(30);
+    expect(next?.issue?.number).toBe(44);
+  });
+
+  it("same-slot input REPLACES that slot (re-linking an issue updates it)", () => {
+    const next = mergeManualRef(issueRef(12), issueRef(13));
+    expect(next?.issue?.number).toBe(13);
+    expect(next?.pr).toBeNull();
+  });
+
+  it("both-slots input replaces wholesale; null/empty input is a clear", () => {
+    const both = { ...prRef(71), issue: { number: 5, url: "u", state: null } };
+    expect(mergeManualRef(issueRef(12), both)?.issue?.number).toBe(5);
+    expect(mergeManualRef(issueRef(12), null)).toBeNull();
+    expect(mergeManualRef(prRef(30), { pr: null, issue: null, source: "manual" })).toBeNull();
+  });
+
+  it("no existing ref → input as-is", () => {
+    expect(mergeManualRef(null, prRef(71))?.pr?.number).toBe(71);
+    expect(mergeManualRef(undefined, issueRef(9))?.issue?.number).toBe(9);
   });
 });
 

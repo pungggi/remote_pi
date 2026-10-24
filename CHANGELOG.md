@@ -44,6 +44,32 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Fixed
 
+- **PR #71 review fixes (plan/149 hardening)**:
+  - **Relay**: a `gh_ref`/`gh_suggestion`/`stats` key explicitly cleared
+    by a patch is now broadcast as an explicit `null` instead of being
+    omitted — downstream treats absent as preserve, so a removed link or
+    consumed suggestion never reached the phones before.
+  - **Extension**: `gh pr view` refreshes a manual PR only when the
+    repository identity (URL `owner/repo` prefix) matches — an unrelated
+    cwd PR with the same number no longer overwrites a manually linked
+    foreign-repo PR. Manual links and accepted suggestions now MERGE with
+    the stored ref (linking a PR after an issue keeps both slots).
+    Reconnects re-seed `gh_ref`/`stats` from the rooms registry before
+    replaying the cached hello, so a ref applied through the device
+    daemon while the session was offline survives the re-announce; and
+    the keeper registration now persists the announced slot, so
+    pre-connect turns are not lost when the process stops before the
+    next `agent_end`.
+  - **App**: linking an offline (keeper-held) session routes to the
+    device daemon instead of the keeper (which only serves session_sync —
+    the link used to time out). Unread fixes: a missing read marker no
+    longer hides seq-0 rows; the marker is cleared when a room's history
+    resets (new conversation); a ref-linked legacy tile still shows its
+    unread; Home opens all rooms' msgs boxes before the first list so
+    offline tiles show cached unread immediately; and the chat only
+    advances the read marker while the app is foregrounded — keep-alive
+    deliveries while the phone is locked stay unread.
+
 - **Home: "Offline" filter tab reset to "Online" on every rooms persist** —
   `HomeViewModel._load()` (triggered via `PairingStorage.notifyListeners` from
   each non-identical `room_announced` persist in `ConnectionManager`) rebuilt

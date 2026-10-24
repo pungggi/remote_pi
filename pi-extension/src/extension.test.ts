@@ -7887,5 +7887,111 @@ describe("plan/149 session slot (gh_ref + stats)", () => {
     expect(reply?.ok).toBe(false);
     expect(reply?.message).toContain("unknown room");
   });
+
+  test("set_session_ref LIVE two-slot: applying a PR after an issue keeps BOTH slots (PR #71 review)", async () => {
+    await _pairForTest("owner149f__1234567890");
+    const roomId = relayRef.current!.connect.mock.calls[0]![0]!.roomId as string;
+
+    await routeClientMessage(
+      {
+        type: "set_session_ref_request", id: "ref-4", room_id: roomId,
+        gh_ref: { issue: { number: 12, url: "https://github.com/o/r/issues/12", state: null }, pr: null },
+      },
+      { abort: () => undefined },
+    );
+    await routeClientMessage(
+      {
+        type: "set_session_ref_request", id: "ref-5", room_id: roomId,
+        gh_ref: { pr: { number: 71, url: "https://github.com/o/r/pull/71", state: null }, issue: null },
+      },
+      { abort: () => undefined },
+    );
+
+    // Registry: the manual PR fills the empty slot; the issue survives.
+    const { readRoomsRegistry, roomsRegistryPath } = await import("./session/rooms_registry.js");
+    const entry = readRoomsRegistry(roomsRegistryPath()).get(roomId);
+    expect(entry?.ghRef).toMatchObject({ source: "manual", pr: { number: 71 }, issue: { number: 12 } });
+
+    // Wire: the live patch carries the merged ref (the app renders wire-wins).
+    const frames = ctrlFrames().filter((f) => f.meta && "gh_ref" in f.meta!);
+    const last = frames[frames.length - 1]!.meta!["gh_ref"] as { pr?: { number?: number }; issue?: { number?: number } };
+    expect(last.pr?.number).toBe(71);
+    expect(last.issue?.number).toBe(12);
+  });
+
+  test("set_session_ref registry-only two-slot merge retains the other slot", async () => {
+    await _pairForTest("owner149g__1234567890");
+    const { upsertRoom, readRoomsRegistry, roomsRegistryPath } = await import("./session/rooms_registry.js");
+    upsertRoom({
+      cwd: "C:\\kept", roomId: "keptRoom149b", lastSeenAt: Date.now(),
+      ghRef: { pr: { number: 30, url: "https://github.com/o/r/pull/30", state: "OPEN" }, issue: null, source: "manual" },
+    });
+
+    await routeClientMessage(
+      {
+        type: "set_session_ref_request", id: "ref-6", room_id: "keptRoom149b",
+        gh_ref: { issue: { number: 44, url: "https://github.com/o/r/issues/44", state: null }, pr: null },
+      },
+      { abort: () => undefined },
+    );
+
+    const entry = readRoomsRegistry(roomsRegistryPath()).get("keptRoom149b");
+    expect(entry?.ghRef).toMatchObject({ source: "manual", pr: { number: 30 }, issue: { number: 44 } });
+  });
+
+  test("reconnect replays the REGISTRY ref when it moved on while offline (PR #71 review)", async () => {
+    await _pairForTest("owner149h__1234567890");
+    const roomId = relayRef.current!.connect.mock.calls[0]![0]!.roomId as string;
+
+    // Manual issue while live (meta + registry in sync).
+    await routeClientMessage(
+      {
+        type: "set_session_ref_request", id: "ref-7", room_id: roomId,
+        gh_ref: { issue: { number: 5, url: "https://github.com/o/r/issues/5", state: null }, pr: null },
+      },
+      { abort: () => undefined },
+    );
+
+    // Offline: the device daemon's registry-only path writes a DIFFERENT ref
+    // while our process sits in the reconnect window.
+    const { upsertRoomMeta } = await import("./session/rooms_registry.js");
+    upsertRoomMeta(roomId, {
+      ghRef: { pr: { number: 99, url: "https://github.com/o/r/pull/99", state: "OPEN" }, issue: null, source: "manual" },
+    });
+
+    vi.useFakeTimers();
+    try {
+      relayInstances[0]!.emit("close");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(relayInstances).toHaveLength(2);
+      const roomMeta = relayInstances[1]!.connect.mock.calls[0]![0]!.roomMeta as { gh_ref?: { pr?: { number?: number }; issue?: { number?: number } } };
+      // The replayed hello announces the registry's newer ref, not the
+      // stale cached one.
+      expect(roomMeta.gh_ref?.pr?.number).toBe(99);
+      expect(roomMeta.gh_ref?.issue).toBeFalsy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("connect persists the announced slot: pre-connect turns survive a stop right after connect (PR #71 review)", async () => {
+    // Pre-connect activity: a full turn happens BEFORE the first relay
+    // connection (user works, then starts /remote-pi).
+    const onMsgEnd = captureEventHandler("message_end");
+    const onEnd = captureEventHandler("agent_end");
+    onMsgEnd({ message: { role: "user", content: "hi" } } as unknown as Parameters<typeof onMsgEnd>[0]);
+    onEnd({} as unknown as Parameters<typeof onEnd>[0]);
+
+    await _pairForTest("owner149i__1234567890");
+    const roomId = relayRef.current!.connect.mock.calls[0]![0]!.roomId as string;
+
+    // The hello announces the totals; the registry must carry them too, or
+    // a stop before the NEXT agent_end loses them from keeper + next start.
+    const { readRoomsRegistry, roomsRegistryPath } = await import("./session/rooms_registry.js");
+    const entry = readRoomsRegistry(roomsRegistryPath()).get(roomId);
+    expect(entry?.stats).toEqual({ turns: 1, user_msgs: 1 });
+    const roomMeta = relayRef.current!.connect.mock.calls[0]![0]!.roomMeta as { stats?: { turns: number; user_msgs: number } };
+    expect(roomMeta.stats).toEqual({ turns: 1, user_msgs: 1 });
+  });
 });
 

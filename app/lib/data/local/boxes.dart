@@ -28,6 +28,11 @@ const String _kReadMarkers = 'read_markers';
 class LocalBoxes {
   static bool _initialized = false;
 
+  /// `true` once [init]/[initForTest] has opened the common boxes. Lets
+  /// UI-layer callers skip OPTIONAL box work in environments without
+  /// storage (plain ViewModel tests never init Hive).
+  static bool get isInitialized => _initialized;
+
   /// Open the v2 namespace and the always-on boxes; **wipe `runtime`** before
   /// anything subscribes (#3 / Risk 2). Call once during bootstrap, before
   /// `runApp` and before any read-repo is constructed.
@@ -77,13 +82,18 @@ class LocalBoxes {
   /// with `seq > lastReadSeq`. Returns 0 for unknown sessions / empty
   /// boxes. Sync-ish: only touches the already-open boxes; callers that
   /// might hit a cold session should await [msgsBox] first.
+  ///
+  /// A MISSING marker means "nothing has been read" — modeled as -1, not
+  /// 0: seqs are allocated from zero (SyncService), so a default of 0
+  /// would permanently hide the first unread row and report 0 unread for
+  /// a one-message session (PR #71 review).
   int unreadCount(String epk, String roomId) {
     if (!isMsgsBoxOpen(epk, roomId)) return 0;
     final box = openMsgsBox(epk, roomId);
-    final lastRead = readMarkersBox().get(sessionKey(epk, roomId)) as int?;
+    final lastRead = (readMarkersBox().get(sessionKey(epk, roomId)) as int?) ?? -1;
     var n = 0;
     for (final k in box.keys) {
-      if (k is int && k > (lastRead ?? 0)) n++;
+      if (k is int && k > lastRead) n++;
     }
     return n;
   }
@@ -93,8 +103,16 @@ class LocalBoxes {
   /// seq must not clear newer unread).
   void markRead(String epk, String roomId, int upToSeq) {
     final markers = readMarkersBox();
-    final current = markers.get(sessionKey(epk, roomId)) as int? ?? 0;
+    final current = (markers.get(sessionKey(epk, roomId)) as int?) ?? -1;
     if (upToSeq > current) markers.put(sessionKey(epk, roomId), upToSeq);
+  }
+
+  /// Plan/149 (PR #71 review) — wipe the read marker when a room's local
+  /// message history resets (session_new / new-conversation detection):
+  /// seqs restart at 0, so a stale marker (e.g. 100) would suppress every
+  /// unread row until the new conversation's seq passes it.
+  void clearReadMarker(String epk, String roomId) {
+    readMarkersBox().delete(sessionKey(epk, roomId));
   }
 
   /// Per-session message box. Lazily opened; idempotent (returns the already
