@@ -3182,7 +3182,12 @@ export function onSessionStart(
     const restartAuthority: RootRestartAuthority = {
       rootLifecycleGeneration: ext.rootLifecycleGeneration,
     };
-    void _cmdRoot(ctx, restartAuthority);
+    // Match fresh boot: session replacement must not open first-run setup
+    // in an unconfigured cwd. Keep local-only configs eligible for rejoin;
+    // auto_start_relay gates only the relay, not this mesh restore (#236).
+    if (localConfigExists("cwd" in ctx ? ctx.cwd : process.cwd())) {
+      void _cmdRoot(ctx, restartAuthority);
+    }
   }
   // Auto-start remote-pi on a fresh boot when the entry's gate passed. Daemon
   // mode has no interactive UI → use the headless ctx; interactive sessions

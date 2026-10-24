@@ -143,7 +143,9 @@ describe("thin-entry lazy boundary (plan/143)", () => {
       // auto-start gate passes (daemon + direct config) → deferred fwd starts
       // the runtime import, now parked behind the gate.
       handlers.get("session_start")!({ type: "session_start" } as never, fakeCtx as never);
-      expect(harness.count).toBe(1);
+      // Dynamic-import mocking starts asynchronously under Vitest 4. Wait for
+      // the factory to begin, while its gate still blocks the actual resolve.
+      await vi.waitFor(() => expect(harness.count).toBe(1));
       expect(harness.resolved).toBe(0);
 
       // shutdown interleaves BEFORE the import resolves: inline teardown sets
