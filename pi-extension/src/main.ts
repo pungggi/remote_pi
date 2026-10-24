@@ -719,7 +719,11 @@ function _attachBridgeIfReady(): void {
   }
   void ext.meshNode
     .attachBridge({ relay: ext.relay, relayUrl: ext.relayUrl, keypair: ext.cachedEd25519 })
-    .catch(() => { /* best-effort — UDS mesh works regardless */ });
+    .catch((error: unknown) => {
+      // UDS still works, but make the cross-PC outage visible. MeshNode's
+      // bounded retry handles transient leader/broker/attach failures (#189).
+      console.warn(`[remote-pi] event=mesh_bridge_attach_failed reason=${String(error)}`);
+    });
 }
 
 /**
@@ -4542,10 +4546,10 @@ async function _sendWithModelOverride(
  * Wake: we inject a CUSTOM message (role:"custom"), not a user message. The
  * SDK's `convertToLlm` maps custom → a user-role LLM message, so the agent
  * still sees + replies to it, but `message_end` does NOT buffer role:"custom",
- * so it never replays as `user_input` on session_sync. Mesh messages are held
- * until the current `agent_end` listeners finish, then appended as one batch
- * before a single turn starts. This avoids calling `prompt()` during the gap
- * where Pi has stopped streaming but the current agent run is still active.
+ * so it never replays as `user_input` on session_sync. Each joining session
+ * owns its queue. Busy messages wait through `agent_end` until that session's
+ * live context is idle, then append as one FIFO batch before a separate wake.
+ * A wake request is confirmed only by `agent_start`, never assumed (#204/#216).
  * `id` lets the LLM echo it via
  * `agent_send(..., re=<id>)`.
  */

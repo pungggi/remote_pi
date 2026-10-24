@@ -135,7 +135,10 @@ async function discoverStandaloneTopology(
       myPubkey: opts.keypair.publicKey,
       log: silent,
     });
-  } catch {
+  } catch (error) {
+    // Empty topology is a valid degradation (no siblings), but discovery
+    // failure must not masquerade as an empty remote roster without a trace.
+    opts.log?.(`[remote-pi] mesh discovery failed, using an empty topology: ${String(error)}`);
     return buildTopologySnapshot(opts.keypair.publicKey, []);
   }
 }

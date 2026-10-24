@@ -47,11 +47,11 @@ Upstream #204 adds wake confirmation and live-idle checks, but does not define s
 
 ## DoD
 
-- [ ] Per-session owner and busy state implemented.
-- [ ] #204 wake/idle/FIFO behavior ported around that owner.
-- [ ] Bounded #189 bridge reattach implemented and tested.
-- [ ] Full extension verification green.
-- [ ] Durable queue/ACK semantics remain a separate product decision.
+- [x] Per-session owner and busy state implemented.
+- [x] #204 wake/idle/FIFO behavior ported around that owner.
+- [x] Bounded #189 bridge reattach implemented and tested.
+- [x] Full extension verification green: 60 files, 1113 passed, 22 skipped; typecheck + build.
+- [x] Durable queue/ACK semantics remain a separate product decision.
 
 ## Next plans
 
