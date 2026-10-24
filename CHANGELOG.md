@@ -11,6 +11,17 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Home: "Offline" filter tab reset to "Online" on every rooms persist** —
+  `HomeViewModel._load()` (triggered via `PairingStorage.notifyListeners` from
+  each non-identical `room_announced` persist in `ConnectionManager`) rebuilt
+  the `HomeList` without the current `filter`, so any working-flag flip or
+  keeper re-announce snapped the tab back to its default while the user read
+  the offline list. `_load()` now carries the selected tab across reloads;
+  only the first load (still `HomeLoading`) uses the `online` default.
+  Regression test: `storage reloads preserve the selected tab`.
+
 ### Added
 
 - **Offline session cleanup from the Home list (plan/148)**: long-press an

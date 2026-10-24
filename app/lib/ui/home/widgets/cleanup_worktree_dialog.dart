@@ -59,6 +59,12 @@ class CleanupWorktreeDialog extends StatelessWidget {
             'so nothing is deleted until it is clean.',
             style: TextStyle(fontSize: 12, color: colors.muted),
           ),
+          const SizedBox(height: 6),
+          Text(
+            'The chat history stays on the computer, so the session may '
+            'reappear in this list as an archive entry.',
+            style: TextStyle(fontSize: 12, color: colors.muted),
+          ),
         ],
       ),
       actions: [

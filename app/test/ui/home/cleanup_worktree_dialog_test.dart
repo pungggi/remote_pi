@@ -55,6 +55,9 @@ void main() {
     // The safety story must be visible before the user taps Delete.
     expect(find.textContaining('Uncommitted'), findsOneWidget);
     expect(find.textContaining('refused by git'), findsOneWidget);
+    // PR #70 review: after cleanup the keeper may resurrect the tile as an
+    // archive entry (transcripts survive) — say so up front.
+    expect(find.textContaining('archive'), findsOneWidget);
   });
 
   testWidgets('Cancel resolves false, Delete resolves true', (tester) async {

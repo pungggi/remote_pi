@@ -11,6 +11,13 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Offline" tab snapped back to "Online"**: every session metadata change
+  re-persists the rooms cache, which reloaded the Home list and silently reset
+  the selected filter tab to its default. The selected tab now survives
+  reloads; only a fresh app start starts on "Online".
+
 ### Added
 
 - **Clean up dead sessions (plan/148)**: long-press an offline tile and pick

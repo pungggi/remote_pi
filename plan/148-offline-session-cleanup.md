@@ -47,15 +47,50 @@ The gating below was an agent draft, not user-locked. Two rules changed:
   worktree may be cleaned; the leftover tile is removed with the plan/17
   "Delete session (local only)" entry.
 
+## Review round (PR #70, augmentcode — 7 findings, all fixed)
+
+0. **Device-review blocker found while testing this PR (user, 2026-10-24)**:
+   the "Offline" tab snapped back to "Online" — every non-identical
+   `room_announced` re-persists rooms, `PairingStorage` notifies, and
+   `HomeViewModel._load()` rebuilt the list with the default filter. Fixed by
+   preserving the selected tab across reloads; regression test added.
+1. **HIGH — menu open hijacked the shared connection**: `_showSessionMenu`
+   fetched the registry on open, routing peer + room away from the chat that
+   is visible in the tablet split view (its next send would misroute). Fixed
+   by removing the menu-open fetch entirely: the entry shows optimistically on
+   offline tiles; route + fetch + match happen at TAP time
+   (`findWorktreeFor`), where the modal barrier blocks the chat. The cached
+   registry refines visibility once known (`mayOfferCleanup`).
+2. **HIGH — race guard only re-checked the long-pressed room**: another room
+   sharing the folder could go live during the confirmation. The execute-time
+   guard now checks EVERY same-peer session at or inside the worktree path
+   (`_liveWorktreeOwner`); git refuses dirty trees, not busy agents, so
+   liveness is the real protection.
+3. **HIGH — exact-path ownership missed nested cwds**: a live session in
+   `<worktree>/packages/foo` dies with the folder just the same. Ownership now
+   uses path containment (`_insideWorktree`: equal or prefix + `/`).
+4. **MEDIUM — tile resurrection after cleanup**: `deleteRoom` is phone-local;
+   the keeper + `.jsonl` transcripts survive (by design, plan/140), so the
+   session may reappear as an archive tile. Documented in the dialog copy;
+   a PC-side `forget_room` action is the real fix (see Next plans).
+5. **MEDIUM — cross-peer ownership**: a live room on PC B with the same
+   absolute path blocked cleanup on PC A. Ownership checks are same-peer now.
+6. **MEDIUM — keeper rooms were valid dispatch targets**: their connection is
+   relay-live but they only serve `session_sync`, so an action dispatched
+   there would time out instead of reaching the live-room fallback.
+   `_actionRoomFor` skips keeper rooms everywhere.
+7. **MEDIUM — sheet overflow on small screens**: the menu Column is wrapped
+   in a `SingleChildScrollView` now.
+
 ## Expected structure
 
 All UI-side work lives in `app/lib/ui/home/` (menu + dialog + viewmodel);
 the heavy lifting (matching, action) reuses existing plumbing:
 
-- **Match:** fetch `listWorktrees` (live peer link — the daemon answers even
-  for dead rooms) and match `entry.path == room.cwd`. Only a matching entry
-  enables the menu item; a session whose cwd is the main checkout (or an
-  unregistered folder) gets no cleanup option.
+- **Match:** `listWorktrees` is fetched at TAP time, never on menu open
+  (review finding 1), and matched against `entry.path == room.cwd` with
+  separator/trailing-slash normalization. A session in the main checkout (or
+  an unregistered folder) gets an informational toast instead of a dialog.
 - **Gating:** offered only when the room is offline AND the folder is a
   registry match AND no other LIVE session owns that folder. Keeper mirrors
   count as offline, so they are eligible (see the implementation decisions).
@@ -77,17 +112,16 @@ the heavy lifting (matching, action) reuses existing plumbing:
 
 ## Steps
 
-1. [x] HomeViewModel: `refreshWorktrees(epk, targetRoomId)` (routed like
-   plan/108, dispatched to the device daemon), `worktreeMatchFor(item)`,
-   `canCleanupWorktree(item)`, `cleanupWorktree(...)`.
-2. [x] `home_page.dart` long-press sheet: cleanup entry under "Open terminal",
-   rendered by a scoped `FutureBuilder` so the menu opens instantly and the
-   entry appears when the registry lands. Red `folderX` icon.
+1. [x] HomeViewModel: `findWorktreeFor` (tap-time route + fetch + match),
+   `mayOfferCleanup` (offline + cached-registry refinement),
+   `cleanupWorktree(...)` with the full live-owner guard.
+2. [x] `home_page.dart` long-press sheet: cleanup entry on offline tiles,
+   scrollable sheet, tap-time validation in `_deleteWorktree`.
 3. [x] Cleanup dialog widget + wiring to the repository.
-4. [x] Tests: gating matrix (offline/keeper/live/no-match/no-fetch/duplicate
-   dead/duplicate live), execution (success removes the tile, git refusal
-   keeps it, revive-race aborts, unreachable PC throws), dialog copy +
-   confirm semantics.
+4. [x] Tests: gating (optimistic entry, live, keeper, cache refinement,
+   keeper-skip routing), execution (success, git refusal, revive race,
+   live owner at root/nested, cross-peer non-block, mid-dialog revival,
+   unreachable PC), dialog copy + confirm semantics.
 
 ### Acceptance criteria
 
@@ -113,3 +147,6 @@ the heavy lifting (matching, action) reuses existing plumbing:
 
 - `--force` passthrough for dirty worktrees (`git worktree remove --force`).
 - Batch mode: "clean every offline worktree whose branch is merged".
+- PC-side `forget_room`: prune the rooms registry (and optionally the keeper
+  connection) so a cleaned session cannot reappear as an archive tile — the
+  app-side delete is phone-local only (review finding 4).

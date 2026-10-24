@@ -196,6 +196,15 @@ class HomeViewModel extends ViewModel<HomeState> {
       emit(const HomeNoPeer());
       return;
     }
+    // Bug 2026-10-24 — preserve the user's tab across reloads. EVERY
+    // PairingStorage write (each non-identical room_announced persists rooms)
+    // lands here via _onStorageChanged, and a fresh HomeList used to reset
+    // the filter to its `online` default — tapping "Offline" snapped back
+    // within seconds while any session was active or a keeper cycled. The
+    // filter is a view preference, not data; only the very first load
+    // (state is still HomeLoading) starts on the default tab.
+    final current = state;
+    final filter = current is HomeList ? current.filter : HomeFilter.online;
     // Make sure the relay is pushing updates for everyone we know about;
     // the call is idempotent so this is safe even mid-session. The same
     // subscribe also covers rooms (plan 17 — replay block in
@@ -207,6 +216,7 @@ class HomeViewModel extends ViewModel<HomeState> {
         statusByEpk: _conn.presenceSnapshot,
         roomsByPeer: _conn.roomsSnapshot,
         gitByKey: _gitByKey,
+        filter: filter,
       ),
     );
     // Plan/107b — seed the active session's git snapshot now that the
@@ -408,83 +418,67 @@ class HomeViewModel extends ViewModel<HomeState> {
   // ---- Plan/148 — offline worktree cleanup ---------------------------------
 
   /// Plan/148 — tracked worktrees per peer, keyed by the RAW epk (the value
-  /// the UI holds, not the wire encoding). Filled by [refreshWorktrees] when
-  /// the long-press sheet opens. Absent = "never fetched", which always hides
-  /// the cleanup entry: a stale list must never enable a destructive action.
+  /// the UI holds, not the wire encoding). Filled ONLY by [findWorktreeFor]
+  /// at tap time: opening the long-press menu must never route the shared
+  /// connection, or the next send of the chat visible in the tablet split
+  /// view would go to whatever room the fetch was routed to (PR #70 review).
+  /// Absent = unknown, and the menu offers the entry optimistically — tap-time
+  /// validation filters untracked folders out with a toast.
   final Map<String, List<WireWorktree>> _worktreesByEpk = {};
 
-  /// Plan/148 — the tracked worktree whose folder IS this session's cwd, or
-  /// `null` when nothing was fetched or the folder is not a registered
-  /// worktree (the main checkout, or a folder created outside Piper).
-  WireWorktree? worktreeMatchFor(HomeItem it) {
+  /// Plan/148 — should the long-press sheet offer "Delete worktree & branch"?
+  ///
+  /// - **Offline only**: an online room's worktree is busy; keeper-held rooms
+  ///   count as offline (history mirrors, see [_roomOnline]).
+  /// - **Registry cache refines, never gates**: once the peer's registry has
+  ///   been fetched (any earlier cleanup attempt), a missing match hides the
+  ///   entry. With no cache we cannot know without routing the connection —
+  ///   so the entry shows and [findWorktreeFor] decides at tap time.
+  bool mayOfferCleanup(HomeItem it) {
+    if (_roomOnline(it.peer.remoteEpk, it.room)) return false;
     final list = _worktreesByEpk[it.peer.remoteEpk];
-    if (list == null) return null;
-    final cwd = it.room.cwd;
-    if (cwd == null || cwd.isEmpty) return null;
+    if (list == null) return true; // unknown — let tap time decide
+    return _cachedMatchFor(it.peer.remoteEpk, it.room.cwd) != null;
+  }
+
+  /// The tracked worktree whose folder IS [cwd], from the cached registry
+  /// (cache-miss safe: returns null when the peer was never fetched).
+  WireWorktree? _cachedMatchFor(String epk, String? cwd) {
+    final list = _worktreesByEpk[epk];
+    if (list == null || cwd == null || cwd.isEmpty) return null;
     for (final w in list) {
       if (_samePath(w.path, cwd)) return w;
     }
     return null;
   }
 
-  /// Plan/148 — may the long-press sheet offer "Delete worktree & branch"?
+  /// Plan/148 — tap-time resolution for the cleanup entry: route to the peer
+  /// (see [_routeToPeer]), fetch the tracked-worktree registry and return the
+  /// entry whose folder IS the session's cwd, or `null` when that folder is
+  /// not tracked (main checkout / created outside Piper). This is the FIRST
+  /// moment the shared connection may be touched; the caller keeps the modal
+  /// dialog barrier up from here on, so the visible chat cannot send into a
+  /// misrouted room.
   ///
-  /// - **Tracked worktree only**: a session sitting in the main checkout (or
-  ///   an unregistered folder) has no worktree to remove; deleting the main
-  ///   checkout is never what the user means.
-  /// - **No live agent**: an online room's worktree is busy, the remove would
-  ///   yank the folder out from under a running session. Keeper-held rooms
-  ///   count as offline (they are history mirrors, see [_roomOnline]).
-  /// - **Not in use elsewhere**: another session pointing at the same folder
-  ///   means the worktree belongs to more than one session; removing it would
-  ///   break that one too. Only LIVE rooms block (user decision
-  ///   2026-10-23): two dead duplicates in the same worktree may be cleaned.
-  bool canCleanupWorktree(HomeItem it) {
-    if (_roomOnline(it.peer.remoteEpk, it.room)) return false;
-    final match = worktreeMatchFor(it);
-    if (match == null) return false;
-    final s = state;
-    if (s is! HomeList) return false;
-    for (final other in s.items(normalizeEpk: normalizeEpkForLookup)) {
-      if (other.peer.remoteEpk == it.peer.remoteEpk &&
-          other.room.roomId == it.room.roomId) {
-        continue; // the tile being cleaned
-      }
-      if (_samePath(other.room.cwd, match.path) &&
-          _roomOnline(other.peer.remoteEpk, other.room)) {
-        return false; // a live session still owns this folder
-      }
+  /// Throws [ActionFailure] when the PC cannot be reached.
+  Future<WireWorktree?> findWorktreeFor({
+    required String epk,
+    required String roomId,
+  }) async {
+    await _routeToPeer(epk);
+    if (_disposed) return null;
+    final room = _actionRoomFor(epk, roomId);
+    if (room == null) {
+      throw ActionFailure(
+        'Could not reach ${_peerLabelForError()}. Start the Cockpit or Pi on '
+        'that computer (the supervisor must be running).',
+      );
     }
-    return true;
-  }
-
-  /// Plan/148 — fetch the peer's tracked worktrees into the cache read by
-  /// [worktreeMatchFor] / [canCleanupWorktree].
-  ///
-  /// The daemon answers on the LIVE peer link even while the session's own
-  /// room is dead, which is exactly the offline case cleanup targets. The
-  /// action channel is active-peer-scoped, so this routes to [epk] first,
-  /// like [openTerminal]. A failure (unreachable PC, no supervisor) DROPS the
-  /// cached list: the sheet then offers no entry instead of acting on stale
-  /// data, and the user sees the ordinary "can't reach the computer" toast
-  /// only when they actually try to clean something.
-  Future<void> refreshWorktrees(String epk, {String targetRoomId = ''}) async {
-    if (_disposed) return;
-    try {
-      await _routeToPeer(epk);
-      if (_disposed) return;
-      final room = _actionRoomFor(epk, targetRoomId);
-      if (room == null) {
-        _worktreesByEpk.remove(epk);
-        return;
-      }
-      _conn.switchRoom(room);
-      final list = await _actions.listWorktrees();
-      if (_disposed) return;
-      _worktreesByEpk[epk] = list;
-    } on Object {
-      if (!_disposed) _worktreesByEpk.remove(epk);
-    }
+    _conn.switchRoom(room);
+    final list = await _actions.listWorktrees();
+    if (_disposed) return null;
+    _worktreesByEpk[epk] = list;
+    return _cachedMatchFor(epk, _roomOf(epk, roomId)?.cwd);
   }
 
   /// Plan/148 — remove the worktree + branch behind an OFFLINE session and,
@@ -494,27 +488,32 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// On failure nothing is touched: `git worktree remove` refuses a dirty
   /// tree, the registry entry survives, and the room record stays so the user
   /// can retry after committing/stashing. Throws [ActionFailure] when the PC
-  /// cannot be reached; a git refusal comes back as `ok:false` with the
-  /// server's message.
+  /// cannot be reached or a live session still anchors the folder; a git
+  /// refusal comes back as `ok:false` with the server's message.
   Future<RemoveWorktreeResult> cleanupWorktree({
     required String epk,
     required String roomId,
-    required String worktreeId,
+    required WireWorktree worktree,
   }) async {
     await _routeToPeer(epk);
     if (_disposed) throw const ActionFailure('cancelled');
-    // Race guard: the tile was offline when the sheet opened, but the session
-    // may have come back (revive, supervisor restart) while the dialog was
-    // open. Removing a live session's folder is never right.
-    for (final it in _allItems()) {
-      if (it.peer.remoteEpk == epk && it.room.roomId == roomId) {
-        if (_roomOnline(epk, it.room)) {
-          throw const ActionFailure(
-            'This session is running again — nothing was removed.',
-          );
-        }
-        break;
-      }
+    // Race guard (PR #70 review): the tile was offline at tap time, but any
+    // session may have come back while the dialog was open. Git happily
+    // removes a CLEAN worktree an agent is using — liveness, not dirtiness,
+    // is what protects here — so re-check EVERY same-peer session anchored at
+    // or under the worktree folder, not just the tile that was long-pressed.
+    final liveOwner = _liveWorktreeOwner(
+      epk,
+      worktree,
+      exceptRoomId: roomId,
+    );
+    if (liveOwner != null) {
+      throw ActionFailure(
+        liveOwner == roomId
+            ? 'This session is running again — nothing was removed.'
+            : 'Another session on this computer is using this folder — '
+                'nothing was removed.',
+      );
     }
     final room = _actionRoomFor(epk, roomId);
     if (room == null) {
@@ -524,16 +523,39 @@ class HomeViewModel extends ViewModel<HomeState> {
       );
     }
     _conn.switchRoom(room);
-    final res = await _actions.removeWorktree(worktreeId);
+    final res = await _actions.removeWorktree(worktree.id);
     if (_disposed) return res;
     if (res.ok) {
       // Folder + branch are gone on the PC: forget the cached list (the next
-      // sheet open refetches) and drop the phone-side record so the tile goes
+      // attempt refetches) and drop the phone-side record so the tile goes
       // away immediately instead of lingering as a dead entry.
       _worktreesByEpk.remove(epk);
       await deleteRoom(epk, roomId);
     }
     return res;
+  }
+
+  /// Plan/148 — the roomId of a LIVE same-peer session whose cwd is the
+  /// worktree root or anywhere INSIDE it (a session running in
+  /// `<worktree>/packages/foo` dies with the folder just as surely as one at
+  /// the root — PR #70 review), or null. [exceptRoomId] (the tile being
+  /// cleaned) is checked too, but reported separately so the UI can say
+  /// "this session" vs "another session". Cross-peer rooms with identical
+  /// paths are unrelated folders on other computers and never block.
+  String? _liveWorktreeOwner(
+    String epk,
+    WireWorktree worktree, {
+    required String exceptRoomId,
+  }) {
+    for (final it in _allItems()) {
+      if (it.peer.remoteEpk != epk) continue;
+      if (!_roomOnline(epk, it.room)) continue;
+      final isTarget = it.room.roomId == exceptRoomId;
+      if (isTarget || _insideWorktree(it.room.cwd, worktree.path)) {
+        return it.room.roomId;
+      }
+    }
+    return null;
   }
 
   /// Plan/148 — route the action channel to [epk]: switch peer when needed and
@@ -559,17 +581,31 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// device daemon (plan/120) is the first choice: it runs even when every
   /// session room is dead, which is the offline-cleanup case. Then the
   /// target room itself, then any live room of that peer (the same handlers
-  /// run in every pi-extension). `null` = nobody can answer, so the caller
-  /// fails fast instead of waiting out the dispatch timeout.
+  /// run in every pi-extension). Keeper-held rooms are skipped everywhere:
+  /// their connection is relay-live but they only serve `session_sync`, so an
+  /// action dispatched there would time out instead of reaching the fallback
+  /// (PR #70 review). `null` = nobody can answer, so the caller fails fast
+  /// instead of waiting out the dispatch timeout.
   String? _actionRoomFor(String epk, String targetRoomId) {
     if (_conn.isRoomLive(epk, kDeviceRoom)) return kDeviceRoom;
-    if (targetRoomId.isNotEmpty && _conn.isRoomLive(epk, targetRoomId)) {
-      return targetRoomId;
-    }
+    String? fallback;
     for (final it in _allItems()) {
-      if (it.peer.remoteEpk != epk) continue;
-      if (it.room.roomId == targetRoomId) continue;
-      if (_conn.isRoomLive(epk, it.room.roomId)) return it.room.roomId;
+      if (it.peer.remoteEpk != epk || it.room.keeper) continue;
+      if (it.room.roomId == targetRoomId) {
+        if (_conn.isRoomLive(epk, it.room.roomId)) return it.room.roomId;
+        continue;
+      }
+      if (fallback == null && _conn.isRoomLive(epk, it.room.roomId)) {
+        fallback = it.room.roomId;
+      }
+    }
+    return fallback;
+  }
+
+  /// The cached room record for `(epk, roomId)`, or null.
+  RoomInfo? _roomOf(String epk, String roomId) {
+    for (final it in _allItems()) {
+      if (it.peer.remoteEpk == epk && it.room.roomId == roomId) return it.room;
     }
     return null;
   }
@@ -609,6 +645,22 @@ class HomeViewModel extends ViewModel<HomeState> {
       p = p.substring(0, p.length - 1);
     }
     return p;
+  }
+
+  /// Plan/148 — `true` when [child] IS [parent] or lives somewhere inside it
+  /// (`/w1/packages/foo` dies with `/w1`). Same separator/case rules as
+  /// [_samePath].
+  static bool _insideWorktree(String? child, String parent) {
+    final c = _normalizePath(child);
+    final p = _normalizePath(parent);
+    if (c.isEmpty || p.isEmpty) return false;
+    final windows = RegExp(r'^[a-zA-Z]:/');
+    if (windows.hasMatch(c) && windows.hasMatch(p)) {
+      final cl = c.toLowerCase();
+      final pl = p.toLowerCase();
+      return cl == pl || cl.startsWith('$pl/');
+    }
+    return c == p || c.startsWith('$p/');
   }
 
   /// Plan/108 — open a terminal (worktree + `pi` tab) for a specific
