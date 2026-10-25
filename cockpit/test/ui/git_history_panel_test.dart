@@ -254,10 +254,19 @@ void main() {
     expect(find.text('Untitled commit'), findsOneWidget);
   });
 
-  testWidgets('uses the singular form for one day ago', (tester) async {
-    final fortySevenHoursAgo = DateTime.now().subtract(
-      const Duration(hours: 47),
+  testWidgets('formats one elapsed day across DST transitions', (tester) async {
+    final now = DateTime.now();
+    final fortySevenHoursAgo = now.subtract(const Duration(hours: 47));
+    final commitDay = DateTime(
+      fortySevenHoursAgo.year,
+      fortySevenHoursAgo.month,
+      fortySevenHoursAgo.day,
     );
+    // On a 25-hour day, 47 elapsed hours can still fall on calendar
+    // yesterday. The widget intentionally prefers that calendar label.
+    final expected = commitDay == DateTime(now.year, now.month, now.day - 1)
+        ? 'yesterday'
+        : '1d ago';
     await tester.pumpWidget(
       host(
         GitHistoryPanel(
@@ -282,6 +291,6 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.textContaining('1d ago'), findsOneWidget);
+    expect(find.textContaining(expected), findsOneWidget);
   });
 }
