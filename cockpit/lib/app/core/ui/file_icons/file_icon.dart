@@ -1,4 +1,5 @@
 import 'package:cockpit/app/core/ui/file_icons/file_icon_map.g.dart';
+import 'package:cockpit/app/core/utils/workspace_env.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
@@ -11,11 +12,17 @@ import 'package:flutter_svg/flutter_svg.dart';
 /// Extensões do Cockpit que o material-icon-theme não conhece (o mapa `.g` é
 /// gerado — overrides manuais moram aqui). `.dbq` = arquivo de query da DB
 /// tab (plano 51); `.http`/`.rest` = arquivo de request da HTTP tab (o SVG
-/// existe nos assets, mas o mapa gerado não associa a extensão a ele).
+/// existe nos assets, mas o mapa gerado não associa a extensão a ele);
+/// `.kanban` = quadro de cards da tab de kanban.
 const Map<String, String> _extensionOverrides = {
   'dbq': 'database',
+  'kanban': 'todo',
   'http': 'http',
   'rest': 'http',
+  // Caderno: SVG nosso (tile preto, bloco de notas branco), não do tema.
+  'notebook': 'cockpit-notebook',
+  // Painel HTML vivo (plano 67): SVG nosso, janela com play.
+  'panel': 'cockpit-panel',
 };
 
 String fileIconName(String fileName) {
@@ -73,10 +80,9 @@ class FileTypeIcon extends StatelessWidget {
   const FileTypeIcon.folder(
     this.name, {
     super.key,
-    bool open = false,
+    this._open = false,
     this.size = 16,
-  }) : _isFolder = true,
-       _open = open;
+  }) : _isFolder = true;
 
   /// Nome do arquivo ou da pasta (basename, não o caminho).
   final String name;
@@ -86,9 +92,15 @@ class FileTypeIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // `.ckp` (layout de orquestração) usa o logo do próprio Cockpit — não é
-    // um tipo que o material-icon-theme conheça.
-    if (!_isFolder && name.toLowerCase().endsWith('.ckp')) {
+    // `.ckp` (layout), `.env.cockpit` (env do workspace) e a pasta `.cockpit/`
+    // (config) usam o logo do próprio
+    // Cockpit — não são tipos que o material-icon-theme conheça. O `.notebook`
+    // tem SVG próprio via `_extensionOverrides` (a árvore o renderiza como
+    // arquivo, então cai em `fileIconName`).
+    final lower = name.toLowerCase();
+    if (lower.endsWith('.ckp') ||
+        lower == kWorkspaceEnvFileName ||
+        (_isFolder && lower == '.cockpit')) {
       return Image.asset(
         'assets/branding/cockpit_logo.png',
         width: size,

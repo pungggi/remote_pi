@@ -4,7 +4,9 @@ import 'dart:convert';
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_gateway.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_scrollback_store.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_status_server.dart';
+import 'package:cockpit/app/core/data/diagnostics/performance_diagnostics.dart';
 import 'package:cockpit/app/core/domain/entities/harness.dart';
+import 'package:cockpit/app/core/terminal/secret_redactor.dart';
 import 'package:cockpit/app/cockpit/domain/services/terminal_harness_monitor.dart';
 import 'package:cockpit/app/core/domain/entities/terminal_profile.dart';
 import 'package:cockpit/i18n/strings.g.dart';
@@ -12,6 +14,7 @@ import 'package:cockpit/app/core/domain/entities/app_settings.dart';
 import 'package:cockpit/app/core/terminal/terminal_controller.dart';
 import 'package:cockpit/app/core/terminal/pty_output_scheduler.dart';
 import 'package:cockpit/app/core/utils/quiet_period_debouncer.dart';
+import 'package:cockpit/app/core/utils/bounded_text_buffer.dart';
 import 'package:cockpit/app/cockpit/ui/session/pane_item.dart';
 import 'package:cockpit/app/cockpit/ui/session/terminal_input.dart';
 import 'package:flutter/foundation.dart';
@@ -31,18 +34,18 @@ class TerminalSession extends PaneItem {
     required this.id,
     required this.projectId,
     required this.workingDirectory,
-    required TerminalGateway gateway,
+    required this._gateway,
     required this.profile,
     String? title,
     Map<String, String> spawnEnv = const <String, String>{},
+    Iterable<String> redactSecrets = const <String>[],
     TerminalScrollbackStore? scrollbackStore,
     String? replay,
     String? startupCommand,
     TerminalEngine engine = TerminalEngine.xterm,
-    TerminalHarnessMonitor? monitor,
-  }) : _gateway = gateway,
-       _scrollback = scrollbackStore,
-       _monitor = monitor,
+    this._monitor,
+  }) : _scrollback = scrollbackStore,
+       _redactor = SecretRedactor(redactSecrets),
        _title = title ?? 'New terminal' {
     // O `ShiftEnterInputHandler` (antes do padrão) faz Shift+Enter virar quebra
     // de linha nos harnesses (claude, codex, pi) em vez de submeter; ele lê o
@@ -54,6 +57,9 @@ class TerminalSession extends PaneItem {
         defaultInputHandler,
       ]),
     );
+    if (PerformanceDiagnostics.instance.enabled) {
+      _firstOutputClock = Stopwatch()..start();
+    }
 
     // Replay do scrollback salvo (restauração): entra na fila ANTES de subir o
     // shell, então a saída viva nasce logo abaixo. No Ghostty a fila só é
@@ -91,6 +97,15 @@ class TerminalSession extends PaneItem {
     _coalescer = PtyOutputCoalescer(
       onAcknowledge: _gateway.acknowledgeOutput,
       onFlush: (batch) {
+        final firstOutputClock = _firstOutputClock;
+        if (firstOutputClock != null) {
+          _firstOutputClock = null;
+          PerformanceDiagnostics.instance.record(
+            PerfMetric.terminalFirstOutput,
+            {PerfField.durationUs: firstOutputClock.elapsedMicroseconds},
+            force: true,
+          );
+        }
         _kitty.feed(batch); // observa push/pop do kitty antes de renderizar.
         terminal.write(batch);
         _record(batch); // grava o scrollback pra replay no próximo boot.
@@ -100,10 +115,28 @@ class TerminalSession extends PaneItem {
         _kickHarnessMonitor();
       },
     );
-    _sub = _gateway.output
-        .cast<List<int>>()
-        .transform(const Utf8Decoder(allowMalformed: true))
-        .listen(_coalescer.add);
+    _coalescer.visible = false; // a view ainda não foi montada
+    // Redação dos valores do `.env.cockpit` ANTES do coalescer: cobre tela,
+    // scrollback gravado e `read-tab` de uma vez. Sem segredos é passthrough.
+    final decoded = _gateway.output.cast<List<int>>().transform(
+      const Utf8Decoder(allowMalformed: true),
+    );
+    // Sempre pelo filtro (passthrough quando vazio): o workspace remoto só
+    // conhece seus segredos depois do spawn, via [updateRedaction].
+    _sub = decoded
+        .map(_redactor.feed)
+        .where((s) => s.isNotEmpty)
+        .listen(
+          _coalescer.add,
+          onDone: () {
+            final tail = _redactor.flush();
+            if (tail.isNotEmpty) _coalescer.add(tail);
+            // Fim do stream = processo encerrado (o PTY local fecha a porta no
+            // exit; o sidecar fecha no `PtyExitEvent`). No `dispose` fomos nós
+            // que matamos — aí não é notícia pra ninguém.
+            if (!_disposed) onProcessExit?.call();
+          },
+        );
     terminal.onOutput = (data) {
       final text = utf8.decode(data, allowMalformed: true);
       _maybeInterrupt(text);
@@ -113,7 +146,12 @@ class TerminalSession extends PaneItem {
         _kickHarnessMonitor(burst: true);
       }
     };
-    terminal.onResize = (columns, rows) => _gateway.resize(rows, columns);
+    terminal.onResize = (columns, rows) {
+      _viewportColumns = columns;
+      _viewportRows = rows;
+      if (!_firstViewportResize.isCompleted) _firstViewportResize.complete();
+      _gateway.resize(rows, columns);
+    };
     // Programas mudam o título da janela via OSC 0/2 (ex.: shell mostra o cwd,
     // `vim`/`ssh` mostram o arquivo/host). Refletimos isso no nome da aba.
     terminal.onTitleChanged = (osc) {
@@ -155,6 +193,43 @@ class TerminalSession extends PaneItem {
   /// pra persistir o cwd vivo no layout — assim o restore sobe o shell onde o
   /// usuário parou, não no cwd inicial da aba.
   VoidCallback? onCwdChanged;
+
+  /// Disparado quando o processo do PTY termina por conta própria (não pelo
+  /// [dispose]). Uma aba de shell fica na tela mostrando o terminal morto; a do
+  /// Neovim é assinada pela VM e fecha junto com o `:q`.
+  VoidCallback? onProcessExit;
+
+  bool _disposed = false;
+
+  int? _viewportColumns;
+  int? _viewportRows;
+  final Completer<void> _firstViewportResize = Completer<void>();
+
+  /// Última grade medida pela view, sem recorrer ao tamanho inicial da PTY.
+  ({int columns, int rows})? get viewportSize {
+    final columns = _viewportColumns;
+    final rows = _viewportRows;
+    if (columns == null || rows == null) return null;
+    return (columns: columns, rows: rows);
+  }
+
+  /// Reaplica à PTY a grade efetivamente medida pela view.
+  ///
+  /// TUIs podem nascer na grade provisória 80x25 antes do primeiro layout. Ao
+  /// reativar uma aba, a view também pode ter sido redimensionada enquanto
+  /// estava desmontada. Esperar a primeira medida e repeti-la elimina ambos os
+  /// casos sem depender de um segundo resize do usuário.
+  Future<void> synchronizeViewport() async {
+    if (_viewportColumns == null || _viewportRows == null) {
+      await _firstViewportResize.future.timeout(
+        const Duration(milliseconds: 500),
+        onTimeout: () {},
+      );
+    }
+    final columns = _viewportColumns;
+    final rows = _viewportRows;
+    if (columns != null && rows != null) _gateway.resize(rows, columns);
+  }
 
   TerminalStatus _status = TerminalStatus.idle;
   TerminalStatus get status => _status;
@@ -306,7 +381,16 @@ class TerminalSession extends PaneItem {
   final TerminalGateway _gateway;
   final TerminalHarnessMonitor? _monitor;
   final KittyKeyboardTracker _kitty = KittyKeyboardTracker();
+
+  /// Troca os valores do `.env.cockpit` por `***` na saída (ver
+  /// [SecretRedactor]). Vazio quando o workspace não tem segredos.
+  final SecretRedactor _redactor;
+
+  /// Segredos conhecidos depois do spawn (workspace remoto: o `.env.cockpit`
+  /// é lido no host pelo gateway, já com a aba viva).
+  void updateRedaction(Iterable<String> secrets) => _redactor.update(secrets);
   late final PtyOutputCoalescer _coalescer;
+  Stopwatch? _firstOutputClock;
 
   // --- Persistência do scrollback (replay no próximo boot) --------------------
   // Grava a saída DECODIFICADA (após o `Utf8Decoder` em streaming → sem cortar
@@ -314,7 +398,9 @@ class TerminalSession extends PaneItem {
   // da frente de uma vez (trim amortizado). Só main-screen — enquanto em
   // alt-screen (TUI: vim/lazygit), a saída é efêmera e NÃO entra no registro.
   final TerminalScrollbackStore? _scrollback;
-  final StringBuffer _record0 = StringBuffer();
+  late final BoundedTextBuffer _record0 = BoundedTextBuffer(
+    maxLength: _kMaxRecordChars,
+  );
   int _altDepth = 0;
   late final QuietPeriodDebouncer _saveDebounce = QuietPeriodDebouncer(
     delay: const Duration(seconds: 1),
@@ -428,13 +514,7 @@ class TerminalSession extends PaneItem {
     // tocou alt-screen → descarta chunk.
     if (!wasMain || _altDepth != 0) return;
 
-    _record0.write(data);
-    if (_record0.length > _kMaxRecordChars) {
-      final s = _record0.toString();
-      _record0
-        ..clear()
-        ..write(s.substring(s.length - (_kMaxRecordChars * 3 ~/ 4)));
-    }
+    _record0.add(data);
     _saveDebounce.trigger();
   }
 
@@ -453,7 +533,7 @@ class TerminalSession extends PaneItem {
       return;
     }
     _lastHarnessKickAt = now;
-    monitor.requestPoll();
+    monitor.requestPoll(sessionId: id, urgent: burst);
 
     if (!burst) return;
     for (final t in _harnessKickTimers) {
@@ -467,8 +547,15 @@ class TerminalSession extends PaneItem {
           Duration(milliseconds: 120),
           Duration(milliseconds: 280),
         ])
-          Timer(delay, monitor.requestPoll),
+          Timer(delay, () => monitor.requestPoll(sessionId: id, urgent: true)),
       ]);
+  }
+
+  /// Atualiza apenas a prioridade de observação do harness. O PTY e os
+  /// processos nunca são pausados quando a aba/workspace fica oculto.
+  void setVisible(bool visible) {
+    _coalescer.visible = visible;
+    _monitor?.setSessionVisible(id, visible);
   }
 
   /// Atualiza [_cwd] a partir de OSC 7 no chunk. Pega a ÚLTIMA ocorrência (o
@@ -485,6 +572,11 @@ class TerminalSession extends PaneItem {
     onCwdChanged?.call();
   }
 
+  /// Scrollback gravado até agora (main-screen apenas), no mesmo formato que
+  /// vai pro store. O reinício da aba usa como `replay` da sessão nova sem
+  /// esperar o flush em disco.
+  String get scrollbackSnapshot => _record0.toString();
+
   Future<void> _flush() async {
     final store = _scrollback;
     if (store == null) return;
@@ -497,6 +589,7 @@ class TerminalSession extends PaneItem {
 
   @override
   Future<void> dispose() async {
+    _disposed = true;
     _monitor?.unregisterSession(id);
     _notifyDebounce?.cancel();
     _saveDebounce.dispose();

@@ -213,6 +213,12 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cockpit.desktop"
   RENAME "${APPLICATION_ID}.desktop"
   COMPONENT Runtime)
 
+# Tipos de arquivo do Cockpit (.kanban/.ckp/.dbq/.http) pro "Abrir com" do
+# gerenciador de arquivos — o .desktop acima declara os MimeType.
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/${APPLICATION_ID}.xml"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/share/mime/packages"
+  COMPONENT Runtime)
+
 foreach(icon_size 64 128 256 512 1024)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/runner/resources/app_icon_${icon_size}.png"
     DESTINATION "${CMAKE_INSTALL_PREFIX}/share/icons/hicolor/${icon_size}x${icon_size}/apps"
@@ -258,6 +264,10 @@ add_custom_command(
           "${CMAKE_BINARY_DIR}/server-out/bundle" "${COCKPIT_SERVER_DIR}"
   COMMAND "${CMAKE_COMMAND}" -E rename
           "${COCKPIT_SERVER_DIR}/bin/cockpit_server" "${COCKPIT_SERVER_EXE}"
+  # Dart >= 3.14: o snapshot lib/libdartaot<nome>.so segue o nome do exe
+  # (ver rename_server_snapshot.cmake); no-op em Dart mais antigo.
+  COMMAND "${CMAKE_COMMAND}" -DBUNDLE_DIR=${COCKPIT_SERVER_DIR}
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/rename_server_snapshot.cmake"
   # A lib do PTY vai ao LADO do exe do servidor: é o 2º candidato do
   # openPtyDylib (o 1º é a env COCKPIT_PTY_DYLIB, que o sidecar preenche).
   # Reusa o artefato do plugin em vez de compilar o mesmo .c duas vezes.

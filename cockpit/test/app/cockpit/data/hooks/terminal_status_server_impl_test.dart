@@ -31,12 +31,21 @@ void main() {
         reason: 'endpoint file must exist after start()');
 
     final doc = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+    File? cliFile;
     if (Platform.isWindows) {
       expect(doc['port'], isA<int>());
       expect(doc['token'], isA<String>());
       // Published port/token must be exactly what the PTYs get via hookEnv.
       expect(srv.hookEnv['COCKPIT_STATUS_PORT'], doc['port'].toString());
       expect(srv.hookEnv['COCKPIT_STATUS_TOKEN'], doc['token']);
+      cliFile = File(
+        '${home.path}/.cockpit/status${kDebugMode ? '-debug' : ''}.json',
+      );
+      expect(await cliFile.exists(), isTrue);
+      final cliDoc = jsonDecode(await cliFile.readAsString())
+          as Map<String, dynamic>;
+      expect(cliDoc['port'], doc['port']);
+      expect(cliDoc['tok'], doc['token']);
     } else {
       expect(doc['sock'], isA<String>());
       expect(srv.hookEnv['COCKPIT_STATUS_SOCK'], doc['sock']);
@@ -45,5 +54,6 @@ void main() {
     await srv.stop();
     expect(await file.exists(), isFalse,
         reason: 'endpoint file must be removed on stop()');
+    if (cliFile != null) expect(await cliFile.exists(), isFalse);
   });
 }

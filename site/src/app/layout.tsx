@@ -25,40 +25,39 @@ const mono = JetBrains_Mono({
   display: "swap",
 });
 
-const siteTagline = "Piper — Your coding agents, in your pocket";
+const siteTagline =
+  "Piper Cockpit: a terminal that grew an IDE around your agents";
 const siteDescription =
-  "Pair your phone once, then drive any Pi coding agent from it — keep a fleet running 24/7 and link every machine into one mesh. Open source, relay on your own network.";
+  "Run Claude Code, Codex, Pi or anything else in real terminals, local or on any machine over SSH, with the viewer, diagnostics, git, worktrees and databases they need to work.";
 
-/// This fork has no deployed site and therefore no canonical domain. Next needs
-/// a parseable `metadataBase` to resolve relative OG image URLs, so it falls
-/// back to the dev server; whoever deploys sets NEXT_PUBLIC_SITE_URL. Pointing
-/// it at the upstream project's domain would attribute this fork's pages to
-/// someone else.
+// No canonical domain is deployed for this fork. Deployments can set the URL;
+// local builds must not attribute their OG images to the upstream project.
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: {
     default: siteTagline,
-    template: "%s · Piper",
+    template: "%s · Piper Cockpit",
   },
   description: siteDescription,
-  applicationName: "Piper",
+  applicationName: "Piper Cockpit",
   keywords: [
-    "Piper",
+    "Piper Cockpit",
+    "Cockpit",
     "coding agents",
-    "Pi coding agent",
-    "mobile agent control",
-    "24/7 agent daemon",
-    "agent mesh",
-    "self-hostable relay",
+    "multiplexed terminal",
+    "Claude Code",
+    "Codex CLI",
+    "remote development over SSH",
+    "agent IDE",
   ],
   openGraph: {
     type: "website",
     url: siteUrl,
     title: siteTagline,
     description: siteDescription,
-    siteName: "Piper",
+    siteName: "Piper Cockpit",
   },
   twitter: {
     card: "summary_large_image",

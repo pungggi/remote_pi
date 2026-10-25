@@ -8,6 +8,9 @@ enum AppThemeMode { system, light, dark }
 /// Motor VT usado por terminais criados daqui pra frente.
 enum TerminalEngine { ghostty, xterm }
 
+/// Motor usado para abrir arquivos de texto editáveis.
+enum FileEditorEngine { cockpit, neovim }
+
 /// Peso do traço da fonte do terminal.
 ///
 /// Existe porque a **mesma** fonte, no mesmo tamanho, tem peso aparente
@@ -41,6 +44,8 @@ class AppSettings {
     this.lspCommands = const <String, String>{},
     this.lspFormatters = const <String, String>{},
     this.formatOnSave = false,
+    this.closeTabOnShellExit = false,
+    this.fileEditorEngine = FileEditorEngine.cockpit,
     this.notificationsEnabled = true,
     this.soundEvents = const <SoundEvent, bool>{},
     this.soundOverrides = const <SoundEvent, String>{},
@@ -48,11 +53,11 @@ class AppSettings {
     this.soundVolume = 50,
     this.searchPanelHeight = 260,
     this.tasksPanelHeight = 200,
-    this.enableAgent = false,
     this.swapSidePanels = false,
     this.railVisible = false,
     this.treeVisible = false,
     this.showCockpit = true,
+    this.developerMode = false,
     this.launchAtStartup = false,
     this.defaultTerminalProfileId,
     this.terminalEngine = TerminalEngine.ghostty,
@@ -117,6 +122,14 @@ class AppSettings {
   /// Formatar automaticamente ao salvar (Cmd+S).
   final bool formatOnSave;
 
+  /// Fecha a aba quando o shell encerra sozinho (ex.: `exit`, Ctrl-D), em vez
+  /// de deixar um terminal morto na tela. Só vale para abas de shell.
+  final bool closeTabOnShellExit;
+
+  /// Motor global de arquivos comuns. Visualizações especializadas e arquivos
+  /// remotos continuam no Cockpit, independentemente desta preferência.
+  final FileEditorEngine fileEditorEngine;
+
   /// Disparar notificações do SO quando um agente termina um turno com a janela
   /// fora de foco. Editado na aba "Notifications" das Configurações.
   final bool notificationsEnabled;
@@ -134,8 +147,7 @@ class AppSettings {
 
   /// Tocar o som do evento **mesmo com a aba dele ativa** (janela focada).
   /// Ausente = `false`: aba ativa fica muda — o usuário já está olhando a
-  /// resposta/prompt. Só faz sentido pra `turnDone`/`actionRequired`
-  /// (`agentError` sempre toca).
+  /// resposta/prompt.
   final Map<SoundEvent, bool> soundOnActiveTab;
 
   /// Volume dos sons in-app, em % (0–100). Aplica a todos os eventos (default
@@ -151,12 +163,6 @@ class AppSettings {
 
   /// Altura (px) da área de lista do subpane de Tasks (redimensionável).
   final double tasksPanelHeight;
-
-  /// Habilita o suporte a **agentes** (abas de `pi`). Desligado por padrão em
-  /// instalações novas (experiência terminal-first); ligado por migração para
-  /// quem já usava agentes numa versão anterior (ver `HiveSettingsStore.load`).
-  /// Com ela desligada, o app não oferece criar aba de agente (só terminal).
-  final bool enableAgent;
 
   /// Troca os painéis laterais de lado: workspaces à direita, arquivos/busca/
   /// git/database à esquerda. Só a POSIÇÃO muda — largura, visibilidade e
@@ -176,6 +182,14 @@ class AppSettings {
   /// Persistido; migração liga automático para quem já usava (ver
   /// `HiveSettingsStore.load`).
   final bool showCockpit;
+
+  /// Modo desenvolvedor (plano 68): o próprio Cockpit vira um run na
+  /// Telemetria (erros globais, warnings) e as métricas de performance ligam.
+  /// Desligado por padrão: só serve a quem dá manutenção no app.
+  final bool developerMode;
+
+  /// Telemetria (plano 66): avisar o agente da aba quando surgem casos novos
+  /// no run dele, entregue só quando o turno termina.
 
   /// Inicia o Cockpit junto com o login do sistema (item de login do SO).
   /// Persistido; a aplicação real no SO é feita pelo [LaunchAtStartupService]
@@ -251,6 +265,8 @@ class AppSettings {
     Map<String, String>? lspCommands,
     Map<String, String>? lspFormatters,
     bool? formatOnSave,
+    bool? closeTabOnShellExit,
+    FileEditorEngine? fileEditorEngine,
     bool? notificationsEnabled,
     Map<SoundEvent, bool>? soundEvents,
     Map<SoundEvent, String>? soundOverrides,
@@ -258,11 +274,11 @@ class AppSettings {
     double? soundVolume,
     double? searchPanelHeight,
     double? tasksPanelHeight,
-    bool? enableAgent,
     bool? swapSidePanels,
     bool? railVisible,
     bool? treeVisible,
     bool? showCockpit,
+    bool? developerMode,
     bool? launchAtStartup,
     String? defaultTerminalProfileId,
     bool clearDefaultTerminalProfileId = false,
@@ -299,6 +315,8 @@ class AppSettings {
       lspCommands: lspCommands ?? this.lspCommands,
       lspFormatters: lspFormatters ?? this.lspFormatters,
       formatOnSave: formatOnSave ?? this.formatOnSave,
+      closeTabOnShellExit: closeTabOnShellExit ?? this.closeTabOnShellExit,
+      fileEditorEngine: fileEditorEngine ?? this.fileEditorEngine,
       notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
       soundEvents: soundEvents ?? this.soundEvents,
       soundOverrides: soundOverrides ?? this.soundOverrides,
@@ -306,11 +324,11 @@ class AppSettings {
       soundVolume: soundVolume ?? this.soundVolume,
       searchPanelHeight: searchPanelHeight ?? this.searchPanelHeight,
       tasksPanelHeight: tasksPanelHeight ?? this.tasksPanelHeight,
-      enableAgent: enableAgent ?? this.enableAgent,
       swapSidePanels: swapSidePanels ?? this.swapSidePanels,
       railVisible: railVisible ?? this.railVisible,
       treeVisible: treeVisible ?? this.treeVisible,
       showCockpit: showCockpit ?? this.showCockpit,
+      developerMode: developerMode ?? this.developerMode,
       launchAtStartup: launchAtStartup ?? this.launchAtStartup,
       defaultTerminalProfileId: clearDefaultTerminalProfileId
           ? null
@@ -347,6 +365,8 @@ class AppSettings {
     if (lspCommands.isNotEmpty) 'lspCommands': lspCommands,
     if (lspFormatters.isNotEmpty) 'lspFormatters': lspFormatters,
     if (formatOnSave) 'formatOnSave': true,
+    if (closeTabOnShellExit) 'closeTabOnShellExit': true,
+    'editor.engine': fileEditorEngine.name,
     if (!notificationsEnabled) 'notificationsEnabled': false,
     if (soundEvents.isNotEmpty)
       'sound.events': <String, bool>{
@@ -365,13 +385,13 @@ class AppSettings {
     'tasksPanelHeight': tasksPanelHeight,
     // Sempre gravado (mesmo quando false) para a migração distinguir "install
     // novo" (chave presente = false) de "upgrade sem a flag" (chave ausente).
-    'enableAgent': enableAgent,
     'swapSidePanels': swapSidePanels,
     if (railVisible) 'railVisible': true,
     if (treeVisible) 'treeVisible': true,
     // Sempre gravado: a migração distingue "install novo" (chave presente) de
     // "upgrade sem a flag" (chave ausente → liga automático).
     'showCockpit': showCockpit,
+    'developerMode': developerMode,
     'launchAtStartup': launchAtStartup,
     // Só quando escolhido: a AUSÊNCIA da chave é o "sem padrão" → fallback de
     // plataforma. Nada a migrar (plano 50).
@@ -429,6 +449,14 @@ class AppSettings {
       lspCommands: _strMap(json['lspCommands']),
       lspFormatters: _strMap(json['lspFormatters']),
       formatOnSave: json['formatOnSave'] as bool? ?? false,
+      closeTabOnShellExit: json['closeTabOnShellExit'] as bool? ?? false,
+      fileEditorEngine: _enumByName(
+        FileEditorEngine.values,
+        json['editor.engine'],
+        json['editor.neovim.enabled'] == true
+            ? FileEditorEngine.neovim
+            : FileEditorEngine.cockpit,
+      ),
       notificationsEnabled: json['notificationsEnabled'] as bool? ?? true,
       soundEvents: _migrateSoundEvents(json),
       soundOverrides: _soundEventMap<String>(json['sound.overrides']),
@@ -439,11 +467,11 @@ class AppSettings {
       ),
       searchPanelHeight: (json['searchPanelHeight'] as num?)?.toDouble() ?? 260,
       tasksPanelHeight: (json['tasksPanelHeight'] as num?)?.toDouble() ?? 200,
-      enableAgent: json['enableAgent'] as bool? ?? false,
       swapSidePanels: json['swapSidePanels'] as bool? ?? false,
       railVisible: json['railVisible'] as bool? ?? false,
       treeVisible: json['treeVisible'] as bool? ?? false,
       showCockpit: json['showCockpit'] as bool? ?? true,
+      developerMode: json['developerMode'] as bool? ?? false,
       launchAtStartup: json['launchAtStartup'] as bool? ?? false,
       defaultTerminalProfileId: str(json['terminal.default_profile_id']),
       terminalEngine: _enumByName(

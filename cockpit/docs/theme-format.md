@@ -13,7 +13,7 @@ app, o realce de código do viewer e a paleta do terminal.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/jacobaraujo7/remote_pi/main/cockpit/docs/theme.schema.json",
+  "$schema": "https://raw.githubusercontent.com/pungggi/remote_pi/main/cockpit/docs/theme.schema.json",
   "id": "acme.aurora",
   "name": "Aurora",
   "author": "Acme",
@@ -85,7 +85,7 @@ Troca só a marca e mantém tudo do tema nativo:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/jacobaraujo7/remote_pi/main/cockpit/docs/theme.schema.json",
+  "$schema": "https://raw.githubusercontent.com/pungggi/remote_pi/main/cockpit/docs/theme.schema.json",
   "id": "acme.violet",
   "name": "Violet",
   "variants": {
@@ -103,7 +103,7 @@ todos os grupos preenchidos.
 O schema fica **no repositório**, não num domínio nosso:
 
 ```
-https://raw.githubusercontent.com/jacobaraujo7/remote_pi/main/cockpit/docs/theme.schema.json
+https://raw.githubusercontent.com/pungggi/remote_pi/main/cockpit/docs/theme.schema.json
 ```
 
 Versionado junto do código que o implementa, então não existe o caso de o site

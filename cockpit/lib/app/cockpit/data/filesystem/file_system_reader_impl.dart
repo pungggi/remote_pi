@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:cockpit/app/cockpit/domain/contracts/file_system_reader.dart';
 import 'package:cockpit/app/cockpit/domain/entities/file_node.dart';
+import 'package:cockpit/app/cockpit/domain/entities/notebook_document.dart';
 import 'package:cockpit/app/core/utils/path_utils.dart';
 
 /// Lê a árvore via `dart:io`: pastas primeiro (ordenadas), depois arquivos.
@@ -31,7 +32,9 @@ class FileSystemReaderImpl implements FileSystemReader {
         if (isDir && _hiddenDirs.contains(name)) continue;
         if (name == '.DS_Store') continue; // lixo do Finder (macOS)
         final node = FileNode(name: name, path: path, isDirectory: isDir);
-        (isDir ? dirs : files).add(node);
+        // Caderno `.notebook` é pasta no disco, mas documento na árvore →
+        // ordena entre os arquivos (como o `.app` no Finder).
+        (isDir && !isNotebookFolder(name) ? dirs : files).add(node);
       }
     } on FileSystemException {
       return const <FileNode>[];

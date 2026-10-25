@@ -1,35 +1,50 @@
+import 'package:cockpit_core/cockpit_core.dart';
+
 import 'dart:async' show StreamSubscription, unawaited;
 import 'dart:io';
 
-import 'package:cockpit/app/cockpit/ui/actions/agent_actions.dart';
 import 'package:cockpit/app/cockpit/ui/actions/remote_workspace_actions.dart';
 import 'package:cockpit/app/cockpit/ui/actions/tab_actions.dart';
 import 'package:cockpit/app/cockpit/ui/actions/workspace_actions.dart';
 import 'package:cockpit/app/cockpit/ui/actions/worktree_actions.dart';
 import 'package:cockpit/app/core/app_intents.dart';
 import 'package:cockpit/app/cockpit/domain/entities/project.dart';
+import 'package:cockpit/app/cockpit/ui/document/document_windows.dart';
+import 'package:cockpit/app/cockpit/domain/entities/remote_host.dart';
 import 'package:cockpit/app/core/domain/entities/app_settings.dart';
 import 'package:cockpit/app/core/domain/entities/automation.dart';
+import 'package:cockpit/app/core/domain/exceptions/neovim_error.dart';
 import 'package:cockpit/app/core/routes.dart';
 import 'package:cockpit/app/core/ui/menu/workspace_menu_bridge.dart';
-import 'package:cockpit/app/cockpit/ui/session/agent_session.dart';
 import 'package:cockpit/app/cockpit/ui/states/pane_node.dart';
+import 'package:cockpit/app/cockpit/ui/states/panel_drag_sizer.dart';
 import 'package:cockpit/app/cockpit/data/remote/remote_db_executor.dart';
 import 'package:cockpit/app/cockpit/data/remote/remote_task_gateway.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/task_discovery.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/task_runner_gateway.dart';
+import 'package:cockpit/app/cockpit/data/telemetry/app_telemetry_bridge.dart';
+import 'package:cockpit/app/cockpit/domain/contracts/telemetry_ingest.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/tasks_viewmodel.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/telemetry_panel.dart';
 import 'package:cockpit/app/cockpit/domain/entities/db_connection.dart';
+import 'package:cockpit/app/cockpit/domain/entities/gallery_template.dart';
+import 'package:cockpit/app/core/ui/file_operation_error_message.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/cockpit_viewmodel.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/update_viewmodel.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/layout_preview_tab.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/remote_disconnected_banner.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/terminal_key_bar.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/widgets.dart';
+import 'package:cockpit/app/core/data/diagnostics/performance_diagnostics.dart';
+import 'package:cockpit/app/core/ui/automation_controller.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/settings_controller.dart';
 import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
 import 'package:cockpit/app/core/utils/platform_kind.dart';
+import 'package:cockpit/app/cockpit/data/remote/remote_db_writer_impl.dart';
+import 'package:cockpit/app/cockpit/domain/contracts/remote_db_writer.dart';
 import 'package:cockpit/i18n/strings.g.dart';
+import 'package:flterm/flterm.dart' show TerminalScope;
 import 'package:flutter/gestures.dart' show PointerDownEvent, kBackMouseButton;
 import 'package:flutter/services.dart'
     show
@@ -43,7 +58,6 @@ import 'package:cockpit/app/core/ui/widgets/app_tooltip.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:cockpit/app/core/domain/result.dart';
-import 'package:cockpit/app/cockpit/domain/contracts/ssh_tunnel.dart';
 import 'package:cockpit/app/cockpit/domain/services/db_query_service.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/database_viewmodel.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/ssh_prompts.dart';
@@ -71,6 +85,16 @@ class CockpitPage extends StatefulWidget {
 class _CockpitPageState extends State<CockpitPage> {
   CockpitViewModel get _vm => context.read<CockpitViewModel>();
 
+  /// Arraste de largura em curso (qualquer um dos dois painéis). Enquanto
+  /// vale `true`, a área inteira do shell mostra o cursor de resize: o
+  /// ponteiro sai da faixa de 8px no primeiro pixel de overshoot, e sem isso
+  /// o cursor voltava a ser a seta no meio do arraste.
+  bool _resizingPanel = false;
+
+  /// Acumulador do arraste: a largura é `base + total percorrido`, clampada só
+  /// na leitura. A regra (e o teste) moram em [PanelDragSizer].
+  final PanelDragSizer _panelDrag = PanelDragSizer();
+
   /// Larguras dos painéis laterais (arrastáveis). **Não** são persistidas —
   /// estado só da sessão da janela.
   double _treeWidth = 300;
@@ -90,6 +114,31 @@ class _CockpitPageState extends State<CockpitPage> {
   /// visibilidade das panes segue `vm.railVisible`/`vm.treeVisible`.
   bool _leftDrawer = false;
   bool _rightDrawer = false;
+
+  /// Começo de um arraste de painel: fotografa a largura e zera o acumulado.
+  void _beginPanelDrag(double width) => setState(() {
+    _resizingPanel = true;
+    _panelDrag.begin(width);
+  });
+
+  void _endPanelDrag() => setState(() => _resizingPanel = false);
+
+  /// Apply clicado no viewer de `.ckp` de uma **janela de documento**: o VM
+  /// guardou o caminho e trouxe esta janela para a frente; aqui é onde o
+  /// destino é resolvido e o diálogo aparece. Post-frame porque o notify pode
+  /// chegar durante um build, e diálogo não abre no meio de um.
+  bool _applyingLayout = false;
+
+  void _consumePendingLayoutApply() {
+    if (_applyingLayout) return;
+    final path = _menuVm?.takePendingLayoutApply();
+    if (path == null) return;
+    _applyingLayout = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (mounted) await promptApplyLayout(context, path);
+      _applyingLayout = false;
+    });
+  }
 
   void _dismissDrawers() {
     if (!_leftDrawer && !_rightDrawer) return;
@@ -117,11 +166,15 @@ class _CockpitPageState extends State<CockpitPage> {
   @override
   void initState() {
     super.initState();
-    // Discovery de harnesses é lazy (Settings ou primeira geração) — evita
-    // spawnar 6 CLIs a cada montagem de workspace.
-    // Registra a ponte do ⌘L global (handler em main.dart) → foca o input do
-    // agente focado, mesmo quando o foco caiu num espaço vazio do shell.
-    requestFocusActiveComposer = _focusActiveComposer;
+    // Descoberta dos harnesses instalados (uma vez por processo): alimenta o
+    // "Open in (agent)" do menu de pasta da árvore, além das automações.
+    // Pós-frame: o `refresh` notifica de imediato (`discovering = true`) e,
+    // chamado de dentro do `initState`, isso é markNeedsBuild durante o build
+    // (caso e_f993 da Telemetria).
+    final automation = context.read<AutomationController>();
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => unawaited(automation.ensureInitialized()),
+    );
     // Pontes do menu nativo (PlatformMenuBar vive acima da rota, sem acesso aos
     // ViewModels page-scoped): abrir projeto e verificar atualizações.
     requestOpenProject = () => unawaited(addProject(context));
@@ -139,7 +192,9 @@ class _CockpitPageState extends State<CockpitPage> {
     _sourceControlViewMode = initialSettings.sourceControlViewMode;
     context.read<CockpitViewModel>()
       ..setDefaultTerminalProfileId(initialSettings.defaultTerminalProfileId)
-      ..setDefaultTerminalEngine(initialSettings.terminalEngine);
+      ..setDefaultTerminalEngine(initialSettings.terminalEngine)
+      ..setCloseTabOnShellExit(initialSettings.closeTabOnShellExit)
+      ..setFileEditorEngine(initialSettings.fileEditorEngine);
     // Dispara o carregamento inicial dos ViewModels page-scoped ao montar a rota.
     // Os módulos provêm via `.new`, então não encadeiam mais `..init()`/`..check()`.
     context.read<CockpitViewModel>().init();
@@ -164,7 +219,9 @@ class _CockpitPageState extends State<CockpitPage> {
     // Publica o estado do workspace no menu File (New Agent / New Terminal): só
     // habilitam quando há workspace ativo. Re-sincroniza a cada mudança da VM.
     _workspaceMenu = context.read<WorkspaceMenuBridge>();
-    _menuVm = context.read<CockpitViewModel>()..addListener(_syncWorkspaceMenu);
+    _menuVm = context.read<CockpitViewModel>()
+      ..addListener(_syncWorkspaceMenu)
+      ..addListener(_consumePendingLayoutApply);
     _syncWorkspaceMenu();
     // Navegação direcional entre panes (⌘⌥ + setas). Vai por um handler global
     // do HardwareKeyboard — e NÃO pelo menu — porque no macOS as setas não
@@ -180,11 +237,14 @@ class _CockpitPageState extends State<CockpitPage> {
       ..addListener(_syncNotifications)
       ..addListener(_syncCockpit)
       ..addListener(_syncSourceControlViewMode)
-      ..addListener(_syncAutomationSelection);
+      ..addListener(_syncAutomationSelection)
+      ..addListener(_syncFileEditorEngine);
+    context.read<CockpitViewModel>().onNeovimError = _showNeovimError;
     _syncLspCommands();
     _syncNotifications();
     _syncCockpit();
     _syncAutomationSelection();
+    _syncFileEditorEngine();
     // Restaura a visibilidade dos painéis (rail/árvore) salva na sessão anterior
     // e persiste de volta a cada toggle. A VM é a fonte de verdade em runtime.
     final vm = context.read<CockpitViewModel>();
@@ -254,13 +314,81 @@ class _CockpitPageState extends State<CockpitPage> {
       }
       // As conexões de um workspace remoto vivem no host
       // (.cockpit/databases.json) — resolução da query E leitura do painel.
-      ..remoteConnectionsFor = _remoteConnectionsFor;
-    context.read<DatabaseViewModel>().remoteConnectionsFor =
-        _remoteConnectionsFor;
+      ..remoteConnectionsFor = _remoteConnectionsFor
+      // Túnel SSH da conexão roda no HOST (onda 2), e o servidor não pergunta
+      // nada: ele falha com o fingerprint. O diálogo é aqui, e o "confio" vai
+      // pro store do host — decisão no humano, estado onde o túnel abre.
+      ..remoteHostKeyTrustFor = (wsId, endpoint, fingerprint) async {
+        final host = _vm.remoteHostForWorkspace(wsId);
+        if (host == null) return;
+        final db = await _vm.remoteHosts.dbServiceFor(host);
+        await db.trustHostKey(endpoint: endpoint, fingerprint: fingerprint);
+      };
+    context.read<DatabaseViewModel>()
+      ..remoteConnectionsFor = _remoteConnectionsFor
+      // Escrita da config de banco de um workspace remoto: definição por
+      // `fs.write` no host, senha no cofre do host (plano 62).
+      ..remoteDbWriterFor = _remoteDbWriterFor;
     // Task Run remoto (plano 58): descoberta via fs.read + execução via terminal
     // do host, roteados quando o workspace ativo é remoto.
     context.read<TasksViewModel>().remoteContextFor = _remoteTaskContextFor;
+    // A CLI (`cockpit run-task` etc.) resolve pelo id do workspace da aba
+    // emissora, não pelo selecionado — agente numa aba de host remoto dirige
+    // as tasks daquele host. Mesmo cache por host do painel.
+    _vm.remoteTaskContextFor = (wsId) =>
+        _remoteTaskContextForHost(_vm.remoteHostForWorkspace(wsId));
+    // Telemetria (plano 66): o ingest roteia cada run pro store do workspace
+    // pelo cwd, então precisa conhecer id/nome/roots do workspace ativo.
+    if (_telemetrySync == null) {
+      final telemetry = inject<TelemetryIngest>();
+      // Plano 68: com "Developer mode" ligado, o próprio app vira um run
+      // (erros globais, warnings, métricas). Reage ao toggle das Settings;
+      // fecha na saída (bootstrapper). A env COCKPIT_PERF=1 é atalho só das
+      // métricas, para quem sobe pelo terminal.
+      final settings = context.read<SettingsController>();
+      void syncDeveloperMode() {
+        final on = settings.settings.developerMode;
+        if (on) {
+          unawaited(
+            AppTelemetryBridge.instance.start(telemetry).then((_) {
+              PerformanceDiagnostics.instance.sink =
+                  AppTelemetryBridge.instance.metric;
+              PerformanceDiagnostics.instance.enable(true);
+            }),
+          );
+        } else {
+          PerformanceDiagnostics.instance.enable(
+            PerformanceDiagnostics.envEnabled,
+          );
+          unawaited(AppTelemetryBridge.instance.close());
+        }
+      }
+
+      _developerModeSync = syncDeveloperMode;
+      settings.addListener(syncDeveloperMode);
+      syncDeveloperMode();
+      final vm = _vm;
+      void sync() {
+        final p = vm.selectedProject;
+        if (p == null || p.path.isEmpty) return;
+        telemetry.registerWorkspace(
+          TelemetryWorkspace(
+            id: p.id,
+            name: p.name,
+            path: p.path,
+            roots: vm.treeRoots,
+          ),
+        );
+      }
+
+      _telemetrySync = sync;
+      vm.addListener(sync);
+      sync();
+    }
   }
+
+  VoidCallback? _telemetrySync;
+  VoidCallback? _developerModeSync;
 
   /// Contexto de Task remoto do workspace ativo (host resolvido do projeto
   /// selecionado), cacheado por host — o runner precisa sobreviver às trocas de
@@ -270,8 +398,12 @@ class _CockpitPageState extends State<CockpitPage> {
 
   ({TaskDiscovery discovery, TaskRunnerGateway runner})? _remoteTaskContextFor(
     String cwd,
-  ) {
-    final host = _vm.remoteHostForWorkspace(_vm.selectedProjectId);
+  ) => _remoteTaskContextForHost(
+    _vm.remoteHostForWorkspace(_vm.selectedProjectId),
+  );
+
+  ({TaskDiscovery discovery, TaskRunnerGateway runner})?
+  _remoteTaskContextForHost(RemoteHost? host) {
     if (host == null) return null;
     return _remoteTaskCtx.putIfAbsent(host.id, () {
       final runner = RemoteTaskRunner(
@@ -300,6 +432,17 @@ class _CockpitPageState extends State<CockpitPage> {
     );
   }
 
+  /// Writer remoto de config de banco do workspace [wsId] (plano 62).
+  /// `null` quando o workspace é local — aí vale o store + cofre desta máquina.
+  RemoteDbWriter? _remoteDbWriterFor(String wsId) {
+    final host = _vm.remoteHostForWorkspace(wsId);
+    if (host == null) return null;
+    return RemoteDbWriterImpl(
+      () => _vm.remoteHosts.fileServiceFor(host),
+      () => _vm.remoteHosts.dbServiceFor(host),
+    );
+  }
+
   /// Capturado no initState pra uso seguro no dispose (sem `context`).
   DbQueryService? _dbService;
 
@@ -320,21 +463,16 @@ class _CockpitPageState extends State<CockpitPage> {
     if (vm == null) return;
     _workspaceMenu?.setWorkspace(
       hasWorkspace: vm.selectedProject != null,
-      agentTabsInUse: vm.hasAgentTabsInUse,
-      // Cockpit é terminal-only → sem "New Agent" no menu File.
-      agentsAllowed: !vm.isPathless(vm.selectedProjectId),
-      // Agente pergunta a subpasta onde vai atuar (igual ao fluxo direto de
-      // criar agente); terminal abre direto na raiz do workspace.
-      onNewAgent: () => unawaited(
-        pickSubfolderThen(context, (sub) => vm.newTabIn(sub, terminal: false)),
-      ),
-      onNewTerminal: () => vm.newTabIn('', terminal: true),
+      onNewTerminal: () => vm.newTabIn(''),
+      onGoToFile: _openFileFinder,
       onSplitRight: () => _splitFocused(SplitDir.vertical),
       onSplitDown: () => _splitFocused(SplitDir.horizontal),
       onToggleRail: vm.toggleRail,
       onToggleFiles: vm.toggleTree,
       onSelectTab: vm.selectTabByIndex,
       onSelectLastTab: vm.selectLastTab,
+      onNextWorkspace: () => vm.cycleWorkspace(1),
+      onPreviousWorkspace: () => vm.cycleWorkspace(-1),
       onFocusPaneLeft: () => vm.focusPaneToward(PaneMove.left),
       onFocusPaneRight: () => vm.focusPaneToward(PaneMove.right),
       onFocusPaneUp: () => vm.focusPaneToward(PaneMove.up),
@@ -342,21 +480,16 @@ class _CockpitPageState extends State<CockpitPage> {
     );
   }
 
-  /// Divide a pane **focada** na direção [dir]. Terminal abre direto na raiz;
-  /// agente pergunta a subpasta — mesma regra do menu de split da pane.
+  /// Divide a pane **focada** na direção [dir], abrindo na raiz do workspace —
+  /// mesma regra do menu de split da pane.
   void _splitFocused(SplitDir dir) {
     final vm = _vm;
     final projectId = vm.selectedProject?.id;
     if (projectId == null) return;
     final paneId = vm.focusedPaneId(projectId);
     if (paneId == null) return;
-    // Só agente pergunta a subpasta; terminal/browser/viewer/db abrem na raiz.
     if (vm.paneActiveIsEmpty(paneId)) {
       vm.splitPaneEmpty(paneId, dir);
-    } else if (vm.paneActiveIsAgent(paneId)) {
-      unawaited(
-        pickSubfolderThen(context, (sub) => vm.splitPane(paneId, dir, sub)),
-      );
     } else {
       vm.splitPane(paneId, dir, '');
     }
@@ -379,6 +512,7 @@ class _CockpitPageState extends State<CockpitPage> {
       _settings!.settings.defaultTerminalProfileId,
     );
     _vm.setDefaultTerminalEngine(_settings!.settings.terminalEngine);
+    _vm.setCloseTabOnShellExit(_settings!.settings.closeTabOnShellExit);
   }
 
   /// Espelha o toggle "Show Cockpit terminal" (Configurações › General) para a
@@ -396,6 +530,30 @@ class _CockpitPageState extends State<CockpitPage> {
 
   void _syncAutomationSelection() {
     _vm.setAutomationSelection(_settings!.settings.automationSelection);
+  }
+
+  void _syncFileEditorEngine() {
+    _vm.setFileEditorEngine(_settings!.settings.fileEditorEngine);
+  }
+
+  void _showNeovimError(NeovimError error) {
+    if (!mounted) return;
+    final tr = context.t.cockpit.neovim;
+    final message = switch (error.kind) {
+      NeovimErrorKind.unavailable => tr.unavailable,
+      NeovimErrorKind.connectionFailed ||
+      NeovimErrorKind.timeout => tr.openFailed,
+    };
+    showToast(
+      context: context,
+      location: ToastLocation.bottomRight,
+      builder: (context, overlay) => SurfaceCard(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Text(message, style: context.typo.label),
+        ),
+      ),
+    );
   }
 
   void _syncLspCommands() {
@@ -442,6 +600,12 @@ class _CockpitPageState extends State<CockpitPage> {
 
   @override
   void dispose() {
+    if (_telemetrySync != null) {
+      context.read<CockpitViewModel>().removeListener(_telemetrySync!);
+    }
+    if (_developerModeSync != null) {
+      context.read<SettingsController>().removeListener(_developerModeSync!);
+    }
     // Runners de Task remotos (cacheados por host): mata as tasks e fecha os
     // streams. Não fecha a conexão SSH (compartilhada com os outros serviços).
     for (final ctx in _remoteTaskCtx.values) {
@@ -455,7 +619,10 @@ class _CockpitPageState extends State<CockpitPage> {
     _settings?.removeListener(_syncCockpit);
     _settings?.removeListener(_syncSourceControlViewMode);
     _settings?.removeListener(_syncAutomationSelection);
+    _settings?.removeListener(_syncFileEditorEngine);
+    _vm.onNeovimError = null;
     _menuVm?.removeListener(_syncWorkspaceMenu);
+    _menuVm?.removeListener(_consumePendingLayoutApply);
     _workspaceMenu?.setWorkspace(hasWorkspace: false);
     // Túneis SSH abertos morrem com o shell — e os prompts vão junto, senão
     // ficariam apontando pra um contexto desmontado.
@@ -464,9 +631,6 @@ class _CockpitPageState extends State<CockpitPage> {
       ?..passphrasePrompt = null
       ..hostKeyPrompt = null
       ..closeSshTunnels();
-    if (requestFocusActiveComposer == _focusActiveComposer) {
-      requestFocusActiveComposer = null;
-    }
     requestOpenProject = null;
     requestCheckForUpdates = null;
     requestOpenSettings = null;
@@ -495,21 +659,9 @@ class _CockpitPageState extends State<CockpitPage> {
     _searchFocusSignal.value++;
   }
 
-  /// Foca o input do agente focado (no-op se a aba ativa não for um agente).
-  void _focusActiveComposer() {
-    final agent = _vm.focusedAgent;
-    if (agent is AgentSession) agent.requestComposerFocus?.call();
-  }
-
-  /// ⌘L (macOS) / Ctrl+L (Win/Linux): foca o input do agente focado quando o
-  /// foco está dentro do shell. (Fora dele — clique no vazio — quem dispara é a
-  /// ponte global de `main.dart`; ver [requestFocusActiveComposer].)
+  /// Atalhos do shell que valem quando o foco está dentro dele.
   Map<ShortcutActivator, VoidCallback>
-  _focusComposerBindings() => <ShortcutActivator, VoidCallback>{
-    const SingleActivator(LogicalKeyboardKey.keyL, meta: true):
-        _focusActiveComposer,
-    const SingleActivator(LogicalKeyboardKey.keyL, control: true):
-        _focusActiveComposer,
+  _shellBindings() => <ShortcutActivator, VoidCallback>{
     const SingleActivator(LogicalKeyboardKey.keyP, meta: true): _openFileFinder,
     const SingleActivator(LogicalKeyboardKey.keyP, control: true):
         _openFileFinder,
@@ -603,10 +755,10 @@ class _CockpitPageState extends State<CockpitPage> {
     return Listener(
       onPointerDown: _onPointerDown,
       child: CallbackShortcuts(
-        bindings: _focusComposerBindings(),
+        bindings: _shellBindings(),
         // Focus(autofocus) garante que a página esteja na cadeia de foco mesmo
-        // antes de clicar em algo — senão o atalho ⌘L não dispara num agente
-        // recém-aberto (nada focado ainda).
+        // antes de clicar em algo — senão os atalhos não disparam num
+        // workspace recém-aberto (nada focado ainda).
         child: Focus(
           autofocus: true,
           child: Scaffold(
@@ -634,50 +786,62 @@ class _CockpitPageState extends State<CockpitPage> {
                 // reconectar. Não ocupa espaço em workspace local.
                 const RemoteDisconnectedBanner(),
                 Expanded(
-                  child: _PanelScaffold(
-                    narrow: narrow,
-                    railOpen: railVisibleEff,
-                    treeOpen: treeVisibleEff,
-                    onDismiss: _dismissDrawers,
-                    swapped: swapped,
-                    rail: _RailPanel(
-                      width: _railWidth,
-                      handleOnLeft: swapped,
+                  // Cursor de resize enquanto o arraste dura, na área inteira:
+                  // o ponteiro passa da faixa de 8px no primeiro overshoot e
+                  // o cursor tem que continuar o mesmo até soltar.
+                  child: MouseRegion(
+                    cursor: _resizingPanel
+                        ? SystemMouseCursors.resizeLeftRight
+                        : MouseCursor.defer,
+                    child: _PanelScaffold(
+                      narrow: narrow,
+                      railOpen: railVisibleEff,
+                      treeOpen: treeVisibleEff,
                       onDismiss: _dismissDrawers,
-                      // Invertido, arrastar para a ESQUERDA é que alarga — o
-                      // painel cresce sempre em direção ao centro.
-                      onResize: (dx) => setState(() {
-                        final delta = swapped ? -dx : dx;
-                        _railWidth = (_railWidth + delta).clamp(
-                          _railMin,
-                          _railMax,
-                        );
-                      }),
-                    ),
-                    center: _CenterPanel(centerKey: _centerKey),
-                    tree: _TreePanel(
-                      handleOnLeft: !swapped,
-                      treeWidth: _treeWidth,
-                      tasksHeight: _tasksHeight,
-                      sourceControlViewMode: _sourceControlViewMode,
-                      searchFocusSignal: _searchFocusSignal,
-                      onDismiss: _dismissDrawers,
-                      onResizeTree: (dx) => setState(() {
-                        final delta = swapped ? dx : -dx;
-                        _treeWidth = (_treeWidth + delta).clamp(
-                          _treeMin,
-                          _treeMax,
-                        );
-                      }),
-                      onTasksResize: (dy) => setState(() {
-                        _tasksHeight = (_tasksHeight - dy).clamp(
-                          _tasksMin,
-                          _tasksMax,
-                        );
-                      }),
-                      onTasksResizeEnd: () => context
-                          .read<SettingsController>()
-                          .setTasksPanelHeight(_tasksHeight),
+                      swapped: swapped,
+                      rail: _RailPanel(
+                        width: _railWidth,
+                        handleOnLeft: swapped,
+                        onDismiss: _dismissDrawers,
+                        onResizeStart: () => _beginPanelDrag(_railWidth),
+                        // Invertido, arrastar para a ESQUERDA é que alarga — o
+                        // painel cresce sempre em direção ao centro.
+                        onResize: (dx) => setState(() {
+                          _railWidth = _panelDrag.update(
+                            swapped ? -dx : dx,
+                            min: _railMin,
+                            max: _railMax,
+                          );
+                        }),
+                        onResizeEnd: _endPanelDrag,
+                      ),
+                      center: _CenterPanel(centerKey: _centerKey),
+                      tree: _TreePanel(
+                        handleOnLeft: !swapped,
+                        treeWidth: _treeWidth,
+                        tasksHeight: _tasksHeight,
+                        sourceControlViewMode: _sourceControlViewMode,
+                        searchFocusSignal: _searchFocusSignal,
+                        onDismiss: _dismissDrawers,
+                        onResizeTreeStart: () => _beginPanelDrag(_treeWidth),
+                        onResizeTree: (dx) => setState(() {
+                          _treeWidth = _panelDrag.update(
+                            swapped ? dx : -dx,
+                            min: _treeMin,
+                            max: _treeMax,
+                          );
+                        }),
+                        onResizeTreeEnd: _endPanelDrag,
+                        onTasksResize: (dy) => setState(() {
+                          _tasksHeight = (_tasksHeight - dy).clamp(
+                            _tasksMin,
+                            _tasksMax,
+                          );
+                        }),
+                        onTasksResizeEnd: () => context
+                            .read<SettingsController>()
+                            .setTasksPanelHeight(_tasksHeight),
+                      ),
                     ),
                   ),
                 ),
@@ -710,13 +874,17 @@ class _RailPanel extends StatelessWidget {
   const _RailPanel({
     required this.width,
     required this.onDismiss,
+    required this.onResizeStart,
     required this.onResize,
+    required this.onResizeEnd,
     this.handleOnLeft = false,
   });
 
   final double width;
   final VoidCallback onDismiss;
+  final VoidCallback onResizeStart;
   final ValueChanged<double> onResize;
+  final VoidCallback onResizeEnd;
 
   /// `true` quando o painel está à DIREITA (modo "Inverter panes"): a alça
   /// muda de borda junto.
@@ -779,6 +947,7 @@ class _RailPanel extends StatelessWidget {
           moveTargetsOf: (projectId) => moveTargets(vm, projectId),
           onMoveToRealm: (projectId, realmId) =>
               unawaited(vm.moveWorkspaceToRealm(projectId, realmId)),
+          onTogglePin: (id) => unawaited(vm.togglePin(id)),
           cockpit: vm.cockpitWorkspace,
           onSelectCockpit: () {
             vm.selectProject(Project.cockpitId);
@@ -801,7 +970,11 @@ class _RailPanel extends StatelessWidget {
           right: handleOnLeft ? null : 0,
           top: 0,
           bottom: 0,
-          child: _ResizeHandle(onDelta: onResize),
+          child: _ResizeHandle(
+            onStart: onResizeStart,
+            onDelta: onResize,
+            onEnd: onResizeEnd,
+          ),
         ),
       ],
     );
@@ -810,17 +983,30 @@ class _RailPanel extends StatelessWidget {
 
 /// Multiplexador (árvore de splits) do workspace ativo — um por projeto, todos
 /// montados no `IndexedStack` pra preservar estado ao trocar de workspace.
-class _CenterPanel extends StatelessWidget {
+class _CenterPanel extends StatefulWidget {
   const _CenterPanel({required this.centerKey});
 
   final GlobalKey centerKey;
 
   @override
+  State<_CenterPanel> createState() => _CenterPanelState();
+}
+
+class _CenterPanelState extends State<_CenterPanel> {
+  // Reuse the exact child widgets across VM notifications. Each child selects
+  // only its own pane state, so a terminal update does not rebuild every
+  // workspace's pane tree.
+  final Map<String, Widget> _workspaceWidgets = {};
+
+  @override
   Widget build(BuildContext context) {
     final vm = context.watch<CockpitViewModel>();
     final colors = context.colors;
+    final projectIds = vm.projects.map((project) => project.id).toList();
+    final liveIds = projectIds.toSet();
+    _workspaceWidgets.removeWhere((id, _) => !liveIds.contains(id));
     return KeyedSubtree(
-      key: centerKey,
+      key: widget.centerKey,
       child: vm.selectedProjectId == null
           ? WelcomeView(
               hasHosts: vm.remoteHosts.hosts.isNotEmpty,
@@ -832,26 +1018,32 @@ class _CenterPanel extends StatelessWidget {
                 arguments: SettingsTab.remoteHosts,
               ),
             )
-          : IndexedStack(
-              index: _activeIndex(vm),
-              sizing: StackFit.expand,
-              children: [
-                // Um multiplexador por projeto — todos montados, só
-                // o ativo pintado → estado preservado ao trocar.
-                for (final project in vm.projects)
-                  KeyedSubtree(
-                    key: ValueKey(project.id),
-                    child: ColoredBox(
-                      color: colors.border,
-                      child: _multiplexer(
-                        context,
-                        vm,
-                        project.id,
-                        active: project.id == vm.selectedProjectId,
+          // `TerminalScope` na raiz dos workspaces: TODAS as TerminalViews do
+          // flterm compartilham o mesmo pool de atlas de glifos (chave =
+          // tema/fonte/DPR). Sem o scope cada view cria um pool isolado e o
+          // atlas morre junto com ela — trocar de aba pagava o `_preseed`
+          // (rasterizar o ASCII + compor a textura) a cada remount. Aqui o
+          // atlas sobrevive à troca e é reaproveitado por todos os terminais.
+          : TerminalScope(
+              child: IndexedStack(
+                index: _activeIndex(vm),
+                sizing: StackFit.expand,
+                children: [
+                  // Um multiplexador por projeto — todos montados, só
+                  // o ativo pintado → estado preservado ao trocar.
+                  for (final id in projectIds)
+                    KeyedSubtree(
+                      key: ValueKey(id),
+                      child: ColoredBox(
+                        color: colors.border,
+                        child: _workspaceWidgets.putIfAbsent(
+                          id,
+                          () => _ProjectMultiplexer(projectId: id),
+                        ),
                       ),
                     ),
-                  ),
-              ],
+                ],
+              ),
             ),
     );
   }
@@ -860,16 +1052,37 @@ class _CenterPanel extends StatelessWidget {
     final index = vm.projects.indexWhere((p) => p.id == vm.selectedProjectId);
     return index < 0 ? 0 : index;
   }
+}
 
-  Widget _multiplexer(
-    BuildContext context,
-    CockpitViewModel vm,
-    String projectId, {
-    required bool active,
-  }) {
-    final tree = vm.tree(projectId);
+typedef _ProjectPaneState = ({
+  PaneNode? tree,
+  String? focusedPaneId,
+  bool active,
+  int focusGen,
+  bool profilePicker,
+});
+
+class _ProjectMultiplexer extends StatelessWidget {
+  const _ProjectMultiplexer({required this.projectId});
+
+  final String projectId;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.select<CockpitViewModel, _ProjectPaneState>((vm) {
+      final active = vm.selectedProjectId == projectId;
+      return (
+        tree: vm.tree(projectId),
+        focusedPaneId: active ? vm.focusedPaneId(projectId) : null,
+        active: active,
+        focusGen: active ? vm.tabFocusGen : 0,
+        profilePicker: active && vm.showTerminalProfilePicker,
+      );
+    });
+    final tree = state.tree;
     if (tree == null) return const SizedBox.shrink();
-    return _renderNode(context, vm, projectId, tree, active: active);
+    final vm = context.read<CockpitViewModel>();
+    return _renderNode(context, vm, projectId, tree, active: state.active);
   }
 
   Widget _renderNode(
@@ -890,34 +1103,17 @@ class _CenterPanel extends StatelessWidget {
           vm: vm,
           focused: active && node.id == vm.focusedPaneId(projectId),
           active: active,
-          onCreateTab: () => vm.newEmptyTab(node.id),
-          // Aba placeholder "Novo" (nem agente nem terminal): o novo pane vira
-          // outro placeholder com o seletor Agent/Terminal (ou terminal direto
-          // se `enableAgent` está off). Terminal abre na raiz; agente pergunta
-          // a subpasta.
+          onCreateTab: () => vm.newTerminalInPane(node.id),
+          // Aba placeholder "Novo": o novo pane vira outro placeholder (que
+          // cai direto em terminal). As demais abrem na raiz do workspace.
           onSplit: (dir) {
             if (vm.paneActiveIsEmpty(node.id)) {
               vm.splitPaneEmpty(node.id, dir);
-            } else if (vm.paneActiveIsAgent(node.id)) {
-              // Só agente pergunta a subpasta; terminal/browser/viewer/db abrem
-              // direto na raiz do workspace (sem modal).
-              pickSubfolderThen(
-                context,
-                (sub) => vm.splitPane(node.id, dir, sub),
-              );
             } else {
               vm.splitPane(node.id, dir, '');
             }
           },
-          onFillEmpty: (emptyId, terminal) => terminal
-              ? vm.fillEmpty(node.id, emptyId, '', terminal: true)
-              : pickSubfolderThen(
-                  context,
-                  (sub) => vm.fillEmpty(node.id, emptyId, sub, terminal: false),
-                ),
-          onHistoryAgent: (agentId) => openAgentHistory(context, agentId),
-          onRenameAgent: (agentId, name) => renameAgent(context, agentId, name),
-          onToggleRelayAgent: (agentId) => toggleRelayAgent(context, agentId),
+          onFillEmpty: (emptyId) => vm.fillEmpty(node.id, emptyId, ''),
         ),
       );
     }
@@ -1001,6 +1197,25 @@ class _CenterPanel extends StatelessWidget {
 }
 
 /// Painel direito: árvore de arquivos, busca, DB e Tasks.
+/// Card da Gallery clicado: o VM cria o arquivo na raiz e abre a tab; a
+/// falha (tipada) vira diálogo aqui, onde há contexto pra traduzir.
+Future<void> _createFromGallery(
+  BuildContext context,
+  CockpitViewModel vm,
+  GalleryTemplate template,
+) async {
+  final result = await vm.createFromTemplate(template);
+  if (!context.mounted) return;
+  if (result case Failure(:final error)) {
+    await showConfirmDialog(
+      context,
+      title: context.t.cockpit.gallery.createErrorTitle,
+      message: fileOperationErrorMessage(context, error),
+      confirmLabel: context.t.common.ok,
+    );
+  }
+}
+
 class _TreePanel extends StatelessWidget {
   const _TreePanel({
     required this.treeWidth,
@@ -1008,7 +1223,9 @@ class _TreePanel extends StatelessWidget {
     required this.sourceControlViewMode,
     required this.searchFocusSignal,
     required this.onDismiss,
+    required this.onResizeTreeStart,
     required this.onResizeTree,
+    required this.onResizeTreeEnd,
     required this.onTasksResize,
     required this.onTasksResizeEnd,
     this.handleOnLeft = true,
@@ -1023,7 +1240,9 @@ class _TreePanel extends StatelessWidget {
   final SourceControlViewMode sourceControlViewMode;
   final ValueNotifier<int> searchFocusSignal;
   final VoidCallback onDismiss;
+  final VoidCallback onResizeTreeStart;
   final ValueChanged<double> onResizeTree;
+  final VoidCallback onResizeTreeEnd;
   final ValueChanged<double> onTasksResize;
   final VoidCallback onTasksResizeEnd;
 
@@ -1094,8 +1313,14 @@ class _TreePanel extends StatelessWidget {
           onClearSelection: vm.clearFileSelection,
           revealPath: vm.treeRevealPath,
           revealGen: vm.treeRevealGen,
-          onOpenDiff: (path) => vm.openDiff(path, isPreview: false),
-          onTapDiff: vm.openDiff, // clique único = preview
+          onOpenDiff: (path) {
+            vm.openDiff(path, isPreview: false);
+            onDismiss(); // fecha o drawer no mobile, como o onOpenFile
+          },
+          onTapDiff: (path) {
+            vm.openDiff(path); // clique único = preview
+            onDismiss();
+          },
           isGitRepo:
               vm.selectedProject != null &&
               vm.isGitRepo(vm.selectedProject!.id),
@@ -1103,7 +1328,30 @@ class _TreePanel extends StatelessWidget {
           stagedPaths: vm.stagedAbsolutePaths(),
           unstagedPaths: vm.unstagedAbsolutePaths(),
           onOpenWith: vm.openWithDefaultApp,
+          // Janela de documento própria: só no desktop (engine extra por
+          // janela) e em workspace local (a janela lê do disco daqui).
+          onOpenInWindow:
+              !isMobilePlatform &&
+                  vm.canOpenInWindow(vm.selectedProject?.id ?? '')
+              ? DocumentWindows.open
+              : null,
+          onOpenAsSource: vm.openFileAsSource,
           onOpenLayout: (path) async {
+            // Abrir um layout = "vire este layout": as abas atuais fecham
+            // (card k21). Só pergunta se há trabalho rodando — abas ociosas
+            // fecham direto (mesma regra do "x").
+            final tr = context.t.cockpit.cockpitPage;
+            final impact = vm.layoutReplaceImpact();
+            if (impact.running) {
+              final ok = await showConfirmDialog(
+                context,
+                title: tr.replaceLayoutTitle,
+                message: tr.replaceLayoutMessage(n: impact.tabs),
+                confirmLabel: tr.replaceLayoutConfirm,
+                danger: true,
+              );
+              if (!ok || !context.mounted) return;
+            }
             final res = await vm.applyLayoutFile(path);
             if (!context.mounted) return;
             if (res case Failure(:final error)) {
@@ -1114,14 +1362,27 @@ class _TreePanel extends StatelessWidget {
               );
             }
           },
-          onCreateInFolder: (sub, terminal) =>
-              vm.newTabIn(sub, terminal: terminal),
+          // Caminho ABSOLUTO da pasta (a árvore pode estar em outra root do
+          // multi-root, então relativo à raiz do projeto não bastava).
+          onCreateInFolder: (path, {command}) =>
+              vm.newTerminalTab(cwd: path, startupCommand: command),
+          agentLaunchers: [
+            for (final h in context.watch<AutomationController>().harnesses)
+              if (HarnessCatalog.getSpec(h.id) case final spec?)
+                TreeAgentLauncher(
+                  label: spec.label,
+                  command: spec.primaryEntryPoint,
+                  assetPath: spec.assetPath,
+                  monochrome: spec.isMonochrome,
+                ),
+          ],
           onCreate: (parentDir, name, isFolder) => isFolder
               ? vm.createDirIn(parentDir, name)
               : vm.createFileIn(parentDir, name),
           onRename: vm.renamePath,
           onDelete: vm.deletePath,
           onMove: vm.movePath,
+          onImport: vm.importPaths,
           onCopy: vm.copyToClipboard,
           onCut: vm.cutToClipboard,
           onPaste: vm.pasteInto,
@@ -1143,6 +1404,22 @@ class _TreePanel extends StatelessWidget {
                   // (project.path é vazio).
                   workspaceRoot: vm.treeRootPath,
                 ),
+          galleryPanel: vm.selectedProject == null
+              ? null
+              : GalleryPanel(
+                  onCreate: (t) => _createFromGallery(context, vm, t),
+                ),
+          // Telemetry (plano 66): casos do workspace ativo. Remoto ainda não
+          // tem base no host (passo 12), então só workspace local com pasta.
+          telemetryPanel:
+              vm.selectedProject == null ||
+                  vm.selectedProject!.isRemoteTerminal ||
+                  vm.selectedProject!.path.isEmpty
+              ? null
+              : TelemetryPanel(
+                  workspaceId: vm.selectedProject!.id,
+                  roots: vm.treeRoots,
+                ),
           // Task Run funciona local E remoto: no remoto a
           // descoberta lê o tasks.json do host (RemoteTask
           // Discovery) e a execução spawna PTY no host
@@ -1156,6 +1433,7 @@ class _TreePanel extends StatelessWidget {
                   // (treeRootPath = remotePath); local usa o
                   // path do projeto.
                   cwd: vm.treeRootPath,
+                  activeFile: vm.selectedFileInTree ?? '',
                   listHeight: tasksHeight,
                   onResizeDelta: onTasksResize,
                   onResizeEnd: onTasksResizeEnd,
@@ -1168,7 +1446,11 @@ class _TreePanel extends StatelessWidget {
           right: handleOnLeft ? null : 0,
           top: 0,
           bottom: 0,
-          child: _ResizeHandle(onDelta: onResizeTree),
+          child: _ResizeHandle(
+            onStart: onResizeTreeStart,
+            onDelta: onResizeTree,
+            onEnd: onResizeTreeEnd,
+          ),
         ),
       ],
     );
@@ -1245,18 +1527,37 @@ class _PanelScaffold extends StatelessWidget {
 }
 
 class _ResizeHandle extends StatelessWidget {
-  const _ResizeHandle({required this.onDelta});
+  const _ResizeHandle({
+    required this.onStart,
+    required this.onDelta,
+    required this.onEnd,
+  });
+
+  /// Começo do arraste: o painel dono fotografa a largura atual (ver
+  /// [_CockpitPageState._beginPanelDrag]).
+  final VoidCallback onStart;
 
   /// Delta horizontal do arraste (px).
   final ValueChanged<double> onDelta;
+
+  /// Fim (ou cancelamento) do arraste. **Cancelamento também chama**: sem
+  /// isso um arraste interrompido pela arena deixaria o cursor de resize
+  /// preso e o estado de arraste ligado.
+  final VoidCallback onEnd;
 
   @override
   Widget build(BuildContext context) {
     return MouseRegion(
       cursor: SystemMouseCursors.resizeLeftRight,
       child: GestureDetector(
-        behavior: HitTestBehavior.translucent,
+        // OPAQUE, não translucent: a faixa é um divisor, e nada atrás dela
+        // precisa do ponteiro. Com `translucent` o hit test seguia para os
+        // widgets de baixo, que entravam na arena junto com o arraste.
+        behavior: HitTestBehavior.opaque,
+        onHorizontalDragStart: (_) => onStart(),
         onHorizontalDragUpdate: (d) => onDelta(d.delta.dx),
+        onHorizontalDragEnd: (_) => onEnd(),
+        onHorizontalDragCancel: onEnd,
         child: const SizedBox(width: 8),
       ),
     );

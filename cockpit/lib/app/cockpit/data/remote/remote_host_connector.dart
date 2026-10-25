@@ -1,20 +1,22 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:crypto/crypto.dart' show sha256;
-
 import 'package:cockpit/app/cockpit/data/remote/dartssh_host_connection.dart';
-import 'package:cockpit/app/cockpit/data/remote/ssh_channel_duplex.dart';
+import 'package:cockpit/app/cockpit/data/remote/mobile_ssh_key_store.dart';
+import 'package:cockpit/app/cockpit/data/remote/reconnect_scheduler.dart';
+import 'package:cockpit/app/cockpit/data/remote/ssh_worker_connection.dart';
 import 'package:cockpit/app/cockpit/data/remote/host_shell/host_shell.dart';
 import 'package:cockpit/app/cockpit/data/remote/host_shell/posix_host_shell.dart';
 import 'package:cockpit/app/cockpit/data/remote/host_shell/windows_host_shell.dart';
 import 'package:cockpit/app/cockpit/data/remote/ssh_known_hosts.dart';
 import 'package:cockpit/app/cockpit/data/remote/ssh_tunnel.dart';
-import 'package:cockpit/app/cockpit/domain/contracts/ssh_tunnel.dart'
-    show HostKeyPrompt, HostKeyVerdict;
 import 'package:cockpit/app/cockpit/domain/entities/remote_host.dart';
 import 'package:cockpit/app/core/utils/platform_kind.dart';
-import 'package:cockpit_core/cockpit_core.dart';
+// O motor de túnel de BANCO também exporta `SshTunnel`/`SshTunnelException`,
+// e este arquivo tem os seus próprios (o túnel do HOST remoto, outra coisa).
+// Esconde os do banco: aqui só interessam os tipos de host key.
+import 'package:cockpit_core/cockpit_core.dart'
+    hide SshTunnel, SshTunnelImpl, SshTunnelException;
 import 'package:cockpit_remote/cockpit_remote.dart';
 
 /// Estado observável da conexão com um host (badge/telas da UI, plano 58).
@@ -57,6 +59,19 @@ enum RemoteHostErrorKind {
   hostKeyChanged,
 }
 
+/// Gate one-shot que só fecha depois de um probe concluído. Exceção mantém o
+/// gate aberto para o retry; separado para testar a semântica sem SSH real.
+class ServerFreshnessProbeGate {
+  bool completed = false;
+
+  Future<bool> run(Future<bool> Function() probe) async {
+    if (completed) return false;
+    final result = await probe();
+    completed = true;
+    return result;
+  }
+}
+
 class RemoteHostException implements Exception {
   const RemoteHostException(this.kind, [this.detail]);
   final RemoteHostErrorKind kind;
@@ -83,16 +98,26 @@ class RemoteHostConnector {
     this.passwordResolver,
     this.hostKeyPrompt,
     this.knownHosts = const SshKnownHosts(),
-  });
+    bool Function()? isFocused,
+  }) {
+    _retry = ReconnectScheduler(
+      onAttempt: _attemptReconnect,
+      isFocused: isFocused ?? _alwaysFocused,
+    );
+  }
+
+  static bool _alwaysFocused() => true;
 
   final RemoteHost host;
 
-  /// Resolve o binário local do cockpit-server (o mesmo do sidecar) usado como
-  /// fonte do bootstrap, para a arquitetura pedida (`arm64` | `x64`). Quem
-  /// manda é o `uname -sm` DO HOST, não a arquitetura desta máquina: um bundle
-  /// macOS traz as duas fatias, e mandar a errada instalava um binário que o
-  /// host não executa — falha que só aparecia como "não conectou".
-  final String? Function({String? arch}) localServerBinaryResolver;
+  /// Política de retry (backoff + gate de foco). Ver [ReconnectScheduler].
+  late final ReconnectScheduler _retry;
+
+  /// Resolve o cockpit-server embarcado usado como fonte do bootstrap, para o
+  /// sistema e arquitetura pedidos (`darwin`/`linux`, `arm64`/`x64`). Quem
+  /// manda é o probe DO HOST, não a plataforma desta máquina: uma Release
+  /// macOS também pode trazer um target Linux para workspaces remotos.
+  final String? Function({String? os, String? arch}) localServerBinaryResolver;
 
   /// Resolve a senha SSH do host (auth por senha), lida do Keychain sob
   /// demanda. `null` = auth por chave (default). Plano 60, Wave C.
@@ -108,7 +133,10 @@ class RemoteHostConnector {
   final SshKnownHosts knownHosts;
 
   SshTunnel? _tunnel;
-  DartSshHostConnection? _dartConn;
+
+  /// Transporte do mobile: `dartssh2` numa isolate própria (a cripto em Dart
+  /// puro travava a view quando rodava na principal).
+  SshWorkerConnection? _dartConn;
 
   /// Status de turno (spinner/chime) vindo do host pelo protocolo (Wave G).
   /// Reassina a cada (re)conexão; broadcast pra o controller repassar à VM.
@@ -160,7 +188,7 @@ class RemoteHostConnector {
           // pra trocar o serviço e re-anexar; quando ele só saía pelo caminho
           // do retry, uma reconexão disparada por qualquer outra ação deixava as
           // abas presas ao serviço morto (teclado mudo).
-          _retryStep = 0;
+          _retry.reset();
           if (!_disposed) _reconnected.add(service);
           return service;
         })
@@ -186,6 +214,12 @@ class RemoteHostConnector {
   Future<RemoteGitService> gitService() async {
     await ensure();
     return RemoteGitService(_connection!);
+  }
+
+  /// Execução de processo no host (`exec` remoto). Conecta se preciso.
+  Future<RemoteProcService> procService() async {
+    await ensure();
+    return RemoteProcService(_connection!);
   }
 
   /// Serviço de DB do host (mesma conexão). Conecta se preciso.
@@ -283,12 +317,29 @@ class RemoteHostConnector {
     // pronto — o bootstrap só rodava quando ninguém atendia, então um host
     // instalado uma vez ficava congelado para sempre naquela versão. Uma vez
     // por host por sessão (a comparação custa um SSH).
-    if (connection != null && !_serverFreshnessChecked) {
-      _serverFreshnessChecked = true;
-      if (await _remoteServerIsStale(shell)) {
-        _staleServer = true;
-        await connection.close();
-        connection = null;
+    if (connection != null && !_serverFreshness.completed) {
+      try {
+        if (await _serverFreshness.run(() => _remoteServerIsStale(shell))) {
+          _staleServer = true;
+          await connection.close();
+          connection = null;
+        }
+      } on Object {
+        // O probe usa o mesmo transporte SSH. Se ele falha, não adota a
+        // conexão meio-aberta nem vaza o túnel; e o gate continua aberto para
+        // a próxima tentativa.
+        try {
+          await connection?.close();
+        } on Object {
+          // Preserva a falha original do probe.
+        }
+        try {
+          await tunnel.close();
+        } on Object {
+          // Preserva a falha original do probe.
+        }
+        _tunnel = null;
+        rethrow;
       }
     }
     if (connection == null) {
@@ -322,7 +373,13 @@ class RemoteHostConnector {
       identityFile: host.effectiveIdentityFile,
     );
 
-    final probe = await probeHost(exec);
+    final HostProbe? probe;
+    try {
+      probe = await probeHost(exec);
+    } on HostUnreachableException catch (e) {
+      _setPhase(RemoteHostPhase.failed);
+      throw RemoteHostException(RemoteHostErrorKind.sshUnreachable, e.detail);
+    }
     if (probe == null) {
       _setPhase(RemoteHostPhase.failed);
       throw const RemoteHostException(RemoteHostErrorKind.hostUnknownOs);
@@ -384,7 +441,18 @@ class RemoteHostConnector {
       );
     }
     final endpoint = SshEndpoint(host.user, host.host, host.port);
-    final conn = DartSshHostConnection(endpoint, password: _password);
+    // Chave privada e host key ficam na isolate principal (Keychain é plugin
+    // Flutter): a chave vai em PEM pro worker; a host key volta como pergunta.
+    final hostKeys = MobileSshHostKeyStore();
+    final conn = SshWorkerConnection(
+      endpoint,
+      password: _password,
+      identityPems: _password != null
+          ? const []
+          : [await MobileSshKeyStore().privateKeyPem()],
+      verifyHostKey: (fingerprint) =>
+          hostKeys.verify(endpoint.endpoint, fingerprint),
+    );
     try {
       await conn.connect();
     } on DartSshException catch (e) {
@@ -410,7 +478,12 @@ class RemoteHostConnector {
         List<int>? stdinBytes,
       }) => conn.runDetailed(command);
 
-      final probe = await probeHost(exec);
+      final HostProbe? probe;
+      try {
+        probe = await probeHost(exec);
+      } on HostUnreachableException catch (e) {
+        throw RemoteHostException(RemoteHostErrorKind.sshUnreachable, e.detail);
+      }
       if (probe == null) {
         throw const RemoteHostException(RemoteHostErrorKind.hostUnknownOs);
       }
@@ -433,7 +506,7 @@ class RemoteHostConnector {
       // servidor (decisão D do plano 58), então aqui a única saída é dizer com
       // todas as letras que não há ninguém atendendo, em vez de deixar vazar um
       // `SSHChannelOpenError(2: open failed)` cru, que não diz nada a quem lê.
-      final channel =
+      final duplex =
           await switch (remote) {
             UnixSocketEndpoint(:final path) => conn.forwardUnix(path),
             TcpEndpoint(:final port) => conn.forwardTcp(port),
@@ -444,7 +517,7 @@ class RemoteHostConnector {
             );
           });
       final connection = await RemoteConnection.connectOn(
-        SshChannelDuplex(channel),
+        duplex,
         clientName: 'cockpit-ipad',
         token: remote.token,
       );
@@ -517,40 +590,43 @@ class RemoteHostConnector {
   /// oposto da promessa de retomar de onde parou.
   static const _remoteIdleSeconds = 120;
 
-  /// `true` quando o binário do host **existe mas é diferente** do que este
-  /// cliente instalaria: o processo velho precisa morrer para o novo valer.
+  /// `true` quando o bundle do host difere do que este cliente instalaria: o
+  /// processo velho precisa morrer para a troca transacional valer.
   bool _staleServer = false;
 
   /// A comparação de versão do servidor roda uma vez por host por sessão —
   /// reconectar (o que acontece a cada oscilação de rede) não paga o SSH extra
   /// de novo.
-  bool _serverFreshnessChecked = false;
+  final _serverFreshness = ServerFreshnessProbeGate();
 
-  /// Compara o `cockpit-server` do host com o que este cliente enviaria.
+  /// Compara o manifesto de TODO o bundle com o que este cliente enviaria.
   ///
   /// Só vale quando o cliente é a FONTE da instalação: num host Windows quem
   /// instala é o próprio host, a partir do bundle do app de lá (D2), então o
-  /// binário local desta máquina não é referência de nada — comparar acusaria
-  /// "desatualizado" em todo boot e derrubaria o servidor remoto sem motivo.
+  /// binário local desta máquina não é referência de nada. Para POSIX, o
+  /// resolver devolve `null` se este build não embarca aquele target; nesse
+  /// caso o cliente também não tem autoridade para julgar o servidor remoto.
   Future<bool> _remoteServerIsStale(HostShell shell) async {
     if (shell.installsFromHostBundle) return false;
-    final local = localServerBinaryResolver(arch: shell.probe.arch);
+    final local = localServerBinaryResolver(
+      os: shell.probe.os,
+      arch: shell.probe.arch,
+    );
     if (local == null) return false;
-    final remoteHash = await shell.serverSha256();
-    if (remoteHash == null) return false;
     try {
-      final localHash = sha256.convert(await File(local).readAsBytes());
-      return localHash.toString() != remoteHash;
+      final bundle = ClientBundle(
+        root: File(local).parent.parent.path,
+        serverBinary: local,
+      );
+      final localDigest = (await bundle.buildManifest()).digest;
+      final remoteDigest = await shell.bundleManifestSha256();
+      // Ausência migra instalações antigas (que só comparavam o executável) e
+      // restos de uma instalação interrompida para o formato transacional.
+      return remoteDigest == null || localDigest != remoteDigest;
     } on FileSystemException {
       return false;
     }
   }
-
-  static String get _localOsName => Platform.isMacOS
-      ? 'darwin'
-      : Platform.isLinux
-      ? 'linux'
-      : 'windows';
 
   Future<void> _installAndStartServer(HostShell shell) async {
     var installed = await shell.serverInstalled();
@@ -568,18 +644,13 @@ class RemoteHostConnector {
           );
         }
       } else {
-        // POSIX: o bundle vem DESTE cliente, então precisa ser da plataforma
-        // do host. Antes o Mach-O do macOS era empurrado pra qualquer host e o
-        // servidor morria no `nohup` sem deixar rastro.
-        if (shell.probe.os != _localOsName) {
-          _setPhase(RemoteHostPhase.failed);
-          throw RemoteHostException(
-            RemoteHostErrorKind.serverInstallFailed,
-            'host runs ${shell.probe.os}; '
-            'this build only ships a $_localOsName cockpit-server',
-          );
-        }
-        final binary = localServerBinaryResolver(arch: shell.probe.arch);
+        // POSIX: o bundle vem DESTE cliente e o resolver exige um target exato.
+        // Isso evita tanto mandar Mach-O para Linux quanto cair no binário
+        // nativo sem sufixo quando o host roda outra plataforma.
+        final binary = localServerBinaryResolver(
+          os: shell.probe.os,
+          arch: shell.probe.arch,
+        );
         if (binary == null) {
           _setPhase(RemoteHostPhase.failed);
           throw RemoteHostException(
@@ -595,7 +666,6 @@ class RemoteHostConnector {
         // isso que só acontece quando o binário realmente mudou.
         if (_staleServer) {
           await shell.killServer();
-          _staleServer = false;
         }
         try {
           await shell.installFromClient(
@@ -604,6 +674,8 @@ class RemoteHostConnector {
               serverBinary: binary,
             ),
           );
+          // Só fica fresh DEPOIS de upload, verificação e swap concluírem.
+          _staleServer = false;
         } on HostShellException catch (e) {
           _setPhase(RemoteHostPhase.failed);
           throw RemoteHostException(
@@ -613,11 +685,6 @@ class RemoteHostConnector {
         }
       }
     }
-    if (_staleServer) {
-      await shell.killServer();
-      _staleServer = false;
-    }
-
     try {
       await shell.startServer(idleSeconds: _remoteIdleSeconds);
     } on HostShellException catch (e) {
@@ -631,21 +698,9 @@ class RemoteHostConnector {
 
   // --- Reconexão automática -------------------------------------------------
   //
-  // Backoff crescente que NUNCA desiste (decisão do usuário): 1s, 2s, 4s, 8s,
-  // 15s e daí 30s fixo. O teto no intervalo (e não no número de tentativas) é
-  // o que mantém "insiste pra sempre" sem martelar a rede — num iPad, um socket
-  // a cada 30s é desprezível perto de tentar a cada segundo.
-  static const List<Duration> _backoff = <Duration>[
-    Duration(seconds: 1),
-    Duration(seconds: 2),
-    Duration(seconds: 4),
-    Duration(seconds: 8),
-    Duration(seconds: 15),
-    Duration(seconds: 30),
-  ];
-
-  Timer? _retryTimer;
-  int _retryStep = 0;
+  // Backoff que NUNCA desiste (decisão do usuário) + gate de foco: o tique só
+  // tenta se o workspace deste host é o selecionado; senão a tentativa fica
+  // adiada até [resumeRetry]. Política e intervalos em [ReconnectScheduler].
   bool _disposed = false;
 
   /// Emite quando a conexão é REFEITA — os gateways de terminal usam pra
@@ -662,14 +717,19 @@ class RemoteHostConnector {
   }
 
   void _scheduleRetry() {
-    if (_disposed || _retryTimer != null) return;
-    final delay = _backoff[_retryStep.clamp(0, _backoff.length - 1)];
-    if (_retryStep < _backoff.length - 1) _retryStep++;
-    _retryTimer = Timer(delay, () {
-      _retryTimer = null;
-      _attemptReconnect();
-    });
+    if (_disposed) return;
+    _retry.schedule();
   }
+
+  /// O workspace deste host voltou a ser o selecionado: se uma tentativa de
+  /// reconexão ficou adiada por falta de foco, dispara agora.
+  void resumeRetry() {
+    if (_disposed) return;
+    _retry.resume();
+  }
+
+  /// Há tentativa de reconexão esperando o foco voltar (pro badge da UI).
+  bool get isRetryDeferred => _retry.isDeferred;
 
   Future<void> _attemptReconnect() async {
     if (_disposed) return;
@@ -699,9 +759,7 @@ class RemoteHostConnector {
   /// já pendurada: da UI, parecia que o botão não fazia nada.
   Future<void> reconnectNow() async {
     if (_disposed) return;
-    _retryTimer?.cancel();
-    _retryTimer = null;
-    _retryStep = 0;
+    _retry.reset();
     // Feedback imediato: o abort abaixo pode levar um instante (fechar socket,
     // esperar a tentativa pendurada morrer) e o clique não pode parecer inerte.
     _setPhase(RemoteHostPhase.openingTunnel);
@@ -757,8 +815,7 @@ class RemoteHostConnector {
 
   Future<void> dispose() async {
     _disposed = true;
-    _retryTimer?.cancel();
-    _retryTimer = null;
+    _retry.dispose();
     await _reconnected.close();
     await _turnSub?.cancel();
     await _turnStatus.close();

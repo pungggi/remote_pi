@@ -10,6 +10,14 @@
 analyzer:
   exclude:
     - build/**
+    # Pacotes internos têm pubspec e contexto próprios (dev-dep `test` que a
+    # raiz não tem): analisá-los daqui só produz `undefined_function` falso.
+    # Rode `dart analyze` dentro de cada packages/<nome>/ quando mexer neles.
+    - packages/**
+    # Plugins absorvidos (código de terceiros com lints próprios).
+    - plugins/**
+    # Scripts ad hoc de wave (dependem de pacotes fora do grafo da raiz).
+    - tool/wave*/**
     - android/**
     - ios/**
     - web/**

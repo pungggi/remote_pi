@@ -13,6 +13,9 @@
 library;
 
 import 'dart:convert';
+import 'dart:io';
+
+import 'package:crypto/crypto.dart' show sha256;
 
 /// Como alcançar o `cockpit-server` de um host.
 ///
@@ -83,7 +86,70 @@ class ClientBundle {
   /// Raiz do bundle: `<root>/bin/cockpit-server` + `<root>/lib/*`.
   final String root;
   final String serverBinary;
+
+  /// Arquivos que realmente chegam ao host, com seus nomes canônicos lá.
+  ///
+  /// O bundle macOS universal pode selecionar `cockpit-server-arm64`, mas o
+  /// host sempre o recebe como `bin/cockpit-server`; o manifesto descreve o
+  /// destino, não o nome incidental da fatia local.
+  List<ClientBundleFile> deployedFiles() {
+    final files = <ClientBundleFile>[
+      ClientBundleFile(serverBinary, 'bin/cockpit-server'),
+    ];
+    final cli = File('$root/bin/cockpit');
+    if (cli.existsSync()) files.add(ClientBundleFile(cli.path, 'bin/cockpit'));
+
+    final libDir = Directory('$root/lib');
+    if (libDir.existsSync()) {
+      final libs = libDir.listSync().whereType<File>().toList()
+        ..sort((a, b) => a.path.compareTo(b.path));
+      for (final lib in libs) {
+        files.add(
+          ClientBundleFile(lib.path, 'lib/${_bundleBasename(lib.path)}'),
+        );
+      }
+    }
+    files.sort((a, b) => a.remotePath.compareTo(b.remotePath));
+    return files;
+  }
+
+  /// Manifesto `sha256sum -c` determinístico de TODO arquivo implantado.
+  /// O digest do próprio manifesto é o marcador barato de freshness.
+  Future<ClientBundleManifest> buildManifest() async {
+    final files = deployedFiles();
+    final lines = <String>[];
+    for (final file in files) {
+      final digest = sha256.convert(await File(file.localPath).readAsBytes());
+      lines.add('$digest  ${file.remotePath}');
+    }
+    final contents = '${lines.join('\n')}\n';
+    return ClientBundleManifest(
+      files: files,
+      contents: contents,
+      digest: sha256.convert(utf8.encode(contents)).toString(),
+    );
+  }
 }
+
+class ClientBundleFile {
+  const ClientBundleFile(this.localPath, this.remotePath);
+  final String localPath;
+  final String remotePath;
+}
+
+class ClientBundleManifest {
+  const ClientBundleManifest({
+    required this.files,
+    required this.contents,
+    required this.digest,
+  });
+
+  final List<ClientBundleFile> files;
+  final String contents;
+  final String digest;
+}
+
+String _bundleBasename(String path) => path.split(Platform.pathSeparator).last;
 
 /// Executor de comandos no host. É sempre o mesmo canal SSH do resto do
 /// conector — o dialeto decide o texto do comando, não como ele viaja.
@@ -127,10 +193,15 @@ abstract class HostShell {
   Future<bool> serverInstalled();
 
   /// SHA-256 do binário do servidor no host, ou `null` se indisponível.
-  /// Na dúvida devolve `null`: não se mexe num servidor que está funcionando.
+  /// Mantido para os dialetos/testes existentes; freshness POSIX usa o
+  /// manifesto completo abaixo.
   Future<String?> serverSha256();
 
-  /// Derruba o servidor em execução (troca de binário desatualizado).
+  /// SHA-256 do manifesto instalado por último. Dialetos que instalam a partir
+  /// do próprio host (Windows) não usam este marcador.
+  Future<String?> bundleManifestSha256() async => null;
+
+  /// Derruba o servidor em execução (troca de bundle desatualizado).
   Future<void> killServer();
 
   /// Instala a partir do bundle do CLIENTE (POSIX). Lança em falha.
@@ -147,14 +218,36 @@ abstract class HostShell {
   Future<String> tailBootLog({int bytes = 2000});
 }
 
+/// Exit code que o `ssh` reserva pra falha do próprio transporte (não do
+/// comando remoto): host inalcançável, conexão recusada, auth negada.
+const int kSshTransportExitCode = 255;
+
+/// O `ssh` não chegou ao host (ver [kSshTransportExitCode]). [detail] é o
+/// stderr cru do ssh, pra UI interpolar.
+class HostUnreachableException implements Exception {
+  const HostUnreachableException(this.detail);
+  final String detail;
+
+  @override
+  String toString() => 'HostUnreachableException($detail)';
+}
+
 /// Descobre o dialeto do host com **um** comando.
 ///
 /// Tenta POSIX primeiro (`uname -sm` + `$HOME`); esse mesmo comando já traz
 /// tudo que o antigo `printf %s "$HOME"` do `SshTunnel.open` buscava, então o
 /// caminho POSIX não paga round-trip novo. Só quando ele falha é que vale
 /// perguntar em PowerShell — num host POSIX essa segunda pergunta nunca ocorre.
+///
+/// Lança [HostUnreachableException] quando o próprio `ssh` falha (exit 255:
+/// timeout, recusa, DNS). Sem isso a falha de transporte caía no probe de
+/// PowerShell, que também falhava, e o host fora do ar virava "sistema
+/// desconhecido" — diagnóstico errado, e o kind errado na UI.
 Future<HostProbe?> probeHost(HostExec exec) async {
-  final (code, out, _) = await exec(r'uname -sm && printf %s "$HOME"');
+  final (code, out, err) = await exec(r'uname -sm && printf %s "$HOME"');
+  if (code == kSshTransportExitCode) {
+    throw HostUnreachableException(err.trim());
+  }
   if (code == 0) {
     final lines = out.trim().split('\n');
     if (lines.length >= 2) {

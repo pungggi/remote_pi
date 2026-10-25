@@ -53,7 +53,10 @@ static void *read_loop(void *arg)
 {
     ReadLoopOptions *options = (ReadLoopOptions *)arg;
 
-    char buffer[1024];
+    // 64 KB: uma rajada (redraw de TUI, `cat` grande) vira poucos chunks em
+    // vez de dezenas — cada chunk é uma mensagem, e no remoto um pacote SSH.
+    // Latência não muda: read() devolve o que há, não espera encher.
+    char buffer[64 * 1024];
 
     while (1)
     {
@@ -286,4 +289,9 @@ FFI_PLUGIN_EXPORT int pty_getpid(PtyHandle *handle)
 FFI_PLUGIN_EXPORT char *pty_error(void)
 {
     return NULL;
+}
+
+FFI_PLUGIN_EXPORT int pty_conpty_bundled(void)
+{
+    return 0;
 }

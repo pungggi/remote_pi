@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_status_server.dart';
+import 'package:cockpit/app/core/data/diagnostics/diagnostics_log.dart';
 import 'package:cockpit/app/core/data/setup/remote_pi_resolver.dart';
 import 'package:flutter/foundation.dart';
 
@@ -92,6 +93,7 @@ class TerminalStatusServerImpl implements TerminalStatusServer {
       if (Platform.isWindows) {
         _token = _randomToken();
         _server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+        await _writeEndpointFile();
       } else {
         final file = File(_socketPath);
         await file.parent.create(recursive: true);
@@ -110,9 +112,16 @@ class TerminalStatusServerImpl implements TerminalStatusServer {
     }
   }
 
-  /// Grava o endpoint em disco (best-effort — nunca quebra o boot). Deletado
-  /// no [stop]; um app morto sem [stop] deixa o arquivo órfão, e o leitor
-  /// externo reporta o erro de conexão de forma acionável.
+  /// Windows CLI/second-instance discovery (upstream): `{port, tok}` in the
+  /// well-known status file. Uses the injectable home for hermetic tests.
+  String get _endpointFilePath {
+    final home = _home ?? Directory.systemTemp.path;
+    final suffix = kDebugMode ? '-debug' : '';
+    return '$home/.cockpit/status$suffix.json';
+  }
+
+  /// Publish BOTH contracts: remote-pi reads [_endpointPath] on every OS,
+  /// while the Windows CLI and second-instance channel read [_endpointFilePath].
   Future<void> _writeEndpointFile() async {
     final server = _server;
     if (server == null) return;
@@ -122,9 +131,18 @@ class TerminalStatusServerImpl implements TerminalStatusServer {
       final payload = Platform.isWindows
           ? {'port': server.port, 'token': _token}
           : {'sock': _socketPath};
-      await file.writeAsString(jsonEncode(payload));
-    } catch (_) {
-      // best-effort: o hookEnv (env das abas) continua sendo o caminho primário.
+      await file.writeAsString(jsonEncode(payload), flush: true);
+      if (Platform.isWindows) {
+        final cliFile = File(_endpointFilePath);
+        await cliFile.parent.create(recursive: true);
+        await cliFile.writeAsString(
+          jsonEncode({'port': server.port, 'tok': _token}),
+          flush: true,
+        );
+      }
+    } catch (e) {
+      // best-effort: hookEnv remains the primary path for Cockpit-owned PTYs.
+      if (kDebugMode) debugPrint('[status-server] endpoint file: $e');
     }
   }
 
@@ -154,8 +172,9 @@ class TerminalStatusServerImpl implements TerminalStatusServer {
             handled = true;
             await sub.cancel();
             String? response;
+            void Function()? after;
             try {
-              response = await _dispatch(line);
+              (response, after) = await _dispatch(line);
             } catch (_) {
               response = null;
             }
@@ -168,6 +187,10 @@ class TerminalStatusServerImpl implements TerminalStatusServer {
               }
             }
             socket.destroy();
+            // Efeito pós-resposta (ver `CockpitCommandResult.afterResponse`):
+            // só aqui o `close-tab` da própria aba pode matar o PTY sem levar
+            // junto o `cockpit` que esperava o `ok`.
+            after?.call();
           },
           onError: (_) => socket.destroy(),
           onDone: () {
@@ -178,27 +201,32 @@ class TerminalStatusServerImpl implements TerminalStatusServer {
   }
 
   /// Processa uma linha JSON. Devolve a linha de resposta a escrever de volta
-  /// (comandos da CLI), ou `null` quando não há resposta (status do hook).
-  Future<String?> _dispatch(String raw) async {
+  /// (comandos da CLI) — `null` quando não há resposta (status do hook) — e o
+  /// efeito a rodar DEPOIS de a resposta ter saído (ver
+  /// `CockpitCommandResult.afterResponse`).
+  Future<(String?, void Function()?)> _dispatch(String raw) async {
     final line = raw.trim();
-    if (line.isEmpty) return null;
+    if (line.isEmpty) return (null, null);
     try {
       final decoded = jsonDecode(line);
-      if (decoded is! Map) return null;
+      if (decoded is! Map) return (null, null);
       final isCmd = decoded['type'] == 'cmd';
       // No Windows/TCP, exige o token (anti-spoof do loopback).
       if (_token != null && decoded['tok'] != _token) {
-        return isCmd
-            ? jsonEncode(
-                const CockpitCommandResult.fail('invalid token').toJson(),
-              )
-            : null;
+        return (
+          isCmd
+              ? jsonEncode(
+                  const CockpitCommandResult.fail('invalid token').toJson(),
+                )
+              : null,
+          null,
+        );
       }
-      if (isCmd) return _dispatchCommand(decoded);
+      if (isCmd) return await _dispatchCommand(decoded);
       // Caminho de status (default / `type` ausente): fire-and-forget.
       final paneId = (decoded['paneId'] ?? '').toString();
       final status = (decoded['st'] ?? '').toString();
-      if (paneId.isEmpty || status.isEmpty) return null;
+      if (paneId.isEmpty || status.isEmpty) return (null, null);
       final sid = (decoded['sid'] ?? '').toString();
       final tx = (decoded['tx'] ?? '').toString();
       final ev = (decoded['ev'] ?? '').toString();
@@ -213,18 +241,31 @@ class TerminalStatusServerImpl implements TerminalStatusServer {
           harness: hn.isEmpty ? null : hn,
         ),
       );
-      return null;
-    } catch (_) {
+      return (null, null);
+    } on Object catch (e) {
       // linha malformada: sem resposta (a CLI reporta timeout/erro de leitura).
-      return null;
+      // Leva um trecho da linha: sem ele o aviso era indiagnosticavel
+      // (caso ev_6vw da Telemetria do app).
+      final sample = line.length > 200 ? '${line.substring(0, 200)}…' : line;
+      DiagnosticsLog.instance.warn(
+        'cli-socket',
+        'malformed line: $sample',
+        error: e,
+      );
+      return (null, null);
     }
   }
 
-  Future<String?> _dispatchCommand(Map<dynamic, dynamic> decoded) async {
+  Future<(String?, void Function()?)> _dispatchCommand(
+    Map<dynamic, dynamic> decoded,
+  ) async {
     final handler = _onCommand;
     if (handler == null) {
-      return jsonEncode(
-        const CockpitCommandResult.fail('commands unavailable').toJson(),
+      return (
+        jsonEncode(
+          const CockpitCommandResult.fail('commands unavailable').toJson(),
+        ),
+        null,
       );
     }
     final tabRaw = (decoded['tabId'] ?? '').toString();
@@ -237,7 +278,7 @@ class TerminalStatusServerImpl implements TerminalStatusServer {
           : const <String, dynamic>{},
     );
     final result = await handler(command);
-    return jsonEncode(result.toJson());
+    return (jsonEncode(result.toJson()), result.afterResponse);
   }
 
   @override
@@ -246,15 +287,17 @@ class TerminalStatusServerImpl implements TerminalStatusServer {
     _server = null;
     _onUpdate = null;
     _token = null;
-    try {
-      final file = File(_endpointPath);
-      if (await file.exists()) await file.delete();
-    } catch (_) {}
-    if (!Platform.isWindows) {
+    final paths = <String>[
+      _endpointPath,
+      if (Platform.isWindows) _endpointFilePath else _socketPath,
+    ];
+    for (final path in paths) {
       try {
-        final file = File(_socketPath);
+        final file = File(path);
         if (await file.exists()) await file.delete();
-      } catch (_) {}
+      } on Object catch (_) {
+        // best-effort: a stale socket/endpoint is removed on the next start.
+      }
     }
   }
 }

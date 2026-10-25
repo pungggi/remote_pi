@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://raw.githubusercontent.com/jacobaraujo7/remote_pi/main/cockpit/docs/theme.schema.json",
+  "$id": "https://raw.githubusercontent.com/pungggi/remote_pi/main/cockpit/docs/theme.schema.json",
   "title": "Cockpit theme",
   "description": "Schema de um tema do Cockpit — ver cockpit/docs/theme-format.md",
   "type": "object",

@@ -1,9 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 
-import 'package:cockpit/app/cockpit/data/remote/mobile_ssh_key_store.dart';
 import 'package:dartssh2/dartssh2.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+/// Decide se a host key apresentada por um destino é aceita. Recebe o
+/// fingerprint textual do `dartssh2`; `false` = recusa (a conexão falha com
+/// `ssh_host_key_changed`). A política (TOFU + Keychain) vive fora desta
+/// classe — ela precisa de plugin Flutter, e esta classe roda também numa
+/// isolate secundária, onde plugin não existe. Ver [SshWorkerConnection].
+typedef HostKeyVerifier = Future<bool> Function(String fingerprint);
 
 /// Endpoint SSH parseado de um `sshTarget` (`user@host[:port]`).
 class SshEndpoint {
@@ -50,25 +57,29 @@ class DartSshException implements Exception {
 }
 
 /// Conexão SSH em Dart puro (`dartssh2`) para o **mobile** (plano 59): autentica
-/// com a chave do dispositivo ([MobileSshKeyStore]) e encaminha pro socket UNIX
-/// remoto do `cockpit-server` via `forwardLocalUnix` (`direct-streamlocal`).
+/// com a chave do dispositivo (PEM em [identityPems]) ou senha, e encaminha pro
+/// socket do `cockpit-server` remoto via `forwardLocalUnix`/`forwardLocal`.
 ///
-/// Host-key **TOFU**: chave desconhecida é confiada e persistida na 1ª conexão;
-/// chave que MUDOU é recusada (possível MITM ou servidor reinstalado). O store é
-/// o `flutter_secure_storage` (Keychain/Keystore).
+/// **Sem dependência de plugin Flutter** — de propósito: toda a criptografia
+/// do `dartssh2` (AES-CTR + HMAC, Dart puro via pointycastle) roda na isolate
+/// que instancia esta classe, pacote por pacote. Na isolate principal isso
+/// congelava a view do iPad/Android a cada rajada de saída de PTY. Por isso o
+/// connector a instancia dentro de um [SshWorkerConnection] (isolate própria)
+/// e só bytes em claro atravessam pra UI. Chave privada e política de host key
+/// chegam por parâmetro/callback, resolvidos por quem tem acesso ao Keychain.
 class DartSshHostConnection {
   DartSshHostConnection(
     this._endpoint, {
-    MobileSshKeyStore? keyStore,
-    FlutterSecureStorage? storage,
+    required HostKeyVerifier verifyHostKey,
+    List<String> identityPems = const [],
     String? password,
-  }) : _keyStore = keyStore ?? MobileSshKeyStore(),
-       _storage = storage ?? const FlutterSecureStorage(),
+  }) : _verifyHostKey = verifyHostKey, // ignore: prefer_initializing_formals
+       _identityPems = identityPems, // ignore: prefer_initializing_formals
        _password = password; // ignore: prefer_initializing_formals
 
   final SshEndpoint _endpoint;
-  final MobileSshKeyStore _keyStore;
-  final FlutterSecureStorage _storage;
+  final HostKeyVerifier _verifyHostKey;
+  final List<String> _identityPems;
 
   /// Senha (auth por senha, plano 60 Wave C). `null` = auth por chave do
   /// dispositivo. Nunca logada; vem do Keychain via o connector.
@@ -76,7 +87,6 @@ class DartSshHostConnection {
 
   SSHClient? _client;
 
-  static const _hostKeyPrefix = 'cockpit.ssh.hostkey.';
   static const _connectTimeout = Duration(seconds: 15);
 
   Future<void> get done => _client?.done ?? Future<void>.value();
@@ -84,12 +94,14 @@ class DartSshHostConnection {
   /// Abre (autentica) a conexão SSH. Idempotente enquanto viva.
   Future<void> connect() async {
     if (_client != null && !_client!.isClosed) return;
-    final identities = await _keyStore.identities();
+    final identities = [
+      for (final pem in _identityPems) ...SSHKeyPair.fromPem(pem),
+    ];
 
     String? rejection;
     final SSHClient client;
     try {
-      final socket = await SSHSocket.connect(
+      final socket = await _NoDelaySshSocket.connect(
         _endpoint.host,
         _endpoint.port,
         timeout: _connectTimeout,
@@ -103,17 +115,9 @@ class DartSshHostConnection {
         identities: _password != null ? const [] : identities,
         onPasswordRequest: _password != null ? () => _password : null,
         onVerifyHostKey: (type, fingerprint) async {
-          final printed = utf8.decode(fingerprint);
-          final key = '$_hostKeyPrefix${_endpoint.endpoint}';
-          final known = await _storage.read(key: key);
-          if (known == printed) return true;
-          if (known != null) {
-            rejection = 'ssh_host_key_changed';
-            return false;
-          }
-          // TOFU: 1ª vez → confia e persiste.
-          await _storage.write(key: key, value: printed);
-          return true;
+          final accepted = await _verifyHostKey(utf8.decode(fingerprint));
+          if (!accepted) rejection = 'ssh_host_key_changed';
+          return accepted;
         },
       );
       // Teto no handshake/auth: o timeout do [SSHSocket.connect] cobre só o
@@ -217,4 +221,44 @@ class DartSshHostConnection {
     _client?.close();
     _client = null;
   }
+}
+
+/// [SSHSocket] sobre o `Socket` do `dart:io` com **`TCP_NODELAY`** ligado.
+///
+/// O `SSHSocket.connect` do `dartssh2` deixa o Nagle ativo. Com ele, um pacote
+/// pequeno (uma tecla, um `pty.ack`) pode ficar retido até o ACK TCP do pacote
+/// anterior — dezenas de ms numa rede móvel, sentidos direto no eco da
+/// digitação. Terminal interativo é o caso clássico em que Nagle atrapalha.
+class _NoDelaySshSocket implements SSHSocket {
+  _NoDelaySshSocket._(this._socket);
+
+  final Socket _socket;
+
+  static Future<SSHSocket> connect(
+    String host,
+    int port, {
+    Duration? timeout,
+  }) async {
+    final socket = await Socket.connect(host, port, timeout: timeout);
+    socket.setOption(SocketOption.tcpNoDelay, true);
+    return _NoDelaySshSocket._(socket);
+  }
+
+  @override
+  Stream<Uint8List> get stream => _socket;
+
+  @override
+  StreamSink<List<int>> get sink => _socket;
+
+  @override
+  Future<void> close() => _socket.close();
+
+  @override
+  Future<void> get done => _socket.done;
+
+  @override
+  void destroy() => _socket.destroy();
+
+  @override
+  Future<void> flush() => _socket.flush();
 }

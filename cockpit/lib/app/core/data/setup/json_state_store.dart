@@ -49,6 +49,17 @@ class JsonStateStore {
   /// Caminho do arquivo persistido (útil em teste/diagnóstico).
   String get path => _file.path;
 
+  /// Relê o arquivo do disco por cima do estado em memória. Pra um SEGUNDO
+  /// processo/engine (janela de documento) acompanhar o que o app principal
+  /// gravou. No-op se há gravação pendente aqui (a nossa versão é a mais nova).
+  Future<void> reload() async {
+    if (_disposed || _pending != null) return;
+    final fresh = await _load(_file);
+    _data
+      ..clear()
+      ..addAll(fresh);
+  }
+
   /// Abre (ou devolve a instância já aberta de) `<dir>/<name>.json`.
   static Future<JsonStateStore> open(String dir, String name) async {
     // `p.join`/`p.normalize`: no Windows `dir` vem com `\` — nada de

@@ -61,7 +61,11 @@ class NativeFileService implements FileService {
   @override
   Future<void> write(String path, Uint8List bytes) async {
     try {
-      await File(path).writeAsBytes(bytes, flush: true);
+      // Pasta-pai ausente é criada (ex.: `.cockpit/tasks.json` num workspace
+      // que nunca teve `.cockpit/`) — mesmo contrato do `File.create`.
+      final file = File(path);
+      await file.parent.create(recursive: true);
+      await file.writeAsBytes(bytes, flush: true);
     } on FileSystemException catch (e) {
       throw FileException(FileErrorKind.io, e.message);
     }

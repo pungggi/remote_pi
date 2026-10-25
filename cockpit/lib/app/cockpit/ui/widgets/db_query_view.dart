@@ -65,6 +65,13 @@ class _DbQueryViewState extends State<DbQueryView> {
 
   bool _running = false;
 
+  /// Último `session.loading` visto. A aba nasce em `loading` com a `view`
+  /// vazia e o conteúdo chega depois (async, local ou remoto) — sem este
+  /// marcador a **chegada** do arquivo seria lida como escrita externa e
+  /// dispararia o auto-run, executando o `.dbq` inteiro (DDL/INSERT incluso)
+  /// só por abrir a aba.
+  late bool _lastLoading;
+
   /// Estado de view (resultado, split, larguras…) — mora no
   /// [DatabaseViewModel] pra sobreviver ao re-mount quando a tab muda de pane
   /// (o widget State morre; a session e este side-car não).
@@ -74,6 +81,7 @@ class _DbQueryViewState extends State<DbQueryView> {
   void initState() {
     super.initState();
     _view = context.read<DatabaseViewModel>().tabStateFor(widget.session.id);
+    _lastLoading = widget.session.loading;
     _baseline = _diskText();
     final doc = DbqDocument.parse(_baseline);
     _connName = doc.db;
@@ -144,8 +152,23 @@ class _DbQueryViewState extends State<DbQueryView> {
   void _onSession() {
     if (widget.session.scratch) return; // untitled: nada vem do disco
     final text = _diskText();
+    // Fim do carregamento inicial: adota o conteúdo como baseline e **não**
+    // executa. Abrir arquivo nunca roda SQL.
+    if (_lastLoading && !widget.session.loading) {
+      _lastLoading = false;
+      _adopt(text);
+      return;
+    }
+    _lastLoading = widget.session.loading;
     if (text == _baseline) return;
     if (widget.session.dirty) return; // edição local vence; não sobrescreve
+    _adopt(text);
+    if (_connName != null) _run(auto: true);
+  }
+
+  /// Traz o conteúdo do disco pro buffer (baseline + frontmatter + SQL), sem
+  /// executar nada.
+  void _adopt(String text) {
     final doc = DbqDocument.parse(text);
     setState(() {
       _baseline = text;
@@ -153,7 +176,6 @@ class _DbQueryViewState extends State<DbQueryView> {
       _limit = doc.limit;
       if (_sql.text != doc.sql) _sql.text = doc.sql;
     });
-    if (_connName != null) _run(auto: true);
   }
 
   Future<bool> _save() async {

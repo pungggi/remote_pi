@@ -26,7 +26,7 @@
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Remote Pi Cockpit</string>
+	<string>Piper Cockpit</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -62,5 +62,129 @@
 	<true/>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
+	<!-- Tipos de documento (janela de documento, 2.0): os formatos PRÓPRIOS
+	     são "Owner" (duplo clique abre no Cockpit); markdown e .http ficam
+	     como "Alternate" (aparecem em "Abrir com", sem roubar o padrão de
+	     quem usa Obsidian/Typora). O .notebook é uma PASTA-pacote. -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Cockpit Kanban Board</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array><string>ch.pungitore.piper.cockpit.kanban</string></array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Cockpit Notebook</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSTypeIsPackage</key>
+			<true/>
+			<key>LSItemContentTypes</key>
+			<array><string>ch.pungitore.piper.cockpit.notebook</string></array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Cockpit Pane Layout</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array><string>ch.pungitore.piper.cockpit.layout</string></array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Cockpit Database Query</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array><string>ch.pungitore.piper.cockpit.dbquery</string></array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Markdown</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array><string>net.daringfireball.markdown</string></array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Text</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array><string>public.plain-text</string><string>public.source-code</string></array>
+		</dict>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>ch.pungitore.piper.cockpit.kanban</string>
+			<key>UTTypeDescription</key>
+			<string>Cockpit Kanban Board</string>
+			<key>UTTypeConformsTo</key>
+			<array><string>net.daringfireball.markdown</string><string>public.plain-text</string></array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array><string>kanban</string></array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>ch.pungitore.piper.cockpit.notebook</string>
+			<key>UTTypeDescription</key>
+			<string>Cockpit Notebook</string>
+			<key>UTTypeConformsTo</key>
+			<array><string>com.apple.package</string></array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array><string>notebook</string></array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>ch.pungitore.piper.cockpit.layout</string>
+			<key>UTTypeDescription</key>
+			<string>Cockpit Pane Layout</string>
+			<key>UTTypeConformsTo</key>
+			<array><string>public.yaml</string><string>public.plain-text</string></array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array><string>ckp</string></array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>ch.pungitore.piper.cockpit.dbquery</string>
+			<key>UTTypeDescription</key>
+			<string>Cockpit Database Query</string>
+			<key>UTTypeConformsTo</key>
+			<array><string>public.plain-text</string></array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array><string>dbq</string></array>
+			</dict>
+		</dict>
+	</array>
 </dict>
 </plist>

@@ -1,54 +1,65 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
 import 'package:cockpit/app/cockpit/domain/entities/browser_capability.dart';
+import 'package:cockpit/app/cockpit/domain/entities/db_connection.dart';
 import 'package:cockpit/app/cockpit/ui/actions/tab_actions.dart';
-import 'package:cockpit/app/cockpit/ui/session/agent_session.dart';
+import 'package:cockpit/app/cockpit/ui/document/document_windows.dart';
 import 'package:cockpit/app/cockpit/ui/session/browser_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/diff_viewer_session.dart';
+import 'package:cockpit/app/cockpit/ui/session/empty_tab.dart';
 import 'package:cockpit/app/cockpit/ui/session/file_viewer_session.dart';
-import 'package:cockpit/app/cockpit/ui/session/pane_item.dart';
 import 'package:cockpit/app/cockpit/ui/session/mongo_browser_session.dart';
+import 'package:cockpit/app/cockpit/ui/session/neovim_session.dart';
+import 'package:cockpit/app/cockpit/ui/session/notebook_session.dart';
+import 'package:cockpit/app/cockpit/ui/session/pane_item.dart';
 import 'package:cockpit/app/cockpit/ui/session/redis_browser_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/task_output_session.dart';
+import 'package:cockpit/app/cockpit/ui/session/telemetry_case_session.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/telemetry_case_view.dart';
 import 'package:cockpit/app/cockpit/ui/session/terminal_session.dart';
 import 'package:cockpit/app/cockpit/ui/states/pane_node.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/cockpit_viewmodel.dart';
-import 'package:cockpit/app/core/utils/platform_kind.dart';
-import 'package:cockpit/app/cockpit/ui/viewmodels/setup_viewmodel.dart';
-import 'package:cockpit/app/cockpit/ui/widgets/http_request_view.dart';
-import 'package:cockpit/app/cockpit/ui/widgets/agent_composer.dart';
-import 'package:cockpit/app/cockpit/ui/widgets/agent_setup_checklist.dart';
-import 'package:cockpit/app/cockpit/ui/widgets/agent_transcript.dart';
-import 'package:cockpit/app/cockpit/ui/widgets/browser_pane.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/active_listenable_builder.dart';
-import 'package:cockpit/app/core/domain/entities/terminal_profile.dart';
-import 'package:cockpit/app/core/ui/widgets/app_menu.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/adaptive_terminal_pane.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/browser_pane.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/confirm_dialog.dart';
-import 'package:cockpit/app/cockpit/ui/widgets/empty_pane.dart';
-import 'package:cockpit/app/cockpit/ui/widgets/diff_viewer.dart';
-import 'package:cockpit/app/cockpit/ui/widgets/db_query_view.dart';
-import 'package:cockpit/app/cockpit/domain/entities/db_connection.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/db_engine_icon.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/db_mongo_view.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/db_query_view.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/db_redis_table.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/diff_viewer.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/file_viewer.dart';
-import 'package:cockpit/app/cockpit/ui/widgets/adaptive_terminal_pane.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/http_request_view.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/kanban_board_view.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/panel_view.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/layout_preview_tab.dart';
+import 'package:cockpit/app/cockpit/ui/widgets/notebook_view.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/pane_tab_leading.dart';
+import 'package:cockpit/app/core/domain/entities/terminal_profile.dart';
+import 'package:cockpit/app/core/terminal/xterm/xterm.dart';
 import 'package:cockpit/app/core/ui/file_icons/file_icons.dart';
-import 'package:cockpit/app/core/ui/themes/themes.dart';
-import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
 import 'package:cockpit/app/core/ui/settings_controller.dart';
+import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:cockpit/app/core/ui/widgets/app_menu.dart';
+import 'package:cockpit/app/core/ui/widgets/app_tooltip.dart';
+import 'package:cockpit/app/core/ui/widgets/hover_tap.dart';
+import 'package:cockpit/app/core/utils/path_utils.dart';
+import 'package:cockpit/app/core/utils/platform_kind.dart';
+import 'package:cockpit/i18n/strings.g.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/gestures.dart'
-    show HitTestResult, PointerScrollEvent, PointerDeviceKind;
+    show
+        HitTestResult,
+        PointerScrollEvent,
+        PointerDeviceKind,
+        kPrimaryMouseButton;
 import 'package:flutter/services.dart';
 import 'package:flutter_modular/flutter_modular.dart';
-import 'package:cockpit/app/core/ui/widgets/app_tooltip.dart';
-import 'package:cockpit/i18n/strings.g.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
-import 'package:cockpit/app/core/terminal/xterm/xterm.dart';
-import 'package:cockpit/app/core/utils/path_utils.dart';
+import 'package:window_manager/window_manager.dart';
 
 /// Folha do multiplexador: tab strip + corpo (agente: transcript+composer / empty;
 /// terminal: TerminalView). O foco aparece **só na aba ativa**.
@@ -62,9 +73,6 @@ class PaneView extends StatelessWidget {
     required this.onCreateTab,
     required this.onSplit,
     required this.onFillEmpty,
-    required this.onHistoryAgent,
-    required this.onRenameAgent,
-    required this.onToggleRelayAgent,
   });
 
   final LeafPane pane;
@@ -76,17 +84,8 @@ class PaneView extends StatelessWidget {
   final VoidCallback onCreateTab;
   final ValueChanged<SplitDir> onSplit;
 
-  /// Preenche a pane vazia — `(emptyId, terminal)`.
-  final void Function(String emptyId, bool terminal) onFillEmpty;
-
-  /// Abre o histórico de sessões de um agente (por id da aba).
-  final ValueChanged<String> onHistoryAgent;
-
-  /// Renomeia o agente (id da aba, novo nome já sanitizado).
-  final void Function(String agentId, String name) onRenameAgent;
-
-  /// Alterna o auto-relay do agente (por id da aba).
-  final ValueChanged<String> onToggleRelayAgent;
+  /// Preenche a pane vazia (placeholder → terminal), por id da aba vazia.
+  final ValueChanged<String> onFillEmpty;
 
   @override
   Widget build(BuildContext context) {
@@ -124,9 +123,6 @@ class PaneView extends StatelessWidget {
               visible: active,
               onCreateTab: onCreateTab,
               onSplit: onSplit,
-              onHistoryAgent: onHistoryAgent,
-              onRenameAgent: onRenameAgent,
-              onToggleRelayAgent: onToggleRelayAgent,
             ),
             Expanded(
               child: tabs.isEmpty
@@ -140,7 +136,10 @@ class PaneView extends StatelessWidget {
                   : IndexedStack(
                       index: activeIndex,
                       sizing: StackFit.expand,
-                      children: [for (final id in tabs) _keyedBody(id)],
+                      children: [
+                        for (final id in tabs)
+                          _keyedBody(id, shown: tabs[activeIndex]),
+                      ],
                     ),
             ),
           ],
@@ -152,17 +151,20 @@ class PaneView extends StatelessWidget {
   /// Corpo de uma aba, com key estável por sessão — preserva o State através de
   /// troca e reordenação de abas. Só a aba ativa recebe `focused`; do contrário
   /// vários terminais montados disputariam o foco do teclado.
-  Widget _keyedBody(String tabId) {
+  Widget _keyedBody(String tabId, {required String shown}) {
     final session = vm.session(tabId);
     if (session == null) return SizedBox.shrink(key: ValueKey('body-$tabId'));
     return _PaneBody(
       key: ValueKey('body-$tabId'),
       item: session,
       paneId: pane.id,
-      focused: active && focused && tabId == pane.active,
-      active: active && tabId == pane.active,
+      // Compara com a aba efetivamente exibida (índice resolvido), não com o
+      // `active` cru: um id transitoriamente inválido nunca deixa a pane
+      // inteira inativa (terminal em branco).
+      focused: active && focused && tabId == shown,
+      active: active && tabId == shown,
       focusGen: vm.tabFocusGen,
-      onFillEmpty: (terminal) => onFillEmpty(tabId, terminal),
+      onFillEmpty: () => onFillEmpty(tabId),
     );
   }
 }
@@ -170,17 +172,48 @@ class PaneView extends StatelessWidget {
 /// Largura fixa de uma aba — também usada pra calcular o auto-scroll do ativo.
 const double _kTabWidth = 188;
 
+/// Seleciona uma aba desktop no pointer-down, antes da arena entre tap e drag.
+/// O canto do X fica de fora para fechar sem ativar outra aba primeiro.
+class TabPointerSelection extends StatelessWidget {
+  const TabPointerSelection({
+    super.key,
+    required this.tabWidth,
+    required this.onSelect,
+    required this.child,
+  });
+
+  final double tabWidth;
+  final VoidCallback onSelect;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Listener(
+    behavior: HitTestBehavior.translucent,
+    onPointerDown: (event) {
+      if (isMobilePlatform ||
+          event.kind != PointerDeviceKind.mouse ||
+          event.buttons & kPrimaryMouseButton == 0 ||
+          event.localPosition.dx >= tabWidth - 25) {
+        return;
+      }
+      onSelect();
+    },
+    child: child,
+  );
+}
+
 /// Ícone por tipo de aba (usado na aba e no dropdown "todas as abas").
 IconData _tabIcon(PaneItem? item) {
+  if (item is NeovimSession) return Icons.edit_note_outlined;
   if (item is TerminalSession) return Icons.terminal_outlined;
   if (item is TaskOutputSession) return Icons.play_circle_outline;
+  if (item is TelemetryCaseSession) return Icons.monitor_heart_outlined;
   if (item is FileViewerSession) return Icons.description_outlined;
   if (item is DiffViewerSession) return Icons.difference_outlined;
   if (item is RedisBrowserSession) return Icons.grid_on_outlined;
   if (item is MongoBrowserSession) return Icons.data_object_outlined;
-  if (item is AgentSession && item.status == AgentStatus.empty) {
-    return Icons.edit_outlined;
-  }
+  if (item is NotebookSession) return Icons.menu_book_outlined;
+  if (item is EmptyTab) return Icons.edit_outlined;
   return Icons.auto_awesome;
 }
 
@@ -192,9 +225,6 @@ class _TabStrip extends StatefulWidget {
     required this.visible,
     required this.onCreateTab,
     required this.onSplit,
-    required this.onHistoryAgent,
-    required this.onRenameAgent,
-    required this.onToggleRelayAgent,
   });
 
   final LeafPane pane;
@@ -203,9 +233,6 @@ class _TabStrip extends StatefulWidget {
   final bool visible;
   final VoidCallback onCreateTab;
   final ValueChanged<SplitDir> onSplit;
-  final ValueChanged<String> onHistoryAgent;
-  final void Function(String agentId, String name) onRenameAgent;
-  final ValueChanged<String> onToggleRelayAgent;
 
   @override
   State<_TabStrip> createState() => _TabStripState();
@@ -230,11 +257,13 @@ class _TabStripState extends State<_TabStrip> {
     super.didUpdateWidget(old);
     final activeChanged = old.pane.active != widget.pane.active;
     final countChanged = old.pane.tabs.length != widget.pane.tabs.length;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      if (activeChanged || countChanged) _scrollActiveIntoView();
-      _syncOverflow();
-    });
+    if (activeChanged || countChanged) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _scrollActiveIntoView();
+        _syncOverflow();
+      });
+    }
   }
 
   @override
@@ -292,6 +321,34 @@ class _TabStripState extends State<_TabStrip> {
     if (ok) widget.vm.closePane(widget.pane.id);
   }
 
+  /// Fecha um conjunto de abas desta pane, em sequência — é o que o menu de
+  /// contexto usa em "fechar as outras" e "fechar todas".
+  ///
+  /// Confirma uma vez antes (como o fechamento de pane: matar vários terminais
+  /// de uma vez não pode sair de um clique torto) e depois passa cada aba pelo
+  /// [requestCloseTab], então um arquivo com edição não salva ainda pergunta o
+  /// que fazer. Cancelar nesse diálogo interrompe as abas restantes.
+  Future<void> _closeTabs(List<String> ids) async {
+    if (ids.isEmpty) return;
+    final tr = context.t.cockpit.paneView;
+    final ok = await showConfirmDialog(
+      context,
+      title: tr.closeTabsTitle,
+      message: tr.closeTabsMessage(count: ids.length),
+      confirmLabel: tr.close,
+      danger: true,
+    );
+    if (!mounted || !ok) return;
+    for (final id in ids) {
+      final closed = await requestCloseTab(
+        context,
+        widget.vm.session(id),
+        () => widget.vm.closeTab(widget.pane.id, id),
+      );
+      if (!mounted || !closed) return;
+    }
+  }
+
   /// Dropdown com todas as abas (pular direto pra uma) — aparece no overflow.
   Future<void> _showTabList(BuildContext anchor) async {
     final pane = widget.pane;
@@ -332,10 +389,6 @@ class _TabStripState extends State<_TabStrip> {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final pane = widget.pane;
-    // Re-checa overflow a cada layout (resize de pane, add/remove de aba).
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _syncOverflow();
-    });
     // Drop do SO na faixa de abas → abre como aba, em qualquer tipo de pane
     // (em terminal, é aqui em cima que se solta pra abrir aba; o corpo insere
     // o caminho).
@@ -386,58 +439,75 @@ class _TabStripState extends State<_TabStrip> {
                           PointerDeviceKind.stylus,
                         },
                       ),
-                      child: SingleChildScrollView(
-                        controller: _scroll,
-                        scrollDirection: Axis.horizontal,
-                        child: Row(
-                          children: [
-                            for (var i = 0; i < pane.tabs.length; i++)
-                              _TabDropSlot(
-                                index: i,
-                                onInsert: (data, index) =>
-                                    widget.vm.moveTabToIndex(
-                                      data.paneId,
-                                      data.tabId,
+                      child: NotificationListener<ScrollMetricsNotification>(
+                        onNotification: (_) {
+                          // Dispara somente quando viewport/content realmente
+                          // muda, em vez de agendar callback em todo rebuild do
+                          // CockpitViewModel.
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (mounted) _syncOverflow();
+                          });
+                          return false;
+                        },
+                        child: SingleChildScrollView(
+                          controller: _scroll,
+                          scrollDirection: Axis.horizontal,
+                          child: Row(
+                            children: [
+                              for (var i = 0; i < pane.tabs.length; i++)
+                                _TabDropSlot(
+                                  index: i,
+                                  onInsert: (data, index) =>
+                                      widget.vm.moveTabToIndex(
+                                        data.paneId,
+                                        data.tabId,
+                                        pane.id,
+                                        index,
+                                      ),
+                                  child: _Tab(
+                                    item: widget.vm.session(pane.tabs[i]),
+                                    paneId: pane.id,
+                                    visible: widget.visible,
+                                    active: pane.tabs[i] == pane.active,
+                                    focused: widget.focused,
+                                    onSelect: () => widget.vm.selectTab(
                                       pane.id,
-                                      index,
+                                      pane.tabs[i],
                                     ),
-                                child: _Tab(
-                                  item: widget.vm.session(pane.tabs[i]),
-                                  paneId: pane.id,
-                                  visible: widget.visible,
-                                  active: pane.tabs[i] == pane.active,
-                                  focused: widget.focused,
-                                  onSelect: () => widget.vm.selectTab(
-                                    pane.id,
-                                    pane.tabs[i],
+                                    onClose: () => widget.vm.closeTab(
+                                      pane.id,
+                                      pane.tabs[i],
+                                    ),
+                                    // Null na única aba: ali "fechar as outras"
+                                    // não faria nada e "fechar todas" seria o
+                                    // próprio "fechar", com um diálogo a mais.
+                                    onCloseOthers: pane.tabs.length > 1
+                                        ? () => _closeTabs([
+                                            for (final t in pane.tabs)
+                                              if (t != pane.tabs[i]) t,
+                                          ])
+                                        : null,
+                                    onCloseAll: pane.tabs.length > 1
+                                        ? () => _closeTabs(pane.tabs.toList())
+                                        : null,
+                                    // Só se existir aba à direita desta.
+                                    onCloseToTheRight: i < pane.tabs.length - 1
+                                        ? () => _closeTabs(
+                                            pane.tabs.sublist(i + 1),
+                                          )
+                                        : null,
+                                    onRestart: () => widget.vm.restartTerminal(
+                                      pane.id,
+                                      pane.tabs[i],
+                                    ),
+                                    onSetLabel: (label) => widget.vm
+                                        .setPaneLabel(pane.tabs[i], label),
+                                    onResetLabel: () =>
+                                        widget.vm.resetPaneLabel(pane.tabs[i]),
                                   ),
-                                  onClose: () =>
-                                      widget.vm.closeTab(pane.id, pane.tabs[i]),
-                                  onRename: (name) =>
-                                      widget.onRenameAgent(pane.tabs[i], name),
-                                  onSetLabel: (label) => widget.vm.setPaneLabel(
-                                    pane.tabs[i],
-                                    label,
-                                  ),
-                                  onResetLabel: () =>
-                                      widget.vm.resetPaneLabel(pane.tabs[i]),
-                                  onToggleRelay: () =>
-                                      widget.onToggleRelayAgent(pane.tabs[i]),
-                                  onHistory: () =>
-                                      widget.onHistoryAgent(pane.tabs[i]),
                                 ),
-                              ),
-                            // Windows: "+" e a seta formam um grupo — a divisória
-                            // fica só no fim dele. Ausente no POSIX (lá só existe
-                            // o login shell, sem escolha a fazer).
-                            _TabAdd(
-                              onTap: widget.onCreateTab,
-                              trailingBorder:
-                                  !widget.vm.showTerminalProfilePicker,
-                            ),
-                            if (widget.vm.showTerminalProfilePicker)
-                              _TabProfilePicker(vm: widget.vm),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
                     ),
@@ -454,6 +524,14 @@ class _TabStripState extends State<_TabStrip> {
                   onTap: () => _showTabList(ctx),
                 ),
               ),
+            // Controles de criação ficam fora da faixa rolável: numa pane
+            // estreita, uma única aba de 188px já esconde o "+".
+            _TabAdd(
+              onTap: widget.onCreateTab,
+              trailingBorder: !widget.vm.showTerminalProfilePicker,
+            ),
+            if (widget.vm.showTerminalProfilePicker)
+              _TabProfilePicker(vm: widget.vm),
             _PaneTools(
               onSplitRight: () => widget.onSplit(SplitDir.vertical),
               onSplitDown: () => widget.onSplit(SplitDir.horizontal),
@@ -513,11 +591,12 @@ class _Tab extends StatefulWidget {
     required this.focused,
     required this.onSelect,
     required this.onClose,
-    required this.onRename,
+    required this.onCloseOthers,
+    required this.onCloseAll,
+    required this.onCloseToTheRight,
+    required this.onRestart,
     required this.onSetLabel,
     required this.onResetLabel,
-    required this.onToggleRelay,
-    required this.onHistory,
   });
 
   final PaneItem? item;
@@ -528,8 +607,23 @@ class _Tab extends StatefulWidget {
   final VoidCallback onSelect;
   final VoidCallback onClose;
 
-  /// Renomeia um **agente** (muda a identidade enviada ao harness).
-  final ValueChanged<String> onRename;
+  /// Fecha as outras abas desta pane, mantendo esta. `null` quando esta é a
+  /// única aba — aí o item nem aparece no menu.
+  ///
+  /// Diferente de [onClose], a confirmação de edição não salva acontece do
+  /// outro lado (a strip é quem conhece as abas irmãs).
+  final Future<void> Function()? onCloseOthers;
+
+  /// Fecha todas as abas desta pane, esta inclusive. `null` na única aba, onde
+  /// "fechar" já é o mesmo efeito. Mesma observação de [onCloseOthers] sobre
+  /// quem confirma.
+  final Future<void> Function()? onCloseAll;
+
+  /// Fecha as abas à direita desta na strip. `null` quando esta já é a última.
+  final Future<void> Function()? onCloseToTheRight;
+
+  /// Reinicia uma aba de **terminal** no lugar (processo novo, mesma aba).
+  final VoidCallback onRestart;
 
   /// Define o **rótulo manual** de uma aba de terminal (nome estável, travado
   /// contra o título automático).
@@ -537,8 +631,6 @@ class _Tab extends StatefulWidget {
 
   /// Restaura o título automático de uma aba de terminal (limpa o rótulo).
   final VoidCallback onResetLabel;
-  final VoidCallback onToggleRelay;
-  final VoidCallback onHistory;
 
   @override
   State<_Tab> createState() => _TabState();
@@ -575,26 +667,28 @@ class _TabState extends State<_Tab> {
     super.dispose();
   }
 
-  /// Tap na aba: **seleciona na hora** e detecta duplo-clique manualmente pra
-  /// renomear (agentes) ou fixar (preview). Um `DoubleTapGestureRecognizer`
-  /// seguraria a arena de gestos por `kDoubleTapTimeout` (~300ms) antes de cada
-  /// `onTapUp`, atrasando a seleção.
-  void _handleTap() {
+  /// Tap na aba: detecta duplo-clique manualmente pra
+  /// renomear (desktop), fixar (preview) ou abrir o menu (mobile).
+  ///
+  /// NUNCA registre `onDoubleTap` no `GestureDetector` da aba: um
+  /// `DoubleTapGestureRecognizer` na arena faz o tap simples esperar
+  /// `kDoubleTapTimeout` (~300ms) antes de `onTapUp` disparar — a aba só
+  /// "ia" depois desse intervalo, em todo tipo de aba (era o delay percebido
+  /// na troca). Por isso o duplo-clique é resolvido AQUI, por timestamp, sem
+  /// segurar o primeiro clique.
+  void _handleTap(BuildContext menuCtx, {required bool selectOnTapUp}) {
     final s = widget.item;
-    final agent = s is AgentSession ? s : null;
     final viewer = s is FileViewerSession ? s : null;
     final terminal = s is TerminalSession ? s : null;
-    // Renomear entra em edição inline: agentes (não-vazios) mudam a identidade;
-    // terminais definem o rótulo manual (nome estável).
-    final canRename =
-        (agent != null && agent.status != AgentStatus.empty) ||
-        terminal != null;
+    // Renomear entra em edição inline: terminais definem o rótulo manual
+    // (nome estável).
+    final canRename = terminal != null;
     final canPin = viewer != null && viewer.isPreview;
     final now = DateTime.now();
     final last = _lastTapAt;
     _lastTapAt = now;
 
-    // Duplo-clique: renomear agente OU fixar preview.
+    // Duplo-clique: fixar preview, abrir menu (mobile) ou renomear (desktop).
     if (last != null &&
         now.difference(last) < const Duration(milliseconds: 300)) {
       _lastTapAt = null; // consumiu o segundo clique
@@ -602,18 +696,31 @@ class _TabState extends State<_Tab> {
         viewer.pin();
         return;
       }
+      // Mobile: não existe clique direito, então o duplo-toque é o único
+      // caminho até o menu da aba. Desktop: o menu já está a um clique
+      // direito e duplo-clique num rótulo renomeia, como se espera.
+      if (s != null && isMobilePlatform) {
+        _showTabMenu(menuCtx);
+        return;
+      }
       if (canRename) {
         _startEditing();
         return;
       }
     }
-    widget.onSelect();
+    // Mouse na área principal já selecionou no pointer-down. Touch e o espaço
+    // junto ao X selecionam aqui, após a arena resolver o tap.
+    if (selectOnTapUp) widget.onSelect();
   }
 
   void _startEditing() {
     final s = widget.item;
-    // Agentes e terminais podem editar o nome inline; demais abas não.
-    if (s == null || (s is! AgentSession && s is! TerminalSession)) return;
+    // Terminais e abas de ARQUIVO podem editar o nome inline. O rótulo manual
+    // é do [PaneItem], não do terminal — o menu já oferecia "Renomear" na aba
+    // de arquivo e este guard silenciava o clique.
+    if (s == null || (s is! TerminalSession && s is! FileViewerSession)) {
+      return;
+    }
     // Semeia com o nome exibido (rótulo manual, se houver; senão o dinâmico).
     final seed = s.displayTitle;
     _ctrl.text = seed;
@@ -626,16 +733,11 @@ class _TabState extends State<_Tab> {
 
   void _commitEdit() {
     if (!_editing) return;
-    final s = widget.item;
     final name = _ctrl.text.trim().replaceAll(' ', '-');
     setState(() => _editing = false);
     if (name.isEmpty) return;
-    // Terminal → rótulo manual travado; agente → renomeia a identidade.
-    if (s is TerminalSession) {
-      widget.onSetLabel(name);
-    } else {
-      widget.onRename(name);
-    }
+    // Rótulo manual travado na aba (o arquivo no disco não muda de nome).
+    widget.onSetLabel(name);
   }
 
   void _cancelEdit() {
@@ -656,11 +758,14 @@ class _TabState extends State<_Tab> {
   Future<void> _showTabMenu(BuildContext menuCtx) async {
     final s = widget.item;
     if (s == null) return;
-    final agent = s is AgentSession ? s : null;
-    final isEmpty = agent?.status == AgentStatus.empty;
     final viewer = s is FileViewerSession ? s : null;
+    final notebook = s is NotebookSession ? s : null;
     final isPreview = viewer?.isPreview ?? false;
     final terminal = s is TerminalSession ? s : null;
+    // Janela de documento: desktop e workspace local (ver `canOpenInWindow`).
+    final canOpenWindow =
+        !isMobilePlatform &&
+        context.read<CockpitViewModel>().canOpenInWindow(s.projectId);
 
     final tr = context.t.cockpit.paneView;
     final value = await showAppMenu<String>(
@@ -673,6 +778,59 @@ class _TabState extends State<_Tab> {
             label: tr.pinTab,
             icon: Icons.push_pin_outlined,
           ),
+        // Aba de arquivo também renomeia: o rótulo manual é do [PaneItem], não
+        // do terminal, e um quadro aberto o dia todo merece um nome melhor que
+        // o do arquivo.
+        if (viewer != null) ...[
+          // Move o arquivo pra uma janela de documento: a aba daqui fecha
+          // (com a mesma confirmação de edição não salva do ⌘W).
+          if (canOpenWindow && !viewer.scratch)
+            AppMenuItem(
+              value: 'open-window',
+              label: tr.openInNewWindow,
+              icon: Icons.open_in_browser,
+            ),
+          AppMenuItem(
+            value: 'rename',
+            label: tr.rename,
+            icon: Icons.edit_outlined,
+          ),
+          if (viewer.titleLocked)
+            AppMenuItem(
+              value: 'reset-label',
+              label: tr.resetTitle,
+              icon: Icons.restart_alt,
+            ),
+          // Saída de emergência do editor próprio: ver e escrever o markdown
+          // cru. O arquivo é o mesmo; só muda quem o desenha.
+          if (viewer.path.toLowerCase().endsWith('.kanban'))
+            AppMenuItem(
+              value: 'raw-source',
+              label: viewer.rawSource ? tr.openAsBoard : tr.openAsMarkdown,
+              icon: viewer.rawSource
+                  ? Icons.view_column_outlined
+                  : Icons.notes_outlined,
+            ),
+          // Mesma saída de emergência no `.ckp`: ler/editar o YAML do layout
+          // em vez do preview.
+          if (viewer.path.toLowerCase().endsWith('.ckp'))
+            AppMenuItem(
+              value: 'raw-source',
+              label: viewer.rawSource ? tr.openAsLayout : tr.openAsYaml,
+              icon: viewer.rawSource
+                  ? Icons.dashboard_outlined
+                  : Icons.notes_outlined,
+            ),
+          // E no `.panel`: ver/editar o HTML em vez da página viva.
+          if (viewer.path.toLowerCase().endsWith('.panel'))
+            AppMenuItem(
+              value: 'raw-source',
+              label: viewer.rawSource ? tr.openAsPanel : tr.openAsHtml,
+              icon: viewer.rawSource
+                  ? Icons.web_asset_outlined
+                  : Icons.code_outlined,
+            ),
+        ],
         // Só em abas de terminal: o id (pane id) copiável pra usar na CLI
         // `cockpit` (`--tab-id`).
         if (terminal != null) ...[
@@ -693,42 +851,72 @@ class _TabState extends State<_Tab> {
             label: tr.copyId,
             icon: Icons.content_copy,
           ),
-        ],
-        if (agent != null && !isEmpty) ...[
+          // Processo novo na mesma aba (replay do scrollback, cwd vivo, resume
+          // do harness). Serve pra pegar `.env.cockpit` novo ou destravar shell.
           AppMenuItem(
-            value: 'rename',
-            label: tr.rename,
-            icon: Icons.edit_outlined,
+            value: 'restart',
+            label: tr.restartTab,
+            icon: Icons.refresh,
           ),
-          AppMenuItem(
-            value: 'relay',
-            label: tr.autoRelay,
-            icon: Icons.cell_tower_outlined,
-            selected: agent.autoStartRelay,
-          ),
-          AppMenuItem(value: 'history', label: tr.history, icon: Icons.history),
         ],
+        // Caderno também sai pra uma janela própria (a pasta inteira).
+        if (notebook != null && canOpenWindow)
+          AppMenuItem(
+            value: 'open-window',
+            label: tr.openInNewWindow,
+            icon: Icons.open_in_browser,
+          ),
         AppMenuItem(value: 'close', label: tr.close, icon: Icons.close),
+        if (widget.onCloseOthers != null)
+          AppMenuItem(
+            value: 'close-others',
+            label: tr.closeOtherTabs,
+            icon: Symbols.tab_close_inactive,
+          ),
+        if (widget.onCloseToTheRight != null)
+          AppMenuItem(
+            value: 'close-to-the-right',
+            label: tr.closeTabsToTheRight,
+            icon: Symbols.tab_close_right,
+          ),
+        if (widget.onCloseAll != null)
+          AppMenuItem(
+            value: 'close-all',
+            label: tr.closeAllTabs,
+            icon: Symbols.tab_close,
+          ),
       ],
     );
     if (!mounted) return;
     switch (value) {
       case 'pin':
         if (viewer != null) viewer.pin();
+      case 'open-window':
+        final path = viewer?.path ?? notebook?.path;
+        if (path != null) {
+          unawaited(DocumentWindows.open(path));
+          await _requestClose();
+        }
       case 'copy-id':
         if (terminal != null) {
           await Clipboard.setData(ClipboardData(text: terminal.id));
         }
+      case 'raw-source':
+        viewer?.toggleRawSource();
       case 'rename':
         _startEditing();
       case 'reset-label':
         widget.onResetLabel();
-      case 'relay':
-        widget.onToggleRelay();
-      case 'history':
-        widget.onHistory();
+      case 'restart':
+        widget.onRestart();
       case 'close':
         _requestClose();
+      case 'close-others':
+        await widget.onCloseOthers?.call();
+      case 'close-to-the-right':
+        await widget.onCloseToTheRight?.call();
+      case 'close-all':
+        await widget.onCloseAll?.call();
     }
   }
 
@@ -742,8 +930,7 @@ class _TabState extends State<_Tab> {
       builder: (_, _) {
         final colors = context.colors;
         final isFocusedActive = widget.active && widget.focused;
-        final agent = s is AgentSession ? s : null;
-        final isEmpty = agent?.status == AgentStatus.empty;
+        final isEmpty = s is EmptyTab;
         final streaming = s.isWorking;
         final dirty = s is FileViewerSession && s.dirty;
 
@@ -807,8 +994,14 @@ class _TabState extends State<_Tab> {
           padding: const EdgeInsets.only(left: 11, right: 7),
           child: Row(
             children: [
+              // Ícone pelo NOME DO ARQUIVO, não pelo título: `.panel`/`.ckp`
+              // trocam o título da aba pelo `title:` do front-matter, e sem a
+              // extensão o ícone caía no genérico.
               if (s is FileViewerSession)
-                FileTypeIcon.file(s.title, size: 15)
+                FileTypeIcon.file(
+                  s.scratch ? s.title : s.path.split('/').last,
+                  size: 15,
+                )
               // Browsers de banco usam o logo de marca do engine (plano 52/53).
               else if (s is RedisBrowserSession)
                 const DbEngineIcon(DbEngine.redis, size: 14)
@@ -872,16 +1065,22 @@ class _TabState extends State<_Tab> {
 
         // Builder garante um BuildContext com RenderBox para showAppMenu.
         final interactive = Builder(
-          builder: (menuCtx) => GestureDetector(
-            onTapUp: (_) => _handleTap(),
-            onSecondaryTapUp: isEmpty ? null : (_) => _showTabMenu(menuCtx),
-            onTertiaryTapUp: (_) => _requestClose(),
-            // Mobile: duplo-toque abre o menu da aba (equivalente ao clique
-            // direito do desktop, que não existe no touch).
-            onDoubleTap: (isMobilePlatform && !isEmpty)
-                ? () => _showTabMenu(menuCtx)
-                : null,
-            child: tabBody,
+          builder: (menuCtx) => TabPointerSelection(
+            tabWidth: _kTabWidth,
+            onSelect: widget.onSelect,
+            child: GestureDetector(
+              onTapUp: (details) => _handleTap(
+                menuCtx,
+                selectOnTapUp:
+                    details.kind != PointerDeviceKind.mouse ||
+                    details.localPosition.dx >= _kTabWidth - 25,
+              ),
+              onSecondaryTapUp: isEmpty ? null : (_) => _showTabMenu(menuCtx),
+              onTertiaryTapUp: (_) => _requestClose(),
+              // Sem `onDoubleTap` aqui — ver [_handleTap]: o reconhecedor de
+              // duplo-clique atrasaria o tap simples em ~300ms.
+              child: tabBody,
+            ),
           ),
         );
 
@@ -1046,20 +1245,33 @@ class _TabAdd extends StatelessWidget {
     final colors = context.colors;
     return AppTooltip(
       message: context.t.cockpit.paneView.newTab,
-      child: GestureDetector(
+      child: Listener(
         behavior: HitTestBehavior.opaque,
-        onTap: onTap,
-        child: MouseRegion(
-          cursor: SystemMouseCursors.click,
-          child: Container(
-            height: 40,
-            padding: const EdgeInsets.symmetric(horizontal: 9),
-            decoration: BoxDecoration(
-              border: trailingBorder
-                  ? Border(right: BorderSide(color: colors.border))
-                  : null,
+        // Mouse: cria no pointer-down, como a seleção de abas. Um pequeno
+        // movimento até o pointer-up pode cancelar o tap na arena de gestos.
+        onPointerDown: (event) {
+          if (event.kind == PointerDeviceKind.mouse &&
+              event.buttons & kPrimaryMouseButton != 0) {
+            onTap();
+          }
+        },
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapUp: (details) {
+            if (details.kind != PointerDeviceKind.mouse) onTap();
+          },
+          child: MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: Container(
+              height: 40,
+              padding: const EdgeInsets.symmetric(horizontal: 9),
+              decoration: BoxDecoration(
+                border: trailingBorder
+                    ? Border(right: BorderSide(color: colors.border))
+                    : null,
+              ),
+              child: Icon(Icons.add, size: 14, color: colors.text4),
             ),
-            child: Icon(Icons.add, size: 14, color: colors.text4),
           ),
         ),
       ),
@@ -1113,7 +1325,7 @@ class _TabProfilePicker extends StatelessWidget {
     if (profile == null) {
       return; // re-descoberta mudou a lista no meio do caminho
     }
-    vm.newTabIn('', terminal: true, profile: profile);
+    vm.newTabIn('', profile: profile);
   }
 
   @override
@@ -1305,46 +1517,18 @@ class _PaneBody extends StatefulWidget {
   final int focusGen;
 
   /// `(terminal)` — qual tipo criar ao preencher a pane vazia.
-  final ValueChanged<bool> onFillEmpty;
+  final VoidCallback onFillEmpty;
 
   @override
   State<_PaneBody> createState() => _PaneBodyState();
 }
 
 class _PaneBodyState extends State<_PaneBody> {
-  final ScrollController _scroll = ScrollController();
   final FocusNode _terminalFocus = FocusNode();
 
-  /// Bounds do composer do agente — pro drop "abrir aba" ignorar drops que caem
-  /// sobre o input (lá o arquivo vira `@menção`, não uma aba nova).
-  final GlobalKey _composerKey = GlobalKey();
-
-  static const double _stickThreshold = 80;
-
-  /// Aba de agente vazia: gate do ambiente. `_checkingAgent` = rodando o probe
-  /// após "New agent"; `_showAgentSetup` = trio incompleto → mostra o checklist.
-  bool _checkingAgent = false;
-  bool _showAgentSetup = false;
-
-  /// Id da aba vazia já auto-convertida em terminal (quando `enableAgent` está
-  /// desligado) — evita reentrar no `onFillEmpty` a cada build.
+  /// Id da aba vazia já convertida em terminal — evita reentrar no
+  /// `onFillEmpty` a cada build.
   String? _autoTerminalFor;
-
-  /// "New agent" numa aba vazia: confere o ambiente. Pronto → spawna direto;
-  /// incompleto → revela o [AgentSetupChecklist] inline. Terminal nunca passa
-  /// por aqui.
-  Future<void> _onNewAgent() async {
-    final setup = context.read<SetupViewModel>();
-    setState(() => _checkingAgent = true);
-    await setup.recheckAll();
-    if (!mounted) return;
-    setState(() => _checkingAgent = false);
-    if (setup.agentReady) {
-      widget.onFillEmpty(false);
-    } else {
-      setState(() => _showAgentSetup = true);
-    }
-  }
 
   /// Tabs que usam um `TerminalPane` e portanto querem foco de teclado quando
   /// ativas. Inclui a aba de logs de task ([TaskOutputSession]) — mesmo sendo
@@ -1357,12 +1541,24 @@ class _PaneBodyState extends State<_PaneBody> {
   @override
   void initState() {
     super.initState();
+    if (widget.item case final TerminalSession session) {
+      session.setVisible(widget.active);
+    }
     if (_wantsTerminalFocus && widget.focused) _requestTerminalFocusSoon();
   }
 
   @override
   void didUpdateWidget(_PaneBody old) {
     super.didUpdateWidget(old);
+    if (widget.item case final TerminalSession session) {
+      if (old.item != widget.item || old.active != widget.active) {
+        if (old.item case final TerminalSession oldSession
+            when oldSession != session) {
+          oldSession.setVisible(false);
+        }
+        session.setVisible(widget.active);
+      }
+    }
     if (!_wantsTerminalFocus) return;
     if (widget.focused && (!old.focused || widget.focusGen != old.focusGen)) {
       // Também re-pede o foco quando só a *geração* mudou: clicar na aba que
@@ -1389,6 +1585,21 @@ class _PaneBodyState extends State<_PaneBody> {
       if (!mounted || !widget.focused || !_wantsTerminalFocus) return;
       _terminalFocus.requestFocus();
     });
+  }
+
+  /// Drop nativo de arquivo no terminal: o caminho entrou, mas o teclado não
+  /// voltava. Dois motivos, nenhum coberto pelos caminhos de foco existentes:
+  /// (1) o drag veio de outro app (Finder/Explorer), então a janela do Cockpit
+  /// deixou de ser a *key window* e o SO não a reativa ao soltar; (2) soltar
+  /// não gera pointer-down, então nem o `Listener` do pane nem o
+  /// [_grantsKeyboardOnPointerDown] rodam. O usuário tinha que clicar de novo
+  /// antes de digitar. Aqui: janela de volta ao primeiro plano, pane focado na
+  /// VM (bumpa a geração) e o node do terminal re-pedido no pós-frame.
+  void _onFileDropped() {
+    if (!_wantsTerminalFocus) return;
+    if (!isMobilePlatform) unawaited(windowManager.focus());
+    context.read<CockpitViewModel>().focus(widget.paneId);
+    _requestTerminalFocusSoon();
   }
 
   /// Envolve o terminal num [Listener] que **devolve o teclado ao próprio
@@ -1421,7 +1632,9 @@ class _PaneBodyState extends State<_PaneBody> {
 
   @override
   void dispose() {
-    _scroll.dispose();
+    if (widget.item case final TerminalSession session) {
+      session.setVisible(false);
+    }
     _terminalFocus.dispose();
     super.dispose();
   }
@@ -1446,22 +1659,6 @@ class _PaneBodyState extends State<_PaneBody> {
     if (!isPaste) return KeyEventResult.ignored;
     session.pasteFromClipboard();
     return KeyEventResult.handled;
-  }
-
-  void _maybeStickToBottom() {
-    final bool stick;
-    if (!_scroll.hasClients) {
-      stick = true;
-    } else {
-      final pos = _scroll.position;
-      stick = pos.pixels >= pos.maxScrollExtent - _stickThreshold;
-    }
-    if (!stick) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scroll.hasClients) {
-        _scroll.jumpTo(_scroll.position.maxScrollExtent);
-      }
-    });
   }
 
   @override
@@ -1504,6 +1701,17 @@ class _PaneBodyState extends State<_PaneBody> {
       return BrowserPane(session: item, active: widget.active);
     }
 
+    // Caderno `.notebook` (plano 62, passo 4): lista de notas | nota | tags.
+    if (item is NotebookSession) {
+      final vm = context.read<CockpitViewModel>();
+      return NotebookView(
+        session: item,
+        active: widget.active,
+        focused: widget.focused,
+        workspaceRoot: vm.projectRootOf(item.projectId) ?? '',
+      );
+    }
+
     // Tab de request `.http`: editor + resposta. Reusa a FileViewerSession
     // pelo mesmo motivo da `.dbq` (preview/dirty/watch de graça).
     if (item is FileViewerSession &&
@@ -1515,6 +1723,88 @@ class _PaneBodyState extends State<_PaneBody> {
         active: widget.active,
         focused: widget.focused,
         onSave: (content) => vm.saveFile(item.id, content),
+      );
+    }
+
+    // Tab de quadro `.kanban`: colunas/cards sobre o markdown do arquivo.
+    // Mesma razão de reusar a FileViewerSession que a `.dbq` e a `.http`.
+    //
+    // Dentro de um `ListenableBuilder` porque a ESCOLHA do renderizador é
+    // estado da sessão (`rawSource`): sem escutar aqui, alternar entre quadro e
+    // markdown notificava a sessão, a barra de abas repintava e o corpo ficava
+    // como estava. Quem decide o que desenhar precisa reagir a quem muda.
+    if (item is FileViewerSession &&
+        item.path.toLowerCase().endsWith('.kanban')) {
+      final vm = context.read<CockpitViewModel>();
+      return ListenableBuilder(
+        listenable: item,
+        builder: (context, _) {
+          if (item.rawSource) {
+            return FileViewer(
+              session: item,
+              active: widget.active,
+              focused: widget.focused,
+              onSave: (content) => vm.saveFile(item.id, content),
+            );
+          }
+          return KanbanBoardView(
+            session: item,
+            active: widget.active,
+            focused: widget.focused,
+            workspaceRoot: vm.projectRootOf(item.projectId) ?? '',
+            onSave: (content) => vm.saveFile(item.id, content),
+            onReload: () => vm.reloadFile(item.id),
+            onViewModeChanged: (asList) =>
+                vm.setKanbanListView(item.id, asList),
+          );
+        },
+      );
+    }
+
+    // Tab de layout `.ckp`: preview do que o layout vai fazer + botão Apply
+    // com o destino escrito nele. Nunca aplica sozinho — um `.ckp` tem um
+    // `command` por pane, então abrir o arquivo é inspecionar, não executar.
+    // `rawSource` (menu da aba) cai no editor de texto, igual ao `.kanban`.
+    if (item is FileViewerSession && item.path.toLowerCase().endsWith('.ckp')) {
+      final vm = context.read<CockpitViewModel>();
+      return ListenableBuilder(
+        listenable: item,
+        builder: (context, _) => item.rawSource
+            ? FileViewer(
+                session: item,
+                active: widget.active,
+                focused: widget.focused,
+                onSave: (content) => vm.saveFile(item.id, content),
+              )
+            : LayoutPreviewTab(session: item),
+      );
+    }
+
+    // Tab de painel `.panel` (plano 67): HTML vivo numa webview com a ponte
+    // `window.cockpit(line)` → `cockpit <line>` na máquina. `rawSource` (menu
+    // da aba) cai no editor de texto, igual ao `.kanban`/`.ckp`.
+    if (item is FileViewerSession &&
+        item.path.toLowerCase().endsWith('.panel')) {
+      final vm = context.read<CockpitViewModel>();
+      return ListenableBuilder(
+        listenable: item,
+        builder: (context, _) => item.rawSource
+            ? FileViewer(
+                session: item,
+                active: widget.active,
+                focused: widget.focused,
+                onSave: (content) => vm.saveFile(item.id, content),
+              )
+            // Remoto: a aba abre em loading enquanto o `fs.read` viaja; sem
+            // o gate, o PanelView montava com o corpo da aba de preview
+            // anterior (ver `_openRemoteFileLoading`).
+            : item.loading
+            ? const Center(child: CircularProgressIndicator())
+            : PanelView(
+                session: item,
+                onCall: (line, cwd) =>
+                    vm.runPanelCommand(line, sessionId: item.id, cwd: cwd),
+              ),
       );
     }
 
@@ -1545,6 +1835,10 @@ class _PaneBodyState extends State<_PaneBody> {
     }
 
     // Terminal: só o TerminalView (ele se atualiza sozinho pelo Terminal model).
+    if (item is TelemetryCaseSession) {
+      return TelemetryCaseView(session: item);
+    }
+
     if (item is TaskOutputSession) {
       // Aba read-only: renderiza o terminal compartilhado (dono = store), sem
       // ligar teclado/onOutput. Fechar a aba não toca no buffer nem na task.
@@ -1600,6 +1894,7 @@ class _PaneBodyState extends State<_PaneBody> {
       return _grantsKeyboardOnPointerDown(
         _TerminalDropTarget(
           session: item,
+          onDropped: _onFileDropped,
           child: ColoredBox(
             color: context.colors.panel,
             child: Padding(
@@ -1642,118 +1937,33 @@ class _PaneBodyState extends State<_PaneBody> {
       );
     }
 
-    final agent = item as AgentSession;
-    return ActiveListenableBuilder(
-      listenable: agent,
-      active: widget.active,
-      builder: (context, _) {
-        if (agent.status == AgentStatus.empty) {
-          // No workspace de sistema "Cockpit" agentes são desligados **sempre**
-          // (terminal-only por construção), independente da flag global.
-          final enableAgent =
-              context.watch<SettingsController>().settings.enableAgent &&
-              !context.read<CockpitViewModel>().isSystemTerminal(
-                agent.projectId,
-              );
-          // Suporte a agentes desligado → a aba vazia vira **terminal direto**,
-          // sem oferecer a escolha agente/terminal. Guard por id (não reentra no
-          // build; cobre uma nova aba vazia criada depois na mesma pane).
-          if (!enableAgent) {
-            if (_autoTerminalFor != agent.id) {
-              _autoTerminalFor = agent.id;
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted) widget.onFillEmpty(true);
-              });
-            }
-            return ColoredBox(color: context.colors.panel);
-          }
-          if (_showAgentSetup) {
-            return AgentSetupChecklist(
-              onReady: () => widget.onFillEmpty(false),
-              onCancel: () => setState(() => _showAgentSetup = false),
-            );
-          }
-          return Stack(
-            children: [
-              EmptyPane(
-                onNewAgent: _onNewAgent,
-                onNewTerminal: () => widget.onFillEmpty(true),
-              ),
-              if (_checkingAgent)
-                Positioned.fill(
-                  child: ColoredBox(
-                    color: context.colors.panel.withValues(alpha: 0.6),
-                    child: const Center(
-                      child: CircularProgressIndicator(size: 18),
-                    ),
-                  ),
-                ),
-            ],
-          );
-        }
-        _maybeStickToBottom();
-        // Drop do SO no corpo do agente → abre aba; sobre o composer, deixa o
-        // próprio composer tratar (vira `@menção`).
-        return _OpenTabDropTarget(
-          vm: context.read<CockpitViewModel>(),
-          paneId: widget.paneId,
-          excludeKey: _composerKey,
-          child: Stack(
-            children: [
-              Positioned.fill(
-                child: AgentTranscript(
-                  entries: agent.entries,
-                  controller: _scroll,
-                  onUiResponse: agent.respondUi,
-                  bottomPadding: 150,
-                ),
-              ),
-              Positioned(
-                left: 16,
-                right: 16,
-                bottom: 16,
-                // Centraliza e limita a largura — em panes largas o input não
-                // estica de ponta a ponta; em panes estreitas, preenche.
-                child: Align(
-                  alignment: Alignment.bottomCenter,
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 760),
-                    child: KeyedSubtree(
-                      key: _composerKey,
-                      child: AgentComposer(
-                        key: ValueKey('composer-${agent.id}'),
-                        session: agent,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
+    // Aba vazia ([EmptyTab]): vira **terminal direto**. O placeholder existe
+    // só pelo frame entre criar a pane e o shell subir. Guard por id (não
+    // reentra no build; cobre uma nova aba vazia criada depois na mesma pane).
+    if (_autoTerminalFor != item.id) {
+      _autoTerminalFor = item.id;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onFillEmpty();
+      });
+    }
+    return ColoredBox(color: context.colors.panel);
   }
 }
 
 /// Aceita **drop nativo do SO** (Finder/Explorer) e abre cada arquivo como uma
 /// **aba** na pane [paneId] (arquivos fora do workspace inclusive — o viewer lê
 /// por caminho absoluto e o LSP fica desligado pra externos). Pastas são
-/// ignoradas. Quando [excludeKey] aponta pra uma área com handler próprio (ex.:
-/// o composer do agente, que vira `@menção`), drops sobre ela são ignorados aqui
-/// pra não duplicar a ação.
+/// ignoradas.
 class _OpenTabDropTarget extends StatefulWidget {
   const _OpenTabDropTarget({
     required this.vm,
     required this.paneId,
     required this.child,
-    this.excludeKey,
   });
 
   final CockpitViewModel vm;
   final String paneId;
   final Widget child;
-  final GlobalKey? excludeKey;
 
   @override
   State<_OpenTabDropTarget> createState() => _OpenTabDropTargetState();
@@ -1762,15 +1972,6 @@ class _OpenTabDropTarget extends StatefulWidget {
 class _OpenTabDropTargetState extends State<_OpenTabDropTarget> {
   bool _over = false;
 
-  /// `true` se [global] (coords globais lógicas do Flutter) cai dentro da área
-  /// excluída (ex.: o composer) — aí o drop é dela, não nosso.
-  bool _overExcluded(Offset global) {
-    final ctx = widget.excludeKey?.currentContext;
-    final box = ctx?.findRenderObject() as RenderBox?;
-    if (box == null || !box.hasSize) return false;
-    return (box.localToGlobal(Offset.zero) & box.size).contains(global);
-  }
-
   void _setOver(bool value) {
     if (_over != value) setState(() => _over = value);
   }
@@ -1778,12 +1979,11 @@ class _OpenTabDropTargetState extends State<_OpenTabDropTarget> {
   @override
   Widget build(BuildContext context) {
     return DropTarget(
-      onDragEntered: (d) => _setOver(!_overExcluded(d.globalPosition)),
-      onDragUpdated: (d) => _setOver(!_overExcluded(d.globalPosition)),
+      onDragEntered: (_) => _setOver(true),
+      onDragUpdated: (_) => _setOver(true),
       onDragExited: (_) => _setOver(false),
       onDragDone: (d) {
         _setOver(false);
-        if (_overExcluded(d.globalPosition)) return;
         for (final f in d.files) {
           if (Directory(f.path).existsSync()) continue; // ignora pastas
           // Fronteira: `desktop_drop` entrega o caminho nativo do SO (`\` no
@@ -1825,7 +2025,15 @@ class _OpenTabDropTargetState extends State<_OpenTabDropTarget> {
 /// itens vêm separados por espaço). Mostra uma borda accent enquanto o item
 /// paira sobre a área — sinal de que vai aceitar o drop.
 class _TerminalDropTarget extends StatefulWidget {
-  const _TerminalDropTarget({required this.session, required this.child});
+  const _TerminalDropTarget({
+    required this.session,
+    required this.child,
+    this.onDropped,
+  });
+
+  /// Chamado depois de injetar os caminhos: o dono do foco devolve o teclado
+  /// ao terminal (o drop nativo não gera pointer-down nenhum no Flutter).
+  final VoidCallback? onDropped;
 
   final TerminalSession session;
   final Widget child;
@@ -1854,6 +2062,7 @@ class _TerminalDropTargetState extends State<_TerminalDropTarget> {
     if (paths.isEmpty) return;
     // Espaço final pra separar de um próximo argumento; o usuário pode apagar.
     widget.session.insertText('${paths.join(' ')} ');
+    widget.onDropped?.call();
   }
 
   /// Este DropTarget é o que está de fato sob o ponto do drop? Faz um hit-test

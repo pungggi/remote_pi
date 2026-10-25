@@ -215,6 +215,24 @@ class SshTunnel {
     if (usingPassword) ...[
       '-o',
       'StrictHostKeyChecking=accept-new',
+      // Senha escolhida no cadastro = senha É o método, não o fallback.
+      //
+      // Sem isto o ssh tenta publickey ANTES (agent + `~/.ssh/id_*` + o que o
+      // `~/.ssh/config` mandar) e o `SSH_ASKPASS` nunca chega a ser chamado:
+      // ou uma chave qualquer entra (e o host conecta como outro usuário do
+      // que o cadastro diz), ou as tentativas estouram o `MaxAuthTries` do
+      // servidor e a conexão morre em "Too many authentication failures" /
+      // "Permission denied (publickey)" — com a senha guardada intacta,
+      // nunca oferecida. Era exatamente o caso de quem cadastra com senha
+      // JUSTAMENTE porque a chave não serve.
+      '-o',
+      'PubkeyAuthentication=no',
+      '-o',
+      'PreferredAuthentications=password,keyboard-interactive',
+      // O helper devolve sempre a MESMA senha: repetir 3x só atrasa o erro
+      // (e conta 3 falhas no log/fail2ban do host).
+      '-o',
+      'NumberOfPasswordPrompts=1',
     ] else ...[
       '-o',
       'BatchMode=yes',

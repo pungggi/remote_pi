@@ -46,7 +46,7 @@ const PILLARS: Pillar[] = [
     proof:
       "Promote any folder to a background daemon; survives logout, answers at 3am.",
     link: "Daemon how-to",
-    href: "/tutorials/daemon",
+    href: "/remote-pi/tutorials/daemon",
   },
   {
     icon: <IconMesh />,
@@ -130,14 +130,14 @@ const STORES: Store[] = [
     top: "Direct download",
     name: "Android APK",
     sub: "Signed · with sha256",
-    href: "/download",
+    href: "/remote-pi/download",
   },
   {
     glyph: <IconDownload />,
     top: "Desktop app",
     name: "Cockpit",
     sub: "Windows · Linux",
-    href: "/cockpit",
+    href: "/download",
   },
 ];
 

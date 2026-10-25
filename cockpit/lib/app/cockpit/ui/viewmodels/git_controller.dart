@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io'
     show
         Directory,
@@ -12,8 +13,8 @@ import 'package:cockpit/app/cockpit/domain/contracts/git_command_runner.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/git_status_reader.dart';
 import 'package:cockpit/app/cockpit/domain/entities/git_file_status.dart';
 import 'package:cockpit/app/cockpit/domain/entities/git_info.dart';
-import 'package:cockpit/app/cockpit/domain/utils/coalescing_single_flight.dart';
 import 'package:cockpit/app/core/ui/window_activity_controller.dart';
+import 'package:cockpit/app/core/data/diagnostics/performance_diagnostics.dart';
 import 'package:flutter/foundation.dart';
 
 typedef DirectoryWatch = Stream<FileSystemEvent> Function(String path);
@@ -32,6 +33,8 @@ class GitController extends ChangeNotifier {
     this._activity, {
     DirectoryWatch? directoryWatch,
     this._watchRetryDelay = const Duration(milliseconds: 500),
+    this._fileTreeDebounce = const Duration(milliseconds: 400),
+    this._fileTreeMaxLatency = const Duration(seconds: 2),
   }) : _directoryWatch = directoryWatch ?? _defaultDirectoryWatch {
     _activity.addListener(_onActivityChanged);
   }
@@ -41,6 +44,13 @@ class GitController extends ChangeNotifier {
   final WindowActivityController _activity;
   final DirectoryWatch _directoryWatch;
   final Duration _watchRetryDelay;
+
+  /// Debounce do bump da árvore (junta a rajada) e o teto: com eventos
+  /// estruturais chegando sem parar (build, `pub get`, agente escrevendo em
+  /// `.dart_tool/`), um debounce puro era rearmado a cada evento e **nunca**
+  /// disparava — arquivo criado na raiz só aparecia quando a rajada acabava.
+  final Duration _fileTreeDebounce;
+  final Duration _fileTreeMaxLatency;
 
   static Stream<FileSystemEvent> _defaultDirectoryWatch(String path) =>
       Directory(path).watch(recursive: true);
@@ -116,6 +126,9 @@ class GitController extends ChangeNotifier {
   /// o bump nem vice-versa.
   Timer? _fileTreeWatchDebounce;
 
+  /// Quando a rajada estrutural em curso começou (pra aplicar o teto).
+  DateTime? _fileTreeBurstStart;
+
   /// Poll de segurança do git. O `_gitWatch` só cobre o projeto **selecionado**
   /// e o `Directory.watch(recursive:)` do macOS coalesce/perde eventos (e forks
   /// de worktree, cujo `index`/`HEAD` moram fora do working tree, nem sempre
@@ -127,8 +140,7 @@ class GitController extends ChangeNotifier {
   bool _pollRequested = false;
   String? _watchedProjectId;
   static const Duration _gitPollInterval = Duration(seconds: 3);
-  final CoalescingSingleFlight<String> _refreshFlights =
-      CoalescingSingleFlight<String>();
+  final GitRefreshScheduler _refreshScheduler = GitRefreshScheduler();
 
   // ---- leitura --------------------------------------------------------------
 
@@ -197,7 +209,7 @@ class GitController extends ChangeNotifier {
     if (info == null) return null;
     GitFileStatus? out;
     for (final s in info.files.values) {
-      out = GitFileStatus.strongest(out, s);
+      out = GitFileStatus.strongestForFolder(out, s);
     }
     return out ??
         (info.untrackedDirs.isNotEmpty ? GitFileStatus.untracked : null);
@@ -257,8 +269,11 @@ class GitController extends ChangeNotifier {
   /// (todos), ao selecionar e no fim de turno do agente (que pode ter mexido
   /// em arquivos). Reavalia as **roots** (implícitas, do filesystem) e lê o
   /// git de cada uma — single-root é o caso N=1 e se comporta como sempre.
-  Future<void> refresh(String projectId) =>
-      _refreshFlights.run(projectId, () => _refreshOnce(projectId));
+  Future<void> refresh(String projectId) => _refreshScheduler.schedule(
+    projectId,
+    () => _refreshOnce(projectId),
+    priority: selectedProjectId?.call() == projectId,
+  );
 
   Future<void> _refreshOnce(String projectId) async {
     final path = resolvePath?.call(projectId);
@@ -367,6 +382,9 @@ class GitController extends ChangeNotifier {
       final selected = selectedProjectId?.call();
       _gitWatchPath = null; // libera o guard de [watchProject]
       watchProject(selected);
+      // O que aconteceu no disco entre a morte do watcher e o re-arm se
+      // perdeu: relê a árvore pra não ficar com a raiz desatualizada.
+      onStructuralFsChange?.call();
     });
   }
 
@@ -401,6 +419,10 @@ class GitController extends ChangeNotifier {
     watchProject(_watchedProjectId ?? selectedProjectId?.call());
     _armPoll();
     if (_pollRequested) _pollTick();
+    // Enquanto a janela esteve sem foco o watcher ficou desligado: tudo que
+    // nasceu/sumiu no disco nesse intervalo passou batido. Relê a árvore ao
+    // voltar — era a causa clássica do "criei na raiz e não apareceu".
+    onStructuralFsChange?.call();
   }
 
   void _cancelWatch() {
@@ -408,6 +430,7 @@ class GitController extends ChangeNotifier {
     _gitWatchDebounce?.cancel();
     _gitWatchRetry?.cancel();
     _fileTreeWatchDebounce?.cancel();
+    _fileTreeBurstStart = null;
     _gitWatch = null;
     _gitWatchPath = null;
   }
@@ -426,16 +449,32 @@ class GitController extends ChangeNotifier {
         event.type == FileSystemEvent.move) {
       // Mudança estrutural no working tree → árvore de arquivos relê as
       // pastas abertas (modify não muda a estrutura, só o conteúdo).
-      _fileTreeWatchDebounce?.cancel();
-      _fileTreeWatchDebounce = Timer(
-        const Duration(milliseconds: 400),
-        () => onStructuralFsChange?.call(),
-      );
+      _scheduleFileTreeBump();
     }
     _gitWatchDebounce?.cancel();
     _gitWatchDebounce = Timer(const Duration(milliseconds: 400), () {
       unawaited(refresh(projectId));
     });
+  }
+
+  /// Debounce com teto: rearma a cada evento, mas se a rajada já dura
+  /// [_fileTreeMaxLatency] dispara agora e começa uma rajada nova.
+  void _scheduleFileTreeBump() {
+    final now = DateTime.now();
+    final start = _fileTreeBurstStart ??= now;
+    if (now.difference(start) >= _fileTreeMaxLatency) {
+      _fireFileTreeBump();
+      return;
+    }
+    _fileTreeWatchDebounce?.cancel();
+    _fileTreeWatchDebounce = Timer(_fileTreeDebounce, _fireFileTreeBump);
+  }
+
+  void _fireFileTreeBump() {
+    _fileTreeWatchDebounce?.cancel();
+    _fileTreeWatchDebounce = null;
+    _fileTreeBurstStart = null;
+    onStructuralFsChange?.call();
   }
 
   /// Deriva as roots git de uma pasta (síncrono, raso — só `existsSync`):
@@ -535,11 +574,12 @@ class GitController extends ChangeNotifier {
     for (final entry in files.entries) {
       final path = entry.key; // relativo, separador '/'
       tree[path] = GitFileStatus.strongest(tree[path], entry.value)!;
-      // Propaga pros ancestrais: 'a/b/c.dart' → 'a/b', 'a'.
+      // Propaga pros ancestrais: 'a/b/c.dart' → 'a/b', 'a'. Deleção sobe
+      // como mudança comum (ver [GitFileStatus.strongestForFolder]).
       var slash = path.lastIndexOf('/');
       while (slash > 0) {
         final dir = path.substring(0, slash);
-        tree[dir] = GitFileStatus.strongest(tree[dir], entry.value)!;
+        tree[dir] = GitFileStatus.strongestForFolder(tree[dir], entry.value)!;
         slash = dir.lastIndexOf('/');
       }
     }
@@ -552,5 +592,114 @@ class GitController extends ChangeNotifier {
     _cancelWatch();
     _gitPoll?.cancel();
     super.dispose();
+  }
+}
+
+/// Fila global, limitada e coalescida para leituras Git. O limite evita que o
+/// restore de muitos workspaces dispute CPU/I/O com builds e com o isolate de
+/// UI. Requisições repetidas compartilham o mesmo Future e uma requisição do
+/// workspace selecionado pode promover uma entrada ainda não iniciada.
+@visibleForTesting
+final class GitRefreshScheduler {
+  GitRefreshScheduler({this.maxConcurrent = 2}) : assert(maxConcurrent > 0);
+
+  final int maxConcurrent;
+  final LinkedHashSet<String> _priority = LinkedHashSet<String>();
+  final LinkedHashSet<String> _normal = LinkedHashSet<String>();
+  final Map<String, Future<void> Function()> _jobs = {};
+  final Map<String, Future<void> Function()> _rerunJobs = {};
+  final Map<String, Completer<void>> _completers = {};
+  final Set<String> _activeKeys = {};
+  final Set<String> _priorityReruns = {};
+  final Set<String> _rerunConsumed = {};
+  int _active = 0;
+
+  @visibleForTesting
+  int get activeCount => _active;
+
+  @visibleForTesting
+  int get queuedCount => _jobs.length;
+
+  Future<void> schedule(
+    String key,
+    Future<void> Function() job, {
+    bool priority = false,
+  }) {
+    final existing = _completers[key];
+    if (existing != null) {
+      if (_activeKeys.contains(key)) {
+        if (!_rerunConsumed.contains(key)) {
+          _rerunJobs[key] = job;
+          if (priority) _priorityReruns.add(key);
+        }
+      } else {
+        _jobs[key] = job;
+        if (priority && _normal.remove(key)) _priority.add(key);
+      }
+      return existing.future;
+    }
+    final completer = Completer<void>();
+    _completers[key] = completer;
+    _jobs[key] = job;
+    (priority ? _priority : _normal).add(key);
+    _drain();
+    return completer.future;
+  }
+
+  void _drain() {
+    while (_active < maxConcurrent && _jobs.isNotEmpty) {
+      final key = _takeNext();
+      final job = _jobs.remove(key)!;
+      _active++;
+      _activeKeys.add(key);
+      final stopwatch = Stopwatch()..start();
+      Future<void>.sync(job).then<void>(
+        (_) => _complete(key, stopwatch: stopwatch),
+        onError: (Object error, StackTrace stack) {
+          _active--;
+          _activeKeys.remove(key);
+          _rerunJobs.remove(key);
+          _priorityReruns.remove(key);
+          _rerunConsumed.remove(key);
+          _recordMetric(stopwatch, failed: true);
+          _completers.remove(key)?.completeError(error, stack);
+          _drain();
+        },
+      );
+    }
+  }
+
+  String _takeNext() {
+    final queue = _priority.isNotEmpty ? _priority : _normal;
+    final key = queue.first;
+    queue.remove(key);
+    return key;
+  }
+
+  void _complete(String key, {required Stopwatch stopwatch}) {
+    _active--;
+    _activeKeys.remove(key);
+    _recordMetric(stopwatch, failed: false);
+    final rerun = _rerunJobs.remove(key);
+    if (rerun != null) {
+      _rerunConsumed.add(key);
+      _jobs[key] = rerun;
+      final priority = _priorityReruns.remove(key);
+      (priority ? _priority : _normal).add(key);
+      _drain();
+      return;
+    }
+    _rerunConsumed.remove(key);
+    _completers.remove(key)?.complete();
+    _drain();
+  }
+
+  void _recordMetric(Stopwatch stopwatch, {required bool failed}) {
+    PerformanceDiagnostics.instance.record(PerfMetric.gitRefresh, {
+      PerfField.durationUs: stopwatch.elapsedMicroseconds,
+      PerfField.active: _active,
+      PerfField.queued: _jobs.length,
+      PerfField.failed: failed ? 1 : 0,
+    });
   }
 }

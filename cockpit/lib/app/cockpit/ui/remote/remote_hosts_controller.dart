@@ -1,3 +1,4 @@
+import 'package:cockpit_core/cockpit_core.dart';
 import 'dart:async';
 
 import 'package:cockpit/app/cockpit/data/remote/mobile_ssh_key_store.dart';
@@ -6,8 +7,6 @@ import 'package:cockpit/app/core/utils/remote_path.dart';
 import 'package:cockpit/app/cockpit/data/remote/remote_host_password_store.dart';
 import 'package:cockpit/app/cockpit/data/remote/remote_host_terminal_gateway.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/remote_hosts_store.dart';
-import 'package:cockpit/app/cockpit/domain/contracts/ssh_tunnel.dart'
-    show HostKeyPrompt, HostKeyVerdict;
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_gateway.dart';
 import 'package:cockpit/app/cockpit/domain/entities/remote_host.dart';
 import 'package:cockpit/app/cockpit/domain/entities/remote_workspace_pin.dart';
@@ -31,6 +30,12 @@ class RemoteHostsController extends ChangeNotifier {
   /// `null` = ninguém pra perguntar → host novo falha em vez de ser aceito
   /// em silêncio.
   HostKeyPrompt? hostKeyPrompt;
+
+  /// O host [hostId] é o do workspace selecionado? Gate do retry automático:
+  /// host fora de foco não tenta reconectar até voltar a ser olhado. A VM
+  /// pluga no boot; `null` = sem gate (todo host tenta, comportamento antigo).
+  bool Function(String hostId)? isHostFocused;
+
   final Map<String, RemoteHostConnector> _connectors = {};
   final MobileSshKeyStore _deviceKeys = MobileSshKeyStore();
   RemoteHostPasswordStore _passwords = RemoteHostPasswordStore();
@@ -76,6 +81,8 @@ class RemoteHostsController extends ChangeNotifier {
       hostKeyPrompt: (endpoint, fingerprint) async =>
           await hostKeyPrompt?.call(endpoint, fingerprint) ??
           HostKeyVerdict.reject,
+      // Lido no tique do retry, não aqui: o foco muda o tempo todo.
+      isFocused: () => isHostFocused?.call(host.id) ?? true,
     );
     connector.turnStatus.listen(_turnStatus.add);
     connector.cliCommands.listen(_cliCommands.add);
@@ -85,6 +92,14 @@ class RemoteHostsController extends ChangeNotifier {
     connector.phases.listen((_) => notifyListeners());
     return connector;
   });
+
+  /// O workspace selecionado mudou: o host que ganhou foco retoma uma
+  /// reconexão adiada (se houver) na hora. Os demais seguem parados.
+  void focusChanged() {
+    for (final entry in _connectors.entries) {
+      if (isHostFocused?.call(entry.key) ?? true) entry.value.resumeRetry();
+    }
+  }
 
   /// Reconecta um host AGORA, ignorando o backoff em curso (botão da UI).
   ///
@@ -141,6 +156,11 @@ class RemoteHostsController extends ChangeNotifier {
   /// Serviço de DB do host (queries remotas). Conecta se preciso.
   Future<RemoteDbService> dbServiceFor(RemoteHost host) =>
       _connectorFor(host).dbService();
+
+  /// Execução de processo no host (`cockpit exec` de aba remota). Conecta se
+  /// preciso.
+  Future<RemoteProcService> procServiceFor(RemoteHost host) =>
+      _connectorFor(host).procService();
 
   Future<void> addHost({
     required String name,
@@ -326,10 +346,10 @@ class RemoteHostsController extends ChangeNotifier {
     return '${existing + 1}';
   }
 
-  /// Fonte local do bootstrap remoto. [arch] vem do `uname -sm` do HOST, não
-  /// desta máquina — o bundle macOS traz as duas fatias do servidor.
-  String? _resolveLocalServerBinary({String? arch}) =>
-      SidecarTerminalConnector.resolveServerBundleBinary(arch: arch);
+  /// Fonte embarcada do bootstrap remoto. [os]/[arch] vêm do probe do HOST,
+  /// não desta máquina; o bundle macOS também pode trazer targets Linux.
+  String? _resolveLocalServerBinary({String? os, String? arch}) =>
+      SidecarTerminalConnector.resolveServerBundleBinary(os: os, arch: arch);
 
   @override
   void dispose() {

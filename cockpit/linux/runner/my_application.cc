@@ -7,6 +7,67 @@
 
 #include "flutter/generated_plugin_registrant.h"
 
+#include "desktop_multi_window/desktop_multi_window_plugin.h"
+
+// Canal "cockpit/document_window" das JANELAS DE DOCUMENTO
+// (desktop_multi_window): a janela nasce sem título; o Dart manda `present`
+// com título e tamanho e aplicamos na GtkWindow de cima da view. Espelha
+// DocumentWindows.swift no macOS.
+static void document_window_method_cb(FlMethodChannel* channel,
+                                      FlMethodCall* method_call,
+                                      gpointer user_data) {
+  FlView* view = FL_VIEW(user_data);
+  if (g_strcmp0(fl_method_call_get_name(method_call), "present") != 0) {
+    fl_method_call_respond_not_implemented(method_call, nullptr);
+    return;
+  }
+  const gchar* title = "";
+  double width = 960, height = 720;
+  FlValue* args = fl_method_call_get_args(method_call);
+  if (args != nullptr && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+    FlValue* t = fl_value_lookup_string(args, "title");
+    if (t != nullptr && fl_value_get_type(t) == FL_VALUE_TYPE_STRING) {
+      title = fl_value_get_string(t);
+    }
+    FlValue* w = fl_value_lookup_string(args, "width");
+    if (w != nullptr && fl_value_get_type(w) == FL_VALUE_TYPE_FLOAT) {
+      width = fl_value_get_float(w);
+    }
+    FlValue* h = fl_value_lookup_string(args, "height");
+    if (h != nullptr && fl_value_get_type(h) == FL_VALUE_TYPE_FLOAT) {
+      height = fl_value_get_float(h);
+    }
+  }
+  GtkWidget* top = gtk_widget_get_toplevel(GTK_WIDGET(view));
+  if (GTK_IS_WINDOW(top)) {
+    GtkWindow* window = GTK_WINDOW(top);
+    gtk_window_set_title(window, title);
+    gtk_window_resize(window, (gint)width, (gint)height);
+    gtk_window_set_position(window, GTK_WIN_POS_CENTER);
+    gtk_window_present(window);
+  }
+  g_autoptr(FlMethodResponse) response =
+      FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+  fl_method_call_respond(method_call, response, nullptr);
+}
+
+// Cada janela de documento é um engine novo sem plugin nenhum: registra os
+// gerados + o canal acima. O channel fica vivo com o engine (sem unref).
+static void document_window_created_cb(FlPluginRegistry* registry) {
+  fl_register_plugins(registry);
+  g_autoptr(FlPluginRegistrar) registrar =
+      fl_plugin_registry_get_registrar_for_plugin(registry,
+                                                  "CockpitDocumentWindow");
+  FlView* view = fl_plugin_registrar_get_view(registrar);
+  if (view == nullptr) return;
+  g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
+  FlMethodChannel* channel = fl_method_channel_new(
+      fl_plugin_registrar_get_messenger(registrar), "cockpit/document_window",
+      FL_METHOD_CODEC(codec));
+  fl_method_channel_set_method_call_handler(channel, document_window_method_cb,
+                                            g_object_ref(view), g_object_unref);
+}
+
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
@@ -78,6 +139,8 @@ static void my_application_activate(GApplication* application) {
   gtk_widget_realize(GTK_WIDGET(view));
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
+  desktop_multi_window_plugin_set_window_created_callback(
+      document_window_created_cb);
 
   gtk_widget_grab_focus(GTK_WIDGET(view));
 }

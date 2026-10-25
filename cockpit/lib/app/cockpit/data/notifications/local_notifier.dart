@@ -12,7 +12,7 @@ class LocalNotifier implements Notifier {
   /// AppUserModelID do Cockpit no Windows. Mesmo valor do `app_id` do
   /// empacotamento (`windows/packaging/exe/make_config.yaml`) e do bundle id
   /// do macOS — identifica o app na central de notificações.
-  static const String _windowsAppUserModelId = 'work.jacobmoura.cockpit';
+  static const String _windowsAppUserModelId = 'ch.pungitore.piper.cockpit';
 
   /// GUID fixo que o Windows usa pra registrar o callback de ativação do
   /// notificador (COM CLSID). Gerado uma única vez — **NÃO pode mudar entre
@@ -80,12 +80,6 @@ class LocalNotifier implements Notifier {
     required String agentName,
     required String workspace,
   }) => _show(t.cockpit.notifications.agentNeedsAction, agentName, workspace);
-
-  @override
-  Future<void> agentCrashed({
-    required String agentName,
-    required String workspace,
-  }) => _show(t.cockpit.notifications.agentCrashed, agentName, workspace);
 
   Future<void> _show(String title, String agentName, String workspace) async {
     final subtitle = workspace.isEmpty ? agentName : '$agentName · $workspace';

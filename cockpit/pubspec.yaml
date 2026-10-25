@@ -16,7 +16,7 @@ publish_to: "none" # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.28.17+80
+version: 2.1.18+116
 
 environment:
   sdk: ^3.12.0
@@ -54,6 +54,10 @@ dependencies:
     path: packages/cockpit_core
   cockpit_remote:
     path: packages/cockpit_remote
+  # Segura o sleep por inatividade da máquina (botão "Keep awake" no rodapé
+  # do rail). Dart puro, desktop-only, no-op em iPad/Android.
+  cockpit_keepawake:
+    path: packages/cockpit_keepawake
 
   # Parse dos layouts `.ckp` (orquestração de panes) — YAML puro-Dart.
   yaml: ^3.1.2
@@ -72,8 +76,13 @@ dependencies:
   # `DefaultMaterialLocalizations` (en-US) por padrão, então os widgets de
   # terceiros que embutem Material (xterm, media_kit_video, gpt_markdown)
   # funcionam sem `flutter_localizations`; e `shadcn_flutter.dart` já re-exporta
-  # `Icons`, então mantemos os Material Icons sem import extra.
+  # `Icons` (Material clássico + Lucide). O conjunto maior é Material Symbols
+  # (`Symbols.*` em `package:material_symbols_icons/symbols.dart`).
   shadcn_flutter: 0.0.52
+
+  # Ícones Material Symbols (outlined/rounded/sharp) — milhares a mais que o
+  # `Icons` clássico. Tree-shakeável quando o uso é `const`/`Symbols.nome`.
+  material_symbols_icons: ^4.2960.0
 
   # DI + roteamento + estado page-scoped num pacote só: cada feature é um módulo
   # (`createModule`) que declara suas rotas + binds. Substitui provider +
@@ -162,22 +171,15 @@ dependencies:
 
   # Wave 2 — arrastar arquivos do SO (Finder/Explorer/etc.) pro input. O
   # drag-drop interno do Flutter não pega drops nativos; o desktop_drop cobre
-  # macOS/Linux/Windows. NOTA: registrar esta dep no plano 37.
-  desktop_drop: ^0.5.0
+  # macOS/Linux/Windows. Absorvido em plugins/ com 1 patch macOS (hover das
+  # platform views) — ver plugins/desktop_drop/README.md e plan/70.
+  desktop_drop:
+    path: plugins/desktop_drop
 
-  # Wave 2 — header fixo (sticky) por turno no chat: a pergunta do usuário fica
-  # pinada no topo enquanto a resposta rola. NOTA: registrar no plano 37.
-  flutter_sticky_header: ^0.8.0
-
-  # Conectividade (Fatia 3 — pareamento) — renderiza a URI de pareamento do
-  # `remote-pi` como QR Code no dialog. NOTA: registrar esta dep no plano 37.
-  qr_flutter: ^4.1.0
-
-  # Windows-only — cliente de named pipe (Win32 FFI) pra falar com o supervisor,
-  # que no Windows escuta em `\\.\pipe\…` em vez de UDS. Ver
-  # lib/data/daemon/win_named_pipe.dart.
+  # FFI direto no app: Job Object do Windows que amarra filhos à vida do
+  # processo (core/utils/child_process_lifetime.dart). O `win32` saiu junto com
+  # o named pipe do supervisor; quem ainda precisa dele é o cockpit_keepawake.
   ffi: ^2.1.0
-  win32: ^5.5.0
 
   # Aviso de atualização in-app (plano 43, passo 7): versão atual do app
   # (package_info_plus) + abrir a URL do artefato no navegador (url_launcher).
@@ -204,22 +206,25 @@ dependencies:
   # (#4), loader via asset-id (#6), build universal macOS corrigido (0.1.3 —
   # cada arch escreve no próprio outputDirectory, sem colisão no lipo).
   anaki_orm: ^0.1.1
-  anaki_sqlite: ^0.1.4
+  anaki_sqlite: ^0.1.6
   # Postgres 0.1.5 / MySQL 0.1.7: credenciais deixaram de ir por URL montada com
   # `format!` (agora Pg/MySqlConnectOptions programático). A URL crua quebrava
   # com senha contendo `? / #` — o sqlx reportava "invalid port number" — e
   # corrompia senha com `%` (percent-decode silencioso).
-  anaki_postgres: ^0.1.5
-  anaki_mysql: ^0.1.7
-  anaki_mssql: ^0.1.4
+  # Postgres 0.1.9 / MySQL 0.1.10: relink dos dylibs darwin com SDK 26. As
+  # 0.1.8/0.1.9 saíram linkadas com o ld do Xcode 27 e o dyld recusava
+  # ("mis-aligned LINKEDIT string pool") — Postgres/MySQL mortos na 2.1.5.
+  anaki_postgres: ^0.1.9
+  anaki_mysql: ^0.1.10
+  anaki_mssql: ^0.1.7
   # NoSQL/cache — acesso APENAS via CLI por enquanto (sem UI); ver plano 51.
-  anaki_redis: ^0.1.4
+  anaki_redis: ^0.1.5
   # 0.1.5: feature `socks5-proxy` do crate mongodb habilitada (plano 54) — é o
   # que faz `proxyHost`/`proxyPort` valerem. Sem ela o driver recusa a opção, e
   # Mongo atrás de bastion (replica set / Atlas SRV) não tem caminho: o driver
   # descobre os membros pelo `hello` e disca os hostnames anunciados, furando
   # qualquer port-forward.
-  anaki_mongodb: ^0.1.7
+  anaki_mongodb: ^0.1.8
 
   # Plano 54 — túnel SSH opcional por conexão de banco. Dart puro de propósito
   # (decisão C): o binário `ssh` só *provavelmente* existe no Windows (Feature
@@ -234,6 +239,10 @@ dependencies:
   slang_flutter: ^4.18.0
   launch_at_startup: ^0.5.1
   pinenacl: ^0.6.0
+  desktop_multi_window: ^0.3.1
+  sqlite3: ^3.6.0
+  sqlite3_flutter_libs: ^0.6.0+eol
+  vm_service: ^15.3.0
 
 dev_dependencies:
   flutter_test:
@@ -290,6 +299,9 @@ flutter:
     # sanitizador + diff de DOM + CSS por variáveis de tema). Sem rede: a
     # webview carrega só estes assets, sob CSP restritiva.
     - assets/md_preview/
+    # Plano 67 — ponte JS injetada nas abas `.panel` (window.cockpit).
+    - assets/panel/
+    - assets/panel/lib/
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
@@ -363,6 +375,24 @@ dependency_overrides:
   # delta desincroniza do sentinel — no iOS, digitar um acento congelava toda a
   # digitacao (setEditingState ignorado -> delta.apply estoura -> canal morre).
   #
+  # Tag cockpit-pin-flterm-link-click (891b2af): Cmd/Ctrl+clique num link abre
+  # mesmo quando a TUI liga mouse tracking (Claude Code, vim). Antes o clique
+  # ia pro app e o link so realcava. Clique sem modificador segue indo pro app.
+  #
+  # Tag cockpit-pin-flterm-upstream-2026-10 (735e10d): refresh completo sobre
+  # o upstream main de 2026-10-02 (branch integrate/upstream-main-2026-10), com
+  # os 6 patches nossos reportados pra nova arquitetura de input (recover/reopen
+  # do text input iOS x3, dead keys sob Kitty, Cmd+char chord pro app, clique
+  # modificado abre link sob mouse tracking). Traz do upstream: busca no
+  # terminal, snapshots, alcas de selecao por toque + lupa (iPad), APIs de
+  # clipboard, Ctrl+Space como chord, fixes de Kitty graphics. O C API do
+  # Ghostty mudou (simbolos novos, ex.: ghostty_search_new): dylib nova.
+  #
+  # Tag cockpit-pin-flterm-upstream-2026-10c (b41f118): + TerminalView.
+  # presentationActive (absorvido do PR #230, moregola): aba oculta fica
+  # montada mas o renderer nao recebe frames; ao reabrir, sync + layout
+  # completo. Dylib nativa identica a 2026-10 (patch so Dart).
+  #
   # ATENCAO CI: ao trocar esta ref muda o ghostty.version; o cache de native
   # asset (.dart_tool/hooks_runner, build/native_assets) precisa ser invalidado,
   # senao a dylib velha crasha o processo (exit -10) ao carregar os bindings novos.
@@ -372,10 +402,20 @@ dependency_overrides:
   flterm:
     git:
       url: https://github.com/jacobaraujo7/libghostty.git
-      ref: 3dc78a42b016ba90ef36f50f16f3c28e4a706f50
+      ref: cockpit-pin-flterm-upstream-2026-10d
       path: packages/flterm
   libghostty:
     git:
       url: https://github.com/jacobaraujo7/libghostty.git
-      ref: 3dc78a42b016ba90ef36f50f16f3c28e4a706f50
+      ref: cockpit-pin-flterm-upstream-2026-10d
       path: packages/libghostty
+  # Hover no WebView2 (Windows): o plugin 0.6.0 reenvia só MOVE ao
+  # CompositionController, nunca LEAVE, e um method call por pixel. Fork pinado
+  # em TAG (regra acima) com Leave no onExit + coalescência por frame + guard do
+  # null deref no callHandler (plano 70). Remover quando o upstream publicar
+  # (PR aberto a partir da branch cockpit/windows-hover do fork).
+  flutter_inappwebview_windows:
+    git:
+      url: https://github.com/jacobaraujo7/flutter_inappwebview.git
+      ref: cockpit-windows-hover-1
+      path: flutter_inappwebview_windows

@@ -74,20 +74,14 @@ List<MenuBarMenu> buildAppMenus(
       const MenuRole(MenuBarRole.quit),
     ]),
     MenuBarMenu(tr.file, <MenuNode>[
-      // New Agent/Terminal abrem uma aba no workspace ativo (via CockpitPage →
-      // newTabIn). Só habilitam quando há workspace selecionado. "New Agent" só
-      // aparece quando o suporte a agentes está ligado (Settings → General) e o
-      // workspace ativo permite agentes (o Cockpit terminal-only não permite).
-      if (controller.settings.enableAgent && workspace.agentsAllowed)
-        MenuAction(
-          tr.newAgent,
-          onSelected: workspace.hasWorkspace ? workspace.newAgent : null,
-        ),
+      // New Terminal abre uma aba no workspace ativo (via CockpitPage →
+      // newTabIn). Só habilita quando há workspace selecionado.
       // No mobile o "+" da aba cria terminal e o "+" do rail abre workspace —
       // esses itens de menu são redundantes (plano 60, Wave F).
       if (!isMobilePlatform)
         MenuAction(
           tr.newTerminal,
+          accelerator: const MenuAccelerator(LogicalKeyboardKey.keyT),
           onSelected: workspace.hasWorkspace ? workspace.newTerminal : null,
         ),
       if (!isMobilePlatform) const MenuSeparator(),
@@ -96,6 +90,18 @@ List<MenuBarMenu> buildAppMenus(
           tr.openWorkspace,
           accelerator: const MenuAccelerator(LogicalKeyboardKey.keyO),
           onSelected: () => requestOpenProject?.call(),
+        ),
+      // ⌘P no menu nativo pelo mesmo motivo do ⌘1…⌘9: com o foco numa webview
+      // (preview de markdown/HTML, `.panel`) o teclado vai pro WKWebView e o
+      // `CallbackShortcuts` do shell nunca vê a tecla; o key equivalent do menu
+      // dispara assim mesmo. Fora do macOS quem trata é o próprio shell, daí o
+      // `shortcutHandledExternally` (senão a palette abriria duas vezes).
+      if (!isMobilePlatform)
+        MenuAction(
+          tr.goToFile,
+          accelerator: const MenuAccelerator(LogicalKeyboardKey.keyP),
+          shortcutHandledExternally: true,
+          onSelected: workspace.hasWorkspace ? workspace.goToFile : null,
         ),
       const MenuSeparator(),
       // Save/Discard/Format só ficam ativos quando há uma aba de edição focada
@@ -210,6 +216,32 @@ List<MenuBarMenu> buildAppMenus(
             onSelected: workspace.hasWorkspace ? workspace.selectLastTab : null,
           ),
         ]),
+      // Troca de workspace pelo teclado (⇧⌘N volta, ⇧⌘M avança): N e M são
+      // vizinhas, esquerda/direita. Sem dígitos de propósito: o rail inclui
+      // worktrees e a posição muda o tempo todo; anterior/próximo é estável.
+      // Com Shift, a combinação nunca chega ao terminal (⌃N/⌃M sem Shift
+      // continuam livres pra readline/vim/fzf).
+      if (!isMobilePlatform) const MenuSeparator(),
+      if (!isMobilePlatform)
+        MenuAction(
+          tr.previousWorkspace,
+          accelerator: const MenuAccelerator(
+            LogicalKeyboardKey.keyN,
+            shift: true,
+          ),
+          onSelected: workspace.hasWorkspace
+              ? workspace.previousWorkspace
+              : null,
+        ),
+      if (!isMobilePlatform)
+        MenuAction(
+          tr.nextWorkspace,
+          accelerator: const MenuAccelerator(
+            LogicalKeyboardKey.keyM,
+            shift: true,
+          ),
+          onSelected: workspace.hasWorkspace ? workspace.nextWorkspace : null,
+        ),
       if (!isMobilePlatform) const MenuSeparator(),
       MenuAction(
         tr.zoomIn,

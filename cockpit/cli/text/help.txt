@@ -17,18 +17,39 @@ USAGE:
   cockpit list-tabs       [--json]             list active tabs (alias: list-panes)
   cockpit list-workspaces [--json]             list workspaces (projects)
   cockpit list-tasks      [--json]             list this workspace's tasks (Task Run)
+  cockpit run-task <task-id> [--profile <p>] [--restart]   start a task
+  cockpit stop-task <task-id>                  stop a running task
+  cockpit restart-task <task-id>               stop + start (same profile)
+  cockpit send-task-key <task-id> <key>        write an interactive key (e.g. r)
   cockpit new-tab [--cwd <dir>] [--title <name>] [--split h|v]
                                                open a new terminal tab (prints its id)
+  cockpit close-tab [<label|tab-id>]           close a tab (default: the current
+                                               one) — prints the closed tab id
+  cockpit new-workspace <path> [--host <host>] [--name <name>] [--json]
+                                               create/open a workspace (local or remote)
+  cockpit new-remote-workspace --host <h> --path <p> [--name <n>] [--json]
+                                               create/open a remote workspace
+  cockpit close-workspace [<id|path>] [--json] close a top-level workspace
+  cockpit rename-workspace <id|path> <name> [--json]
+                                               rename a workspace in the sidebar
   cockpit db <list|schema|query|run|execute>   SQL databases (see `cockpit db --help`)
+  cockpit telemetry <cmd…> | errors | show …   run observed / query the error store (see `cockpit telemetry --help`)
   cockpit redis [browse] --db <conn> ...       Redis command / open key table
   cockpit mongo [browse] --db <conn> [--database <name>] ...
                                                MongoDB runCommand / open browser
   cockpit http <list|run> <file.http>          run HTTP requests from a .http
                                                file (see `cockpit http --help`)
+  cockpit exec [--cwd <dir>] [--timeout <s>] [--json] [--] <command...>
+                                               run a shell command via the app and
+                                               print its output (see `cockpit exec --help`)
   cockpit browse <url> [--json]                open the built-in browser tab at
                                                <url> (system browser on Linux)
-  cockpit orchestrate <file.ckp> [--json]      apply a .ckp pane layout (open
-                                               terminals/splits + run commands)
+  cockpit orchestrate <file.ckp> [--append]    apply a .ckp pane layout: close
+                      [--json]                 the workspace tabs, then open the
+                                               terminals/splits + run commands
+                                               (--append keeps the open tabs)
+  cockpit note <add|list> <dir.notebook> ...   write/list notes in a notebook
+                                               folder (see `cockpit note --help`)
   cockpit install-skill   [--force]            install the Claude Code skill
   cockpit --help | --version
 
@@ -40,12 +61,15 @@ READ (read-tab / read-task):
   read-tab without a target reads the CURRENT tab; a target may be a stable
   tab label or a tab-id.
 
-TASKS (list-tasks / read-task):
+TASKS (list-tasks / read-task / run-task / stop-task / restart-task / send-task-key):
   Task ids are stable per workspace: npm:<script> (package.json), flutter:run /
   flutter:test, json:<label> (.cockpit/tasks.json). Discover them with
   `cockpit list-tasks` — `[output]` marks tasks whose output `read-task` can
   read (ran this boot); ● marks tasks running right now. Task-output tabs in
   `list-tabs --json` also carry the task id as `taskId`.
+  run/stop/restart/send-task-key drive the same runner as the Tasks panel, on
+  local and remote workspaces alike. `list-tasks --json` lists each task's
+  `profiles` and interactive `keys`.
 
 DATABASES (db):
   Connections live per workspace in .cockpit/databases.json (+ auto-detected
@@ -62,6 +86,13 @@ HTTP (http):
     cockpit http list api/users.http
     cockpit http run  api/users.http --request "Create user"
   Full reference: `cockpit http --help`.
+
+NOTEBOOKS (note):
+  A folder named *.notebook is a notebook: one .md per note, frontmatter with
+  title/tags. The app shows it as a single item and renders it as a notes tab.
+    cockpit note add notes.notebook --title "Túnel SSH" --tag relay --body -
+    cockpit note list notes.notebook
+  Full reference: `cockpit note --help`.
 
 IDS:
   Workspace ids are opaque UUIDs — use `workspacePath` (list-tabs) / `path`
@@ -94,10 +125,40 @@ NEW-TAB:
                   Omit to open as a new tab in the same pane.
   Anchored at the emitting tab's pane/workspace. Prints the new tab id.
 
+CLOSE-TAB:
+  cockpit close-tab [<label|tab-id>]
+  Without a target it closes the CURRENT tab — the shell you are typing in
+  ends with it. Closing the last tab of a split removes the split; closing the
+  last tab of a workspace leaves an empty tab (same as the tab's "x" in the UI).
+
+WORKSPACES (new-workspace / close-workspace / rename-workspace):
+  cockpit new-workspace <path> [--host <ssh-target>] [--name <title>] [--json]
+  cockpit new-remote-workspace --host <ssh-target> --path <remote-path> [--name <title>] [--json]
+  Alias: `cockpit open-workspace`. Adds a top-level workspace in Cockpit's
+  sidebar (local or remote), selects it, and ensures an initial terminal tab is
+  opened. For remote workspaces, --host specifies the SSH host or ~/.ssh/config
+  alias (automatically registered if not already present).
+  Idempotent: if already open, selects it and returns its info. Prints the
+  workspace id (or JSON object with --json).
+
+  cockpit close-workspace [<id|path>] [--json]
+  Closes a top-level workspace (ends its tabs; files on disk are kept). Target
+  may be a UUID, directory path, or unique name (default: current workspace).
+  Prints the closed workspace id.
+
+  cockpit rename-workspace [<id|path>] <new-name> [--json]
+  Updates the display title of a workspace in the sidebar. Target may be a UUID,
+  directory path, or unique name (default: current workspace).
+
 EXAMPLES:
   cockpit send "echo hi" && cockpit send-key Enter
   id=$(cockpit new-tab --cwd ~/proj --title Worker --split h)
   cockpit send --tab-id "$id" --enter "npm test"   # text + Enter in one call
+  cockpit close-tab "$id"                      # close it when done (or: Worker)
+  ws=$(cockpit new-workspace ~/proj/my-service --name "My Service")
+  cockpit rename-workspace "$ws" "Renamed Service"
+  cockpit close-workspace "$ws"
+  rws=$(cockpit new-remote-workspace --host workspace-vm --path /home/ubuntu/wt --name "Task 1")
   cockpit send-key C-c
   cockpit send --tab-id t3 --enter "ls"
   cockpit .zprofile          # opens the file in the viewer (relative to tab cwd)

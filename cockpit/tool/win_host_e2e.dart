@@ -18,10 +18,10 @@ import 'dart:typed_data';
 
 import 'package:cockpit/app/cockpit/data/remote/host_shell/host_shell.dart';
 import 'package:cockpit/app/cockpit/data/remote/host_shell/windows_host_shell.dart';
-import 'package:cockpit/app/cockpit/data/remote/ssh_channel_duplex.dart';
+import 'package:cockpit/app/cockpit/data/remote/dartssh_host_connection.dart';
+import 'package:cockpit/app/cockpit/data/remote/ssh_worker_connection.dart';
 import 'package:cockpit/app/cockpit/data/remote/ssh_tunnel.dart';
-import 'package:dartssh2/dartssh2.dart';
-import 'package:cockpit_core/cockpit_core.dart';
+import 'package:cockpit_core/cockpit_core.dart' hide SshTunnel;
 import 'package:cockpit_remote/cockpit_remote.dart';
 
 var _failures = 0;
@@ -90,7 +90,7 @@ Future<void> main(List<String> args) async {
   _check('token presente', endpoint.token != null);
   stdout.writeln('       port=${endpoint.port}');
 
-  // Transporte MOBILE (`--mobile`): dartssh2 + SshChannelDuplex, a pilha do
+  // Transporte MOBILE (`--mobile`): dartssh2 numa isolate worker, a pilha do
   // iPad. É a única diferença estrutural entre os dois clientes — o desktop
   // usa o `ssh` do sistema com `-L`. Existe porque o terminal funciona no
   // macOS contra este mesmo host e não no iPad: se o input morrer aqui, o
@@ -236,20 +236,19 @@ Future<void> _runMobile(
   final cwd = cwdIndex >= 0 ? _mobileArgs[cwdIndex + 1] : null;
   final user = target.split('@').first;
   final host = target.split('@').last;
-  final socket = await SSHSocket.connect(host, port);
-  final client = SSHClient(
-    socket,
-    username: user,
-    identities: SSHKeyPair.fromPem(await File(identity!).readAsString()),
+  final client = SshWorkerConnection(
+    SshEndpoint(user, host, port),
+    identityPems: [await File(identity!).readAsString()],
+    verifyHostKey: (_) async => true,
   );
-  await client.authenticated;
+  await client.connect();
   _check('mobile: autenticou', true);
 
-  final channel = await client.forwardLocal('127.0.0.1', endpoint.port);
+  final duplex = await client.forwardTcp(endpoint.port);
   _check('mobile: forwardLocal abriu', true);
 
   final connection = await RemoteConnection.connectOn(
-    SshChannelDuplex(channel),
+    duplex,
     clientName: 'cockpit-ipad',
     token: endpoint.token,
   );
@@ -306,7 +305,7 @@ Future<void> _runMobile(
 
   await sub.cancel();
   await connection.close();
-  client.close();
+  await client.close();
   stdout.writeln(_failures == 0 ? 'MOBILE VERDE' : 'FALHOU');
   exit(_failures == 0 ? 0 : 1);
 }

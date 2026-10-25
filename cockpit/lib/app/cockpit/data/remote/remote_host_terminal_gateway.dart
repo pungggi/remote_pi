@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:cockpit/app/cockpit/data/remote/pty_ack_batcher.dart';
 import 'package:cockpit/app/cockpit/data/remote/remote_host_connector.dart';
 import 'package:cockpit/app/core/data/diagnostics/diagnostics_log.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_gateway.dart';
@@ -22,6 +22,12 @@ import 'package:cockpit_remote/cockpit_remote.dart';
 class RemoteHostTerminalGateway implements TerminalGateway {
   RemoteHostTerminalGateway(this._connector);
 
+  /// `.env.cockpit` do workspace REMOTO: lido no host (via `fs.read`) logo
+  /// antes do spawn e fundido no ambiente da PTY, abaixo do env do Cockpit.
+  /// A VM pluga por aba; `null` = sem arquivo/sem injeção. Falha de leitura
+  /// não derruba a aba — abre sem as variáveis.
+  Future<Map<String, String>> Function()? workspaceEnvLoader;
+
   final RemoteHostConnector _connector;
 
   RemoteTerminalService? _service;
@@ -31,6 +37,9 @@ class RemoteHostTerminalGateway implements TerminalGateway {
   // Flow control por contador acumulado (mesma razão do gateway do sidecar).
   int _bytesDelivered = 0;
   int _bytesAcked = 0;
+
+  /// Acks saem por volume, não por chunk: no remoto cada um é um pacote SSH.
+  late final PtyAckBatcher _acks = PtyAckBatcher(send: _sendAck);
 
   final StreamController<List<int>> _output = StreamController<List<int>>();
   final List<void Function()> _queued = [];
@@ -163,6 +172,9 @@ class RemoteHostTerminalGateway implements TerminalGateway {
       _closeOutput();
       return;
     }
+    // Crédito ainda não confirmado volta ao contador: será confirmado na
+    // conexão nova, em vez de sumir com o transporte.
+    _bytesAcked -= _acks.reset();
     _detached = true;
     _ready = false;
   }
@@ -185,6 +197,17 @@ class RemoteHostTerminalGateway implements TerminalGateway {
     }
     if (_killed) return;
 
+    var workspaceEnv = const <String, String>{};
+    final loader = workspaceEnvLoader;
+    if (loader != null) {
+      try {
+        workspaceEnv = await loader();
+      } on Object {
+        workspaceEnv = const <String, String>{};
+      }
+      if (_killed) return;
+    }
+
     // Login shell: o **host** resolve seu próprio shell (o cliente não sabe qual
     // é o shell do host — pior no iPad, onde o fallback é `/bin/sh` e o
     // oh-my-zsh/.zshrc não carrega). Executable vazio = "use o $SHELL do host,
@@ -197,7 +220,9 @@ class RemoteHostTerminalGateway implements TerminalGateway {
           arguments: loginShell ? const <String>[] : profile.args,
           // Caminho é do filesystem REMOTO (vazio = HOME remota do servidor).
           workingDirectory: workingDirectory.isEmpty ? null : workingDirectory,
-          environment: _terminalEnv(extraEnv),
+          // Env do workspace PRIMEIRO: nunca sobrescreve tab id/hook do
+          // Cockpit (mesma ordem do spawn local).
+          environment: _terminalEnv({...workspaceEnv, ...extraEnv}),
           rows: rows,
           columns: columns,
           flowControlled: true,
@@ -271,6 +296,7 @@ class RemoteHostTerminalGateway implements TerminalGateway {
   }
 
   void _closeOutput() {
+    _acks.dispose();
     if (!_output.isClosed) _output.close();
   }
 
@@ -316,10 +342,15 @@ class RemoteHostTerminalGateway implements TerminalGateway {
 
   @override
   void acknowledgeOutput() {
-    final id = _sessionId;
     final credit = _bytesDelivered - _bytesAcked;
-    if (id == null || credit <= 0) return;
+    if (_sessionId == null || credit <= 0) return;
     _bytesAcked = _bytesDelivered;
+    _acks.add(credit);
+  }
+
+  void _sendAck(int credit) {
+    final id = _sessionId;
+    if (id == null || _killed || _exited) return;
     unawaited(_service?.ack(id, credit));
   }
 
@@ -327,6 +358,7 @@ class RemoteHostTerminalGateway implements TerminalGateway {
   Future<void> kill() async {
     _killed = true;
     _queued.clear();
+    _acks.dispose();
     await _reconnectSub?.cancel();
     await _attachment?.cancel();
     final id = _sessionId;

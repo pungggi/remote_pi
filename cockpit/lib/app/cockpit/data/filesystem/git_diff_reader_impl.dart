@@ -31,7 +31,7 @@ class GitDiffReaderImpl implements GitDiffReader {
       ], stdoutEncoding: utf8);
       final statusOut = status.exitCode == 0 ? (status.stdout as String) : '';
       if (statusOut.startsWith('??')) {
-        return _untrackedDiff(absPath);
+        return await _untrackedDiff(absPath);
       }
 
       final diff = await Process.run(git, [
