@@ -46,6 +46,13 @@ import 'package:cockpit/app/cockpit/ui/session/terminal_session.dart';
 import 'package:cockpit/app/cockpit/ui/states/pane_node.dart' show SplitDir;
 import 'package:cockpit/app/cockpit/ui/viewmodels/cockpit_viewmodel.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/telemetry_cli_handler.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
+/// The filesystem owner of a CLI command: the issuing tab wins even when
+/// another workspace is currently selected in the UI.
+@visibleForTesting
+String? cliWorkspaceIdFor(PaneItem? sender, String? selectedProjectId) =>
+    sender?.projectId ?? selectedProjectId;
 
 /// Atende os comandos da CLI interna `cockpit` (mesmo socket do
 /// `TerminalStatusServer`), extraído do `CockpitViewModel` (refactor
@@ -402,6 +409,8 @@ class CockpitCliHandler {
       // estiver aberta. Devolve `{path}`. A pasta é criada se faltar.
       case 'note-add':
         {
+          final sender = c.tabId == null ? null : _vm.session(c.tabId!);
+          final workspaceId = cliWorkspaceIdFor(sender, _vm.selectedProjectId);
           final dir = (c.args['notebook'] ?? '').toString();
           if (dir.isEmpty || !isNotebookFolder(dir)) {
             return const CockpitCommandResult.fail(
@@ -431,6 +440,7 @@ class CockpitCliHandler {
           var name = NotebookNote.fileNameFor(title, now);
           final taken = (await _vm.listChildren(
             dir,
+            workspaceId: workspaceId,
           )).map((e) => e.name).toSet();
           var i = 2;
           while (taken.contains(name)) {
@@ -446,6 +456,7 @@ class CockpitCliHandler {
               now: now,
               body: body,
             ),
+            workspaceId: workspaceId,
           );
           if (!ok) return CockpitCommandResult.fail('could not write "$path"');
           _vm.notebookSessionFor(dir)?.requestReload();
@@ -455,6 +466,8 @@ class CockpitCliHandler {
       // `cockpit note list <dir.notebook>` — notas com título e tags.
       case 'note-list':
         {
+          final sender = c.tabId == null ? null : _vm.session(c.tabId!);
+          final workspaceId = cliWorkspaceIdFor(sender, _vm.selectedProjectId);
           final dir = (c.args['notebook'] ?? '').toString();
           if (dir.isEmpty || !isNotebookFolder(dir)) {
             return const CockpitCommandResult.fail(
@@ -462,11 +475,14 @@ class CockpitCliHandler {
             );
           }
           final out = <Map<String, dynamic>>[];
-          for (final e in await _vm.listChildren(dir)) {
+          for (final e in await _vm.listChildren(
+            dir,
+            workspaceId: workspaceId,
+          )) {
             if (e.isDirectory || !e.name.toLowerCase().endsWith('.md')) {
               continue;
             }
-            final raw = await _vm.readTextAt(e.path);
+            final raw = await _vm.readTextAt(e.path, workspaceId: workspaceId);
             if (raw == null) continue;
             final n = NotebookNote.parse(e.path, raw);
             out.add({'path': n.path, 'title': n.title, 'tags': n.tags});

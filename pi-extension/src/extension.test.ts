@@ -234,6 +234,7 @@ const {
   _routeClientMessageFrom,
   _deliverMeshMessageToAgentForTest,
   _activateMeshDeliveryOwnerForTest,
+  _disposeActiveMeshDeliveryOwnerForTest,
 } = await import("./main.js");
 const {
   default: extension,
@@ -1307,6 +1308,44 @@ describe("agent-network mesh delivery", () => {
       expect.stringContaining("second"),
     ]);
     expect(bSend).not.toHaveBeenCalled();
+  });
+
+  test("idle stop/join recreates the owner with a live drain context", async () => {
+    vi.useFakeTimers();
+    const a = session();
+    const aCtx = { isIdle: () => true };
+    a.handler("session_start")({ type: "session_start" }, aCtx);
+    _activateMeshDeliveryOwnerForTest(a.pi, aCtx);
+    const aSend = sent(a);
+
+    _disposeActiveMeshDeliveryOwnerForTest();
+    _activateMeshDeliveryOwnerForTest(a.pi, aCtx);
+    _deliverMeshMessageToAgentForTest(envelope("idle-rejoin"));
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(meshContents(aSend)).toEqual([expect.stringContaining("idle-rejoin")]);
+  });
+
+  test("another Pi's active turn does not block an idle joining owner", async () => {
+    vi.useFakeTimers();
+    const a = session();
+    const b = session();
+    const aCtx = { isIdle: () => false };
+    const bCtx = { isIdle: () => true };
+    a.handler("session_start")({ type: "session_start" }, aCtx);
+    b.handler("session_start")({ type: "session_start" }, bCtx);
+    a.handler("agent_start")({ type: "agent_start" }, aCtx);
+    const aSend = sent(a);
+    const bSend = sent(b);
+
+    _activateMeshDeliveryOwnerForTest(b.pi, bCtx);
+    _deliverMeshMessageToAgentForTest(envelope("idle-join"));
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(meshContents(bSend)).toEqual([expect.stringContaining("idle-join")]);
+    expect(aSend).not.toHaveBeenCalled();
   });
 
   test("shutdown drops outgoing work instead of leaking it into a replacement", async () => {

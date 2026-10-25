@@ -24,16 +24,24 @@ class _FakeHost implements DocumentHost {
   final changes = StreamController<void>.broadcast();
 
   @override
-  Future<List<FileNode>> listChildren(String path) async => [
+  Future<List<FileNode>> listChildren(
+    String path, {
+    String? workspaceId,
+  }) async => [
     for (final p in files.keys)
       FileNode(name: p.split('/').last, path: p, isDirectory: false),
   ];
 
   @override
-  Future<String?> readTextAt(String path) async => files[path];
+  Future<String?> readTextAt(String path, {String? workspaceId}) async =>
+      files[path];
 
   @override
-  Future<bool> writeTextAt(String path, String content) async {
+  Future<bool> writeTextAt(
+    String path,
+    String content, {
+    String? workspaceId,
+  }) async {
     files[path] = content;
     return true;
   }

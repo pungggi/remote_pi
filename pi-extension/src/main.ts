@@ -4585,9 +4585,37 @@ export function _deliverMeshMessageToAgentForTest(env: MeshEnvelope): void {
   _deliverMeshMessageToAgent(env);
 }
 
+/** Test-only entry point for the stop/dispose half of owner activation. */
+export function _disposeActiveMeshDeliveryOwnerForTest(): void {
+  ext.meshDelivery.disposeActive();
+}
+
 /** Test-only: activate the same per-pi owner that _cmdJoin would capture. */
-export function _activateMeshDeliveryOwnerForTest(pi: ExtensionAPI): void {
-  ext.meshDelivery.activate(pi);
+export function _activateMeshDeliveryOwnerForTest(pi: ExtensionAPI, ctx?: MeshDrainContext): void {
+  _activateJoinedMeshDeliveryOwner(pi, ctx);
+}
+
+/**
+ * Bind the joining session's live context immediately. A stop disposes that
+ * context, and a fresh join must not wait for another lifecycle event.
+ * Busy state comes from THIS session's isIdle(), never the process-wide
+ * agentRunActive flag: another Pi may be the one running.
+ */
+function _activateJoinedMeshDeliveryOwner(
+  ownerPi: ExtensionAPI | null,
+  idleContext?: MeshDrainContext,
+): MeshDeliveryController | null {
+  if (!ownerPi) return null;
+  const owner = ext.meshDelivery.activate(ownerPi);
+  if (!idleContext) return owner;
+  owner.captureContext(idleContext);
+  try {
+    if (!idleContext.isIdle()) owner.agentStart(idleContext);
+  } catch {
+    // A stale context clears itself on the next drain; do not invent busy
+    // state that another session would have to clear.
+  }
+  return owner;
 }
 
 /**
@@ -4616,10 +4644,7 @@ async function _cmdJoin(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<void
   // Capture the joining session NOW. A later factory call may replace ext.pi,
   // but it must never redirect this MeshNode's envelopes or busy state (#216).
   const ownerPi = ext.pi;
-  const joinedOwner = ownerPi ? ext.meshDelivery.activate(ownerPi) : null;
-  // A manual join can load the runtime after the inline agent_start mirror.
-  // Carry that already-running turn into the new controller before delivery.
-  if (joinedOwner && ext.agentRunActive) joinedOwner.agentStart(_meshIdleContext(ctx));
+  const joinedOwner = _activateJoinedMeshDeliveryOwner(ownerPi, _meshIdleContext(ctx));
   const joinGeneration = ++ext.meshJoinGeneration;
 
   ensureGlobalDirs();

@@ -92,7 +92,10 @@ class StandaloneDocumentHost implements DocumentHost {
   // ---- filesystem ----------------------------------------------------------
 
   @override
-  Future<List<FileNode>> listChildren(String path) async {
+  Future<List<FileNode>> listChildren(
+    String path, {
+    String? workspaceId,
+  }) async {
     final out = <FileNode>[];
     try {
       await for (final e in Directory(path).list(followLinks: false)) {
@@ -115,7 +118,16 @@ class StandaloneDocumentHost implements DocumentHost {
   }
 
   @override
-  Future<String?> readTextAt(String path) async {
+  Future<Uint8List?> readBytesAt(String path, {String? workspaceId}) async {
+    try {
+      return await File(path).readAsBytes();
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  @override
+  Future<String?> readTextAt(String path, {String? workspaceId}) async {
     try {
       return await File(path).readAsString();
     } on FileSystemException {
@@ -127,7 +139,11 @@ class StandaloneDocumentHost implements DocumentHost {
   Stream<void> watchFolder(String path) => changes.watchFolder(path);
 
   @override
-  Future<bool> writeTextAt(String path, String content) async {
+  Future<bool> writeTextAt(
+    String path,
+    String content, {
+    String? workspaceId,
+  }) async {
     try {
       await File(path).writeAsString(content, flush: true);
       return true;

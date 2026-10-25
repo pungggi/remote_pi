@@ -43,6 +43,19 @@ void main() {
     expect(data['timedOut'], isFalse);
   }, testOn: '!windows');
 
+  test('Windows usa o command processor nativo', () async {
+    final client = await boot();
+    final reply = await _call(client, 'proc.run', {
+      'command': 'echo hello& echo err 1>&2& exit 3',
+      'cwd': dir.path,
+    });
+    expect(reply.ok, isTrue);
+    final data = reply.data as Map;
+    expect(data['code'], 3);
+    expect(data['stdout'].toString().trim(), 'hello');
+    expect(data['stderr'].toString().trim(), 'err');
+  }, testOn: 'windows');
+
   test('cwd inexistente é erro tipado', () async {
     final client = await boot();
     final reply = await _call(client, 'proc.run', {
@@ -63,6 +76,44 @@ void main() {
     expect(data['timedOut'], isTrue);
     expect(data['code'], 124);
   }, testOn: '!windows');
+
+  test('proc.run não segura as demais mensagens do socket', () async {
+    final client = await boot();
+    final replies = <int>[];
+    final sub = client.messages.listen((message) {
+      if (message is RpcResponse && (message.rid == 1 || message.rid == 2)) {
+        replies.add(message.rid);
+      }
+    });
+    addTearDown(sub.cancel);
+
+    client.send(
+      RpcRequest(
+        rid: 1,
+        method: 'proc.run',
+        params: {
+          'command': Platform.isWindows
+              ? 'ping -n 3 127.0.0.1 >NUL'
+              : 'sleep 1',
+        },
+      ),
+    );
+    // A reverse cli.cmd response travels through this same dispatcher. An
+    // immediate second message proves the process lifetime is not serialized
+    // ahead of it; the old order was [1, 2].
+    client.send(
+      RpcRequest(rid: 2, method: 'test.unsupported', params: const {}),
+    );
+
+    final deadline = DateTime.now().add(const Duration(seconds: 6));
+    while (replies.length < 2) {
+      if (DateTime.now().isAfter(deadline)) {
+        fail('responses did not complete: $replies');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(replies, [2, 1]);
+  });
 }
 
 Future<RpcResponse> _call(

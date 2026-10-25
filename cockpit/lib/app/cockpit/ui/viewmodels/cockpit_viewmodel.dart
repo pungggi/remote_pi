@@ -856,8 +856,13 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   /// filesystem REMOTO quando o workspace ativo é um host remoto (plano 58);
   /// senão, o filesystem local.
   @override
-  Future<List<FileNode>> listChildren(String path) async {
-    final host = _activeRemoteHost();
+  Future<List<FileNode>> listChildren(
+    String path, {
+    String? workspaceId,
+  }) async {
+    final host = workspaceId == null
+        ? _activeRemoteHost()
+        : remoteHostForWorkspace(workspaceId);
     if (host == null) return _fileSystem.children(path);
     try {
       final service = await _remoteHosts.fileServiceFor(host);
@@ -1940,13 +1945,45 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   /// Texto de um arquivo (local ou host remoto) pra widgets que leem vários
   /// arquivos de uma pasta (caderno). `null` = binário/ilegível.
   @override
-  Future<String?> readTextAt(String path) async {
+  Future<String?> readTextAt(String path, {String? workspaceId}) async {
+    if (workspaceId != null) {
+      final bytes = await readBytesAt(path, workspaceId: workspaceId);
+      if (bytes == null) return null;
+      try {
+        return utf8.decode(bytes);
+      } on FormatException {
+        return null;
+      }
+    }
     final view = await _readFile(path);
     return switch (view) {
       FileViewMarkdown(:final text) => text,
       FileViewText(:final text) => text,
       _ => null,
     };
+  }
+
+  /// Raw bytes from the workspace that issued the request. An explicit ID
+  /// prevents a background remote tab from reading the selected workspace or
+  /// the client filesystem by accident.
+  @override
+  Future<Uint8List?> readBytesAt(String path, {String? workspaceId}) async {
+    final host = workspaceId == null
+        ? _activeRemoteHost()
+        : remoteHostForWorkspace(workspaceId);
+    if (host != null) {
+      try {
+        final service = await _remoteHosts.fileServiceFor(host);
+        return await service.read(path);
+      } on Object {
+        return null;
+      }
+    }
+    try {
+      return await File(path).readAsBytes();
+    } on FileSystemException {
+      return null;
+    }
   }
 
   /// Eventos de mudança numa pasta (caderno). Local = [_fileChanges];
@@ -1995,8 +2032,14 @@ class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   /// Grava [content] em [path] (local ou host remoto) e bumpa a árvore.
   /// Contraparte de [readTextAt] pra abas que não são `FileViewerSession`.
   @override
-  Future<bool> writeTextAt(String path, String content) async {
-    final host = _activeRemoteHost();
+  Future<bool> writeTextAt(
+    String path,
+    String content, {
+    String? workspaceId,
+  }) async {
+    final host = workspaceId == null
+        ? _activeRemoteHost()
+        : remoteHostForWorkspace(workspaceId);
     if (host != null) {
       try {
         final service = await _remoteHosts.fileServiceFor(host);

@@ -82,6 +82,20 @@ class MongoTabState {
   String? error;
 }
 
+/// Reads a password from the root-based store with the pre-migration
+/// workspace-ID OS key as fallback. Rename and remote migration must share
+/// this path so an untouched legacy password survives either operation.
+@visibleForTesting
+Future<String?> readConnectionPasswordWithLegacy(
+  DbSecrets secrets, {
+  required String workspaceRoot,
+  required String workspaceId,
+  required String connectionName,
+}) => secrets.read(
+  DbQueryService.secretKey(workspaceRoot, connectionName),
+  legacyKey: DbQueryService.legacySecretKey(workspaceId, connectionName),
+);
+
 /// Estado do painel Database + serviço de execução pras tabs `.dbq` (plano
 /// 51). Page-scoped (provido no `cockpit_module`); o workspace ativo entra
 /// via [setWorkspace] (chamado pelo painel quando o projeto muda).
@@ -321,7 +335,12 @@ class DatabaseViewModel extends ChangeNotifier {
     if (previousName != null && previousName != conn.name) {
       // Rename: migra a senha guardada pra chave nova antes de apagar a velha
       // — editar sem redigitar a senha NUNCA a perde.
-      final existing = await _secrets.read(oldKey);
+      final existing = await readConnectionPasswordWithLegacy(
+        _secrets,
+        workspaceRoot: root,
+        workspaceId: wsId,
+        connectionName: previousName,
+      );
       if (conn.savePassword &&
           existing != null &&
           (password == null || password.isEmpty)) {
@@ -424,7 +443,12 @@ class DatabaseViewModel extends ChangeNotifier {
     // Sem senha digitada: o renome acima já moveu o que havia no host, então
     // aqui só resta a MIGRAÇÃO de quem ainda tinha a senha no cofre desta
     // máquina (cadastro anterior ao cofre único).
-    final legacy = await _secrets.read(legacyKey);
+    final legacy = await readConnectionPasswordWithLegacy(
+      _secrets,
+      workspaceRoot: root,
+      workspaceId: wsId,
+      connectionName: previousName ?? conn.name,
+    );
     if (legacy != null && legacy.isNotEmpty) {
       await remote.setSecret(root, conn.name, legacy);
       await _secrets.delete(legacyKey);

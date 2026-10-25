@@ -34,6 +34,13 @@ void main() {
     });
   });
 
+  test('update de uma unit existente inclui restart explícito', () {
+    final update = buildSystemdInstallCommands(restartExisting: true);
+    expect(update, hasLength(3));
+    expect(update.last, ['--user', 'restart', 'cockpit-server.service']);
+    expect(buildSystemdInstallCommands(restartExisting: false), hasLength(2));
+  });
+
   group('ServiceManager', () {
     late Directory tmp;
     late List<String> calls;
@@ -56,60 +63,55 @@ void main() {
       run: (exe, args) async {
         calls.add('$exe ${args.join(' ')}');
         if (exe == 'loginctl' && args.first == 'enable-linger') {
-          return ProcessResult(0, lingerExit, '', lingerExit == 0 ? '' : 'denied');
+          return ProcessResult(
+            0,
+            lingerExit,
+            '',
+            lingerExit == 0 ? '' : 'denied',
+          );
         }
         return ProcessResult(0, 0, 'active', '');
       },
     );
 
-    test(
-      'install grava a unit, recarrega, habilita e liga o linger',
-      () async {
-        final code = await manager().install();
-        expect(code, 0);
-        final unit = File('${tmp.path}/.config/systemd/user/cockpit-server.service');
-        expect(unit.existsSync(), isTrue);
-        expect(unit.readAsStringSync(), contains('ExecStart=$bin'));
-        expect(
-          unit.readAsStringSync(),
-          contains('${tmp.path}/.cockpit/server/lib/libcockpit_pty.so'),
-        );
-        expect(calls, [
-          'systemctl --user daemon-reload',
-          'systemctl --user enable --now cockpit-server.service',
-          startsWith('loginctl enable-linger'),
-        ]);
-        expect(out.toString(), contains('starts at boot'));
-      },
-      skip: !Platform.isLinux ? 'systemd é Linux' : false,
-    );
+    test('install grava a unit, recarrega, habilita e liga o linger', () async {
+      final code = await manager().install();
+      expect(code, 0);
+      final unit = File(
+        '${tmp.path}/.config/systemd/user/cockpit-server.service',
+      );
+      expect(unit.existsSync(), isTrue);
+      expect(unit.readAsStringSync(), contains('ExecStart=$bin'));
+      expect(
+        unit.readAsStringSync(),
+        contains('${tmp.path}/.cockpit/server/lib/libcockpit_pty.so'),
+      );
+      expect(calls, [
+        'systemctl --user daemon-reload',
+        'systemctl --user enable --now cockpit-server.service',
+        startsWith('loginctl enable-linger'),
+      ]);
+      expect(out.toString(), contains('starts at boot'));
+    }, skip: !Platform.isLinux ? 'systemd é Linux' : false);
 
-    test(
-      'linger negado não falha o install e imprime o sudo',
-      () async {
-        final code = await manager(lingerExit: 1).install();
-        expect(code, 0);
-        expect(out.toString(), contains('sudo loginctl enable-linger'));
-      },
-      skip: !Platform.isLinux ? 'systemd é Linux' : false,
-    );
+    test('linger negado não falha o install e imprime o sudo', () async {
+      final code = await manager(lingerExit: 1).install();
+      expect(code, 0);
+      expect(out.toString(), contains('sudo loginctl enable-linger'));
+    }, skip: !Platform.isLinux ? 'systemd é Linux' : false);
 
-    test(
-      'uninstall desabilita, apaga a unit e recarrega',
-      () async {
-        final m = manager();
-        await m.install();
-        calls.clear();
-        final code = await m.uninstall();
-        expect(code, 0);
-        expect(File(m.unitPath).existsSync(), isFalse);
-        expect(calls, [
-          'systemctl --user disable --now cockpit-server',
-          'systemctl --user daemon-reload',
-        ]);
-      },
-      skip: !Platform.isLinux ? 'systemd é Linux' : false,
-    );
+    test('uninstall desabilita, apaga a unit e recarrega', () async {
+      final m = manager();
+      await m.install();
+      calls.clear();
+      final code = await m.uninstall();
+      expect(code, 0);
+      expect(File(m.unitPath).existsSync(), isFalse);
+      expect(calls, [
+        'systemctl --user disable --now cockpit-server',
+        'systemctl --user daemon-reload',
+      ]);
+    }, skip: !Platform.isLinux ? 'systemd é Linux' : false);
 
     test('verbo desconhecido devolve 2 com usage', () async {
       final code = await runServiceCommand(const ['bogus'], out: out);

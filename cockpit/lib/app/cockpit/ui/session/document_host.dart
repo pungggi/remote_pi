@@ -33,10 +33,11 @@ abstract class DocumentHost {
   Future<SemanticTokens> lspSemanticTokensFull(String path);
   Future<void> goToDefinition(String path, int line, int character);
 
-  Future<List<FileNode>> listChildren(String path);
-  Future<String?> readTextAt(String path);
+  Future<List<FileNode>> listChildren(String path, {String? workspaceId});
+  Future<Uint8List?> readBytesAt(String path, {String? workspaceId});
+  Future<String?> readTextAt(String path, {String? workspaceId});
   Stream<void> watchFolder(String path);
-  Future<bool> writeTextAt(String path, String content);
+  Future<bool> writeTextAt(String path, String content, {String? workspaceId});
   Future<bool> writeBytesAt(String path, Uint8List bytes);
   Future<Result<void, FileOperationError>> deletePath(String path);
 }

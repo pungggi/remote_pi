@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:cockpit/app/cockpit/data/db/db_secrets_impl.dart';
 import 'package:cockpit/app/cockpit/domain/services/db_query_service.dart';
+import 'package:cockpit/app/cockpit/ui/viewmodels/database_viewmodel.dart';
 import 'package:cockpit_core/cockpit_core.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -76,6 +77,25 @@ void main() {
     legacy.reads.clear();
     expect(await secrets.read(key, legacyKey: 'cockpit.db.w1.dev'), isNotNull);
     expect(legacy.reads, isEmpty);
+  });
+
+  test('rename encontra senha que ainda está na chave workspaceId', () async {
+    final legacy = _SpyLegacy({'cockpit.db.w1.dev': 'senha-antiga'});
+    final secrets = DbSecretsImpl(store: store, legacy: legacy);
+
+    final value = await readConnectionPasswordWithLegacy(
+      secrets,
+      workspaceRoot: '/srv/proj',
+      workspaceId: 'w1',
+      connectionName: 'dev',
+    );
+
+    expect(value, 'senha-antiga');
+    expect(
+      store.readKey(DbQueryService.secretKey('/srv/proj', 'dev')),
+      'senha-antiga',
+    );
+    expect(legacy.values, isEmpty);
   });
 
   test('cofre do SO indisponível não derruba a leitura', () async {

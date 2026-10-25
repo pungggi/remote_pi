@@ -7,13 +7,15 @@ import 'dart:typed_data' show Uint8List;
 import 'package:cockpit/app/cockpit/domain/entities/browser_capability.dart';
 import 'package:cockpit/app/cockpit/domain/entities/file_view.dart';
 import 'package:cockpit/app/cockpit/domain/entities/panel_document.dart';
+import 'package:cockpit/app/cockpit/ui/session/document_host.dart';
 import 'package:cockpit/app/cockpit/ui/session/file_viewer_session.dart';
 import 'package:cockpit/app/cockpit/ui/widgets/webview_chrome.dart';
 
 import 'package:cockpit/app/core/ui/themes/themes.dart';
 import 'package:cockpit/app/core/ui/widgets/unzoomed_native_view.dart';
 import 'package:cockpit/i18n/strings.g.dart';
-import 'package:flutter/foundation.dart' show FlutterError, mapEquals;
+import 'package:flutter/foundation.dart'
+    show FlutterError, mapEquals, visibleForTesting;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
@@ -30,6 +32,35 @@ import 'package:url_launcher/url_launcher.dart' as launcher;
 /// na troca de tema; a página as usa se quiser.
 /// Prefixo reservado da URL virtual das libs embarcadas (`/__cockpit__/x.js`).
 const kPanelLibPrefix = '__cockpit__/';
+
+/// Resolves a panel-relative resource without allowing it to escape the
+/// document directory. Both slash forms are checked so a remote POSIX panel
+/// and a local Windows panel share the same traversal guard.
+@visibleForTesting
+String? panelResourcePath(String root, String relativePath) {
+  if (relativePath.isEmpty || relativePath.contains('\u0000')) return null;
+  final portable = relativePath.replaceAll('\\', '/');
+  if (portable.startsWith('/') || RegExp(r'^[A-Za-z]:').hasMatch(portable)) {
+    return null;
+  }
+  if (portable.split('/').contains('..')) return null;
+  final separator = root.endsWith('/') || root.endsWith('\\') ? '' : '/';
+  return '$root$separator$relativePath';
+}
+
+/// Reads through the document's host and explicitly pins the workspace. A
+/// remote panel therefore never falls back to a same-named client-side file.
+@visibleForTesting
+Future<Uint8List?> readPanelResource({
+  required DocumentHost host,
+  required String projectId,
+  required String documentDirectory,
+  required String relativePath,
+}) {
+  final path = panelResourcePath(documentDirectory, relativePath);
+  if (path == null) return Future.value(null);
+  return host.readBytesAt(path, workspaceId: projectId);
+}
 
 /// Controllers das webviews de `.panel` abertas, por id de sessão. Alimenta o
 /// `cockpit panel screenshot`: o agente escreve o HTML às cegas e precisa ver
@@ -63,6 +94,7 @@ class _PanelViewState extends State<PanelView> {
   static String? _bridge;
 
   InAppWebViewController? _web;
+  late DocumentHost _documentHost;
   bool _loaded = false;
   PanelDocument? _doc;
   Map<String, String>? _pushedTheme;
@@ -179,6 +211,7 @@ class _PanelViewState extends State<PanelView> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _documentHost = documentHostOf(context);
     final vars = _themeVars(context);
     if (mapEquals(vars, _pushedTheme)) return;
     _pushedTheme = vars;
@@ -217,8 +250,8 @@ class _PanelViewState extends State<PanelView> {
     };
   }
 
-  /// Serve `ckp-panel://<sessão>/<path relativo>` — só arquivos dentro da
-  /// pasta do `.panel` (caminho canônico, sem `..` escapando).
+  /// Serve `ckp-panel://<sessão>/<path relativo>` from the document's host.
+  /// The lexical guard rejects traversal before any local or remote read.
   Future<CustomSchemeResponse?> _serveLocal(
     InAppWebViewController web,
     WebResourceRequest request,
@@ -230,15 +263,16 @@ class _PanelViewState extends State<PanelView> {
     // URL (ver `initialUrlRequest` no build), não por `loadData`.
     if (rel.isEmpty) return _serveDocument();
     if (rel.startsWith(kPanelLibPrefix)) return _serveBundled(rel);
-    final root = Directory(_docDir).absolute.path;
-    final file = File('$root/$rel').absolute;
-    final canonical = file.path;
-    if (!canonical.startsWith('$root${Platform.pathSeparator}')) return null;
-    if (!await file.exists()) return null;
-    final bytes = await file.readAsBytes();
+    final bytes = await readPanelResource(
+      host: _documentHost,
+      projectId: widget.session.projectId,
+      documentDirectory: _docDir,
+      relativePath: rel,
+    );
+    if (bytes == null) return null;
     return CustomSchemeResponse(
       data: bytes,
-      contentType: _mimeOf(canonical),
+      contentType: _mimeOf(rel),
       contentEncoding: webViewTextEncoding,
     );
   }

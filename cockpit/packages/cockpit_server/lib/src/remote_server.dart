@@ -546,6 +546,15 @@ class _Connection {
         return;
       }
 
+      // A proc.run can invoke the CLI, which sends a reverse cli.cmd and
+      // waits for its response on this same socket. Do not hold the serial
+      // dispatcher for the process lifetime: that response must be dispatched
+      // while the process is still running, or the nested command deadlocks.
+      if (message case RpcRequest(method: 'proc.run')) {
+        unawaited(_handleRpc(message));
+        return;
+      }
+
       switch (message) {
         case PtyOpen():
           // Injeta o endereço do receptor de status do HOST no env da PTY (o
@@ -716,12 +725,20 @@ class _Connection {
     final timeoutRaw = p['timeout'];
     final seconds = (timeoutRaw is num ? timeoutRaw.toInt() : 60).clamp(1, 600);
     final env = <String, String>{..._statusEnv, ..._cliPathEnv(null)};
-    final shell = Platform.environment['SHELL'] ?? '/bin/sh';
+    // Windows has neither SHELL nor /bin/sh on a standard installation. Use
+    // the native command processor there; POSIX keeps the login-shell PATH.
+    final windows = Platform.isWindows;
+    final shell = windows
+        ? (Platform.environment['ComSpec'] ?? 'cmd.exe')
+        : (Platform.environment['SHELL'] ?? '/bin/sh');
+    final arguments = windows
+        ? <String>['/d', '/s', '/c', command]
+        : <String>['-lc', command];
     final Process proc;
     try {
       proc = await Process.start(
         shell,
-        <String>['-lc', command],
+        arguments,
         workingDirectory: cwd.isEmpty ? null : cwd,
         environment: env,
         includeParentEnvironment: true,

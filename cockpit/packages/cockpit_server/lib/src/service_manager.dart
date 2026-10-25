@@ -28,7 +28,8 @@ String buildSystemdUnit({
   required String serverBinary,
   required String ptyLibrary,
   required String socketPath,
-}) => '''
+}) =>
+    '''
 [Unit]
 Description=Piper Cockpit server
 Documentation=https://remote-pi.jacobmoura.work/cockpit
@@ -46,6 +47,17 @@ TimeoutStopSec=10
 [Install]
 WantedBy=default.target
 ''';
+
+/// Commands for install/update. `enable --now` starts a first install but
+/// does not restart an already-active unit after its binary was replaced.
+/// A pre-existing unit therefore gets an explicit restart as the last step.
+List<List<String>> buildSystemdInstallCommands({
+  required bool restartExisting,
+}) => [
+  ['--user', 'daemon-reload'],
+  ['--user', 'enable', '--now', '$kServiceName.service'],
+  if (restartExisting) ['--user', 'restart', '$kServiceName.service'],
+];
 
 /// Resultado de um passo do gerenciador: `ok` + o que dizer ao usuário.
 class ServiceStep {
@@ -87,9 +99,7 @@ class ServiceManager {
   }
 
   String get _user =>
-      Platform.environment['USER'] ??
-      Platform.environment['LOGNAME'] ??
-      'USER';
+      Platform.environment['USER'] ?? Platform.environment['LOGNAME'] ?? 'USER';
 
   /// Escreve a unit, recarrega o systemd, habilita e inicia. Depois tenta o
   /// linger. Devolve 0 em sucesso (mesmo se o linger foi negado: o serviço
@@ -108,14 +118,12 @@ class ServiceManager {
       ptyLibrary: ptyLibrary,
       socketPath: socketPath,
     );
+    final hadUnit = File(unitPath).existsSync();
     Directory(unitDir).createSync(recursive: true);
     File(unitPath).writeAsStringSync(unit, flush: true);
     _out.writeln('wrote $unitPath');
 
-    for (final args in [
-      ['--user', 'daemon-reload'],
-      ['--user', 'enable', '--now', '$kServiceName.service'],
-    ]) {
+    for (final args in buildSystemdInstallCommands(restartExisting: hadUnit)) {
       final r = await _run('systemctl', args);
       if (r.exitCode != 0) {
         _out.writeln('systemctl ${args.join(' ')} failed:');
@@ -123,7 +131,11 @@ class ServiceManager {
         return 1;
       }
     }
-    _out.writeln('service enabled and started (systemctl --user)');
+    _out.writeln(
+      hadUnit
+          ? 'service enabled and restarted (systemctl --user)'
+          : 'service enabled and started (systemctl --user)',
+    );
 
     final linger = await _run('loginctl', ['enable-linger', _user]);
     if (linger.exitCode == 0) {
