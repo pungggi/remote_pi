@@ -139,6 +139,7 @@ import {
   saveLocalConfig,
 } from "./session/local_config.js";
 import { runSetupWizard, type WizardUI } from "./session/setup_wizard.js";
+import { isPiSubagentChildProcess } from "./session/pi_subagent.js";
 import { updateFooter, type FooterState } from "./ui/footer.js";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -3203,10 +3204,13 @@ export function onSessionStart(
     const restartAuthority: RootRestartAuthority = {
       rootLifecycleGeneration: ext.rootLifecycleGeneration,
     };
-    // Match fresh boot: session replacement must not open first-run setup
-    // in an unconfigured cwd. Keep local-only configs eligible for rejoin;
-    // auto_start_relay gates only the relay, not this mesh restore (#236).
-    if (localConfigExists("cwd" in ctx ? ctx.cwd : process.cwd())) {
+    // Match fresh boot: replacement must not open first-run setup in an
+    // unconfigured cwd or auto-start a marked subagent child (#203). Unmarked
+    // local-only configs still rejoin; their flag gates only the relay (#236).
+    if (
+      !isPiSubagentChildProcess()
+      && localConfigExists("cwd" in ctx ? ctx.cwd : process.cwd())
+    ) {
       void _cmdRoot(ctx, restartAuthority);
     }
   }

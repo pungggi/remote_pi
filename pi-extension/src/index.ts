@@ -46,6 +46,7 @@ import type { BufferMsg, ExtensionState } from "./extension-state.js";
 import { registerAgentTools } from "./session/tools.js";
 import { ensureGlobalDirs, skillsDir } from "./session/global_config.js";
 import { effectiveAutoStartRelay, loadLocalConfig, localConfigExists } from "./session/local_config.js";
+import { isPiSubagentChildProcess } from "./session/pi_subagent.js";
 import {
   filterReceivedImageMessagesFromContext,
   flushPendingReceivedImagePreviews,
@@ -651,6 +652,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     const autoStart =
       !ext.autoInited &&
       !isPrintMode &&
+      !isPiSubagentChildProcess() &&
       !!cwd &&
       localConfigExists(cwd) &&
       effectiveAutoStartRelay(loadLocalConfig(cwd));
