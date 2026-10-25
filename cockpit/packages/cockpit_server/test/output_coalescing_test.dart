@@ -66,25 +66,39 @@ void main() {
       final messages = const RemoteMessageCodec()
           .decodeStream(client.socket)
           .asBroadcastStream();
-      final ack = messages.first;
+      final received = <RemoteMessage>[];
+      final ack = Completer<void>();
+      final opened = Completer<void>();
+      final output = Completer<void>();
+      final exited = Completer<void>();
+      final subscription = messages.listen((message) {
+        received.add(message);
+        if (message is HelloAck && !ack.isCompleted) ack.complete();
+        if (message is PtyOpened && !opened.isCompleted) opened.complete();
+        if (message is PtyOutput && !output.isCompleted) output.complete();
+        if (message is PtyExited && !exited.isCompleted) exited.complete();
+      });
+      addTearDown(subscription.cancel);
+
       client.socket.add(
-        _line(const Hello(version: protocolVersion, client: 't')),
+        _line(
+          Hello(version: protocolVersion, client: 't', token: client.token),
+        ),
       );
-      await ack;
+      await ack.future.timeout(const Duration(seconds: 5));
       client.socket.add(_line(const PtyOpen(executable: '/bin/sh')));
       client.socket.add(_line(const PtyAttach(sessionId: 's1')));
       await client.socket.flush();
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await opened.future.timeout(const Duration(seconds: 5));
+      await _waitForListener(terminals);
 
       const chunks = 200;
       terminals.spew(chunks);
+      await output.future.timeout(const Duration(seconds: 5));
       terminals.exit(0);
+      await exited.future.timeout(const Duration(seconds: 5));
+      await subscription.cancel();
 
-      final received = <RemoteMessage>[];
-      await for (final m in messages) {
-        received.add(m);
-        if (m is PtyExited) break;
-      }
       final outputs = received.whereType<PtyOutput>().toList();
       final total = outputs.fold<int>(0, (n, o) => n + o.bytes.length);
       expect(total, chunks * 1024);
@@ -98,6 +112,14 @@ void main() {
       expect(received.last, isA<PtyExited>());
     },
   );
+}
+
+Future<void> _waitForListener(_ChattyTerminals terminals) async {
+  for (var i = 0; i < 100; i++) {
+    if (terminals._live.hasListener) return;
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  fail('PTY attach listener was not registered in time');
 }
 
 List<int> _line(RemoteMessage m) =>

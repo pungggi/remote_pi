@@ -74,9 +74,19 @@ The fork is 272 commits behind `upstream/main`. Upstream moved Cockpit from the 
 - [x] Piper identity and release invariants checked.
 - [x] Automated verification matrix completed or exceptions documented.
 - [x] Manual/device checks explicitly listed as pending when not run.
-- [ ] Post-sync follow-ups scoped only after the baseline is green.
+- [x] Post-sync #260 completed after the green baseline; #264/#257 excluded.
+
+## Post-sync follow-up: #260 Tailscale SSH TCP fallback
+
+- **Server**: `--tcp` selects loopback TCP plus token rendezvous. The default `LocalEndpoint` transport remains unchanged without the flag.
+- **Discovery**: POSIX accepts a Unix socket or JSON rendezvous, polls incomplete announcements, and rejects invalid TCP ports or tokens.
+- **Tunnel**: a TCP remote uses local TCP on every desktop platform. Unix forwarding remains the default for POSIX Unix-socket announcements.
+- **Recovery**: at most one alternate-transport attempt, boot-log details on final failure, and manifest-digest replacement of an unreachable stale server.
+- **Coverage**: forwarding matrix, fallback limit, bootstrap order, endpoint parsing, and token handshakes.
+- **Verification**: 84 remote tests passed with 3 skipped; full Cockpit 1661 passed with 8 skipped; server 33 passed with 3 skipped. Windows release build and a real loopback token handshake passed.
+- **Analyze**: no errors. The 40 existing lint/deprecation findings remain outside this follow-up.
+- **Still manual**: a real Tailscale SSH host and interactive remote-terminal validation. No real POSIX/Tailscale end-to-end claim is inferred from unit tests or the Windows smoke.
 
 ## Next plans
 
-- Evaluate #260 for Tailscale SSH TCP fallback against the new remote-workspace code.
-- Evaluate #264 editor soft wrap and split #257 terminal status line/Ctrl-Tab if selected by the user.
+- #264 and #257 remain outside the user-selected scope. Re-evaluate them only on explicit request.

@@ -25,9 +25,9 @@ class LocalEndpoint {
   /// O transporte desta plataforma usa TCP + token em vez de socket UNIX.
   static bool get usesTcp => debugForceTcp ?? Platform.isWindows;
 
-  /// Força (ou proíbe) o caminho TCP independentemente da plataforma. Existe
-  /// só para os testes: o caminho do Windows é o que quebrava, e sem isto ele
-  /// não teria como ser exercitado numa máquina POSIX.
+  /// Força (ou proíbe) o caminho TCP independentemente da plataforma. O
+  /// `cockpit-server --tcp` usa isto para hosts SSH sem forward streamlocal;
+  /// os testes também o usam para exercitar TCP fora do Windows.
   static bool? debugForceTcp;
 
   /// Escuta em [path] e devolve o listener (+ token, no Windows).

@@ -181,9 +181,9 @@ abstract class HostShell {
 
   /// Onde o servidor escuta, ou `null` se não há servidor de pé.
   ///
-  /// No POSIX o caminho é determinístico e o "não há ninguém" é descoberto pelo
-  /// próprio túnel — devolver o endpoint sem gastar um SSH extra preserva a
-  /// latência de abertura que existia antes do plano 61.
+  /// No POSIX o mesmo caminho anuncia um socket UNIX clássico ou um arquivo
+  /// de rendezvous TCP (`--tcp`). Um único exec distingue os dois; JSON
+  /// incompleto devolve `null` para que o poll tente novamente.
   Future<RemoteEndpoint?> readEndpoint();
 
   /// Poll de [readEndpoint] após iniciar o servidor. `null` = desistiu.

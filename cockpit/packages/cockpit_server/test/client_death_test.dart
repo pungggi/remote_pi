@@ -32,7 +32,8 @@ void main() {
 
     // Cliente 1: abre, anexa e some no meio da enxurrada de saída.
     final victim = await LocalEndpoint.connect(path);
-    await _handshake(victim.socket);
+    final victimAck = await _handshake(victim);
+    if (victimAck is! HelloAck) fail('victim handshake failed: $victimAck');
     victim.socket.add(_line(const PtyOpen(executable: '/bin/sh')));
     victim.socket.add(_line(const PtyAttach(sessionId: 's1')));
     await victim.socket.flush();
@@ -44,14 +45,19 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 300));
     final survivor = await LocalEndpoint.connect(path);
     addTearDown(survivor.socket.destroy);
-    final ack = await _handshake(survivor.socket);
-    expect(ack, isA<HelloAck>());
+    final ack = await _handshake(survivor);
+    if (ack is! HelloAck) fail('survivor handshake failed: $ack');
   });
 }
 
-Future<RemoteMessage> _handshake(Socket socket) async {
+Future<RemoteMessage> _handshake(LocalSocket endpoint) async {
+  final socket = endpoint.socket;
   final first = const RemoteMessageCodec().decodeStream(socket).first;
-  socket.add(_line(const Hello(version: protocolVersion, client: 'test')));
+  socket.add(
+    _line(
+      Hello(version: protocolVersion, client: 'test', token: endpoint.token),
+    ),
+  );
   await socket.flush();
   return first.timeout(const Duration(seconds: 5));
 }
