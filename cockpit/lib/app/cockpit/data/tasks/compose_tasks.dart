@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:cockpit/app/cockpit/data/tasks/project_paths.dart';
 import 'package:cockpit/app/cockpit/domain/entities/task_definition.dart';
 import 'package:cockpit/app/core/data/jsonc.dart';
+import 'package:cockpit/app/core/utils/path_utils.dart'
+    show isUnderPath, normalizePath, relativeUnder;
 import 'package:yaml/yaml.dart';
 
 enum ComposeEngine { docker, dockerLegacy, podman, podmanLegacy }
@@ -35,14 +37,9 @@ class ComposeFileParser {
   Future<ComposeFile?> parse(String path, String workspace) async {
     final lower = path.toLowerCase();
     if (!(lower.endsWith('.yaml') || lower.endsWith('.yml'))) return null;
-    final normalizedRoot = Directory(workspace).absolute.path;
-    final normalizedPath = File(path).absolute.path;
-    if (normalizedPath != normalizedRoot &&
-        !normalizedPath.startsWith(
-          '$normalizedRoot${Platform.pathSeparator}',
-        )) {
-      return null;
-    }
+    final normalizedRoot = normalizePath(Directory(workspace).absolute.path);
+    final normalizedPath = normalizePath(File(path).absolute.path);
+    if (!isUnderPath(normalizedPath, normalizedRoot)) return null;
     try {
       final yaml = loadYaml(await File(normalizedPath).readAsString());
       if (yaml is! YamlMap || yaml['services'] is! YamlMap) return null;
@@ -62,8 +59,7 @@ class ComposeFileParser {
   /// and root .env semantics.
   Future<String?> _includingParent(String child, String workspace) async {
     var dir = File(child).parent;
-    while (dir.path == workspace ||
-        dir.path.startsWith('$workspace${Platform.pathSeparator}')) {
+    while (isUnderPath(dir.path, workspace)) {
       for (final name in const [
         'compose.yaml',
         'compose.yml',
@@ -77,7 +73,7 @@ class ComposeFileParser {
         try {
           final yaml = loadYaml(await candidate.readAsString());
           if (yaml is YamlMap && _includes(yaml['include'], child, dir.path)) {
-            return candidate.absolute.path;
+            return normalizePath(candidate.absolute.path);
           }
         } catch (_) {}
       }
@@ -96,7 +92,9 @@ class ComposeFileParser {
           : item is YamlMap
           ? item['path']
           : null;
-      if (raw is String && File(resolveCwd(base, raw)).absolute.path == child) {
+      if (raw is String &&
+          normalizePath(File(resolveCwd(base, raw)).absolute.path) ==
+              normalizePath(child)) {
         return true;
       }
     }
@@ -295,11 +293,9 @@ class ComposeTaskGenerator {
   }
 
   String _relative(String path, String base) {
-    final prefix = base.endsWith(Platform.pathSeparator)
-        ? base
-        : '$base${Platform.pathSeparator}';
     if (path == base) return '.';
-    return path.startsWith(prefix) ? path.substring(prefix.length) : path;
+    final relative = relativeUnder(path, base);
+    return relative.isEmpty ? path : relative;
   }
 }
 

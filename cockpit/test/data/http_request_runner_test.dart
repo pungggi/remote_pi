@@ -14,6 +14,8 @@ void main() {
   final runner = HttpRequestRunnerImpl();
 
   setUpAll(() async {
+    HttpOverrides.global = null;
+    addTearDown(() => HttpOverrides.global = null);
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     base = 'http://127.0.0.1:${server.port}';
     server.listen((req) async {

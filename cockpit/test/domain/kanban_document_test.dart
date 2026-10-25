@@ -624,7 +624,7 @@ um parágrafo solto
       // Plano 69: o exemplo mora em cli/skills/cockpit-design/references/kanban.md.
       final skill = File(
         'cli/skills/cockpit-design/references/kanban.md',
-      ).readAsStringSync();
+      ).readAsStringSync().replaceAll('\r\n', '\n');
       final fence = RegExp(
         r'```markdown\n(.*?)```',
         dotAll: true,

@@ -46,6 +46,8 @@ void main() {
     late _Sink sink;
 
     setUp(() async {
+      HttpOverrides.global = null;
+      addTearDown(() => HttpOverrides.global = null);
       sink = _Sink();
       rx = OtlpReceiver(sink);
       await rx.start();

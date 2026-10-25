@@ -1,6 +1,6 @@
-import 'dart:io' show Platform;
-
 import 'package:cockpit/app/core/utils/platform_kind.dart';
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, TargetPlatform, visibleForTesting;
 
 import 'package:cockpit/app/core/app_intents.dart';
 import 'package:cockpit/app/core/ui/menu/editor_menu_bridge.dart';
@@ -284,7 +284,7 @@ class AppMenuBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (!Platform.isMacOS) return child;
+    if (defaultTargetPlatform != TargetPlatform.macOS) return child;
     return PlatformMenuBar(
       menus: menus.map(_toPlatformMenu).toList(growable: false),
       child: child,
@@ -424,7 +424,7 @@ class _WindowMenuBarState extends State<WindowMenuBar> {
 
   @override
   Widget build(BuildContext context) {
-    if (Platform.isMacOS && !widget.renderOnMacOS) {
+    if (defaultTargetPlatform == TargetPlatform.macOS && !widget.renderOnMacOS) {
       return const SizedBox.shrink();
     }
     final colors = context.colors;

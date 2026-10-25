@@ -13,7 +13,11 @@ void main() {
         isTrue,
         reason: 'rode o teste da raiz de cockpit/',
       );
-      expect(GalleryTemplate.panel.content, file.readAsStringSync());
+      String normalize(String text) => text.replaceAll('\r\n', '\n');
+      expect(
+        normalize(GalleryTemplate.panel.content),
+        normalize(file.readAsStringSync()),
+      );
     },
   );
 }

@@ -103,6 +103,12 @@ class _FakeFactory implements LspClientFactory {
   }
 }
 
+LspServerPool _pool(_Shared shared) =>
+    LspServerPool(_FakeFactory(shared))
+      // The fake never spawns, but spec resolution still needs a real file.
+      // Using the current test runner keeps the suite hermetic on every OS.
+      ..commandOverrides = {'dart': Platform.resolvedExecutable};
+
 void main() {
   late Directory tmp;
   late String dartFile;
@@ -116,7 +122,7 @@ void main() {
 
   test('open com start falho → stopped; restart sobe e reabre o doc', () async {
     final shared = _Shared()..startSucceeds = false;
-    final pool = LspServerPool(_FakeFactory(shared));
+    final pool = _pool(shared);
 
     await pool.openDocument(path: dartFile, text: 'a');
     // Servidor falhou, mas o doc fica registrado → status stopped (não null).
@@ -139,7 +145,7 @@ void main() {
 
   test('restartLanguage reinicia mesmo sem servidor vivo', () async {
     final shared = _Shared()..startSucceeds = false;
-    final pool = LspServerPool(_FakeFactory(shared));
+    final pool = _pool(shared);
     await pool.openDocument(path: dartFile, text: 'a');
     expect(pool.statusForPath(dartFile)!.running, isFalse);
 
@@ -152,7 +158,7 @@ void main() {
 
   test('open com sucesso abre o doc e fica running', () async {
     final shared = _Shared();
-    final pool = LspServerPool(_FakeFactory(shared));
+    final pool = _pool(shared);
     await pool.openDocument(path: dartFile, text: 'a');
     final s = pool.statusForPath(dartFile);
     expect(s!.running, isTrue);
@@ -163,7 +169,7 @@ void main() {
   group('teto de semantic tokens', () {
     test('arquivo pequeno pede tokens ao servidor', () async {
       final shared = _Shared();
-      final pool = LspServerPool(_FakeFactory(shared));
+      final pool = _pool(shared);
       await pool.openDocument(path: dartFile, text: 'class A {}');
 
       await pool.semanticTokensFull(dartFile);
@@ -174,7 +180,7 @@ void main() {
 
     test('arquivo acima do teto NÃO faz round-trip e volta vazio', () async {
       final shared = _Shared();
-      final pool = LspServerPool(_FakeFactory(shared));
+      final pool = _pool(shared);
       // > 100KB: o custo real não era o request, era o relayout do texto todo
       // disparado quando os tokens chegam async.
       final big = 'class A {}\n' * 12000; // ~132KB
@@ -189,7 +195,7 @@ void main() {
 
     test('edição durante o request não desloca os tokens', () async {
       final shared = _Shared();
-      final pool = LspServerPool(_FakeFactory(shared));
+      final pool = _pool(shared);
 
       // Texto do PEDIDO: linhas de 4 chars → início da linha 1 no offset 5.
       await pool.openDocument(path: dartFile, text: 'aaaa\nbbbb\n');
@@ -223,7 +229,7 @@ void main() {
 
     test('encolher abaixo do teto reativa os tokens', () async {
       final shared = _Shared();
-      final pool = LspServerPool(_FakeFactory(shared));
+      final pool = _pool(shared);
       await pool.openDocument(path: dartFile, text: 'class A {}\n' * 12000);
       await pool.semanticTokensFull(dartFile);
       expect(shared.created.single.semanticTokensCalls, 0);
@@ -250,7 +256,7 @@ void main() {
 
     test('arquivo FORA do workspace reusa o servidor do projeto', () async {
       final shared = _Shared();
-      final pool = LspServerPool(_FakeFactory(shared));
+      final pool = _pool(shared);
 
       await pool.openDocument(
         path: dartFile,
@@ -275,7 +281,7 @@ void main() {
       'monorepo: subpacote DENTRO do workspace ganha servidor próprio',
       () async {
         final shared = _Shared();
-        final pool = LspServerPool(_FakeFactory(shared));
+        final pool = _pool(shared);
 
         // `tmp/sub/pubspec.yaml` → pacote distinto dentro do mesmo workspace.
         final sub = Directory('${tmp.path}/sub')..createSync();
@@ -304,7 +310,7 @@ void main() {
 
     test('sem workspace, arquivo solto usa a própria raiz achada', () async {
       final shared = _Shared();
-      final pool = LspServerPool(_FakeFactory(shared));
+      final pool = _pool(shared);
 
       final sdkFile = '${external.path}/framework.dart';
       await pool.openDocument(path: sdkFile, text: 'b'); // sem fallbackRoot

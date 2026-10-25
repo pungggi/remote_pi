@@ -55,13 +55,25 @@ The fork is 272 commits behind `upstream/main`. Upstream moved Cockpit from the 
 | Site | ESLint and `next build` | Branding and download-link review |
 | Release | Windows build if toolchain permits | No tag or publish in this plan |
 
+## Verification result
+
+- **Cockpit**: 1646 tests passed, 8 skipped; analyze has no errors, only existing deprecation/style info.
+- **Cockpit CLI**: 35 tests plus fmt and clippy green.
+- **App**: 926 tests passed.
+- **Extension**: 1138 tests passed, 17 skipped; typecheck and build green.
+- **Relay**: 155 tests passed.
+- **Site**: ESLint and production build green.
+- **Windows release**: `cockpit.exe` and `cockpit-cli.exe` built; bundled server announced a valid endpoint in the smoke test.
+- **Toolchain notes**: Flutter 3.50, Zig 0.16.0, NuGet, and ATL/MFC were required. A short `C:\ckp` junction avoided the Windows path-length limit.
+- **Not manually verified**: interactive streaming/resume, real mesh, physical Cockpit startup/shutdown, and device-specific UI behavior.
+
 ## DoD
 
-- [ ] Upstream merged; all conflicts resolved and indexed.
-- [ ] Legacy RPC removed without live references.
-- [ ] Piper identity and release invariants checked.
-- [ ] Automated verification matrix completed or exceptions documented.
-- [ ] Manual/device checks explicitly listed as pending when not run.
+- [x] Upstream merged; all conflicts resolved and indexed.
+- [x] Legacy RPC removed without live references.
+- [x] Piper identity and release invariants checked.
+- [x] Automated verification matrix completed or exceptions documented.
+- [x] Manual/device checks explicitly listed as pending when not run.
 - [ ] Post-sync follow-ups scoped only after the baseline is green.
 
 ## Next plans

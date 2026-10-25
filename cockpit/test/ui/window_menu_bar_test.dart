@@ -1,6 +1,8 @@
 import 'package:cockpit/app/core/ui/menu/app_menu_bar.dart';
 import 'package:cockpit/app/core/ui/menu/menu_model.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:flutter/foundation.dart'
+    show debugDefaultTargetPlatformOverride, TargetPlatform;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
@@ -17,10 +19,13 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 /// shadcn troca o popover ancorado por um bottom sheet
 /// (`isMobile(theme.platform) ? SheetOverlayHandler() : PopoverOverlayHandler()`).
 /// Sem isto o teste exercitaria um caminho que nenhum usuário de Windows vê.
-Widget _host(Widget child) => ShadcnApp(
+Widget _host(
+  Widget child, [
+  TargetPlatform platform = TargetPlatform.windows,
+]) => ShadcnApp(
   theme: buildTheme(
     brightness: Brightness.dark,
-  ).copyWith(platform: () => TargetPlatform.windows),
+  ).copyWith(platform: () => platform),
   home: Scaffold(
     child: Align(alignment: Alignment.topLeft, child: child),
   ),
@@ -94,7 +99,11 @@ void main() {
   testWidgets('no macOS não desenha nada (a barra é a nativa do SO)', (
     tester,
   ) async {
-    await tester.pumpWidget(_host(WindowMenuBar(menus: menus())));
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    await tester.pumpWidget(
+      _host(WindowMenuBar(menus: menus()), TargetPlatform.macOS),
+    );
 
     expect(find.byIcon(Icons.menu), findsNothing);
   });

@@ -153,9 +153,12 @@ String normalizeProjectPath(String file, List<String> projectRoots) {
     final nf = p.normalize(f);
     for (final r in projectRoots) {
       final nr = p.normalize(r);
-      if (p.isWithin(nr, nf)) return p.relative(nf, from: nr);
+      if (p.isWithin(nr, nf)) {
+        return p.relative(nf, from: nr).replaceAll('\\', '/');
+      }
     }
-    return f;
+    return f.replaceAll('\\', '/');
   }
-  return f.startsWith('./') ? f.substring(2) : f;
+  final relative = f.startsWith('./') ? f.substring(2) : f;
+  return relative.replaceAll('\\', '/');
 }

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:cockpit/app/cockpit/data/tasks/compose_tasks.dart';
 import 'package:cockpit/app/cockpit/domain/entities/task_definition.dart';
 import 'package:cockpit/app/core/data/jsonc.dart';
+import 'package:cockpit/app/core/utils/path_utils.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -57,7 +58,7 @@ void main() {
         child.path,
         tmp.path,
       );
-      expect(parsed?.path, parent.absolute.path);
+      expect(parsed?.path, normalizePath(parent.absolute.path));
       expect(parsed?.services, ['api']);
     });
   });

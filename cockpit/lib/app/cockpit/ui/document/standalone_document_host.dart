@@ -11,6 +11,7 @@ import 'package:cockpit/app/core/domain/entities/lsp_semantic_tokens.dart';
 import 'package:cockpit/app/core/domain/exceptions/file_operation_error.dart';
 import 'package:cockpit/app/core/domain/result.dart';
 import 'package:cockpit/app/core/utils/path_utils.dart';
+import 'package:path/path.dart' as p;
 
 /// [DocumentHost] da **janela de documento**: um arquivo (ou `.notebook`)
 /// aberto solto, fora do shell do Cockpit. Filesystem direto por `dart:io`;
@@ -53,12 +54,8 @@ class StandaloneDocumentHost implements DocumentHost {
   @override
   String displayPath(String projectId, String absolutePath) {
     if (workspaceRoot.isEmpty) return absolutePath;
-    final prefix = workspaceRoot.endsWith(Platform.pathSeparator)
-        ? workspaceRoot
-        : '$workspaceRoot${Platform.pathSeparator}';
-    return absolutePath.startsWith(prefix)
-        ? absolutePath.substring(prefix.length)
-        : absolutePath;
+    if (!p.isWithin(workspaceRoot, absolutePath)) return absolutePath;
+    return p.relative(absolutePath, from: workspaceRoot).replaceAll('\\', '/');
   }
 
   // ---- SCM / LSP: fora do escopo da janela solta (no-ops) -----------------

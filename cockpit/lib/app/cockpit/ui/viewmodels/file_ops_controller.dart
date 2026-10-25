@@ -133,6 +133,7 @@ class FileOpsController extends ChangeNotifier {
     required String workspaceRoot,
   }) async {
     var changed = false;
+    final normalizedTargetDir = normalizePath(targetDir);
     try {
       for (final raw in sources) {
         final from = normalizePath(raw).replaceAll(RegExp(r'/+$'), '');
@@ -144,7 +145,7 @@ class FileOpsController extends ChangeNotifier {
         }
         // Soltar uma pasta dentro dela mesma (ou de uma descendente) não tem
         // resultado possível.
-        if (targetDir == from || isUnderPath(targetDir, from)) {
+        if (normalizedTargetDir == from || isUnderPath(normalizedTargetDir, from)) {
           return const Failure(
             FileOperationError(FileOperationErrorKind.cannotMoveIntoItself),
           );
@@ -153,14 +154,14 @@ class FileOpsController extends ChangeNotifier {
             workspaceRoot.isNotEmpty && isUnderPath(from, workspaceRoot);
         if (internal) {
           // Já está no destino: nada a fazer.
-          if (dirnameOf(from) == targetDir) continue;
-          final r = await _mutator.rename(from, joinPath(targetDir, name));
+          if (dirnameOf(from) == normalizedTargetDir) continue;
+          final r = await _mutator.rename(from, joinPath(normalizedTargetDir, name));
           if (r case Failure()) return r;
-          await retargetSessions?.call(from, joinPath(targetDir, name));
+          await retargetSessions?.call(from, joinPath(normalizedTargetDir, name));
           changed = true;
           continue;
         }
-        final to = await _uniqueDest(targetDir, name);
+        final to = await _uniqueDest(normalizedTargetDir, name);
         final r = await _mutator.copy(from, to);
         if (r case Failure()) return r;
         changed = true;

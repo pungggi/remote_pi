@@ -4,6 +4,7 @@ import 'package:cockpit/app/cockpit/domain/contracts/file_system_mutator.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/file_ops_controller.dart';
 import 'package:cockpit/app/core/domain/exceptions/file_operation_error.dart';
 import 'package:cockpit/app/core/domain/result.dart';
+import 'package:cockpit/app/core/utils/path_utils.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Registra as chamadas; `copy`/`rename` não tocam o disco (o controller só
@@ -65,8 +66,8 @@ void main() {
       );
       expect(r.isSuccess, isTrue);
       expect(mutator.calls, [
-        'copy /Users/x/Downloads/a.txt -> $root/docs/a.txt',
-        'move $root/src/b.txt -> $root/docs/b.txt',
+        'copy /Users/x/Downloads/a.txt -> ${joinPath(root, 'docs/a.txt')}',
+        'move ${joinPath(root, 'src/b.txt')} -> ${joinPath(root, 'docs/b.txt')}',
       ]);
       expect(bumps, 1);
     },
@@ -81,7 +82,9 @@ void main() {
       '$root/docs',
       workspaceRoot: root,
     );
-    expect(mutator.calls, ['copy /elsewhere/a.txt -> $root/docs/a copy.txt']);
+    expect(mutator.calls, [
+      'copy /elsewhere/a.txt -> ${joinPath(root, 'docs/a copy.txt')}',
+    ]);
   });
 
   test('refuses to drop a folder into itself', () async {
