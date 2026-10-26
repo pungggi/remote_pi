@@ -37,7 +37,8 @@ Numeração `00-` é proposital: este arquivo carrega antes dos planos numerados
 |---|---|
 | **`pi --mode rpc` DEPRECADO como motor do Cockpit** | ~~Cockpit spawna `pi --mode rpc` como motor do agente (plano 37, decisão B/C)~~ **revertido**. O Cockpit virou **terminal-first**: harnesses (Pi, Claude Code, Codex CLI) rodam como **programas de terminal** comuns, não via harness RPC. A flag `enableAgent` nasce **OFF** (terminal puro); o RPC era um acoplamento a mais sem ganho pro fluxo real |
 | **Domínios estruturados = `cockpit-server`, não RPC** | Terminais/arquivos/git/databases (local via sidecar loopback, remoto via SSH) rodam no **`cockpit-server`** (Dart AOT, plano 58) — protocolo JSONL próprio, não o `pi --mode rpc`. Local-only (decisão B do plano 37) reaberto: o Cockpit alcança hosts remotos por SSH |
-| **Sem remoção imediata do código RPC** | Deprecação é de **direção**, não big-bang: o harness RPC (`lib/app/cockpit/data/rpc/`) e os docs (`docs/rpc-protocol.md`) seguem no repo enquanto houver quem os use; feature nova não deve depender de `pi --mode rpc` |
+| ~~**Sem remoção imediata do código RPC**~~ | ~~Deprecação é de **direção**, não big-bang: o harness RPC (`lib/app/cockpit/data/rpc/`) e os docs (`docs/rpc-protocol.md`) seguem no repo enquanto houver quem os use; feature nova não deve depender de `pi --mode rpc`~~ |
+| **Remoção do RPC no sync upstream (revisado 2026-10-25)** | Decisão explícita do usuário: o upstream removeu o harness em `58c4bdb0`/`17d5d0e5`, e o Cockpit terminal-first já não depende dele. O sync remove o código legado em vez de preservar os modify/delete conflicts. Isso não reativa RPC nem muda o domínio `cockpit-server` |
 
 ## Pareamento
 

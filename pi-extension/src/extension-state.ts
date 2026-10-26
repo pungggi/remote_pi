@@ -14,9 +14,9 @@
  * reassigning an imported binding — which is why this is an object, not a set
  * of `export let`.
  *
- * EVERY import here is `import type`: the object's initializers are all null /
- * zero / empty, so this module has no runtime dependencies and cannot form an
- * import cycle.
+ * Imports are type-only except the lightweight MeshDeliveryRegistry. That
+ * class has no SDK/runtime imports; its back-reference here is type-only, so
+ * the lazy boundary stays acyclic at runtime.
  *
  * Field names drop the historical `_` prefix — they are the public properties
  * of the state object, not "private helpers" of a monolith. The state-machine
@@ -33,6 +33,7 @@ import type { MeshTopologySnapshot } from "./mesh/siblings.js";
 import type { AcquiredLock } from "./session/cwd_lock.js";
 import type { FileIndex } from "./session/file_index.js";
 import type { ExtensionUiBridge } from "./extension_ui_bridge.js";
+import { MeshDeliveryRegistry } from "./session/mesh_delivery.js";
 import type { Ed25519Keypair } from "./pairing/crypto.js";
 import type { JournaledFrame, QueuedMessageItem, ThinkingLevel, WireGhRef, WireGitStatus, WireSessionStats } from "./protocol/types.js";
 
@@ -183,8 +184,8 @@ export interface ExtensionState {
   sessionName: string | null;
   sessionPeerCount: number;
   meshJoinGeneration: number;
-  pendingMeshMessages: MeshEnvelope[];
-  meshDrainScheduled: boolean;
+  /** Per-pi delivery state plus the owner whose MeshNode receives envelopes. */
+  meshDelivery: MeshDeliveryRegistry;
 
   // lifecycle flags
   disposed: boolean;
@@ -277,8 +278,7 @@ export const ext: ExtensionState = {
   sessionName: null,
   sessionPeerCount: 0,
   meshJoinGeneration: 0,
-  pendingMeshMessages: [],
-  meshDrainScheduled: false,
+  meshDelivery: new MeshDeliveryRegistry(),
 
   // lifecycle flags
   disposed: false,
@@ -333,6 +333,8 @@ export const ext: ExtensionState = {
  * see the reset.
  */
 export function resetExtensionState(): void {
+  // Invalidate queued delivery callbacks before resetting their generations.
+  ext.meshDelivery.disposeAll();
   // A reset must not orphan live timers: nulling the field without
   // clearTimeout leaves a scheduled callback that could fire against the
   // zeroed generations (upstream #128 hardening — `_scheduleInitialConnectRetry`
@@ -376,8 +378,7 @@ export function resetExtensionState(): void {
     sessionName: null,
     sessionPeerCount: 0,
     meshJoinGeneration: 0,
-    pendingMeshMessages: [],
-    meshDrainScheduled: false,
+    meshDelivery: ext.meshDelivery,
     disposed: false,
     autoInited: false,
     hasGlobalPairings: false,

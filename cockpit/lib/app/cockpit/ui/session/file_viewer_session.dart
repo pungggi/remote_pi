@@ -2,6 +2,7 @@ import 'package:cockpit/app/cockpit/domain/entities/file_view.dart';
 import 'package:cockpit/app/cockpit/domain/entities/scm_line_decorations.dart';
 import 'package:cockpit/app/cockpit/ui/session/pane_item.dart';
 import 'package:cockpit/app/cockpit/ui/session/scm_line_decoration_coordinator.dart';
+import 'package:path/path.dart' as p;
 
 /// Uma aba de viewer read-only de arquivo (texto/markdown/imagem). O conteúdo
 /// ([view]) já vem classificado/lido pela VM (binário/vídeo nem chega aqui).
@@ -48,13 +49,26 @@ class FileViewerSession extends PaneItem {
   String path;
 
   // Título e cwd derivam do path → seguem o rename automaticamente.
+  /// Título vindo do próprio documento (front-matter `title:` de um `.panel`).
+  /// `null` = nome do arquivo. Quem parseia o arquivo o define via
+  /// [setDocumentTitle]; muda com o conteúdo, então segue o watcher.
+  String? documentTitle;
+
+  void setDocumentTitle(String? value) {
+    if (value == documentTitle) return;
+    documentTitle = value;
+    notifyListeners();
+  }
+
+  // `package:path`, não corte no `/`: no Windows o path chega com `\` (CLI
+  // `open`, "abrir com" do Explorer) e o corte devolvia o caminho inteiro como
+  // título e o próprio arquivo como cwd.
   @override
   String get title => scratch
       ? (scratchTitle ?? 'Untitled')
-      : path.split('/').where((p) => p.isNotEmpty).last;
+      : (documentTitle ?? p.basename(path));
   @override
-  String get workingDirectory =>
-      path.contains('/') ? path.substring(0, path.lastIndexOf('/')) : path;
+  String get workingDirectory => p.dirname(path);
 
   /// Aponta a aba para [newPath] (rename/move). A VM cuida de re-ler o conteúdo
   /// e re-observar o disco; aqui só trocamos o caminho e avisamos a UI.
@@ -68,6 +82,15 @@ class FileViewerSession extends PaneItem {
   /// Conteúdo atual. **Mutável**: a VM reatribui ao detectar mudança no disco
   /// (file watcher — plan/42 follow-up), e o `notifyListeners` reconstrói a aba.
   FileView view;
+
+  /// Adota [fresh], relido do disco, e avisa quem escuta a sessão. É o único
+  /// caminho para uma mudança EXTERNA: o quadro do `.kanban` só reprocessa o
+  /// conteúdo no listener da sessão, então trocar [view] sem notificar deixava
+  /// o quadro congelado (foi o bug da janela de documento).
+  void adoptDisk(FileView fresh) {
+    view = fresh;
+    notifyListeners();
+  }
 
   /// `true` quando o editor tem alterações não gravadas. Dirige o indicador da
   /// aba (bolinha no lugar do X) e o dialog de "fechar sem salvar". O `FileViewer`
@@ -87,6 +110,28 @@ class FileViewerSession extends PaneItem {
   /// enquanto montado (e limpo ao desmontar); `null` quando não há editor ativo.
   /// Usado pelo "Salvar e fechar". Retorna `true` no sucesso.
   Future<bool> Function()? saveDraft;
+
+  /// `true` = mostrar o arquivo como TEXTO, mesmo quando a extensão tem um
+  /// editor próprio (hoje só o `.kanban`). É a saída de emergência: o quadro
+  /// entende a forma que o parser modela, e escrever markdown livre na nota —
+  /// ou consertar um arquivo que ficou torto — precisa do texto cru.
+  bool rawSource = false;
+
+  void toggleRawSource() {
+    rawSource = !rawSource;
+    notifyListeners();
+  }
+
+  /// `true` = o `.kanban` está sendo visto como LISTA em vez de quadro.
+  /// Preferência de visualização por aba; a VM a persiste no layout, então ela
+  /// sobrevive a fechar e reabrir o app.
+  bool boardAsList = false;
+
+  void setBoardAsList(bool value) {
+    if (value == boardAsList) return;
+    boardAsList = value;
+    notifyListeners();
+  }
 
   /// `true` se esta é uma aba de preview (VSCode-style). Preview é sobrescrito
   /// ao clicar em outro arquivo; duplo-clique transforma em aba normal.

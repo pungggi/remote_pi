@@ -44,6 +44,7 @@ class LayoutSpec {
     required this.name,
     required this.panes,
     this.autorunWorktree = false,
+    this.skippedByPlatform = const [],
   });
 
   /// Nome do layout — basename do arquivo sem a extensão.
@@ -53,12 +54,35 @@ class LayoutSpec {
   /// worktree do workspace que contém o arquivo.
   final bool autorunWorktree;
 
+  /// Panes **aplicáveis** neste SO (o filtro de `platforms` já rodou).
   final List<LayoutPane> panes;
+
+  /// Panes declarados no arquivo que este SO não cria (`platforms` não bate).
+  /// Fora de [panes] de propósito — quem aplica ignora; quem **mostra** o
+  /// layout (o preview) lista como "não roda aqui".
+  final List<LayoutPane> skippedByPlatform;
 }
 
-/// Resultado de aplicar um layout: tabs criadas e panes pulados (merge).
+/// Como um layout entra no workspace.
+///
+/// [replace] é o default de "abrir um layout": o workspace **vira** o layout,
+/// então as abas atuais são fechadas antes de criar os panes (inclusive as
+/// fixadas/rotuladas: abrir um layout significa "seja este layout", não há
+/// exceção por aba). [append] é o comportamento antigo: merge idempotente
+/// por cima do que já está aberto (pane com nome já usado é pulado).
+enum LayoutApplyMode { replace, append }
+
+/// Resultado de aplicar um layout: tabs criadas, panes pulados (merge) e
+/// quantas abas foram fechadas antes (só em [LayoutApplyMode.replace]).
 class LayoutApplyReport {
-  const LayoutApplyReport({this.created = const [], this.skipped = const []});
+  const LayoutApplyReport({
+    this.created = const [],
+    this.skipped = const [],
+    this.closed = 0,
+  });
+
+  /// Abas fechadas antes de aplicar (0 em `append`).
+  final int closed;
 
   /// Nomes dos panes efetivamente criados.
   final List<String> created;

@@ -81,6 +81,14 @@ class AppDelegate: FlutterAppDelegate {
     return true
   }
 
+  /// Duplo clique num `.kanban`/`.notebook`/… no Finder, "Abrir com Cockpit"
+  /// ou `open -a Cockpit arquivo`: cada caminho vira uma janela de documento
+  /// (ver DocumentWindows.swift). Vale com o app já aberto ou a frio.
+  override func application(_ sender: NSApplication, openFiles filenames: [String]) {
+    OpenFilesChannel.shared.open(filenames)
+    sender.reply(toOpenOrPrint: .success)
+  }
+
   override func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
     return true
   }

@@ -42,6 +42,11 @@ enum FileDiffKind {
 
   /// Sem mudanças (idêntico ao HEAD).
   unchanged,
+
+  /// Não deu pra ler o diff (git falhou, conexão remota caiu, root errada).
+  /// Distinto de [unchanged]: o viewer mostra a causa em vez de "sem
+  /// mudanças", senão a falha fica invisível (foi o sintoma no iOS).
+  error,
 }
 
 /// O diff de um arquivo contra o HEAD, já parseado — insumo **só leitura** do
@@ -53,6 +58,7 @@ class FileDiff {
     this.hunks = const [],
     this.beforeRevision,
     this.afterRevision,
+    this.errorDetail,
   });
 
   const FileDiff.binary(String path)
@@ -60,6 +66,11 @@ class FileDiff {
 
   const FileDiff.unchanged(String path)
     : this(path: path, kind: FileDiffKind.unchanged);
+
+  /// Falha ao obter o diff; [detail] é o texto cru do erro (git/SO/RPC), que
+  /// a UI interpola na frase traduzida sem traduzir.
+  const FileDiff.error(String path, String detail)
+    : this(path: path, kind: FileDiffKind.error, errorDetail: detail);
 
   /// Caminho absoluto do arquivo.
   final String path;
@@ -72,4 +83,7 @@ class FileDiff {
   /// Primeiro pai e commit que um diff historico compara; nulos no working tree.
   final String? beforeRevision;
   final String? afterRevision;
+
+  /// Detalhe cru do erro quando [kind] é [FileDiffKind.error].
+  final String? errorDetail;
 }

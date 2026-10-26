@@ -191,7 +191,10 @@ type TestBridge = {
   detach: ReturnType<typeof vi.fn>;
 };
 
-function testNode(role: "leader" | "follower" = "leader"): {
+function testNode(
+  role: "leader" | "follower" = "leader",
+  log?: (message: string) => void,
+): {
   node: TestMeshNode;
   peer: InstanceType<typeof peerHarness.MockSessionPeer>;
 } {
@@ -200,6 +203,7 @@ function testNode(role: "leader" | "follower" = "leader"): {
   const node = new MeshNode({
     sockPath: "/tmp/mesh-node-test.sock",
     name: "agent",
+    ...(log ? { log } : {}),
   }) as TestMeshNode;
   return { node, peer: peerHarness.instances.at(-1)! };
 }
@@ -260,6 +264,77 @@ describe("MeshNode retained topology", () => {
       topology: retained,
     }));
     expect(attached.activate).toHaveBeenCalledTimes(1);
+  });
+
+  test("a promoted leader attaches without a peer reconnect event (#189)", async () => {
+    vi.useFakeTimers();
+    const attached = bridge(topology());
+    attachSpy.mockResolvedValue(attached as never);
+    const { node, peer } = testNode("follower");
+    await node.attachBridge({
+      relay: injectedRelay() as never,
+      relayUrl: "https://relay.test",
+      keypair: KEYPAIR,
+    });
+    expect(attachSpy).not.toHaveBeenCalled();
+
+    peer.role = "leader";
+    peer.broker = { id: "promoted-broker" };
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(attachSpy).toHaveBeenCalledTimes(1);
+    expect(attached.activate).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(attachSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("a broker that becomes ready later is picked up by the same retry", async () => {
+    vi.useFakeTimers();
+    const attached = bridge(topology());
+    attachSpy.mockResolvedValue(attached as never);
+    const { node, peer } = testNode("leader");
+    peer.broker = null;
+    await node.attachBridge({
+      relay: injectedRelay() as never,
+      relayUrl: "https://relay.test",
+      keypair: KEYPAIR,
+    });
+    expect(attachSpy).not.toHaveBeenCalled();
+
+    peer.broker = { id: "late-broker" };
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(attachSpy).toHaveBeenCalledTimes(1);
+    expect(attached.activate).toHaveBeenCalledTimes(1);
+  });
+
+  test("injected attach retries are bounded and an explicit attach rearms them", async () => {
+    vi.useFakeTimers();
+    const logs: string[] = [];
+    const attached = bridge(topology());
+    attachSpy.mockResolvedValue(attached as never);
+    const { node, peer } = testNode("follower", (message) => logs.push(message));
+    const relay = injectedRelay();
+    await node.attachBridge({
+      relay: relay as never,
+      relayUrl: "https://relay.test",
+      keypair: KEYPAIR,
+    });
+
+    await vi.advanceTimersByTimeAsync(200_000);
+    expect(attachSpy).not.toHaveBeenCalled();
+    expect(logs.filter((line) => line.includes("retrying in"))).toHaveLength(5);
+    expect(logs.filter((line) => line.includes("budget exhausted"))).toHaveLength(1);
+
+    peer.role = "leader";
+    peer.broker = { id: "broker-after-budget" };
+    await node.attachBridge({
+      relay: relay as never,
+      relayUrl: "https://relay.test",
+      keypair: KEYPAIR,
+    });
+    expect(attachSpy).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(attachSpy).toHaveBeenCalledTimes(1);
   });
 
   test("attaching a bridge later applies retained topology", async () => {

@@ -203,7 +203,8 @@ void main() {
     await File(
       hookPath,
     ).writeAsString('#!/bin/sh\necho post-checkout-marker\n');
-    await Process.run('chmod', ['+x', hookPath]);
+    // Git for Windows executes the shebang script without a POSIX chmod.
+    if (!Platform.isWindows) await Process.run('chmod', ['+x', hookPath]);
 
     final run = manager.add(repo.path, 'feat/hooked');
     final lines = <String>[];

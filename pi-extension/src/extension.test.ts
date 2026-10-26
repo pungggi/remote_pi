@@ -233,6 +233,8 @@ const {
   _restartSupervisorCommand,
   _routeClientMessageFrom,
   _deliverMeshMessageToAgentForTest,
+  _activateMeshDeliveryOwnerForTest,
+  _disposeActiveMeshDeliveryOwnerForTest,
 } = await import("./main.js");
 const {
   default: extension,
@@ -1239,64 +1241,145 @@ void _getActivePeerCountForTest;
 // ── agent-network mesh delivery ──────────────────────────────────────────────
 
 describe("agent-network mesh delivery", () => {
-  test("holds messages until agent_end listeners finish and starts one turn for the batch", async () => {
-    const harness = captureEventHarness();
-    const sendMessage = vi.fn();
-    _setPiForTest({ sendMessage, sendUserMessage: () => undefined });
-    harness.handler("agent_start")({ type: "agent_start" });
+  const sessions: Array<ReturnType<typeof captureEventHarness>> = [];
+  const session = () => {
+    const value = captureEventHarness();
+    sessions.push(value);
+    return value;
+  };
+  const sent = (harness: ReturnType<typeof captureEventHarness>) =>
+    harness.pi.sendMessage as unknown as ReturnType<typeof vi.fn>;
+  const envelope = (id: string) => ({
+    id,
+    from: "/work/repo@worker",
+    re: null,
+    body: { id },
+  });
+  const meshContents = (sendMessage: ReturnType<typeof vi.fn>) => sendMessage.mock.calls
+    .map(([message]) => message as { customType?: string; content?: string })
+    .filter((message) => message.customType === "remote-pi:mesh-message")
+    .map((message) => message.content ?? "");
 
-    _deliverMeshMessageToAgentForTest({
-      id: "mesh-message-1",
-      from: "/work/repo@reviewer",
-      re: null,
-      body: { status: "first" },
-    });
-    _deliverMeshMessageToAgentForTest({
-      id: "mesh-message-2",
-      from: "/work/repo@worker",
-      re: "mesh-message-1",
-      body: { status: "second" },
-    });
+  afterEach(async () => {
+    vi.useRealTimers();
+    for (const harness of sessions.splice(0)) {
+      await harness.handler("session_shutdown")({ type: "session_shutdown" });
+    }
+    _setPiForTest(null);
+    _setDisposedForTest(false);
+  });
+
+  test("a second factory can neither redirect the owner nor release its busy FIFO (#216)", async () => {
+    vi.useFakeTimers();
+    const a = session();
+    let aIdle = true;
+    const aCtx = { isIdle: () => aIdle };
+    a.handler("session_start")({ type: "session_start" }, aCtx);
+    _activateMeshDeliveryOwnerForTest(a.pi);
+    const aSend = sent(a);
+
+    // This second factory replaces ext.pi, just as the dropped child session
+    // from issue #216 did. It never becomes the mesh owner.
+    const b = session();
+    const bSend = sent(b);
+    _deliverMeshMessageToAgentForTest(envelope("first"));
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(meshContents(aSend)).toEqual([expect.stringContaining("first")]);
+    expect(bSend).not.toHaveBeenCalled();
+
+    aIdle = false;
+    a.handler("agent_start")({ type: "agent_start" }, aCtx);
+    _deliverMeshMessageToAgentForTest(envelope("second"));
     await Promise.resolve();
 
-    expect(sendMessage).not.toHaveBeenCalled();
+    // B's lifecycle cannot confirm A's wake or release A's pending message.
+    const bCtx = { isIdle: () => true };
+    b.handler("agent_start")({ type: "agent_start" }, bCtx);
+    b.handler("agent_end")({ type: "agent_end" }, bCtx);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(meshContents(aSend)).toEqual([expect.stringContaining("first")]);
 
-    harness.handler("agent_end")({ type: "agent_end" });
-    expect(sendMessage).not.toHaveBeenCalled();
-
-    harness.handler("agent_start")({ type: "agent_start" });
-    await new Promise<void>((resolve) => setTimeout(resolve, 5));
-    expect(sendMessage).not.toHaveBeenCalled();
-
-    harness.handler("agent_end")({ type: "agent_end" });
-    await new Promise<void>((resolve) => setTimeout(resolve, 5));
-    expect(sendMessage).toHaveBeenCalledTimes(2);
-    expect(sendMessage.mock.calls[0]).toEqual([
-      expect.objectContaining({
-        customType: "remote-pi:mesh-message",
-        display: true,
-        content: expect.stringContaining("mesh-message-1"),
-      }),
-      { triggerTurn: false },
+    a.handler("agent_end")({ type: "agent_end" }, aCtx);
+    aIdle = true;
+    await vi.advanceTimersByTimeAsync(10);
+    expect(meshContents(aSend)).toEqual([
+      expect.stringContaining("first"),
+      expect.stringContaining("second"),
     ]);
-    expect(sendMessage.mock.calls[1]).toEqual([
-      expect.objectContaining({
-        customType: "remote-pi:mesh-message",
-        display: true,
-        content: expect.stringContaining("mesh-message-2"),
-      }),
-      { triggerTurn: true, deliverAs: "followUp" },
-    ]);
+    expect(bSend).not.toHaveBeenCalled();
+  });
 
-    harness.handler("agent_end")({ type: "agent_end" });
-    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  test("idle stop/join recreates the owner with a live drain context", async () => {
+    vi.useFakeTimers();
+    const a = session();
+    const aCtx = { isIdle: () => true };
+    a.handler("session_start")({ type: "session_start" }, aCtx);
+    _activateMeshDeliveryOwnerForTest(a.pi, aCtx);
+    const aSend = sent(a);
+
+    _disposeActiveMeshDeliveryOwnerForTest();
+    _activateMeshDeliveryOwnerForTest(a.pi, aCtx);
+    _deliverMeshMessageToAgentForTest(envelope("idle-rejoin"));
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(meshContents(aSend)).toEqual([expect.stringContaining("idle-rejoin")]);
+  });
+
+  test("another Pi's active turn does not block an idle joining owner", async () => {
+    vi.useFakeTimers();
+    const a = session();
+    const b = session();
+    const aCtx = { isIdle: () => false };
+    const bCtx = { isIdle: () => true };
+    a.handler("session_start")({ type: "session_start" }, aCtx);
+    b.handler("session_start")({ type: "session_start" }, bCtx);
+    a.handler("agent_start")({ type: "agent_start" }, aCtx);
+    const aSend = sent(a);
+    const bSend = sent(b);
+
+    _activateMeshDeliveryOwnerForTest(b.pi, bCtx);
+    _deliverMeshMessageToAgentForTest(envelope("idle-join"));
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(meshContents(bSend)).toEqual([expect.stringContaining("idle-join")]);
+    expect(aSend).not.toHaveBeenCalled();
+  });
+
+  test("shutdown drops outgoing work instead of leaking it into a replacement", async () => {
+    vi.useFakeTimers();
+    const a = session();
+    const aCtx = { isIdle: () => false };
+    a.handler("session_start")({ type: "session_start" }, aCtx);
+    a.handler("agent_start")({ type: "agent_start" }, aCtx);
+    _activateMeshDeliveryOwnerForTest(a.pi);
+    const aSend = sent(a);
+    _deliverMeshMessageToAgentForTest(envelope("old-session"));
+    await Promise.resolve();
+    await a.handler("session_shutdown")({ type: "session_shutdown" });
+
+    const b = session();
+    _setDisposedForTest(false); // fresh replacement module
+    b.handler("session_start")({ type: "session_start" }, { isIdle: () => true });
+    _activateMeshDeliveryOwnerForTest(b.pi);
+    const bSend = sent(b);
+    _deliverMeshMessageToAgentForTest(envelope("replacement-session"));
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(aSend).not.toHaveBeenCalled();
+    expect(meshContents(bSend)).toEqual([expect.stringContaining("replacement-session")]);
+    expect(meshContents(bSend)[0]).not.toContain("old-session");
   });
 });
 
 // ── user_input mirroring (local terminal / RPC) ───────────────────────────────
 
 type AnyEvent = { type: string; [k: string]: unknown };
-type EventHandler = (event: AnyEvent) => unknown;
+type EventHandler = (event: AnyEvent, ctx?: unknown) => unknown;
 
 function captureEventHandler(eventName: string): EventHandler {
   let captured: EventHandler | undefined;
@@ -1314,6 +1397,7 @@ function captureEventHandler(eventName: string): EventHandler {
 }
 
 function captureEventHarness(): {
+  pi: ExtensionAPI;
   handler: (eventName: string) => EventHandler;
   emitBus: (channel: string, data: unknown) => void;
   busListenerCount: (channel: string) => number;
@@ -1340,10 +1424,11 @@ function captureEventHarness(): {
     registerTool: () => undefined, registerShortcut: () => undefined,
     registerFlag: () => undefined, getFlag: () => undefined,
     registerMessageRenderer: () => undefined,
-    sendMessage: () => undefined, sendUserMessage: () => undefined,
+    sendMessage: vi.fn(), sendUserMessage: () => undefined,
   } as unknown as ExtensionAPI;
   (extension as ExtensionFactory)(pi);
   return {
+    pi,
     handler(eventName: string) {
       const h = handlers.get(eventName);
       if (!h) throw new Error(`event "${eventName}" handler not registered`);
@@ -5584,6 +5669,8 @@ describe("remote-pi:name-assigned event", () => {
     expect(ev).toBeDefined();
     expect(ev!.display).toBe(false);
     expect(ev!.details).toMatchObject({ changed: false });
+    const call = sendMessage.mock.calls.find((c) => c[0]?.customType === "remote-pi:name-assigned");
+    expect(call?.[1]).toEqual({ triggerTurn: false });
     expect(typeof ev!.details!["requested"]).toBe("string");
     // No collision in this isolated broker → assigned === requested.
     expect(ev!.details!["assigned"]).toBe(ev!.details!["requested"]);
@@ -5669,6 +5756,10 @@ describe("relay control channel + relay-state event", () => {
     expect(ev).toBeDefined();
     expect(ev!.display).toBe(false);
     expect(ev!.details).toMatchObject({ status: "disconnected", connected: false });
+    // Pure-data events are stripped from LLM context, so they must never start
+    // or extend a turn (a mid-stream steer would leave a trailing assistant message).
+    const call = sendMessage.mock.calls.find((c) => c[0]?.customType === "remote-pi:relay-state");
+    expect(call?.[1]).toEqual({ triggerTurn: false });
   });
 
   test("relay:on → relay up + 'connected'; relay:off → relay down + 'disconnected'", async () => {
@@ -5829,6 +5920,95 @@ describe("same-folder same-name → #N suffix (no refusal)", () => {
   });
 });
 
+// ── Session replacement must not initiate first-run setup (issue #236) ───────
+describe("session replacement respects local configuration (#236)", () => {
+  let cwd: string;
+  let savedDirectConfig: string | undefined;
+
+  beforeEach(async () => {
+    savedDirectConfig = process.env["REMOTE_PI_DIRECT_CONFIG"];
+    delete process.env["REMOTE_PI_DIRECT_CONFIG"];
+    cwd = mkdtempSync(join(tmpdir(), "pi-ext-session-rearm-"));
+    _setDisposedForTest(false);
+    _resetAutoInitedForTest();
+    await captureHandler("remote-pi stop")("", makeMockCtx(cwd));
+    _resetCwdLockForTest();
+    relayInstances.length = 0;
+    _defaultConnectImpl = async () => undefined;
+  });
+
+  afterEach(async () => {
+    await captureHandler("remote-pi stop")("", makeMockCtx(cwd));
+    _setDisposedForTest(false);
+    _resetAutoInitedForTest();
+    _resetCwdLockForTest();
+    vi.restoreAllMocks();
+    if (savedDirectConfig === undefined) delete process.env["REMOTE_PI_DIRECT_CONFIG"];
+    else process.env["REMOTE_PI_DIRECT_CONFIG"] = savedDirectConfig;
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  test.each(["new", "resume", "fork", "reload"])(
+    "unconfigured cwd stays idle after repeated %s replacements",
+    async (reason) => {
+      const lockModule = await import("./session/cwd_lock.js");
+      const acquireLock = vi.spyOn(lockModule, "acquireCwdLock")
+        .mockResolvedValue({ ok: true, release: vi.fn() });
+      const ctx = {
+        ...makeMockCtx(cwd),
+        ui: { notify: vi.fn(), input: vi.fn().mockResolvedValue(undefined), select: vi.fn() },
+      };
+      const harness = captureEventHarness();
+      harness.handler("session_start")({ type: "session_start" }, ctx);
+      expect(acquireLock).not.toHaveBeenCalled();
+
+      for (let i = 0; i < 2; i += 1) {
+        await harness.handler("session_shutdown")({ type: "session_shutdown", reason });
+        harness.handler("session_start")({ type: "session_start" }, ctx);
+        // Let a mistakenly started root finish against the cancelled UI mock;
+        // the fake lock avoids real socket work and leaking a pending root.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(acquireLock).not.toHaveBeenCalled();
+        expect(ctx.ui.input).not.toHaveBeenCalled();
+        expect(ctx.ui.select).not.toHaveBeenCalled();
+        expect(_hasMeshNodeForTest()).toBe(false);
+        expect(relayInstances).toHaveLength(0);
+        expect(indexModule._getDisposedForTest()).toBe(false);
+      }
+      expect(readdirSync(cwd)).toEqual([]);
+    },
+  );
+
+  test.each(["disk", "inline"])(
+    "%s-configured local-only mesh still rejoins after repeated replacements",
+    async (source) => {
+      const config = JSON.stringify({ agent_name: "configured", auto_start_relay: false });
+      if (source === "inline") process.env["REMOTE_PI_DIRECT_CONFIG"] = config;
+      else {
+        mkdirSync(join(cwd, ".pi", "remote-pi"), { recursive: true });
+        writeFileSync(join(cwd, ".pi", "remote-pi", "config.json"), config);
+      }
+      const ctx = {
+        ...makeMockCtx(cwd),
+        ui: { notify: vi.fn(), input: vi.fn(), select: vi.fn() },
+      };
+      // Local-only configs are connected explicitly, not by relay auto-init.
+      await captureHandler("remote-pi")("", ctx);
+      expect(_hasMeshNodeForTest()).toBe(true);
+      const harness = captureEventHarness();
+      for (let i = 0; i < 2; i += 1) {
+        await harness.handler("session_shutdown")({ type: "session_shutdown", reason: "resume" });
+        expect(_hasMeshNodeForTest()).toBe(false);
+        harness.handler("session_start")({ type: "session_start" }, ctx);
+        await vi.waitFor(() => expect(_hasMeshNodeForTest()).toBe(true));
+      }
+      expect(ctx.ui.input).not.toHaveBeenCalled();
+      expect(ctx.ui.select).not.toHaveBeenCalled();
+      expect(relayInstances).toHaveLength(0);
+    },
+  );
+});
+
 // ── print/-p mode never auto-starts the relay (issue #44) ────────────────────
 describe("session_start auto-init skips relay in print/-p mode (#44)", () => {
   const savedArgv = process.argv;
@@ -5880,9 +6060,125 @@ describe("session_start auto-init skips relay in print/-p mode (#44)", () => {
     const onSessionStart = captureEventHandler("session_start");
     _resetAutoInitedForTest();
     onSessionStart({ type: "session_start" }, makeMockCtx("/home/user/projects/rp-interactive"));
-    await new Promise<void>((r) => setTimeout(r, 20));
+    // Auto-init acquires a real IPC lock before joining; a fixed 20ms sleep
+    // races that asynchronous work on macOS and leaks it into the next test.
+    await vi.waitFor(() => expect(_hasMeshNodeForTest()).toBe(true));
+  });
+});
+
+describe("session_start auto-init with pi-subagent markers (#203)", () => {
+  const savedArgv = process.argv;
+  const markerKeys = [
+    "PI_SUBAGENT_CHILD",
+    "PI_SUBAGENT_RUN_ID",
+    "PI_SUBAGENT_CHILD_AGENT",
+    "PI_SUBAGENT_PARENT_SESSION",
+  ] as const;
+  const childMarkers = [
+    ["PI_SUBAGENT_CHILD", "1"],
+    ["PI_SUBAGENT_RUN_ID", "test-run"],
+    ["PI_SUBAGENT_CHILD_AGENT", "test-agent"],
+  ] as const;
+  let cwd: string;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    for (const key of markerKeys) vi.stubEnv(key, undefined);
+    vi.stubEnv("REMOTE_PI_DAEMON", undefined);
+    vi.stubEnv("REMOTE_PI_DIRECT_CONFIG", undefined);
+    _knownPeers.length = 0;
+    _defaultConnectImpl = async () => undefined;
+    // Git/gh seed processes are irrelevant to the startup gate and hold the
+    // temp cwd open briefly on Windows during relay-backed tests.
+    const gitRefresh = await import("./git/refresh.js");
+    vi.spyOn(gitRefresh, "startGitRefresh").mockImplementation(() => undefined);
+    _setDisposedForTest(false);
+    await captureHandler("remote-pi stop")("", makeMockCtx());
+    _resetCwdLockForTest();
+    _resetAutoInitedForTest();
+    relayRef.current = null;
+    relayInstances.length = 0;
+    process.argv = ["node", "pi"];
+    cwd = mkdtempSync(join(tmpdir(), "remote-pi-child-start-"));
+    const { saveLocalConfig } = await import("./session/local_config.js");
+    saveLocalConfig(cwd, { agent_name: "TestAgent", auto_start_relay: true });
+  });
+
+  afterEach(async () => {
+    await captureEventHandler("session_shutdown")({ type: "session_shutdown" });
+    _setDisposedForTest(false);
+    _resetAutoInitedForTest();
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    process.argv = savedArgv;
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  describe.each([false, true])("daemon=%s", (isDaemon) => {
+    beforeEach(() => {
+      if (isDaemon) {
+        vi.stubEnv("REMOTE_PI_DAEMON", "1");
+        vi.spyOn(process, "cwd").mockReturnValue(cwd);
+      }
+    });
+
+    test.each(childMarkers)("%s=%s suppresses fresh-session mesh and relay startup", async (key, value) => {
+      vi.stubEnv(key, value);
+      captureEventHandler("session_start")({ type: "session_start" }, makeMockCtx(cwd));
+
+      // Observe a bounded window: immediate idle could otherwise pass before
+      // an unwanted fire-and-forget join becomes visible.
+      const noStartup = new Error("No automatic startup observed");
+      await expect(vi.waitFor(() => {
+        if (!_hasMeshNodeForTest() && relayInstances.length === 0) throw noStartup;
+      }, { timeout: 100, interval: 10 })).rejects.toBe(noStartup);
+      expect(_getState()).toBe("idle");
+      expect(_hasMeshNodeForTest()).toBe(false);
+      expect(relayInstances).toHaveLength(0);
+    });
+
+    test.each([
+      ["unmarked", {}],
+      ["parent metadata only", { PI_SUBAGENT_PARENT_SESSION: "parent-session" }],
+      ["empty markers", { PI_SUBAGENT_CHILD: "", PI_SUBAGENT_RUN_ID: "", PI_SUBAGENT_CHILD_AGENT: "" }],
+      ["child flag is zero", { PI_SUBAGENT_CHILD: "0" }],
+      ["child flag is not one", { PI_SUBAGENT_CHILD: "true" }],
+    ] as const)("%s still auto-starts the mesh and relay", async (_label, markers) => {
+      for (const [key, value] of Object.entries(markers)) vi.stubEnv(key, value);
+      captureEventHandler("session_start")({ type: "session_start" }, makeMockCtx(cwd));
+
+      await vi.waitFor(() => {
+        expect(_hasMeshNodeForTest()).toBe(true);
+        expect(_getState()).toBe("started");
+        expect(relayInstances).toHaveLength(1);
+      });
+    });
+  });
+
+  test.each(childMarkers)("%s also suppresses local-only rearm after replacement", async (key, value) => {
+    vi.stubEnv(key, value);
+    const { saveLocalConfig } = await import("./session/local_config.js");
+    saveLocalConfig(cwd, { agent_name: "TestAgent", auto_start_relay: false });
+    _setDisposedForTest(true);
+    captureEventHandler("session_start")({ type: "session_start" }, makeMockCtx(cwd));
+
+    const noStartup = new Error("No automatic startup observed");
+    await expect(vi.waitFor(() => {
+      if (!_hasMeshNodeForTest() && relayInstances.length === 0) throw noStartup;
+    }, { timeout: 100, interval: 10 })).rejects.toBe(noStartup);
+    expect(_hasMeshNodeForTest()).toBe(false);
+    expect(relayInstances).toHaveLength(0);
+  });
+
+  test("an explicitly marked child can still start Remote Pi manually", async () => {
+    for (const [key, value] of childMarkers) vi.stubEnv(key, value);
+    const ctx = makeMockCtx(cwd);
+    captureEventHandler("session_start")({ type: "session_start" }, ctx);
+    await captureHandler("remote-pi")("", ctx);
 
     expect(_hasMeshNodeForTest()).toBe(true);
+    expect(_getState()).toBe("started");
+    expect(relayInstances).toHaveLength(1);
   });
 });
 
@@ -7451,10 +7747,15 @@ describe("model meta", () => {
     onPromptStart({ type: "ui_prompt_start", reason: "ui_prompt", kind: "select", title: "Pick one" });
     onPromptEnd({ type: "ui_prompt_end", reason: "ui_prompt", kind: "select" });
 
-    const msgs = sendMessage.mock.calls
-      .map((c) => c[0] as { customType?: string; content?: string; display?: boolean; details?: Record<string, unknown> })
-      .filter((m) => m?.customType === "remote-pi:ui-prompt");
+    const promptCalls = sendMessage.mock.calls
+      .filter((c) => (c[0] as { customType?: string }).customType === "remote-pi:ui-prompt");
+    const msgs = promptCalls
+      .map((c) => c[0] as { customType?: string; content?: string; display?: boolean; details?: Record<string, unknown> });
     expect(msgs).toHaveLength(2);
+    expect(promptCalls.map((c) => c[1])).toEqual([
+      { triggerTurn: false },
+      { triggerTurn: false },
+    ]);
     expect(msgs[0]!.display).toBe(false);
     expect(msgs[0]!.details).toMatchObject({ waiting: true, kind: "select", title: "Pick one" });
     expect(msgs[0]!.content).toContain("Pick one");

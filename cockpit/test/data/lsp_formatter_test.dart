@@ -28,12 +28,14 @@ void main() {
     test('sucesso quando o comando sai com código 0', () async {
       // `true` ignora argumentos e sai 0 — exercita o caminho feliz sem um
       // formatador real nem modificar o arquivo.
-      final r = await runFormatterCommand('true %FILE%', file.path);
+      final command = Platform.isWindows ? 'cmd /c exit 0 %FILE%' : 'true %FILE%';
+      final r = await runFormatterCommand(command, file.path);
       expect(r.isSuccess, isTrue);
     });
 
     test('falha quando o comando sai com código != 0', () async {
-      final r = await runFormatterCommand('false %FILE%', file.path);
+      final command = Platform.isWindows ? 'cmd /c exit 1 %FILE%' : 'false %FILE%';
+      final r = await runFormatterCommand(command, file.path);
       expect(r.isFailure, isTrue);
     });
   });

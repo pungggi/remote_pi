@@ -11,9 +11,10 @@ export function SiteFooter() {
           service: no account, no relay operated for you.
         </div>
         <nav className="footer-links">
-          <Link href="/cockpit">Cockpit</Link>
+          <Link href="/docs">Docs</Link>
           <Link href="/download">Download</Link>
-          <Link href="/terms">Terms</Link>
+          <Link href="/remote-pi">Piper</Link>
+          <Link href="/terms">Terms of Service</Link>
           <Link href="/privacy">Privacy Policy</Link>
           <a
             href={`${GITHUB_URL}/blob/main/PROTOCOL.md`}

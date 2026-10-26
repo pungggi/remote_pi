@@ -13,6 +13,7 @@ import 'package:cockpit/app/core/domain/exceptions/lsp_error.dart';
 import 'package:cockpit/app/core/domain/result.dart';
 import 'package:cockpit/app/core/utils/executable_resolver.dart';
 import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
 
 /// Pool **global do app** de language servers, chaveado por `(linguagem, raiz)`.
 /// Vários workspaces vivos compartilham este pool: dois arquivos da mesma raiz
@@ -115,8 +116,12 @@ class LspServerPool {
     return fallbackRoot;
   }
 
-  bool _isUnder(String path, String root) =>
-      path == root || path.startsWith('$root${Platform.pathSeparator}');
+  bool _isUnder(String path, String root) {
+    final normalizedPath = p.normalize(path);
+    final normalizedRoot = p.normalize(root);
+    return normalizedPath == normalizedRoot ||
+        p.isWithin(normalizedRoot, normalizedPath);
+  }
 
   /// Garante um servidor vivo para [key]. Reusa se já existe; senão resolve a
   /// spec e sobe. Retorna o entry vivo, ou `null` se não deu pra subir
@@ -138,8 +143,9 @@ class LspServerPool {
 
     final future = _startServer(key, def, root);
     _pendingStarts[key] = future;
-    unawaited(future.whenComplete(() => _pendingStarts.remove(key)));
-    return future;
+    // Complete callers only after the pending marker is gone. Returning the
+    // original future lets an immediate restart reuse a failed start.
+    return future.whenComplete(() => _pendingStarts.remove(key));
   }
 
   Future<_ServerEntry?> _startServer(

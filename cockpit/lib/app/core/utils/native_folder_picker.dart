@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:cockpit/app/core/utils/path_utils.dart';
@@ -31,7 +32,18 @@ class NativeFolderPicker {
       initialDirectory: initialDirectory,
       dialogTitle: dialogTitle,
     );
-    return picked == null ? null : normalizePath(picked);
+    return picked == null ? null : normalizePath(lastPathLine(picked));
+  }
+
+  /// No Linux o `file_picker` lê o stdout do `zenity`/`kdialog`, e avisos de
+  /// driver (ex.: Mesa com `DRI_PRIME` inválido) saem no mesmo stdout, antes
+  /// do caminho. Fica só a última linha não vazia.
+  static String lastPathLine(String raw) {
+    final lines = raw
+        .split(RegExp(r'\r?\n'))
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty);
+    return lines.isEmpty ? raw : lines.last;
   }
 
   static Future<String?> _pickNative({
@@ -58,7 +70,7 @@ class NativeFolderPicker {
         ? null
         : toNativePath(initialDirectory);
     try {
-      return await FilePicker.platform.getDirectoryPath(
+      return await _getDirectoryPath(
         dialogTitle: dialogTitle,
         initialDirectory: initial,
       );
@@ -66,7 +78,29 @@ class NativeFolderPicker {
       // Pasta inicial inválida (apagada, unidade removida, permissão) não pode
       // impedir a escolha: reabre sem ela.
       if (initial == null) rethrow;
-      return FilePicker.platform.getDirectoryPath(dialogTitle: dialogTitle);
+      return _getDirectoryPath(dialogTitle: dialogTitle);
     }
+  }
+
+  static Future<String?> _getDirectoryPath({
+    String? dialogTitle,
+    String? initialDirectory,
+  }) {
+    if (Platform.isWindows) {
+      // file_picker 8.3.7 executa IFileOpenDialog.Show sincronicamente dentro
+      // de getDirectoryPath. No isolate da UI, navegar um diretório lento
+      // congela todos os frames e controles da janela até o diálogo retornar.
+      // FilePickerWindows é FFI puro e pode inicializar COM no isolate próprio.
+      return Isolate.run(
+        () => FilePickerWindows().getDirectoryPath(
+          dialogTitle: dialogTitle,
+          initialDirectory: initialDirectory,
+        ),
+      );
+    }
+    return FilePicker.platform.getDirectoryPath(
+      dialogTitle: dialogTitle,
+      initialDirectory: initialDirectory,
+    );
   }
 }

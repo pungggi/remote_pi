@@ -17,7 +17,7 @@ class IssueReport {
   });
 
   /// Repositório de destino das issues.
-  static const String repoUrl = 'https://github.com/jacobaraujo7/remote_pi';
+  static const String repoUrl = 'https://github.com/pungggi/remote_pi';
 
   /// Teto prático da URL de issue do GitHub. Acima disso o servidor recusa, então
   /// o corpo é truncado e o usuário é instruído a colar o resto (que já vai

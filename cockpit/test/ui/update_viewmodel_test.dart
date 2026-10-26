@@ -300,6 +300,7 @@ void main() {
         const NoopSelfUpdater(),
       );
       addTearDown(vm.dispose);
+      vm.attachSettings(SettingsController(_FakeSettingsStore()));
 
       await vm.check();
 

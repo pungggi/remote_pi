@@ -40,7 +40,8 @@ class ClaudeStatusUpdate {
 /// o comando de resume difere.
 enum AgentHarness {
   claude('claude'),
-  codex('codex');
+  codex('codex'),
+  pi('pi');
 
   const AgentHarness(this.wire);
 
@@ -49,8 +50,18 @@ enum AgentHarness {
 
   /// Comando que reata a sessão [sessionId] num shell novo.
   String resumeCommand(String sessionId) => switch (this) {
-    AgentHarness.claude => 'claude --resume $sessionId',
-    AgentHarness.codex => 'codex resume $sessionId',
+    AgentHarness.claude =>
+      sessionId == 'latest' || sessionId.isEmpty
+          ? 'claude -c'
+          : 'claude --resume $sessionId',
+    AgentHarness.codex =>
+      sessionId == 'latest' || sessionId.isEmpty
+          ? 'codex resume --last'
+          : 'codex resume $sessionId',
+    AgentHarness.pi =>
+      sessionId == 'latest' || sessionId.isEmpty
+          ? 'pi -c'
+          : 'pi --session $sessionId',
   };
 
   /// Converte o nome do wire. Desconhecido ou ausente cai em [claude]: layouts
@@ -66,7 +77,8 @@ enum AgentHarness {
 class CockpitCommand {
   const CockpitCommand({required this.cmd, this.tabId, this.args = const {}});
 
-  /// Verbo no wire: `write` (send/send-key) | `list-panes` | `list-workspaces`.
+  /// Verbo no wire: `write` (send/send-key) | `list-panes` | `list-workspaces` |
+  /// `new-workspace` | `close-workspace` | `rename-workspace`.
   final String cmd;
 
   /// Pane alvo (default = `$COCKPIT_PANE_ID` resolvido pela CLI). `null` só nos
@@ -80,17 +92,41 @@ class CockpitCommand {
 /// Resultado de um [CockpitCommand], serializado de volta pra CLI como uma linha
 /// JSON `{ok, data?|error?}`.
 class CockpitCommandResult {
-  const CockpitCommandResult.ok([this.data]) : ok = true, error = null;
-  const CockpitCommandResult.fail(this.error) : ok = false, data = null;
+  const CockpitCommandResult.ok([this.data, this.afterResponse, this.warning])
+    : ok = true,
+      error = null;
+  const CockpitCommandResult.fail(this.error)
+    : ok = false,
+      data = null,
+      afterResponse = null,
+      warning = null;
 
   final bool ok;
   final Object? data;
   final String? error;
 
+  /// Efeito a executar **depois** da resposta ter sido escrita e o socket
+  /// fechado. Existe para o comando que destrói o próprio canal por onde a
+  /// resposta volta: `close-tab` sem alvo fecha a aba emissora, e fechá-la
+  /// mata o PTY, o shell e o processo `cockpit` que está esperando o `ok` —
+  /// executado antes do flush, o sucesso viraria erro de transporte na tela.
+  ///
+  /// Não é adiar por tempo: o servidor chama isto no ponto exato em que a
+  /// resposta já saiu. Quem usa valida tudo que pode falhar ANTES de agendar,
+  /// porque daqui não há mais como reportar erro.
+  final void Function()? afterResponse;
+
+  /// Aviso que a CLI imprime no **stderr**, sem sujar o stdout que os agentes
+  /// parseiam. Existe para o comando que fez algo correto mas provavelmente
+  /// não o que se queria — hoje só `--workspace` mirando um workspace de OUTRA
+  /// máquina, que executa lá e devolve resposta com cara de local.
+  final String? warning;
+
   Map<String, dynamic> toJson() => <String, dynamic>{
     'ok': ok,
     if (data != null) 'data': data,
     if (error != null) 'error': error,
+    if (warning != null) 'warning': warning,
   };
 }
 

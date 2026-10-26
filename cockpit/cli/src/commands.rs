@@ -204,6 +204,345 @@ pub fn new_tab(args: &[String]) -> ! {
     std::process::exit(0)
 }
 
+// ---- close-tab --------------------------------------------------------------
+
+const CLOSE_TAB_HELP: &str = "cockpit close-tab [<label|tab-id>] [--json]
+  Closes a tab (the counterpart of `new-tab`). Without a target, closes the
+  CURRENT tab — which ends the shell you are typing in.
+  A target may be a stable tab label or a tab-id (see `cockpit list-tabs`).
+  Same behaviour as the tab's \"x\" in the UI: closing the last tab of a split
+  removes the split; closing the last tab of a workspace leaves an empty tab.
+  Prints the id of the closed tab.";
+
+pub fn close_tab(args: &[String]) -> ! {
+    let parsed = Flags::parse(args);
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{CLOSE_TAB_HELP}");
+        std::process::exit(0);
+    }
+    let target = parsed.positionals.first().cloned().unwrap_or_default();
+    let mut cmd_args = Map::new();
+    if !target.is_empty() {
+        cmd_args.insert("target".into(), json!(target));
+    }
+    let mut req = json!({"cmd": "close-tab", "args": Value::Object(cmd_args)});
+    // Sem alvo posicional, o server cai na própria tab ($COCKPIT_TAB_ID).
+    with_tab_id(&mut req, parsed.effective_tab_id());
+
+    let resp = transport::request(req, DEFAULT_TIMEOUT);
+    if !is_ok(&resp) {
+        fail_with(&resp);
+    }
+    let data = resp.get("data").cloned().unwrap_or_else(|| json!({}));
+    if parsed.json {
+        println!("{}", data);
+    } else {
+        let id = data.get("tabId").and_then(|v| v.as_str()).unwrap_or("");
+        println!("{id}");
+    }
+    std::process::exit(0)
+}
+
+// ---- workspaces -------------------------------------------------------------
+
+const NEW_WORKSPACE_HELP: &str = "cockpit new-workspace <path> [--host <ssh-target>] [--name <title>] [--json]
+  Adds a top-level workspace in Cockpit's sidebar (local or remote), selects it,
+  and ensures an initial terminal tab is opened.
+  Aliases: `cockpit open-workspace`, `cockpit new-remote-workspace`
+  If the directory is already open, focuses it and returns the existing workspace.
+  --host <target> SSH host or alias from ~/.ssh/config (creates a remote workspace)
+  --path <path>   path (alternative to positional <path>)
+  --name <title>  custom display title (default: folder name)
+  --tab-id <id>   caller tab (default: this tab / $COCKPIT_TAB_ID)
+  --json          output workspace as JSON: {\"id\": \"...\", \"name\": \"...\", \"path\": \"...\", \"tabs\": N}
+  Prints the workspace id.";
+
+pub fn new_workspace(args: &[String]) -> ! {
+    let mut path: Option<String> = None;
+    let mut host: Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut tab_id: Option<String> = None;
+    let mut as_json = false;
+
+    let mut i = 0usize;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--help" || a == "-h" {
+            println!("{NEW_WORKSPACE_HELP}");
+            std::process::exit(0);
+        }
+        if a == "--json" {
+            as_json = true;
+            i += 1;
+            continue;
+        }
+        if a == "--host" || a == "--remote" {
+            if i + 1 >= args.len() {
+                die("cockpit new-workspace: --host requires a value", 2);
+            }
+            i += 1;
+            host = Some(args[i].clone());
+            i += 1;
+            continue;
+        } else if let Some(v) = a
+            .strip_prefix("--host=")
+            .or_else(|| a.strip_prefix("--remote="))
+        {
+            host = Some(v.to_string());
+            i += 1;
+            continue;
+        }
+        if a == "--path" {
+            if i + 1 >= args.len() {
+                die("cockpit new-workspace: --path requires a value", 2);
+            }
+            i += 1;
+            path = Some(args[i].clone());
+            i += 1;
+            continue;
+        } else if let Some(v) = a.strip_prefix("--path=") {
+            path = Some(v.to_string());
+            i += 1;
+            continue;
+        }
+        if a == "--name" {
+            if i + 1 >= args.len() {
+                die("cockpit new-workspace: --name requires a value", 2);
+            }
+            i += 1;
+            name = Some(args[i].clone());
+            i += 1;
+            continue;
+        } else if let Some(v) = a.strip_prefix("--name=") {
+            name = Some(v.to_string());
+            i += 1;
+            continue;
+        }
+        if a == "--tab-id" || a == "-t" {
+            if i + 1 >= args.len() {
+                die("cockpit: --tab-id requires a value", 2);
+            }
+            i += 1;
+            tab_id = Some(args[i].clone());
+            i += 1;
+            continue;
+        } else if let Some(v) = a.strip_prefix("--tab-id=") {
+            tab_id = Some(v.to_string());
+            i += 1;
+            continue;
+        }
+        if a.starts_with('-') {
+            die(&format!("cockpit: unknown flag \"{a}\""), 2);
+        }
+        if path.is_none() {
+            path = Some(a.to_string());
+        }
+        i += 1;
+    }
+
+    let raw_path = match path {
+        Some(p) if !p.is_empty() => p,
+        _ => die(
+            "cockpit new-workspace: missing <path> (or --path <path>)",
+            2,
+        ),
+    };
+
+    let target_path = if host.is_some() {
+        // Caminho no HOST remoto: não resolve contra o cwd local
+        raw_path
+    } else {
+        resolve_path(&raw_path)
+    };
+
+    let mut cmd_args = Map::new();
+    cmd_args.insert("path".into(), json!(target_path));
+    if let Some(h) = host.filter(|h| !h.is_empty()) {
+        cmd_args.insert("host".into(), json!(h));
+    }
+    if let Some(n) = name.filter(|n| !n.is_empty()) {
+        cmd_args.insert("name".into(), json!(n));
+    }
+
+    let mut req = json!({"cmd": "new-workspace", "args": Value::Object(cmd_args)});
+    with_tab_id(&mut req, tab_id.or_else(self_tab_id));
+
+    let resp = transport::request(req, DEFAULT_TIMEOUT);
+    if !is_ok(&resp) {
+        fail_with(&resp);
+    }
+    let data = resp.get("data").cloned().unwrap_or_else(|| json!({}));
+    if as_json {
+        println!("{}", data);
+    } else {
+        let id = data.get("id").and_then(Value::as_str).unwrap_or("");
+        println!("{id}");
+    }
+    std::process::exit(0)
+}
+
+const CLOSE_WORKSPACE_HELP: &str = "cockpit close-workspace [<id|path>] [--tab-id <id>] [--json]
+  Closes a top-level project from Cockpit (ends its agents/tabs; folder on
+  disk is kept).
+  Without a target, closes the workspace owning the current tab (or currently
+  selected workspace).
+  Target may be a workspace UUID, directory path, or unique name.
+  --tab-id <id>   caller tab (default: this tab / $COCKPIT_TAB_ID)
+  --json          output as JSON: {\"id\": \"...\", \"path\": \"...\", \"closed\": true}
+  Prints the closed workspace id.";
+
+pub fn close_workspace(args: &[String]) -> ! {
+    let mut target: Option<String> = None;
+    let mut as_json = false;
+    let mut tab_id: Option<String> = None;
+
+    let mut i = 0usize;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--help" || a == "-h" {
+            println!("{CLOSE_WORKSPACE_HELP}");
+            std::process::exit(0);
+        }
+        if a == "--json" {
+            as_json = true;
+            i += 1;
+            continue;
+        }
+        if a == "--tab-id" || a == "-t" {
+            if i + 1 >= args.len() {
+                die("cockpit: --tab-id requires a value", 2);
+            }
+            i += 1;
+            tab_id = Some(args[i].clone());
+            i += 1;
+            continue;
+        } else if let Some(v) = a.strip_prefix("--tab-id=") {
+            tab_id = Some(v.to_string());
+            i += 1;
+            continue;
+        }
+        if a.starts_with('-') {
+            die(&format!("cockpit: unknown flag \"{a}\""), 2);
+        }
+        if target.is_none() {
+            target = Some(a.to_string());
+        }
+        i += 1;
+    }
+
+    let mut cmd_args = Map::new();
+    if let Some(t) = target.filter(|t| !t.is_empty()) {
+        let resolved =
+            if t.starts_with('~') || t.starts_with('.') || t.contains('/') || t.contains('\\') {
+                resolve_path(&t)
+            } else {
+                t
+            };
+        cmd_args.insert("target".into(), json!(resolved));
+    }
+    let mut req = json!({"cmd": "close-workspace", "args": Value::Object(cmd_args)});
+    with_tab_id(&mut req, tab_id.or_else(self_tab_id));
+
+    let resp = transport::request(req, DEFAULT_TIMEOUT);
+    if !is_ok(&resp) {
+        fail_with(&resp);
+    }
+    let data = resp.get("data").cloned().unwrap_or_else(|| json!({}));
+    if as_json {
+        println!("{}", data);
+    } else {
+        let id = data.get("id").and_then(Value::as_str).unwrap_or("");
+        println!("{id}");
+    }
+    std::process::exit(0)
+}
+
+const RENAME_WORKSPACE_HELP: &str =
+    "cockpit rename-workspace [<id|path>] <new-name> [--tab-id <id>] [--json]
+  Renames the display title of a workspace in Cockpit's rail.
+  Target may be a workspace UUID, directory path, or unique name.
+  Without target, renames the workspace owning the current tab.
+  --tab-id <id>   caller tab (default: this tab / $COCKPIT_TAB_ID)
+  --json          output as JSON: {\"id\": \"...\", \"name\": \"...\", \"path\": \"...\"}
+  Prints the updated workspace id.";
+
+pub fn rename_workspace(args: &[String]) -> ! {
+    let mut target: Option<String> = None;
+    let mut new_name: Option<String> = None;
+    let mut tab_id: Option<String> = None;
+    let mut as_json = false;
+
+    let mut i = 0usize;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--help" || a == "-h" {
+            println!("{RENAME_WORKSPACE_HELP}");
+            std::process::exit(0);
+        }
+        if a == "--json" {
+            as_json = true;
+            i += 1;
+            continue;
+        }
+        if a == "--tab-id" || a == "-t" {
+            if i + 1 >= args.len() {
+                die("cockpit: --tab-id requires a value", 2);
+            }
+            i += 1;
+            tab_id = Some(args[i].clone());
+            i += 1;
+            continue;
+        } else if let Some(v) = a.strip_prefix("--tab-id=") {
+            tab_id = Some(v.to_string());
+            i += 1;
+            continue;
+        }
+        if a.starts_with('-') {
+            die(&format!("cockpit: unknown flag \"{a}\""), 2);
+        }
+        if target.is_none() {
+            target = Some(a.to_string());
+        } else if new_name.is_none() {
+            new_name = Some(a.to_string());
+        }
+        i += 1;
+    }
+
+    let (target_val, raw_name) = match (target, new_name) {
+        (Some(t), Some(n)) => (Some(t), n),
+        (Some(n), None) => (None, n),
+        _ => die("cockpit rename-workspace: missing workspace name", 2),
+    };
+
+    let mut cmd_args = Map::new();
+    if let Some(t) = target_val.filter(|t| !t.is_empty()) {
+        let resolved =
+            if t.starts_with('~') || t.starts_with('.') || t.contains('/') || t.contains('\\') {
+                resolve_path(&t)
+            } else {
+                t
+            };
+        cmd_args.insert("target".into(), json!(resolved));
+    }
+    cmd_args.insert("name".into(), json!(raw_name));
+
+    let mut req = json!({"cmd": "rename-workspace", "args": Value::Object(cmd_args)});
+    with_tab_id(&mut req, tab_id.or_else(self_tab_id));
+
+    let resp = transport::request(req, DEFAULT_TIMEOUT);
+    if !is_ok(&resp) {
+        fail_with(&resp);
+    }
+    let data = resp.get("data").cloned().unwrap_or_else(|| json!({}));
+    if as_json {
+        println!("{}", data);
+    } else {
+        let id = data.get("id").and_then(Value::as_str).unwrap_or("");
+        println!("{id}");
+    }
+    std::process::exit(0)
+}
+
 // ---- browse -----------------------------------------------------------------
 
 const BROWSE_HELP: &str = "cockpit browse <url> [--json]
@@ -263,14 +602,19 @@ pub fn browse_url(args: &[String]) -> ! {
 
 // ---- orchestrate ------------------------------------------------------------
 
-const ORCHESTRATE_HELP: &str = "cockpit orchestrate <file.ckp> [--json]
+const ORCHESTRATE_HELP: &str = "cockpit orchestrate <file.ckp> [--append] [--json]
   Applies a .ckp pane layout to the current workspace.
-  Panes whose name already exists as a tab label are skipped.";
+  By default the workspace becomes the layout: every open tab is closed
+  first (no confirmation), then the panes are created. The tab you run
+  this from is kept. An invalid file closes nothing.
+  --append   keep the open tabs and merge the layout on top; panes whose
+             name already exists as a tab label are skipped.";
 
 pub fn orchestrate(args: &[String]) -> ! {
     let mut file: Option<String> = None;
     let mut tab_id: Option<String> = None;
     let mut as_json = false;
+    let mut append = false;
 
     let mut i = 0usize;
     while i < args.len() {
@@ -281,6 +625,8 @@ pub fn orchestrate(args: &[String]) -> ! {
         }
         if a == "--json" {
             as_json = true;
+        } else if a == "--append" {
+            append = true;
         } else if a == "--tab-id" {
             i += 1;
             tab_id = args.get(i).cloned();
@@ -296,7 +642,10 @@ pub fn orchestrate(args: &[String]) -> ! {
         Some(f) if !f.is_empty() => f,
         _ => die("cockpit orchestrate: missing <file.ckp>", 2),
     };
-    let mut req = json!({"cmd": "orchestrate", "args": {"path": resolve_path(&file)}});
+    let mut req = json!({
+        "cmd": "orchestrate",
+        "args": {"path": resolve_path(&file), "append": append}
+    });
     with_tab_id(&mut req, tab_id.or_else(self_tab_id));
     let resp = transport::request(req, DEFAULT_TIMEOUT);
     if !is_ok(&resp) {
@@ -308,6 +657,10 @@ pub fn orchestrate(args: &[String]) -> ! {
     } else {
         let created = join_list(&data, "created");
         let skipped = join_list(&data, "skipped");
+        let closed = data.get("closed").and_then(|v| v.as_u64()).unwrap_or(0);
+        if closed > 0 {
+            println!("closed: {closed}");
+        }
         println!(
             "created: {}",
             if created.is_empty() {
@@ -467,6 +820,87 @@ fn value_to_display(v: &Value) -> String {
         Value::Null => String::new(),
         other => other.to_string(),
     }
+}
+
+// ---- run-task / stop-task / restart-task / send-task-key -------------------
+
+const TASK_HELP: &str = "cockpit run-task <task-id> [--profile <name>] [--restart] [--json]
+cockpit stop-task <task-id> [--json]
+cockpit restart-task <task-id> [--json]
+cockpit send-task-key <task-id> <key> [--json]
+
+Drive the Tasks panel from a tab: start, stop or restart a task, or write an
+interactive key (e.g. `r` = hot reload on Flutter) to a running task's stdin.
+Task ids and their profiles/keys come from `cockpit list-tasks --json`.
+Works on local and remote workspaces (the task runs where the workspace is).
+`run-task` on a task that is already running fails unless `--restart`.
+Prints `{\"taskId\":…,\"running\":…}`.";
+
+pub fn task(cmd: &str, args: &[String]) -> ! {
+    let parsed = Flags::parse(args);
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{TASK_HELP}");
+        std::process::exit(0);
+    }
+    // Positionals sem o valor de `--profile` (o Flags genérico não o consome).
+    let mut positionals: Vec<String> = Vec::new();
+    let mut skip = false;
+    for a in &parsed.positionals {
+        if skip {
+            skip = false;
+            continue;
+        }
+        if a == "--profile" {
+            skip = true;
+            continue;
+        }
+        positionals.push(a.clone());
+    }
+    let target = positionals.first().cloned().unwrap_or_default();
+    if target.is_empty() {
+        die(&format!("cockpit {cmd}: missing task id"), 2);
+    }
+    let mut cmd_args = Map::new();
+    cmd_args.insert("target".into(), json!(target));
+    if cmd == "send-task-key" {
+        match positionals.get(1) {
+            Some(k) if !k.is_empty() => {
+                cmd_args.insert("key".into(), json!(k));
+            }
+            _ => die("cockpit send-task-key: missing key", 2),
+        }
+    }
+    // `--profile <name>`: o parser genérico não conhece a flag, então o valor
+    // seria lido como posicional; pega aqui e tira dos positionals.
+    if let Some(i) = args.iter().position(|a| a == "--profile") {
+        match args.get(i + 1) {
+            Some(p) if !p.is_empty() && !p.starts_with("--") => {
+                cmd_args.insert("profile".into(), json!(p));
+            }
+            _ => die("cockpit run-task: --profile needs a name", 2),
+        }
+    }
+    if args.iter().any(|a| a == "--restart") {
+        cmd_args.insert("restart".into(), json!(true));
+    }
+    let mut req = json!({"cmd": cmd, "args": Value::Object(cmd_args)});
+    // O workspace da task é o da tab emissora ($COCKPIT_TAB_ID ou --tab-id).
+    with_tab_id(&mut req, parsed.effective_tab_id());
+    let resp = transport::request(req, DEFAULT_TIMEOUT);
+    if !is_ok(&resp) {
+        fail_with(&resp);
+    }
+    let data = resp.get("data").cloned().unwrap_or_else(|| json!({}));
+    if parsed.json {
+        println!("{}", data);
+    } else {
+        let running = data
+            .get("running")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        println!("{target}: {}", if running { "running" } else { "stopped" });
+    }
+    std::process::exit(0)
 }
 
 // ---- read-tab / read-task ---------------------------------------------------
@@ -1004,36 +1438,6 @@ fn nosql_request(wire: &str, cmd_args: Map<String, Value>, tab_id: Option<String
     db_fail("error", &raw)
 }
 
-// ---- install-skill ----------------------------------------------------------
-
-const SKILL_MARKDOWN: &str = include_str!("../text/skill.md");
-
-pub fn install_skill(args: &[String]) -> ! {
-    let parsed = Flags::parse(args);
-    let home = match crate::util::home_dir() {
-        Some(h) => h,
-        None => die("cockpit: HOME not resolved", 1),
-    };
-    let dir = format!("{home}/.claude/skills/cockpit-cli");
-    let path = format!("{dir}/SKILL.md");
-    if !parsed.force {
-        if let Ok(current) = std::fs::read_to_string(&path) {
-            if current == SKILL_MARKDOWN {
-                println!("cockpit: skill already installed ({path})");
-                std::process::exit(0);
-            }
-        }
-    }
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        die(&format!("cockpit: {e}"), 1);
-    }
-    if let Err(e) = std::fs::write(&path, SKILL_MARKDOWN) {
-        die(&format!("cockpit: {e}"), 1);
-    }
-    println!("cockpit: skill installed at {path}");
-    std::process::exit(0)
-}
-
 // ---- helpers de parsing -----------------------------------------------------
 
 /// Lê `--flag valor` ou `--flag=valor` na posição atual, avançando o índice
@@ -1055,6 +1459,421 @@ fn take<'a>(
         }
     }
     None
+}
+
+// ---- note ---------------------------------------------------------------------
+
+const NOTE_HELP: &str = "cockpit note <add|list> <folder.notebook> [flags]
+  add   --title <text> [--tag <name>]... [--body <text> | --body -]
+        create a note in the notebook (prints its path). `--body -` reads
+        the body from stdin. The `agent` tag is always added — it marks
+        notes written by an agent.
+  list  [--json]   list the notebook's notes (title + tags)
+  A notebook is a folder whose name ends in .notebook; one .md per note.
+  The folder is created if missing.";
+
+pub fn note(args: &[String]) -> ! {
+    if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
+        if args.is_empty() {
+            eprintln!("{NOTE_HELP}");
+            std::process::exit(2);
+        }
+        println!("{NOTE_HELP}");
+        std::process::exit(0);
+    }
+    let sub = args[0].clone();
+    let rest = &args[1..];
+
+    let mut title: Option<String> = None;
+    let mut body: Option<String> = None;
+    let mut tags: Vec<String> = Vec::new();
+    let mut tab_id: Option<String> = None;
+    let mut as_json = false;
+    let mut positionals: Vec<String> = Vec::new();
+
+    let mut i = 0usize;
+    while i < rest.len() {
+        let a = rest[i].as_str();
+        match a {
+            "--help" | "-h" => {
+                println!("{NOTE_HELP}");
+                std::process::exit(0);
+            }
+            "--json" => as_json = true,
+            "--title" | "--tag" | "--body" | "--tab-id" => {
+                if i + 1 >= rest.len() {
+                    die(&format!("cockpit note: {a} requires a value"), 2);
+                }
+                i += 1;
+                let v = rest[i].clone();
+                match a {
+                    "--title" => title = Some(v),
+                    "--tag" => tags.push(v),
+                    "--body" => body = Some(v),
+                    _ => tab_id = Some(v),
+                }
+            }
+            _ => {
+                if let Some(v) = a.strip_prefix("--title=") {
+                    title = Some(v.to_string());
+                } else if let Some(v) = a.strip_prefix("--tag=") {
+                    tags.push(v.to_string());
+                } else if let Some(v) = a.strip_prefix("--body=") {
+                    body = Some(v.to_string());
+                } else if let Some(v) = a.strip_prefix("--tab-id=") {
+                    tab_id = Some(v.to_string());
+                } else if a.starts_with("--") {
+                    die(&format!("cockpit note: unknown flag {a}"), 2);
+                } else {
+                    positionals.push(a.to_string());
+                }
+            }
+        }
+        i += 1;
+    }
+    if positionals.is_empty() {
+        die("cockpit note: missing <folder.notebook>", 2);
+    }
+    let notebook = resolve_path(&positionals[0]);
+    if !notebook.to_lowercase().ends_with(".notebook") {
+        die("cockpit note: the folder name must end in .notebook", 2);
+    }
+    let tab_id = tab_id.or_else(|| std::env::var("COCKPIT_TAB_ID").ok());
+
+    match sub.as_str() {
+        "add" => {
+            let title = match title {
+                Some(t) if !t.trim().is_empty() => t,
+                _ => die("cockpit note add: --title is required", 2),
+            };
+            let body = match body {
+                Some(b) if b == "-" => {
+                    let mut buf = String::new();
+                    if std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf).is_err() {
+                        die("cockpit note add: could not read stdin", 2);
+                    }
+                    buf
+                }
+                Some(b) => b,
+                None => String::new(),
+            };
+            let mut req = json!({
+                "cmd": "note-add",
+                "args": {"notebook": notebook, "title": title, "tags": tags, "body": body},
+            });
+            with_tab_id(&mut req, tab_id);
+            let resp = transport::request(req, DEFAULT_TIMEOUT);
+            if !is_ok(&resp) {
+                fail_with(&resp);
+            }
+            let path = resp["data"]["path"].as_str().unwrap_or("");
+            if as_json {
+                println!("{}", json!({"path": path}));
+            } else {
+                println!("{path}");
+            }
+            std::process::exit(0)
+        }
+        "list" => {
+            let mut req = json!({"cmd": "note-list", "args": {"notebook": notebook}});
+            with_tab_id(&mut req, tab_id);
+            let resp = transport::request(req, DEFAULT_TIMEOUT);
+            if !is_ok(&resp) {
+                fail_with(&resp);
+            }
+            let items = resp["data"].as_array().cloned().unwrap_or_default();
+            if as_json {
+                println!("{}", Value::Array(items));
+            } else if items.is_empty() {
+                println!("(no notes)");
+            } else {
+                for it in items {
+                    let title = it["title"].as_str().unwrap_or("");
+                    let tags: Vec<String> = it["tags"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|t| t.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let path = it["path"].as_str().unwrap_or("");
+                    println!("{title}  [{}]  {path}", tags.join(", "));
+                }
+            }
+            std::process::exit(0)
+        }
+        _ => die(&format!("cockpit note: unknown subcommand \"{sub}\""), 2),
+    }
+}
+
+// ---- exec (plano 67) --------------------------------------------------------
+
+const EXEC_HELP: &str = "cockpit exec [--cwd <dir>] [--timeout <s>] [--json] [--] <command...>
+  Runs <command> through the app (a login shell on this machine) and prints
+  its output. Everything after the flags (or after `--`) is the command line,
+  passed to the shell as-is, so pipes and quotes work like in a terminal.
+  --cwd      working directory (default: current directory)
+  --timeout  seconds before the process is killed (default 60)
+  --json     print {ok, code, stdout, stderr, timedOut} as one JSON line
+  Exit code = the command's exit code (124 on timeout).";
+
+pub fn exec(args: &[String]) -> ! {
+    let mut cwd: Option<String> = None;
+    let mut timeout: Option<u64> = None;
+    let mut json_out = false;
+    let mut tab_id: Option<String> = None;
+    let mut command: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < args.len() {
+        let a = args[i].as_str();
+        match a {
+            "--help" | "-h" => {
+                println!("{EXEC_HELP}");
+                std::process::exit(0)
+            }
+            "--cwd" => {
+                i += 1;
+                cwd = Some(
+                    args.get(i)
+                        .cloned()
+                        .unwrap_or_else(|| die("cockpit exec: --cwd requires a value", 2)),
+                );
+            }
+            "--timeout" => {
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| die("cockpit exec: --timeout requires a value", 2));
+                timeout = Some(match raw.parse::<u64>() {
+                    Ok(v) => v,
+                    Err(_) => die("cockpit exec: --timeout requires a non-negative integer", 2),
+                });
+            }
+            "--json" => json_out = true,
+            "--tab-id" | "-t" => {
+                i += 1;
+                tab_id = Some(
+                    args.get(i)
+                        .cloned()
+                        .unwrap_or_else(|| die("cockpit exec: --tab-id requires a value", 2)),
+                );
+            }
+            "--" => {
+                command.extend(args[i + 1..].iter().cloned());
+                break;
+            }
+            _ if a.starts_with("--") => {
+                die(&format!("cockpit exec: unknown flag {a}\n{EXEC_HELP}"), 2)
+            }
+            _ => {
+                command.extend(args[i..].iter().cloned());
+                break;
+            }
+        }
+        i += 1;
+    }
+    if command.is_empty() {
+        die(&format!("cockpit exec: missing command\n{EXEC_HELP}"), 2);
+    }
+    let line = command.join(" ");
+    let dir = cwd.map(|d| resolve_path(&d)).or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned())
+    });
+    let mut cmd_args = Map::new();
+    cmd_args.insert("command".into(), json!(line));
+    if let Some(d) = dir {
+        cmd_args.insert("cwd".into(), json!(d));
+    }
+    if let Some(t) = timeout {
+        cmd_args.insert("timeout".into(), json!(t));
+    }
+    let mut req = json!({"cmd": "exec", "args": Value::Object(cmd_args)});
+    with_tab_id(&mut req, tab_id.or_else(self_tab_id));
+    // Folga sobre o timeout do processo: o app mata o filho e ainda responde.
+    let wait = Duration::from_secs(timeout.unwrap_or(60) + 5);
+    let resp = transport::request(req, wait);
+    if !is_ok(&resp) {
+        fail_with(&resp);
+    }
+    let data = resp.get("data").cloned().unwrap_or_else(|| json!({}));
+    let code = data.get("code").and_then(|v| v.as_i64()).unwrap_or(1) as i32;
+    if json_out {
+        let mut out = data.clone();
+        out["ok"] = json!(code == 0);
+        println!("{out}");
+        std::process::exit(code)
+    }
+    let stdout = field(&data, "stdout");
+    let stderr = field(&data, "stderr");
+    if !stdout.is_empty() {
+        print!("{stdout}");
+        if !stdout.ends_with('\n') {
+            println!();
+        }
+    }
+    if !stderr.is_empty() {
+        eprint!("{stderr}");
+        if !stderr.ends_with('\n') {
+            eprintln!();
+        }
+    }
+    if data.get("timedOut") == Some(&Value::Bool(true)) {
+        eprintln!("cockpit exec: timed out");
+    }
+    std::process::exit(code)
+}
+
+// ---- panel ------------------------------------------------------------------
+
+const PANEL_HELP: &str = "cockpit panel <new|screenshot> …
+  cockpit panel new --template <dashboard|list-detail|form> <file.panel>
+      Writes the embedded template to <file.panel> (refuses to overwrite) and
+      opens it in the app. Templates ship with the cockpit-design skill.
+  cockpit panel screenshot [<label|tab-id>] [--out <file.png>]
+      PNG of an open .panel tab's web view (default: the tab you are in, or
+      the one holding the file you passed). Without --out, writes a temp file
+      and prints its path, so you can look at your own panel and iterate.";
+
+pub fn panel(args: &[String]) -> ! {
+    let Some(sub) = args.first() else {
+        die(
+            &format!("cockpit panel: missing subcommand\n{PANEL_HELP}"),
+            2,
+        )
+    };
+    match sub.as_str() {
+        "new" => panel_new(&args[1..]),
+        "screenshot" => panel_screenshot(&args[1..]),
+        "-h" | "--help" => {
+            println!("{PANEL_HELP}");
+            std::process::exit(0)
+        }
+        other => die(
+            &format!("cockpit panel: unknown subcommand {other}\n{PANEL_HELP}"),
+            2,
+        ),
+    }
+}
+
+fn panel_new(args: &[String]) -> ! {
+    let mut template: Option<String> = None;
+    let mut file: Option<String> = None;
+    let mut i = 0usize;
+    while i < args.len() {
+        if let Some((_, value)) = take(args, &mut i, &["--template"]) {
+            template = value;
+        } else if args[i] == "-h" || args[i] == "--help" {
+            println!("{PANEL_HELP}");
+            std::process::exit(0)
+        } else if args[i].starts_with("--") {
+            die(
+                &format!("cockpit panel new: unknown flag {}\n{PANEL_HELP}", args[i]),
+                2,
+            )
+        } else {
+            file = Some(args[i].clone());
+        }
+        i += 1;
+    }
+    let template = template.unwrap_or_else(|| "dashboard".to_string());
+    let file = file.unwrap_or_else(|| {
+        die(
+            &format!("cockpit panel new: missing <file.panel>\n{PANEL_HELP}"),
+            2,
+        )
+    });
+    let key = format!("cockpit-design/templates/{template}.panel");
+    let Some((_, bytes)) = crate::skills::SKILLS.iter().find(|(rel, _)| *rel == key) else {
+        let available: Vec<&str> = crate::skills::SKILLS
+            .iter()
+            .filter_map(|(rel, _)| rel.strip_prefix("cockpit-design/templates/"))
+            .filter_map(|n| n.strip_suffix(".panel"))
+            .collect();
+        die(
+            &format!(
+                "cockpit panel new: unknown template {template} (available: {})",
+                available.join(", ")
+            ),
+            2,
+        )
+    };
+    let path = resolve_path(&file);
+    if std::path::Path::new(&path).exists() {
+        die(
+            &format!("cockpit panel new: {path} already exists (refusing to overwrite)"),
+            1,
+        );
+    }
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::write(&path, bytes) {
+        die(&format!("cockpit panel new: {e}"), 1);
+    }
+    let mut req = json!({"cmd": "open", "args": {"path": path}});
+    with_tab_id(&mut req, self_tab_id());
+    let resp = transport::request(req, DEFAULT_TIMEOUT);
+    if !is_ok(&resp) {
+        eprintln!("cockpit panel new: written, but could not open it in the app");
+        fail_with(&resp);
+    }
+    println!("{path}");
+    std::process::exit(0)
+}
+
+fn panel_screenshot(args: &[String]) -> ! {
+    let mut out: Option<String> = None;
+    let mut target: Option<String> = None;
+    let mut i = 0usize;
+    while i < args.len() {
+        if let Some((_, value)) = take(args, &mut i, &["--out"]) {
+            out = value;
+        } else if args[i] == "-h" || args[i] == "--help" {
+            println!("{PANEL_HELP}");
+            std::process::exit(0)
+        } else if args[i].starts_with("--") {
+            die(
+                &format!(
+                    "cockpit panel screenshot: unknown flag {}\n{PANEL_HELP}",
+                    args[i]
+                ),
+                2,
+            )
+        } else {
+            target = Some(args[i].clone());
+        }
+        i += 1;
+    }
+    let mut cmd_args = Map::new();
+    if let Some(t) = target {
+        // Um caminho de arquivo vira o alvo pelo path (absoluto); senão label/id.
+        let v = if t.ends_with(".panel") {
+            resolve_path(&t)
+        } else {
+            t
+        };
+        cmd_args.insert("target".into(), json!(v));
+    }
+    if let Some(o) = out {
+        cmd_args.insert("out".into(), json!(resolve_path(&o)));
+    }
+    let mut req = json!({"cmd": "panel-screenshot", "args": Value::Object(cmd_args)});
+    with_tab_id(&mut req, self_tab_id());
+    let resp = transport::request(req, Duration::from_secs(20));
+    if !is_ok(&resp) {
+        fail_with(&resp);
+    }
+    let path = resp
+        .get("data")
+        .and_then(|d| d.get("path"))
+        .and_then(|p| p.as_str())
+        .unwrap_or("");
+    println!("{path}");
+    std::process::exit(0)
 }
 
 #[cfg(test)]

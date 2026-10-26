@@ -213,6 +213,12 @@ class SettingsController extends ChangeNotifier {
   void setFormatOnSave(bool value) =>
       _apply(_settings.copyWith(formatOnSave: value));
 
+  void setCloseTabOnShellExit(bool value) =>
+      _apply(_settings.copyWith(closeTabOnShellExit: value));
+
+  void setFileEditorEngine(FileEditorEngine engine) =>
+      _apply(_settings.copyWith(fileEditorEngine: engine));
+
   void setNotificationsEnabled(bool value) =>
       _apply(_settings.copyWith(notificationsEnabled: value));
 
@@ -262,11 +268,12 @@ class SettingsController extends ChangeNotifier {
   void setTasksPanelHeight(double value) =>
       _apply(_settings.copyWith(tasksPanelHeight: value));
 
-  void setEnableAgent(bool value) =>
-      _apply(_settings.copyWith(enableAgent: value));
-
   void setShowCockpit(bool value) =>
       _apply(_settings.copyWith(showCockpit: value));
+
+  /// Modo desenvolvedor (plano 68): telemetria do próprio app + métricas.
+  void setDeveloperMode(bool value) =>
+      _apply(_settings.copyWith(developerMode: value));
 
   /// Inverte o lado dos painéis laterais (workspaces à direita).
   void setSwapSidePanels(bool value) =>

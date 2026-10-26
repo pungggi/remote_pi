@@ -46,6 +46,7 @@ import type { BufferMsg, ExtensionState } from "./extension-state.js";
 import { registerAgentTools } from "./session/tools.js";
 import { ensureGlobalDirs, skillsDir } from "./session/global_config.js";
 import { effectiveAutoStartRelay, loadLocalConfig, localConfigExists } from "./session/local_config.js";
+import { isPiSubagentChildProcess } from "./session/pi_subagent.js";
 import {
   filterReceivedImageMessagesFromContext,
   flushPendingReceivedImagePreviews,
@@ -128,6 +129,11 @@ export async function _preloadRuntimeForTest(): Promise<MainModule> {
  * pure-data event we add later is covered by construction. Events meant for the
  * human (`remote-pi:mesh-message`, `remote-pi:mesh-revoked`, …) set
  * `display: true` and pass through untouched.
+ *
+ * Senders of filtered messages must pass `{ triggerTurn: false }`. Without it,
+ * pi steers a message sent mid-stream into the running turn and makes another
+ * LLM call; this filter then strips the message, so the request ends with an
+ * assistant message and models without prefill support reject it with a 400.
  */
 function _isPureDataContextMessage(message: unknown): boolean {
   if (typeof message !== "object" || message === null) return false;
@@ -198,7 +204,7 @@ function publishWaitingForUserInline(waiting: boolean, kind?: string, title?: st
           ...(title ? { title } : {}),
         },
         display: false,
-      });
+      }, { triggerTurn: false });
     } catch {
       // ext.pi stale (session replaced) or runtime not yet bound — same
       // discipline as main.ts: swallow, the next transition re-emits.
@@ -486,8 +492,8 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     if (ext.myRoomMeta) ext.myRoomMeta = { ...ext.myRoomMeta, thinking: level };
   });
 
-  pi.on("agent_start", () => {
-    if (mainLoaded || !runtimeIdle()) { fwd((m) => m.onAgentStart()); return; }
+  pi.on("agent_start", (_event, ctx) => {
+    if (mainLoaded || !runtimeIdle()) { fwd((m) => m.onAgentStart(pi, ctx)); return; }
     ext.agentRunActive = true;
     ext.agentRunGeneration += 1;
     ext.turnText = "";      // a fresh run's replayable text starts empty
@@ -523,8 +529,8 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
       ext.messageBuffer.push(m as unknown as BufferMsg);
     }
   });
-  pi.on("agent_end", () => {
-    if (mainLoaded || !runtimeIdle()) { fwd((m) => m.onAgentEnd()); return; }
+  pi.on("agent_end", (_event, ctx) => {
+    if (mainLoaded || !runtimeIdle()) { fwd((m) => m.onAgentEnd(pi, ctx)); return; }
     flushPendingReceivedImagePreviews();  // empty pre-relay — kept for fidelity
     ext.turnText = "";
     ext.turnTextTurn = null;
@@ -612,6 +618,9 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // reset, bridge rebind, disposed re-arm, relay auto-start) forwards.
   pi.on("session_start", (_event, ctx) => {
     ext.lastEventCtx = ctx;
+    // Delivery state is light and per-pi. Capture idle even when the heavy
+    // runtime correctly stays unloaded for this unconfigured/idle session.
+    ext.meshDelivery.for(pi).captureContext(ctx);
     // Daemon: always init (supervisor sets REMOTE_PI_DIRECT_CONFIG so a config
     // is present at process.cwd()). Interactive: only init when the
     // session_start ctx announces its cwd AND a local config already exists
@@ -643,6 +652,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     const autoStart =
       !ext.autoInited &&
       !isPrintMode &&
+      !isPiSubagentChildProcess() &&
       !!cwd &&
       localConfigExists(cwd) &&
       effectiveAutoStartRelay(loadLocalConfig(cwd));
@@ -687,8 +697,11 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // onSessionShutdown (disposed flag, generation revocation, _goIdle) must run
   // before this handler returns, exactly as it did in the monolith.
   pi.on("session_shutdown", () => {
+    // Dispose synchronously: even a deferred runtime import must not allow an
+    // outgoing queue to wake after this session has been replaced.
+    ext.meshDelivery.dispose(pi);
     const m = mainLoaded;
-    if (m) return m.onSessionShutdown();
+    if (m) return m.onSessionShutdown(pi);
     if (runtimeIdle()) {
       // Inline teardown (plan/143) — mirrors main.onSessionShutdown's
       // synchronous prefix: disposed flag + generation revocation + bridge
@@ -704,7 +717,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
       ext.lastEventCtx = null;
       return Promise.resolve();
     }
-    return _main().then((loaded) => { mainLoaded = loaded; return loaded.onSessionShutdown(); });
+    return _main().then((loaded) => { mainLoaded = loaded; return loaded.onSessionShutdown(pi); });
   });
 
   // ── Commands ──────────────────────────────────────────────────────────────

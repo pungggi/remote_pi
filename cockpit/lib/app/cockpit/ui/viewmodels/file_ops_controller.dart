@@ -120,6 +120,58 @@ class FileOpsController extends ChangeNotifier {
     return r;
   }
 
+  // ---- drop nativo (Finder/Explorer → árvore) --------------------------------
+
+  /// Traz [sources] (caminhos absolutos soltos pelo SO) pra dentro de
+  /// [targetDir]. Origem já dentro de [workspaceRoot] é MOVIDA (é o mesmo
+  /// gesto do arrasto interno); origem de fora é COPIADA (arquivo ou pasta,
+  /// recursivo), com sufixo ` copy` quando o nome já existe. Para na primeira
+  /// falha e a devolve; o que já entrou fica.
+  Future<Result<void, FileOperationError>> importInto(
+    List<String> sources,
+    String targetDir, {
+    required String workspaceRoot,
+  }) async {
+    var changed = false;
+    final normalizedTargetDir = normalizePath(targetDir);
+    try {
+      for (final raw in sources) {
+        final from = normalizePath(raw).replaceAll(RegExp(r'/+$'), '');
+        final name = basenameOf(from);
+        if (name.isEmpty) {
+          return const Failure(
+            FileOperationError(FileOperationErrorKind.invalidPath),
+          );
+        }
+        // Soltar uma pasta dentro dela mesma (ou de uma descendente) não tem
+        // resultado possível.
+        if (normalizedTargetDir == from || isUnderPath(normalizedTargetDir, from)) {
+          return const Failure(
+            FileOperationError(FileOperationErrorKind.cannotMoveIntoItself),
+          );
+        }
+        final internal =
+            workspaceRoot.isNotEmpty && isUnderPath(from, workspaceRoot);
+        if (internal) {
+          // Já está no destino: nada a fazer.
+          if (dirnameOf(from) == normalizedTargetDir) continue;
+          final r = await _mutator.rename(from, joinPath(normalizedTargetDir, name));
+          if (r case Failure()) return r;
+          await retargetSessions?.call(from, joinPath(normalizedTargetDir, name));
+          changed = true;
+          continue;
+        }
+        final to = await _uniqueDest(normalizedTargetDir, name);
+        final r = await _mutator.copy(from, to);
+        if (r case Failure()) return r;
+        changed = true;
+      }
+      return const Success(null);
+    } finally {
+      if (changed) _bumpTree();
+    }
+  }
+
   // ---- clipboard da árvore (copiar / recortar / colar) ----------------------
 
   /// Caminho no clipboard interno da árvore (`null` = vazio).

@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:cockpit/app/core/data/diagnostics/performance_diagnostics.dart';
 
 /// Orça o trabalho de todos os PTYs do app de forma global e justa.
 ///
@@ -17,11 +18,14 @@ final class PtyOutputScheduler {
     this.maxCharsPerFrame = 64 * 1024,
     this.maxSliceChars = 4 * 1024,
     this.maxWorkPerFrame = const Duration(milliseconds: 4),
+    this.hiddenDrainInterval = const Duration(milliseconds: 100),
+    this.scheduleHiddenFrames = false,
     void Function(VoidCallback drain)? scheduleFrame,
     int Function()? clockMicros,
   }) : assert(maxCharsPerFrame > 0),
        assert(maxSliceChars > 0),
        assert(maxWorkPerFrame > Duration.zero),
+       assert(hiddenDrainInterval > Duration.zero),
        _scheduleFrame = scheduleFrame ?? _scheduleOnNextFrame,
        _clockMicros = clockMicros ?? _monotonicMicros;
 
@@ -37,10 +41,29 @@ final class PtyOutputScheduler {
   /// Parcela máxima do frame dedicada a parse/model/render invalidation.
   final Duration maxWorkPerFrame;
 
+  /// Sem frame por este tempo, drena por timer. Janela em outra mesa do macOS
+  /// (ou minimizada/oculta) não recebe vsync e o Flutter para de produzir
+  /// frames — mas o Dart segue vivo. Antes disto o drenar dependia SÓ do
+  /// frame: o buffer enchia, o ack do PTY era suspenso (backpressure), o pipe
+  /// do kernel lotava e o processo filho (claude, npm run dev…) BLOQUEAVA no
+  /// write até a janela voltar — o "modo de espera" ao trocar de mesa. É o
+  /// que o VS Code evita lendo o PTY fora do loop de render. Drenar fora de
+  /// frame é seguro: é parse + scrollback; o desenho acontece quando houver
+  /// frame de novo. Com a janela visível o frame chega em ~16 ms e o timer
+  /// nunca dispara.
+  final Duration hiddenDrainInterval;
+
+  /// Diagnostic override for comparing the previous hidden-output behavior.
+  /// Normal operation drains hidden-only output on the timer without asking
+  /// Flutter to draw a frame that cannot display any of that output.
+  final bool scheduleHiddenFrames;
+
   final void Function(VoidCallback drain) _scheduleFrame;
   final int Function() _clockMicros;
   final ListQueue<PtyOutputCoalescer> _ready = ListQueue();
-  bool _frameScheduled = false;
+  bool _drainScheduled = false;
+  bool _frameCallbackScheduled = false;
+  Timer? _hiddenDrain;
   bool _draining = false;
   int _pendingChars = 0;
 
@@ -85,19 +108,36 @@ final class PtyOutputScheduler {
   }
 
   void _ensureFrame() {
-    if (_frameScheduled || _ready.isEmpty) return;
-    _frameScheduled = true;
-    _scheduleFrame(_drainFrame);
+    if (_ready.isEmpty) return;
+    if (!_drainScheduled) {
+      _drainScheduled = true;
+      // Always consume the PTY, including when no Flutter frame is needed.
+      _hiddenDrain = Timer(hiddenDrainInterval, _drainFrame);
+    }
+    if ((scheduleHiddenFrames || _ready.any((source) => source.visible)) &&
+        !_frameCallbackScheduled) {
+      _frameCallbackScheduled = true;
+      _scheduleFrame(() => _drainFrame(fromFrame: true));
+    }
   }
 
-  void _drainFrame() {
-    _frameScheduled = false;
+  void _drainFrame({bool fromFrame = false}) {
+    // A timer drain cannot cancel a callback already registered with Flutter.
+    // Keep its slot occupied until that callback actually runs, or callbacks
+    // would accumulate during a long period without vsync.
+    if (fromFrame) _frameCallbackScheduled = false;
+    if (!_drainScheduled) return; // already drained by the other path
+    _drainScheduled = false;
+    _hiddenDrain?.cancel();
+    _hiddenDrain = null;
     if (_ready.isEmpty) return;
 
     _draining = true;
     final startedAt = _clockMicros();
     final timeBudget = maxWorkPerFrame.inMicroseconds;
     var charBudget = maxCharsPerFrame;
+    var processedChars = 0;
+    var hiddenChars = 0;
 
     try {
       while (_ready.isNotEmpty && charBudget > 0) {
@@ -109,6 +149,8 @@ final class PtyOutputScheduler {
           math.min(maxSliceChars, charBudget),
         );
         charBudget -= processed;
+        processedChars += processed;
+        if (!source.visible) hiddenChars += processed;
 
         // Reinsere no fim: mesmo uma fonte muito ruidosa não monopoliza o
         // frame enquanto outra aguarda.
@@ -120,8 +162,19 @@ final class PtyOutputScheduler {
       }
     } finally {
       _draining = false;
+      PerformanceDiagnostics.instance.record(PerfMetric.pty, {
+        PerfField.durationUs: _clockMicros() - startedAt,
+        PerfField.pending: _pendingChars,
+        PerfField.sources: _ready.length,
+        PerfField.processedChars: processedChars,
+        PerfField.hiddenChars: hiddenChars,
+      });
       _ensureFrame();
     }
+  }
+
+  void _visibilityChanged(PtyOutputCoalescer source) {
+    if (source.visible && source._queued && !_draining) _ensureFrame();
   }
 }
 
@@ -167,6 +220,16 @@ final class PtyOutputCoalescer {
 
   int get pendingLength => _pendingLength;
   bool get ackPaused => _ackPaused;
+
+  /// Apenas para diagnóstico: output oculto ainda precisa passar pelo parser.
+  bool _visible = true;
+  bool get visible => _visible;
+  set visible(bool value) {
+    if (_visible == value) return;
+    _visible = value;
+    _scheduler._visibilityChanged(this);
+  }
+
   bool get _hasPending => _pendingLength > 0;
 
   /// Completa quando tudo que já entrou foi entregue ao consumidor.

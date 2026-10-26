@@ -198,6 +198,12 @@ export class MeshNode {
   private relayBackoffIdx = 0;
   private static readonly RELAY_RECONNECT_BACKOFFS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
 
+  /** Bounded backstop for an injected relay whose first attach missed leader
+   *  or broker readiness. Owned relays keep their independent reconnect path. */
+  private bridgeAttachRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private bridgeAttachRetryIdx = 0;
+  private static readonly BRIDGE_ATTACH_BACKOFFS_MS = [2_000, 5_000, 15_000, 30_000, 60_000];
+
   constructor(opts: MeshNodeOptions) {
     this.log = opts.log ?? ((): void => {});
     const peerOpts: SessionPeerOptions = { sockPath: opts.sockPath, name: opts.name };
@@ -249,6 +255,9 @@ export class MeshNode {
     meshRequestTimeoutMs?: number;
   }): Promise<void> {
     this._assertOpen();
+    // An explicit attach is fresh evidence from the host: retry immediately
+    // and restart the bounded budget, even when params are unchanged.
+    this._clearBridgeAttachRetry();
     const next: BridgeParams = {
       relayUrl: opts.relayUrl,
       injectedRelay: opts.relay,
@@ -367,9 +376,15 @@ export class MeshNode {
 
   private async _attemptBridge(generation: number): Promise<void> {
     if (this.closed || this.activeBridge) return;
-    if (this.peer_.currentRole() !== "leader") return;
+    if (this.peer_.currentRole() !== "leader") {
+      this._scheduleBridgeAttachRetry("not the broker-host leader yet");
+      return;
+    }
     const broker: Broker | null = this.peer_.localBroker();
-    if (!broker) return;
+    if (!broker) {
+      this._scheduleBridgeAttachRetry("local broker not ready");
+      return;
+    }
     const paramsAtStart = this.bridgeParams;
     if (!paramsAtStart) return;
     const revisionAtStart = this.topologyRevision;
@@ -478,6 +493,7 @@ export class MeshNode {
 
       // Publish only after activation and owned-close handler installation.
       this.activeBridge = result;
+      this._clearBridgeAttachRetry();
       this.brokerRemote = result.brokerRemote;
       this.piForward = result.piForward;
       this.relay = candidateRelay;
@@ -497,6 +513,7 @@ export class MeshNode {
       }
       try { result?.detach(); } catch { /* preserve original error */ }
       if (candidateRelayOwned) this._closeOwnedRelay(candidateRelay);
+      this._scheduleBridgeAttachRetry("bridge attach failed");
       throw error;
     }
   }
@@ -536,6 +553,7 @@ export class MeshNode {
   }
 
   private _teardownPublishedBridge(closeOwnedRelay: boolean): void {
+    this._clearBridgeAttachRetry();
     const bridge = this.activeBridge;
     const relay = this.relay;
     const relayOwned = this.relayOwned;
@@ -568,6 +586,41 @@ export class MeshNode {
     if (!this.relayReconnectTimer) return;
     clearTimeout(this.relayReconnectTimer);
     this.relayReconnectTimer = null;
+  }
+
+  /** Retry a missed injected-bridge attach with a fixed budget. A later
+   *  attachBridge/reconnect event clears and rearms this state. */
+  private _scheduleBridgeAttachRetry(reason: string): void {
+    if (this.closed || this.activeBridge || this.bridgeAttachRetryTimer) return;
+    if (this.bridgeParams?.injectedRelay === undefined) return;
+    const backoffs = MeshNode.BRIDGE_ATTACH_BACKOFFS_MS;
+    if (this.bridgeAttachRetryIdx >= backoffs.length) {
+      if (this.bridgeAttachRetryIdx === backoffs.length) {
+        this.log("mesh bridge: attach retry budget exhausted; waiting for the next attach/reconnect event");
+        this.bridgeAttachRetryIdx += 1;
+      }
+      return;
+    }
+    const delay = backoffs[this.bridgeAttachRetryIdx]!;
+    this.bridgeAttachRetryIdx += 1;
+    this.log(`mesh bridge: deferred (${reason}) — retrying in ${Math.round(delay / 1_000)}s`);
+    const timer = setTimeout(() => {
+      this.bridgeAttachRetryTimer = null;
+      void this._requestBridge().catch((error: unknown) => {
+        this.log(`mesh bridge: attach retry failed: ${String(error)}`);
+        this._scheduleBridgeAttachRetry("previous attach rejected");
+      });
+    }, delay);
+    timer.unref?.();
+    this.bridgeAttachRetryTimer = timer;
+  }
+
+  private _clearBridgeAttachRetry(): void {
+    if (this.bridgeAttachRetryTimer) {
+      clearTimeout(this.bridgeAttachRetryTimer);
+      this.bridgeAttachRetryTimer = null;
+    }
+    this.bridgeAttachRetryIdx = 0;
   }
 
   private _scheduleRelayReconnect(): void {

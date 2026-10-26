@@ -3,15 +3,24 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:cockpit/app/cockpit/data/remote/host_shell/host_shell.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
+typedef SshForwardPlan = ({
+  bool useTcp,
+  String localPath,
+  int? localPort,
+  String argument,
+});
 
 /// Túnel SSH para o socket do `cockpit-server` de um host remoto (plano 58,
 /// Wave 2, decisão G): usa o binário `ssh` DO SISTEMA — nada de biblioteca
 /// SSH nem crypto nossa. `~/.ssh/config`, chaves, agent e ProxyJump valem de
 /// graça; se `ssh <target>` funciona no terminal do usuário, funciona aqui.
 ///
-/// O forward é de socket UDS→UDS: o servidor remoto escuta só em localhost
-/// (nunca expõe porta de rede) e este túnel materializa aquele socket num
-/// path local. Pro cliente, o resultado é indistinguível do loopback.
+/// O forward é UDS→UDS no caminho POSIX clássico. No Windows, ou quando o
+/// servidor POSIX anuncia TCP (`--tcp`), a ponta local é TCP de loopback; o
+/// destino continua sendo o socket ou a porta de loopback do host. Assim o
+/// servidor nunca precisa escutar numa interface de rede pública.
 /// UTF-8 que não estoura em byte inválido — ver o comentário em [capture].
 const _lenientUtf8 = Utf8Decoder(allowMalformed: true);
 
@@ -26,20 +35,26 @@ class SshTunnel {
   final Process _process;
 
   /// Socket local que espelha o socket remoto do cockpit-server. Vazio quando
-  /// a ponta local é TCP (Windows — ver [localPort]).
+  /// a ponta local é TCP (Windows ou remoto TCP — ver [localPort]).
   final String localSocketPath;
 
-  /// Porta de loopback que espelha o socket remoto, no Windows.
+  /// Porta de loopback que espelha a ponta remota, quando a ponta local é TCP.
   ///
-  /// O OpenSSH do Windows não faz forward de socket UNIX na ponta LOCAL, e o
-  /// caminho nem chega a ser parseado: `-L C:\...\x.sock:/home/u/y.sock` morre
-  /// em `Bad local forwarding specification`, porque o `C:` já é um separador
-  /// pro parser. A forma suportada é `-L 127.0.0.1:<porta>:<socket remoto>` —
-  /// TCP local → UDS remoto, que o OpenSSH faz desde a 6.7. O lado REMOTO
-  /// continua sendo o socket UNIX de sempre: nada muda no host.
+  /// Dois casos exigem TCP aqui: o OpenSSH do Windows não faz forward de
+  /// socket UNIX na ponta LOCAL (o caminho nem chega a ser parseado:
+  /// `-L C:\...\x.sock:/home/u/y.sock` morre em `Bad local forwarding
+  /// specification`, porque o `C:` já é um separador pro parser); e hosts cujo
+  /// servidor SSH recusa o canal streamlocal (Tailscale SSH: "unknown channel
+  /// type: unsupported channel type") não conseguem nem abrir o forward
+  /// UNIX→UNIX — nesses o servidor remoto sobe em TCP (rendezvous, ver
+  /// `--tcp` no cockpit-server) e o forward vira `127.0.0.1:<porta>` dos dois
+  /// lados, que qualquer OpenSSH aceita. A forma suportada no Windows é
+  /// `-L 127.0.0.1:<porta>:<destino>`, TCP local → UDS remoto, que o OpenSSH
+  /// faz desde a 6.7.
   final int? localPort;
 
-  /// A ponta local é TCP (Windows) em vez de socket UNIX.
+  /// A ponta local é TCP em vez de socket UNIX (Windows, ou remoto TCP — ver
+  /// [localPort]).
   bool get usesTcpEndpoint => localPort != null;
   final String target;
 
@@ -60,10 +75,9 @@ class SshTunnel {
   /// em argv nem em variável de ambiente.
   ///
   /// [remote] descreve a PONTA REMOTA, já resolvida pelo dialeto do host
-  /// (`HostShell.readEndpoint`): socket UNIX num host POSIX, porta de loopback
-  /// num host Windows. As duas pontas são independentes — as quatro
-  /// combinações existem, e um cliente Windows falando com host Windows é TCP
-  /// dos dois lados.
+  /// (`HostShell.readEndpoint`): socket UNIX ou rendezvous TCP no POSIX, e
+  /// sempre TCP no Windows. A ponta local acompanha TCP; com socket UNIX
+  /// remoto, só o Windows precisa trocar a ponta local para TCP.
   static Future<SshTunnel> open({
     required String target,
     required RemoteEndpoint remote,
@@ -72,16 +86,13 @@ class SshTunnel {
     String? identityFile,
     Duration timeout = const Duration(seconds: 15),
   }) async {
-    // Ponta local: socket UNIX no POSIX; porta de loopback no Windows.
-    final useTcp = Platform.isWindows;
-    final localPath = useTcp
-        ? ''
-        : '${Directory.systemTemp.path}/cockpit-ssh-'
-              '${DateTime.now().microsecondsSinceEpoch}.sock';
-    // Porta livre pedida ao SO e devolvida na hora. Há uma janela em que outro
-    // processo pode tomá-la; `ExitOnForwardFailure=yes` faz o ssh morrer alto
-    // nesse caso, em vez de fingir que o túnel subiu.
-    final localTcpPort = useTcp ? await _freeLoopbackPort() : null;
+    final plan = await forwardPlan(
+      remote: remote,
+      isWindows: Platform.isWindows,
+    );
+    final useTcp = plan.useTcp;
+    final localPath = plan.localPath;
+    final localTcpPort = plan.localPort;
 
     final askpass = await _Askpass.create(password);
     final authOpts = _authOpts(
@@ -91,16 +102,6 @@ class SshTunnel {
     );
 
     try {
-      // Ponta remota, no formato que o `-L` espera. O `$HOME` já vem resolvido
-      // de fora: o forward streamlocal do OpenSSH NÃO expande `~`/`$HOME`, e
-      // resolvê-lo aqui custava um `Process.run` extra que, num host Windows,
-      // ainda estourava `FormatException` ao decodificar o erro do `cmd` em
-      // CP-850 (o `systemEncoding` do macOS/Linux é UTF-8 estrito).
-      final remoteSpec = switch (remote) {
-        UnixSocketEndpoint(:final path) => path,
-        TcpEndpoint(:final port) => '127.0.0.1:$port',
-      };
-
       final process = await Process.start('ssh', [
         '-N', // só forward, sem shell
         ...authOpts,
@@ -110,9 +111,7 @@ class SshTunnel {
         // Só faz sentido com socket UNIX local (remove o inode órfão).
         if (!useTcp) ...['-o', 'StreamLocalBindUnlink=yes'],
         '-L',
-        useTcp
-            ? '127.0.0.1:$localTcpPort:$remoteSpec'
-            : '$localPath:$remoteSpec',
+        plan.argument,
         target,
       ], environment: askpass?.env);
 
@@ -154,6 +153,39 @@ class SshTunnel {
       // senha não é mais necessário. Removê-lo evita deixar a senha no disco.
       await askpass?.dispose();
     }
+  }
+
+  /// Builds the actual `-L` plan without starting SSH. POSIX TCP rendezvous
+  /// needs TCP locally even when the client is not Windows; a Unix remote on
+  /// Windows keeps its Unix destination but still needs a local TCP port.
+  @visibleForTesting
+  static Future<SshForwardPlan> forwardPlan({
+    required RemoteEndpoint remote,
+    required bool isWindows,
+  }) async {
+    final useTcp = isWindows || remote is TcpEndpoint;
+    final localPath = useTcp
+        ? ''
+        : '${Directory.systemTemp.path}/cockpit-ssh-'
+              '${DateTime.now().microsecondsSinceEpoch}.sock';
+    // Porta livre pedida ao SO e devolvida na hora. Há uma janela em que outro
+    // processo pode tomá-la; `ExitOnForwardFailure=yes` faz o ssh morrer alto
+    // nesse caso, em vez de fingir que o túnel subiu.
+    final localPort = useTcp ? await _freeLoopbackPort() : null;
+    // O `$HOME` remoto já vem resolvido: o forward streamlocal do OpenSSH não
+    // expande `~`/`$HOME` no destino.
+    final remoteSpec = switch (remote) {
+      UnixSocketEndpoint(:final path) => path,
+      TcpEndpoint(:final port) => '127.0.0.1:$port',
+    };
+    return (
+      useTcp: useTcp,
+      localPath: localPath,
+      localPort: localPort,
+      argument: useTcp
+          ? '127.0.0.1:$localPort:$remoteSpec'
+          : '$localPath:$remoteSpec',
+    );
   }
 
   /// O forward já está de pé? No POSIX basta o socket local existir; no
@@ -215,6 +247,24 @@ class SshTunnel {
     if (usingPassword) ...[
       '-o',
       'StrictHostKeyChecking=accept-new',
+      // Senha escolhida no cadastro = senha É o método, não o fallback.
+      //
+      // Sem isto o ssh tenta publickey ANTES (agent + `~/.ssh/id_*` + o que o
+      // `~/.ssh/config` mandar) e o `SSH_ASKPASS` nunca chega a ser chamado:
+      // ou uma chave qualquer entra (e o host conecta como outro usuário do
+      // que o cadastro diz), ou as tentativas estouram o `MaxAuthTries` do
+      // servidor e a conexão morre em "Too many authentication failures" /
+      // "Permission denied (publickey)" — com a senha guardada intacta,
+      // nunca oferecida. Era exatamente o caso de quem cadastra com senha
+      // JUSTAMENTE porque a chave não serve.
+      '-o',
+      'PubkeyAuthentication=no',
+      '-o',
+      'PreferredAuthentications=password,keyboard-interactive',
+      // O helper devolve sempre a MESMA senha: repetir 3x só atrasa o erro
+      // (e conta 3 falhas no log/fail2ban do host).
+      '-o',
+      'NumberOfPasswordPrompts=1',
     ] else ...[
       '-o',
       'BatchMode=yes',

@@ -606,6 +606,21 @@ class ConnectionManager extends Service {
   // Permanently disconnect and go to NoPeer.
   Future<void> disconnect() => _teardownActive(emitNoPeer: true);
 
+  /// Resume recovery immediately instead of waiting out a background backoff.
+  ///
+  /// A frozen process cannot run retry timers, so the first foreground attempt
+  /// should happen now with a fresh backoff ladder. An Online socket is left
+  /// alone: blindly replacing it could create an authenticated duplicate.
+  void onForeground() {
+    _cancelRetry();
+    _retryAttempt = 0;
+    final peer = _activePeer;
+    if (peer == null) return;
+    if (_connectInFlight) return;
+    if (_status is StatusOnline) return;
+    _connect(peer);
+  }
+
   /// Plan 114 — reset the backoff and dial the active peer *now*. The single
   /// chokepoint for the three resilience triggers: network-change detection
   /// (A), the manual Reconnect button (B), and the inbound-liveness watchdog
@@ -753,6 +768,9 @@ class ConnectionManager extends Service {
     final token = CancelToken();
     _connectCancel = token;
     _connectInFlight = true;
+    // Activation can fail after the factory has authenticated the socket.
+    // Keep the candidate outside the try so the catch can always close it.
+    IChannel? ch;
     // Plan 17 fix — set the destination room from the persisted
     // PeerRecord BEFORE emitting StatusOnline so the very first send
     // after connect goes to the right (peer, room) on the relay. If
@@ -782,7 +800,7 @@ class ConnectionManager extends Service {
     _emit(const StatusConnecting());
 
     try {
-      final ch = await _factory(peer, token);
+      ch = await _factory(peer, token);
       if (token.isCancelled) {
         await ch.close();
         return;
@@ -800,6 +818,13 @@ class ConnectionManager extends Service {
       _watchControl(ch);
       _replaySubscriptions();
     } catch (e) {
+      // Never leave an authenticated-but-unused relay connection behind when
+      // room propagation or subscription replay fails after the handshake.
+      try {
+        await ch?.close();
+      } catch (_) {
+        // Already gone; local teardown can still continue.
+      }
       if (!token.isCancelled) _scheduleRetry(peer);
     } finally {
       // Only clear the flight flag if THIS call is still the active

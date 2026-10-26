@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:cockpit/app/cockpit/domain/contracts/db_connection_store.dart';
 import 'package:cockpit/app/cockpit/domain/entities/db_connection.dart';
+import 'package:path/path.dart' as p;
 
 /// Conexões do workspace em `.cockpit/databases.json` (versionado) +
 /// `.cockpit/databases.local.json` (gitignored, override por nome) + sqlites
@@ -47,7 +48,7 @@ class DbConnectionStoreImpl implements DbConnectionStore {
         .toSet();
     for (final path in await _detectSqlites(workspaceRoot)) {
       if (knownPaths.contains(_normalize(workspaceRoot, path))) continue;
-      final name = path.split(Platform.pathSeparator).last;
+      final name = p.basename(path);
       if (byName.containsKey(name)) continue;
       byName[name] = DbConnection.sqlite(
         name,
@@ -65,6 +66,20 @@ class DbConnectionStoreImpl implements DbConnectionStore {
     String workspaceRoot,
     List<DbConnection> connections,
   ) async {
+    final file = File('$workspaceRoot/$_dirName/$_fileName');
+    await file.parent.create(recursive: true);
+    await file.writeAsString(encodeDatabasesJson(connections));
+  }
+
+  /// Caminho do `databases.json` relativo à raiz do workspace. O writer remoto
+  /// (plano 62) monta o caminho no HOST com isto, em vez de repetir a string.
+  static const String databasesRelativePath = '$_dirName/$_fileName';
+
+  /// Conteúdo do `databases.json` a partir de [connections]. Extraído do
+  /// [save] para que o caminho remoto grave **byte a byte** o mesmo arquivo —
+  /// duas serializações divergindo produziriam diff espúrio conforme o
+  /// workspace fosse editado do cliente ou do host.
+  static String encodeDatabasesJson(List<DbConnection> connections) {
     final registered =
         connections
             .where((c) => c.origin == DbConnectionOrigin.registered)
@@ -72,14 +87,10 @@ class DbConnectionStoreImpl implements DbConnectionStore {
           // O arquivo também sai ordenado: ele é versionado, e gravar na ordem
           // da memória produzia diff de reordenação a cada salvamento.
           ..sort(DbConnection.compareByName);
-    final file = File('$workspaceRoot/$_dirName/$_fileName');
-    await file.parent.create(recursive: true);
     const encoder = JsonEncoder.withIndent('  ');
-    await file.writeAsString(
-      '${encoder.convert({
-        'databases': [for (final c in registered) c.toJson()],
-      })}\n',
-    );
+    return '${encoder.convert({
+      'databases': [for (final c in registered) c.toJson()],
+    })}\n';
   }
 
   Future<List<DbConnection>> _readFile(
@@ -140,11 +151,8 @@ class DbConnectionStoreImpl implements DbConnectionStore {
           final ext = dot < 0 ? '' : name.substring(dot + 1).toLowerCase();
           if (!_sqliteExts.contains(ext)) continue;
           if (await _hasSqliteMagic(e)) {
-            // Path relativo à raiz — portável entre máquinas do time.
-            final rel = e.path.startsWith('$root/')
-                ? e.path.substring(root.length + 1)
-                : e.path;
-            found.add(rel);
+            // Relative POSIX path: stable across hosts and path separators.
+            found.add(p.relative(e.path, from: root).replaceAll('\\', '/'));
           }
         }
       }
@@ -170,7 +178,7 @@ class DbConnectionStoreImpl implements DbConnectionStore {
   }
 
   static String _normalize(String root, String path) =>
-      _isAbsolute(path) ? path : '$root/$path';
+      p.normalize(p.isAbsolute(path) ? path : p.join(root, path));
 
   static bool _isAbsolute(String path) =>
       path.startsWith('/') || RegExp(r'^[A-Za-z]:[\\/]').hasMatch(path);

@@ -29,7 +29,7 @@ class WindowsHostShell extends HostShell {
 
   /// Bundle do Cockpit instalado no host — a fonte da instalação (D2).
   static const _hostBundle =
-      r'$env:LOCALAPPDATA\Programs\Remote Pi Cockpit\cockpit-server-bundle';
+      r'$env:LOCALAPPDATA\Programs\Piper Cockpit\cockpit-server-bundle';
 
   @override
   bool get installsFromHostBundle => true;

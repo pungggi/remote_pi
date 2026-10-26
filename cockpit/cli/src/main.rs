@@ -17,6 +17,8 @@ mod commands;
 mod flags;
 mod hook;
 mod keys;
+mod skills;
+mod telemetry;
 mod transport;
 mod util;
 
@@ -60,14 +62,25 @@ fn main() {
         "list-tasks" => commands::list("list-tasks", args),
         "read-tab" | "read-pane" => commands::read("read-pane", args),
         "read-task" => commands::read("read-task", args),
+        "run-task" | "stop-task" | "restart-task" | "send-task-key" => commands::task(first, args),
         "db" => commands::db(args),
+        "telemetry" => telemetry::telemetry(args),
         "http" => commands::http(args),
         "redis" => commands::redis(args),
         "mongo" => commands::mongo(args),
         "new-tab" => commands::new_tab(args),
+        "close-tab" => commands::close_tab(args),
+        "new-workspace" | "open-workspace" | "new-remote-workspace" => {
+            commands::new_workspace(args)
+        }
+        "close-workspace" => commands::close_workspace(args),
+        "rename-workspace" => commands::rename_workspace(args),
+        "exec" => commands::exec(args),
         "browse" => commands::browse_url(args),
         "orchestrate" => commands::orchestrate(args),
-        "install-skill" => commands::install_skill(args),
+        "note" => commands::note(args),
+        "install-skill" => skills::install_skill(args),
+        "panel" => commands::panel(args),
         // Atalho: `cockpit <arquivo>` (sem verbo) abre o arquivo — o token
         // desconhecido é tratado como caminho. `cockpit open <arquivo>` é a
         // forma explícita.

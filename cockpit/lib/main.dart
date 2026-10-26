@@ -1,8 +1,13 @@
 import 'dart:io';
 
 import 'package:cockpit/app/bootstrapper.dart';
+import 'package:cockpit/app/cockpit/ui/document/document_window_app.dart';
+import 'package:cockpit/app/cockpit/ui/document/document_windows.dart';
+import 'package:cockpit/app/cockpit/ui/document/open_files_channel.dart';
+import 'package:cockpit/app/cockpit/ui/document/running_instance.dart';
 import 'package:cockpit/app/core/data/diagnostics/diagnostics_log.dart';
 import 'package:cockpit/app/core/data/diagnostics/error_handlers.dart';
+import 'package:cockpit/app/core/data/diagnostics/performance_diagnostics.dart';
 import 'package:cockpit/app/core/ui/widgets/app_error_view.dart';
 import 'package:cockpit/app/core/ui/widgets/error_report_dialog.dart';
 import 'package:cockpit/i18n/strings.g.dart';
@@ -19,7 +24,23 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 /// Aqui fica só o que precisa envolver *tudo*: a captura global de erros. Um app
 /// GUI não tem stdout visível, então sem isso qualquer falha em produção some
 /// sem deixar rastro — inclusive as que fecham o app sozinho.
-Future<void> main() async {
+Future<void> main(List<String> args) async {
+  // Engine criado pelo desktop_multi_window pra uma janela de documento:
+  // sobe só o viewer (ver DocumentWindows), nunca o app inteiro.
+  if (DocumentWindows.pathFromArguments(args) != null) {
+    await runDocumentWindow(args);
+    return;
+  }
+  // Windows/Linux: "abrir com" sobe um processo novo por arquivo. Se já há um
+  // Cockpit vivo, entrega os caminhos a ele e sai; senão este processo vira o
+  // app e abre os arquivos após o boot (ver RunningInstance/OpenFilesChannel).
+  if (Platform.isWindows || Platform.isLinux) {
+    final files = RunningInstance.filePathsFromArguments(args);
+    if (files.isNotEmpty) {
+      if (await RunningInstance.forwardOpen(files)) exit(0);
+      OpenFilesChannel.pendingFromArguments = files;
+    }
+  }
   await runGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
 
@@ -63,6 +84,7 @@ Future<void> main() async {
     final version = await _resolveVersion();
     setDiagnosticsAppVersion(version);
     await DiagnosticsLog.instance.init(appVersion: version);
+    PerformanceDiagnostics.instance.start();
 
     // Erro de build vira painel legível em vez da caixa cinza do Flutter.
     AppErrorView.install();

@@ -19,6 +19,8 @@ class _FakeInstaller extends CodexHookInstallerImpl {
   Future<String?> resolveHookCommand(String? cliPath) async => command;
 }
 
+String tomlKeyPath(String path) => path.replaceAll(r'\', r'\\');
+
 void main() {
   late Directory home;
   late Directory codex;
@@ -120,7 +122,7 @@ void main() {
       ]) {
         expect(
           config,
-          contains('[hooks.state."${codex.path}/hooks.json:$label:0:0"]'),
+          contains('[hooks.state."${tomlKeyPath(codex.path)}/hooks.json:$label:0:0"]'),
         );
       }
       expect('trusted_hash'.allMatches(config).length, 7);
@@ -186,7 +188,7 @@ void main() {
       expect(jsonEncode(stop.first), contains('meu-hook'));
       expect(
         readConfig(),
-        contains('[hooks.state."${codex.path}/hooks.json:stop:1:0"]'),
+        contains('[hooks.state."${tomlKeyPath(codex.path)}/hooks.json:stop:1:0"]'),
       );
     });
 

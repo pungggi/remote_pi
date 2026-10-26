@@ -32,9 +32,9 @@ class LinuxProcessTreeProvider implements ProcessTreeProvider {
       if (probePid == null) return const [];
 
       if (await _childrenApiAvailable(probePid)) {
-        return _collectTrees(rootPids);
+        return await _collectTrees(rootPids);
       }
-      return _collectByFullScan(rootPids);
+      return await _collectByFullScan(rootPids);
     } catch (_) {
       return const [];
     }

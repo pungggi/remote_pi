@@ -1,5 +1,6 @@
 import Cocoa
 import FlutterMacOS
+import desktop_multi_window
 
 class MainFlutterWindow: NSWindow {
   override func awakeFromNib() {
@@ -18,6 +19,16 @@ class MainFlutterWindow: NSWindow {
     RegisterGeneratedPlugins(registry: flutterViewController)
 
     registerNativeDialogs(flutterViewController)
+
+    // Arquivos abertos pelo Finder chegam pelo AppDelegate → este canal.
+    OpenFilesChannel.shared.register(flutterViewController)
+
+    // Cada janela de documento (desktop_multi_window) é um engine novo: sem
+    // isto ela nasce sem plugin nenhum (media_kit, webview, file_picker…).
+    FlutterMultiWindowPlugin.setOnWindowCreatedCallback { controller in
+      RegisterGeneratedPlugins(registry: controller)
+      DocumentWindowChannel.register(controller)
+    }
 
     super.awakeFromNib()
   }

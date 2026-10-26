@@ -42,9 +42,9 @@
       "settings": "Configurações…",
       "checkForUpdates": "Verificar Atualizações…",
       "file": "Arquivo",
-      "newAgent": "Novo Agente",
       "newTerminal": "Novo Terminal",
       "openWorkspace": "Abrir Workspace",
+      "goToFile": "Ir para Arquivo…",
       "save": "Salvar",
       "discard": "Descartar",
       "format": "Formatar",
@@ -61,6 +61,8 @@
       "selectTab": "Selecionar Aba",
       "tabN": "Aba ${n}",
       "lastTab": "Última Aba",
+      "previousWorkspace": "Workspace Anterior",
+      "nextWorkspace": "Próximo Workspace",
       "zoomIn": "Aumentar Zoom",
       "zoomOut": "Diminuir Zoom",
       "actualSize": "Tamanho Real",
@@ -102,15 +104,12 @@
       "dontSave": "Não salvar",
       "saveAndClose": "Salvar e fechar"
     },
-    "historyDialog": {
-      "title": "Histórico de sessões",
-      "subtitle": "Abrir uma substitui a transcrição atual deste agente",
-      "empty": "Nenhuma sessão salva nesta pasta.",
-      "untitledSession": "Sessão sem título",
-      "justNow": "agora",
-      "minutesAgo": "${n} min atrás",
-      "hoursAgo": "${n} h atrás",
-      "daysAgo": "${n} d atrás"
+    "neovim": {
+      "unavailable": "O Neovim não está disponível. Abrindo no Cockpit.",
+      "openFailed": "Não foi possível acessar o Neovim. Abrindo no Cockpit.",
+      "unsavedTitle": "Buffers não salvos no Neovim",
+      "unsavedMessage": "O Neovim tem buffers modificados. Fechar a aba e descartar essas alterações?",
+      "closeAnyway": "Fechar mesmo assim"
     },
     "worktreeCreateDialog": {
       "forkTitle": "Fork da worktree",
@@ -141,13 +140,6 @@
       "searchBranch": "Buscar branch...",
       "back": "Voltar"
     },
-    "subfolderDialog": {
-      "title": "Onde trabalhar?",
-      "empty": "Nenhuma subpasta aqui.",
-      "useRoot": "Usar a raiz de ${project}",
-      "usePath": "Usar ${project}/${rel}",
-      "useThisFolder": "Usar esta pasta"
-    },
     "commitMessageDialog": {
       "commitTitle": "Commit",
       "stageAndCommitTitle": "Stage e Commit",
@@ -164,56 +156,6 @@
       "generating": "Gerando…",
       "cancelGeneration": "Cancelar geração"
     },
-    "agentEditDialog": {
-      "title": "Editar agente",
-      "agentName": "Nome do agente",
-      "relaySection": "Relay (remote-pi)",
-      "autoConnect": "Conectar automaticamente ao iniciar",
-      "informationSection": "Informações",
-      "folder": "Pasta",
-      "model": "Modelo",
-      "state": "Estado",
-      "context": "Contexto",
-      "statusEmpty": "vazio",
-      "statusStarting": "iniciando",
-      "statusReady": "pronto",
-      "statusStreaming": "transmitindo",
-      "statusEnded": "encerrado"
-    },
-    "agentSetupChecklist": {
-      "title": "Configurar o ambiente do agente",
-      "intro": "Rodar um agente exige o Pi instalado. Complete os passos abaixo — terminais e arquivos funcionam sem nada disso.",
-      "step1Title": "Pi Code instalado",
-      "step1Description": "O binário `pi` precisa estar acessível.",
-      "step2Title": "Extensão remote-pi no Pi",
-      "step2Description": "Registrada em ~/.pi/agent/settings.json.",
-      "step3Title": "Supervisor instalado",
-      "step3Description": "Serviço pi-supervisord (remote-pi install).",
-      "install": "Instalar",
-      "installExtensionTitle": "Instalar extensão remote-pi",
-      "installSupervisorTitle": "Instalar supervisor",
-      "createAgent": "Criar agente",
-      "back": "Voltar",
-      "checkAgain": "Verificar novamente",
-      "notRequired": "Não obrigatório nesta configuração",
-      "installing": "Instalando…",
-      "installedSuccessfully": "Instalado com sucesso."
-    },
-    "agentComposer": {
-      "cmdNewDescription": "Nova sessão — limpa a conversa",
-      "cmdCompactDescription": "Compacta o contexto do agente",
-      "attachFile": "Anexar arquivo",
-      "maxImages": "Máximo de ${max} imagens.",
-      "placeholder": "Mensagem para o agente, use @files ou /commands",
-      "stop": "Parar",
-      "send": "Enviar",
-      "relayOnline": "Relay online",
-      "relayReconnecting": "Relay reconectando...",
-      "relayOffline": "Relay offline",
-      "contextTooltip": "Contexto: ${pct}% da janela",
-      "visionWarning": "O modelo atual não consegue ver imagens — troque para um com suporte a visão.",
-      "modelFallback": "modelo"
-    },
     "tasksPanel": {
       "reloadTasksTooltip": "Recarregar tasks",
       "restartTooltip": "Reiniciar",
@@ -226,7 +168,13 @@
       "moreKeysTooltip": "Mais teclas",
       "sectionTasks": "TAREFAS",
       "noTasks": "Nenhuma tarefa detectada neste projeto.",
-      "createTasksJson": "Criar tasks.json"
+      "createTasksJson": "Criar tasks.json",
+      "generateComposeTasks": "Gerar tasks do Compose",
+      "selectComposeEngine": "Escolha uma engine Compose",
+      "noComposeEngine": "Docker Compose ou Podman Compose não foi encontrado.",
+      "invalidComposeFile": "O arquivo ativo não é um Compose válido com services.",
+      "invalidTasksJson": "tasks.json é inválido. Nenhuma alteração foi gravada.",
+      "composeConflicts": "Tasks não Compose com rótulos conflitantes foram mantidas: ${labels}"
     },
     "cockpitPage": {
       "chooseProjectFolderDialogTitle": "Escolha a pasta do projeto",
@@ -249,6 +197,12 @@
       "removeWorktreeWarning": "\n\nAviso: o branch \"${name}\" ainda não foi mesclado — removê-lo (git branch -D) descarta o trabalho não mesclado.",
       "failedToRemoveWorktreeTitle": "Falha ao remover a worktree",
       "openLayoutTitle": "Abrir layout",
+      "replaceLayoutTitle": "Substituir o layout atual?",
+      "replaceLayoutMessage": {
+        "one": "1 aba será fechada, e ela tem um processo em execução.",
+        "other": "${n} abas serão fechadas, inclusive as com processos em execução."
+      },
+      "replaceLayoutConfirm": "Substituir",
       "restartServerTooltip": "Reiniciar servidor",
       "noLspAvailable": "Nenhum LSP disponível",
       "lspRunning": "em execução",
@@ -263,20 +217,24 @@
       "configureHost": "Configurar host",
       "addWorkspace": "Adicionar workspace"
     },
-    "modelPicker": {
-      "search": "Buscar modelo (${count})"
-    },
     "paneView": {
       "closePaneTitle": "Fechar painel?",
       "closePaneMessage": "Isso fecha todas as ${count} aba(s) deste painel e encerra os agentes/terminais nele.",
       "close": "Fechar",
+      "closeOtherTabs": "Fechar as outras",
+      "closeTabsToTheRight": "Fechar à direita",
+      "closeAllTabs": "Fechar todas",
+      "closeTabsTitle": "Fechar abas?",
+      "closeTabsMessage": "Isso fecha ${count} aba(s) e encerra os agentes/terminais nelas.",
       "allTabs": "Todas as abas",
       "pinTab": "Fixar aba",
+      "openInNewWindow": "Abrir em nova janela",
       "rename": "Renomear",
+      "openAsMarkdown": "Abrir como markdown",
+      "openAsBoard": "Abrir como quadro",
       "resetTitle": "Redefinir título",
       "copyId": "Copiar Id",
-      "autoRelay": "Auto-relay",
-      "history": "Histórico",
+      "restartTab": "Reiniciar",
       "newTab": "Nova aba",
       "newTerminal": "Novo terminal…",
       "splitRight": "Dividir à direita",
@@ -285,7 +243,11 @@
       "dropHereToMove": "Solte aqui para mover a aba",
       "dockAsTab": "Encaixar como aba",
       "openBrowser": "Abrir navegador",
-      "openTerminal": "Abrir terminal"
+      "openTerminal": "Abrir terminal",
+      "openAsLayout": "Abrir como layout",
+      "openAsYaml": "Abrir como YAML",
+      "openAsPanel": "Abrir como painel",
+      "openAsHtml": "Abrir como HTML"
     },
     "fileTreePanel": {
       "viewDiff": "Ver Diff",
@@ -324,6 +286,7 @@
       "newFile": "Novo arquivo",
       "newFolder": "Nova pasta",
       "refreshTooltip": "Atualizar",
+      "collapseAll": "Recolher todas as pastas",
       "sectionSourceControl": "CONTROLE DE VERSÃO",
       "viewAsList": "Ver como lista",
       "viewAsTree": "Ver como árvore",
@@ -337,10 +300,11 @@
       "openInFileManager": "Abrir no gerenciador de arquivos",
       "open": "Abrir",
       "openWith": "Abrir com",
+      "openInNewWindow": "Abrir em nova janela",
       "openLayout": "Abrir layout",
+      "openAsMarkdown": "Abrir como markdown",
       "showGitDiff": "Mostrar diff do git",
-      "createAgent": "Criar agente",
-      "createTerminal": "Criar terminal",
+      "createTerminal": "Abrir no terminal",
       "rename": "Renomear",
       "copy": "Copiar",
       "cut": "Recortar",
@@ -382,13 +346,23 @@
       "diffModified": "Modificado ${ref}",
       "diffWorkingTree": "Diretorio de trabalho",
       "diffBinaryFile": "Arquivo binario - sem diff de texto.",
-      "diffNoChanges": "Sem alteracoes."
+      "diffNoChanges": "Sem alteracoes.",
+      "diffError": "Não foi possível ler o diff: ${detail}",
+      "galleryTooltip": "Galeria",
+      "sectionGallery": "GALERIA",
+      "openAsHtml": "Abrir como HTML",
+      "importQuestionTitle": "Copiar aqui?",
+      "importMessage": "Copiar ${count} itens para “${dest}”?",
+      "importAction": "Copiar",
+      "couldNotImportTitle": "Não foi possível copiar",
+      "openInAgent": "Abrir no ${harness}"
     },
     "fileViewer": {
       "cantOpen": "Não é possível abrir este arquivo.",
       "couldNotLoadImage": "Não foi possível carregar a imagem.",
       "preview": "Pré-visualização",
-      "source": "Código-fonte"
+      "source": "Código-fonte",
+      "reload": "Recarregar"
     },
     "workspaceSettingsDialog": {
       "choosePhotoTitle": "Escolher foto do workspace",
@@ -445,7 +419,7 @@
       "saveQueryAs": "Salvar query como",
       "couldNotSave": "Não foi possível salvar",
       "selectDatabase": "Selecionar banco de dados",
-      "noSqlConnections": "Nenhuma conexão SQL — adicione uma no painel Database",
+      "noSqlConnections": "Nenhuma conexão SQL",
       "running": "Executando…",
       "runSelection": "Executar seleção",
       "run": "Executar",
@@ -495,6 +469,70 @@
         "responseTooLarge": "A resposta passou do limite de ${bytes} bytes."
       }
     },
+    "kanbanView": {
+      "filter": "Filtrar",
+      "filterTitlePlaceholder": "Buscar por título",
+      "filterLabels": "Marcadores",
+      "filterClear": "Limpar",
+      "filterDependencies": "Dependências",
+      "filterBlocked": "Bloqueado",
+      "filterReady": "Pronto",
+      "blockedBy": "Bloqueado por",
+      "addBlocker": "Adicionar card bloqueador",
+      "searchCards": "Buscar cards",
+      "unknownCard": "desconhecido",
+      "boardView": "Quadro",
+      "listView": "Lista",
+      "refresh": "Atualizar do disco",
+      "manageLabels": "Marcadores",
+      "labelsTitle": "Marcadores deste quadro",
+      "labelNamePlaceholder": "nome do marcador",
+      "labelUsage": {
+        "one": "1 card",
+        "other": "${n} cards"
+      },
+      "deleteLabel": "Apagar marcador",
+      "newCard": "novo card",
+      "newCardTitle": "Novo card",
+      "newColumn": "Nova coluna",
+      "columnNameTitle": "Nome da coluna",
+      "dragColumn": "Arrastar coluna",
+      "columnOptions": "Opções da coluna",
+      "renameColumn": "Renomear coluna",
+      "moveColumnLeft": "Mover pra esquerda",
+      "moveColumnRight": "Mover pra direita",
+      "deleteColumn": "Apagar coluna",
+      "newCardHere": "Novo card aqui",
+      "duplicateCard": "Duplicar",
+      "cardLabels": "Marcadores",
+      "deleteCard": "Apagar card",
+      "advance": "Passar pra próxima coluna",
+      "advanceHold": "Mover para a próxima coluna (segurar: mover para a última)",
+      "advanceBack": "Voltar uma coluna",
+      "emptyColumn": "Sem cards",
+      "cardCount": {
+        "one": "1 card",
+        "other": "${n} cards"
+      },
+      "notes": "Nota",
+      "notesPlaceholder": "Escreva uma nota",
+      "comments": "Comentários",
+      "addComment": "Adicionar comentário",
+      "commentPlaceholder": "Escreva um comentário",
+      "noComments": "Nenhum comentário ainda",
+      "closeDetail": "Fechar",
+      "notABoard": "Este arquivo ainda não tem colunas ## — ele abre como markdown.",
+      "startBoard": "Começar um quadro",
+      "couldNotSave": "Não deu pra salvar o quadro",
+      "unrecognizedBlock": "Não reconhecido pelo parser — arrasta inteiro, sem edição inline.",
+      "deleteColumnDialog": {
+        "title": "Apagar “${name}”?",
+        "message": "Esta coluna tem ${count}. Escolha o que acontece com eles.",
+        "moveCards": "Mover pra coluna anterior",
+        "deleteAll": "Apagar junto com a coluna",
+        "emptyMessage": "Esta coluna está vazia."
+      }
+    },
     "dbPanel": {
       "sectionDatabase": "BANCO DE DADOS",
       "edit": "Editar…",
@@ -505,7 +543,8 @@
       "deleteConnectionMessage": "Remover \"${name}\" deste workspace? Qualquer senha salva será descartada. Arquivos .dbq que fazem referência a ela não são afetados.",
       "footer": ".cockpit/databases.json · ${n} conexões",
       "footerOne": ".cockpit/databases.json · 1 conexão",
-      "noConnections": "Nenhuma conexão ainda."
+      "noConnections": "Nenhuma conexão ainda.",
+      "passwordRequired": "Senha não encontrada no host. Abra esta conexão e digite-a de novo — ela fica salva na máquina que executa o banco, não nesta."
     },
     "dbMongoView": {
       "deleteDocumentTitle": "Excluir documento",
@@ -549,7 +588,8 @@
       "choosePrivateKeyPlaceholder": "Escolha uma chave privada…",
       "choosePrivateKeyDialogTitle": "Escolher chave privada SSH",
       "keyPassphrase": "Senha da chave",
-      "savePassphrase": "Salvar senha da chave"
+      "savePassphrase": "Salvar senha da chave",
+      "passwordOnHost": "A senha fica salva no host, não nesta máquina."
     },
     "sshPrompts": {
       "unknownSshHostTitle": "Host SSH desconhecido",
@@ -563,6 +603,10 @@
     },
     "projectsRail": {
       "workspaces": "Workspaces",
+      "keepAwakeOn": "Mantendo este computador acordado para acesso remoto. Clique para deixá-lo dormir de novo.",
+      "keepAwakeOff": "Manter este computador acordado para acesso remoto. Desliga sozinho quando o Cockpit reinicia.",
+      "keepAwakeBattery": "Acordado na bateria. Isso consome a bateria.",
+      "keepAwakeLid": "Fechar a tampa do notebook continua colocando-o para dormir.",
       "newWorkspace": "Novo workspace",
       "settings": "Configurações",
       "mergeToParent": "Mesclar no pai",
@@ -597,6 +641,7 @@
       "next": "Próximo (⏎)",
       "close": "Fechar (Esc)",
       "badPattern": "Padrão inválido",
+      "counter": "${current} de ${total}",
       "noResults": "Nenhum resultado"
     },
     "contentSearch": {
@@ -610,24 +655,11 @@
       "searching": "Buscando…",
       "noResults": "Nenhum resultado."
     },
-    "emptyPane": {
-      "newAgent": "Novo agente",
-      "newAgentDescription": "Roda um pi na pasta que você escolher",
-      "newTerminal": "Novo terminal",
-      "newTerminalDescription": "Abre um shell na pasta que você escolher"
-    },
     "topbar": {
       "collapseSidebar": "Recolher barra lateral",
       "toggleFiles": "Mostrar/ocultar arquivos",
       "filesUnavailable": "Arquivos indisponíveis no Cockpit",
       "hideKeyboard": "Baixar teclado"
-    },
-    "transcript": {
-      "cancel": "Cancelar",
-      "send": "Enviar",
-      "typeYourAnswer": "Digite sua resposta",
-      "startHint": "Envie um prompt para o agente começar.",
-      "workedFor": "Trabalhou por ${duration}"
     },
     "tasks": {
       "hotReload": "Hot reload",
@@ -639,11 +671,20 @@
     "notifications": {
       "agentFinished": "Agente terminou",
       "open": "Abrir",
-      "agentNeedsAction": "Agente precisa de você",
-      "agentCrashed": "Agente parou inesperadamente"
+      "agentNeedsAction": "Agente precisa de você"
+    },
+    "terminalLink": {
+      "open": "Abrir",
+      "revealFinder": "Mostrar no Finder",
+      "revealExplorer": "Mostrar no Explorer",
+      "revealFolder": "Abrir pasta",
+      "copyPath": "Copiar caminho",
+      "openLink": "Abrir link",
+      "copyLink": "Copiar link"
     },
     "terminal": {
-      "cwdFallbackWarning": "Aviso: a pasta \"${requested}\" não existe. Este terminal abriu em \"${path}\"."
+      "cwdFallbackWarning": "Aviso: a pasta \"${requested}\" não existe. Este terminal abriu em \"${path}\".",
+      "workspaceEnvTracked": "Aviso: o .env.cockpit está rastreado pelo git (veio com o repositório). Injetado: ${keys}"
     },
     "remoteHost": {
       "addHost": "Adicionar host remoto",
@@ -666,8 +707,8 @@
       "pickFolderTitle": "Abrir pasta em ${host}",
       "openHere": "Abrir aqui",
       "emptyFolder": "Sem subpastas",
-      "newLocal": "Novo workspace local",
-      "newRemote": "Novo workspace remoto",
+      "newLocal": "Local",
+      "newRemote": "Remoto",
       "chooseHost": "Escolher um host",
       "newHostEntry": "Novo host…",
       "editHost": "Editar host",
@@ -701,6 +742,179 @@
       "reload": "Recarregar",
       "urlHint": "Digite a URL ou endereço",
       "go": "Ir"
+    },
+    "documentWindow": {
+      "mediaNotSupported": "Áudio e vídeo abrem na janela principal do Cockpit.",
+      "fileNotFound": "Arquivo não encontrado: ${path}"
+    },
+    "gallery": {
+      "intro": "Documentos especiais do Cockpit para que você tenha o visual do que o agente de IA esteja fazendo.",
+      "createErrorTitle": "Não foi possível criar o arquivo",
+      "dbQuery": {
+        "title": "Consulta de banco",
+        "description": "Editor SQL com grid de resultado, usando uma das conexões registradas."
+      },
+      "kanban": {
+        "title": "Quadro kanban",
+        "description": "Colunas e cards gravados como markdown puro. Arraste, edite e comente."
+      },
+      "layout": {
+        "title": "Layout de panes",
+        "description": "Terminais e splits para abrir de uma vez, estilo tmuxinator. Pode rodar sozinho em worktrees novas."
+      },
+      "httpRequest": {
+        "title": "Requests HTTP",
+        "description": "Escreva requests num arquivo e execute com a resposta ao lado."
+      },
+      "html": {
+        "title": "Visual HTML",
+        "description": "Uma página que o agente escreve e o Cockpit renderiza direto: mapa mental, diagrama, gráfico, o que precisar."
+      },
+      "tasks": {
+        "title": "Tarefas",
+        "description": "Comandos para rodar pelo painel de Tasks, como dev server, testes e build. Fica em .cockpit/tasks.json."
+      },
+      "notebook": {
+        "title": "Caderno",
+        "description": "Uma pasta de notas curtas com tags. O agente escreve, você lê e edita. Abre no Obsidian também."
+      },
+      "workspaceEnv": {
+        "title": "Env do workspace",
+        "description": "Variáveis injetadas em todo terminal deste workspace. Coloque tokens ou logins de API aqui em vez de colar no prompt do agente. Fica fora do git."
+      },
+      "panel": {
+        "title": "Painel",
+        "description": "Uma página HTML com ponte para o app: os botões rodam comandos da CLI do Cockpit e do shell nesta máquina. Um playground para dashboards rápidos."
+      }
+    },
+    "notebook": {
+      "notes": "Notas",
+      "newNote": "Nova nota",
+      "searchPlaceholder": "Buscar notas",
+      "empty": "Nenhuma nota ainda. Crie uma, ou peça pro agente escrever aqui.",
+      "noMatch": "Nenhuma nota bate com o filtro.",
+      "selectNote": "Selecione uma nota",
+      "reload": "Recarregar do disco",
+      "untagged": "sem tag",
+      "saveFailed": "Não foi possível salvar a nota",
+      "createFailed": "Não foi possível criar a nota",
+      "addTag": "adicionar tag",
+      "untitled": "Sem título",
+      "deleteNote": "Apagar nota",
+      "deleteConfirm": "Mover “${name}” pra lixeira?",
+      "imageFailed": "Não foi possível salvar a imagem",
+      "format": {
+        "bold": "Negrito (⌘B)",
+        "italic": "Itálico (⌘I)",
+        "strike": "Riscado",
+        "heading1": "Título 1",
+        "heading2": "Título 2",
+        "heading3": "Título 3",
+        "bullets": "Lista",
+        "numbered": "Lista numerada",
+        "checklist": "Checklist",
+        "quote": "Citação",
+        "code": "Código inline (⌘E)",
+        "codeBlock": "Bloco de código",
+        "link": "Link (⌘K)",
+        "rule": "Divisor",
+        "noteLink": "Link pra uma nota ([[…]])",
+        "noteLinkSearch": "Buscar notas",
+        "image": "Inserir imagem…"
+      },
+      "backlinks": "Citada em",
+      "renameTag": "Renomear tag",
+      "deleteTag": "Apagar tag",
+      "deleteTagConfirm": "Remover “${name}” de ${count} notas? As notas ficam.",
+      "showList": "Mostrar lista de notas",
+      "hideList": "Ocultar lista de notas"
+    },
+    "layoutPreview": {
+      "applyFailedTitle": "Não foi possível aplicar o layout",
+      "applyInCockpit": "Aplicar no Cockpit",
+      "applyNewWorkspace": "Abrir como novo workspace",
+      "applyTo": "Aplicar em ${workspace}",
+      "autorunWorktree": "autorun: worktree. Este layout também é aplicado sozinho quando você cria uma worktree do workspace onde ele está.",
+      "command": "Comando",
+      "folder": "Pasta",
+      "noCommand": "sem comando, abre um shell",
+      "replaceConfirm": "Substituir layout",
+      "replaceMessage": "${n} abas abertas deste workspace serão fechadas, inclusive as com trabalho em andamento.",
+      "replaceTitle": "Substituir o layout de ${workspace}?",
+      "skippedTitle": "Não criados neste sistema",
+      "splitDown": "divide abaixo",
+      "splitRight": "divide à direita",
+      "splitTab": "aba",
+      "subtitle": "Este layout abre ${n} terminais. Leia os comandos antes de aplicar."
+    },
+    "telemetry": {
+      "tooltip": "Telemetria",
+      "title": "Telemetria",
+      "liveRuns": "${n} ativos",
+      "noWorkspace": "Abra um workspace para ver a telemetria dele.",
+      "empty": "Nada aqui ainda.",
+      "emptyFiltered": "Nada aqui ainda.",
+      "searchHint": "Filtrar casos",
+      "chipOpen": "Abertos",
+      "chipNew": "Novos",
+      "chipResolved": "Resolvidos",
+      "chipIgnored": "Ignorados",
+      "chipWarnings": "Avisos",
+      "tagNew": "novo",
+      "tagRegression": "regressão",
+      "tagResolved": "resolvido",
+      "tagIgnored": "ignorado",
+      "srcTask": "task",
+      "srcWrapper": "cockpit telemetry",
+      "run": "run ${id}",
+      "resolve": "Marcar resolvido",
+      "ignore": "Ignorar (some para os agentes também)",
+      "reopen": "Reabrir",
+      "clear": "Limpar ocorrências",
+      "clearRun": "Limpar este run",
+      "clearProject": "Limpar projeto",
+      "openFile": "Abrir ${location}",
+      "showInTerminal": "Ver no terminal",
+      "copyCommand": "Copiar comando da CLI",
+      "copied": "Copiado",
+      "statusOpen": "Aberto",
+      "statusResolved": "Resolvido",
+      "statusIgnored": "Ignorado",
+      "occurrences": "Ocorrências",
+      "inRuns": "em ${n} runs",
+      "first": "Primeira",
+      "last": "Última",
+      "origin": "Origem",
+      "sectionStack": "Stack",
+      "stackHint": "frames do projeto em destaque · clique abre o arquivo",
+      "sectionCorrelated": "Log correlacionado",
+      "correlatedHint": "o JSON mais próximo antes do erro, no mesmo run",
+      "none": "nenhum",
+      "sectionRuns": "Ocorrências por run",
+      "runsHint": "mesma chave (cwd, comando): é assim que novo e regressão são calculados",
+      "sectionContext": "Contexto cru",
+      "contextHint": "linhas do terminal ao redor da última ocorrência",
+      "current": "atual",
+      "fingerprintHint": "fingerprint = tipo + mensagem normalizada + ${location}",
+      "blameUncommitted": "alterado no working tree",
+      "blameCommit": "alterado ${ago} (${sha})",
+      "justNow": "agora",
+      "minutesAgo": "há ${n} min",
+      "hoursAgo": "há ${n} h",
+      "daysAgo": "há ${n} d",
+      "resolvedToast": "Resolvido. Se voltar num run futuro, reaparece como regressão.",
+      "ignoredToast": "Ignorado. Os agentes não veem mais (salvo --include-ignored).",
+      "clearedToast": "Ocorrências apagadas. As regras de triagem ficam.",
+      "byHuman": "por você",
+      "byAgent": "pelo agente",
+      "caseTabTitle": "${type} · ${file}",
+      "srcApp": "App",
+      "chipApp": "Cockpit"
+    },
+    "panelView": {
+      "unavailable": "Painéis precisam da web view embutida, que ainda não existe no Linux.",
+      "openInBrowser": "Abrir no navegador",
+      "openAsHtml": "Abrir como HTML"
     }
   },
   "settings": {
@@ -710,27 +924,6 @@
       "english": "Inglês",
       "portugueseBr": "Português (BR)",
       "spanish": "Espanhol"
-    },
-    "revokeDialog": {
-      "deviceRemoved": "Dispositivo removido.",
-      "failedToRevoke": "Falha ao revogar o dispositivo.",
-      "revoking": "Revogando…",
-      "revokingDevice": "Revogando ${name}…",
-      "connectingMessage": "Conectando ao relay e removendo o acesso.",
-      "ok": "Ok"
-    },
-    "pairingDialog": {
-      "title": "Parear dispositivo",
-      "connectingToRelay": "Conectando ao relay…",
-      "step1": "Abra o app Remote Pi no seu celular.",
-      "step2": "Toque em adicionar / parear dispositivo.",
-      "step3": "Aponte a câmera para o QR abaixo.",
-      "qrGenerationFailed": "Não foi possível gerar o QR.",
-      "autoRefreshHint": "O código se atualiza sozinho. Mantenha esta janela aberta.",
-      "pairingFailed": "Falha no pareamento.",
-      "tryAgain": "Tentar novamente",
-      "copied": "Copiado!",
-      "copyData": "Copiar dados"
     },
     "page": {
       "header": {
@@ -744,16 +937,17 @@
         "language": "Linguagem",
         "shortcuts": "Atalhos",
         "notifications": "Notificações",
-        "connectivity": "Conectividade",
-        "daemonAgents": "Agentes Daemon",
-        "schedules": "Agendamentos",
         "automations": "Automações",
         "remoteHosts": "Hosts remotos"
       },
       "general": {
-        "sectionAgent": "Agente",
-        "enableAgentsTitle": "Ativar agentes",
-        "enableAgentsDesc": "Mostra a opção de abrir abas de agente (pi). Quando desligado, o Cockpit funciona apenas como workspace de terminal.",
+        "sectionEditor": "Editor",
+        "editorEngineTitle": "Motor",
+        "editorEngineCockpit": "Cockpit (padrão)",
+        "editorEngineNeovim": "Neovim",
+        "neovimChecking": "Procurando o Neovim…",
+        "neovimNotFound": "O Neovim não foi encontrado na PATH do seu shell.",
+        "neovimRefresh": "Verificar novamente",
         "showCockpitTitle": "Mostrar terminal do Cockpit",
         "showCockpitDesc": "Mantém um workspace sem pasta, só de terminal, fixado no topo da barra lateral. Desligar fecha seus terminais.",
         "launchAtStartupTitle": "Iniciar ao ligar",
@@ -761,13 +955,14 @@
         "sectionUpdates": "Atualizações",
         "checkUpdatesTitle": "Verificar atualizações",
         "checkUpdatesDesc": "Com que frequência o Cockpit deve procurar novas versões.",
-        "agentsInUseError": "Não é possível desligar os agentes com uma aba de agente aberta. Feche todas as abas de agente primeiro e depois desative.",
         "updateFrequency": {
           "daily": "Diariamente",
           "weekly": "Semanalmente",
           "monthly": "Mensalmente",
           "never": "Nunca"
-        }
+        },
+        "developerModeTitle": "Modo desenvolvedor",
+        "developerModeDesc": "Registra os erros e avisos do próprio Cockpit numa base separada da Telemetria (chip “Cockpit”) e liga as métricas de performance. Só serve a quem mantém o app."
       },
       "diagnostics": {
         "sectionTitle": "Diagnóstico",
@@ -809,7 +1004,10 @@
         "engineDesc": "Usado por novas abas de terminal e buffers de saída de tasks. Abas abertas mantêm o motor atual.",
         "shellTitle": "Shell",
         "shellDesc": "Qual shell novas abas de terminal abrem. A seta ao lado do + ainda abre qualquer outro, só para aquela aba.",
-        "noWslMessage": "Nenhuma distro WSL encontrada. Instale uma (wsl.exe --install) e reinicie o Cockpit para vê-la listada aqui."
+        "noWslMessage": "Nenhuma distro WSL encontrada. Instale uma (wsl.exe --install) e reinicie o Cockpit para vê-la listada aqui.",
+        "sectionBehavior": "Comportamento",
+        "closeOnExitTitle": "Fechar a aba quando o shell encerrar",
+        "closeOnExitDesc": "Quando um shell termina sozinho (exit, Ctrl-D), fecha a aba em vez de deixar um terminal morto."
       },
       "appearance": {
         "sectionTheme": "Tema",
@@ -884,8 +1082,6 @@
         "soundTurnDoneDesc": "Um agente terminou o turno.",
         "soundActionRequired": "Ação necessária",
         "soundActionRequiredDesc": "Um agente está esperando sua aprovação ou resposta.",
-        "soundAgentError": "Erro do agente",
-        "soundAgentErrorDesc": "O processo de um agente parou inesperadamente.",
         "soundDefault": "Padrão",
         "soundCustom": "Personalizado: ${name}",
         "soundChooseFile": "Escolher arquivo",
@@ -909,104 +1105,6 @@
         "saveAndRestart": "Salvar e reiniciar",
         "statusResponds": "Servidor responde",
         "statusNotFound": "Servidor não encontrado ou comando inválido"
-      },
-      "connectivity": {
-        "sectionRelay": "Relay",
-        "sectionPairedDevices": "Dispositivos pareados",
-        "reloadTooltip": "Recarregar",
-        "failedToListDevices": "Falha ao listar dispositivos.",
-        "noPairedDevices": "Nenhum dispositivo pareado.",
-        "relayAddressTitle": "Endereço do relay",
-        "relayAddressDesc": "Servidor que conecta seus agentes ao celular. Aplica-se a todo agente com o relay ativado.",
-        "saving": "Salvando…",
-        "check": "Verificar",
-        "healthOnline": "Online",
-        "healthNoResponse": "Sem resposta",
-        "healthNotChecked": "Não verificado",
-        "deviceDefaultLabel": "Dispositivo",
-        "revoke": "Revogar",
-        "pairNewDevice": "Parear novo dispositivo",
-        "revokeDialogTitle": "Revogar dispositivo?",
-        "revokeDialogContent": "\"${name}\" perderá o acesso aos seus agentes e precisará parear novamente.\n\nVocê precisa estar conectado ao relay — o app conectará automaticamente para revogar."
-      },
-      "schedules": {
-        "sectionScheduledPrompts": "Prompts agendados",
-        "createSchedule": "Criar agendamento",
-        "createDaemonFirst": "Crie um Agente Daemon primeiro.",
-        "supervisorOffline": "Supervisor offline. Agendamentos precisam do pi-supervisord em execução (`remote-pi install`).",
-        "failedToListSchedules": "Falha ao listar agendamentos.",
-        "noSchedules": "Nenhum agendamento. Crie um prompt recorrente para um daemon.",
-        "runNow": "Executar agora",
-        "viewLog": "Ver log",
-        "disabled": "desativado",
-        "nextRun": "próximo ${when}",
-        "lastRun": "último: ${label}",
-        "removeScheduleDialogTitle": "Remover agendamento?",
-        "removeScheduleDialogContent": "O job \"${schedule}\" de ${daemon} é excluído. Suas execuções param.",
-        "newScheduleTitle": "Novo agendamento",
-        "daemonLabel": "Daemon",
-        "whenLabel": "Quando (expressão cron)",
-        "previewPlaceholder": "A próxima execução aparece aqui",
-        "previewComputed": "Próximo: calculado ao salvar",
-        "previewNext": "Próximo: ${when}",
-        "exampleEveryDay9am": "todo dia às 9h",
-        "exampleHourly": "a cada hora",
-        "exampleEvery15Min": "a cada 15 min",
-        "exampleWeekdays6pm": "dias úteis às 18h",
-        "promptLabel": "Prompt",
-        "timezoneLabel": "Fuso horário (opcional)",
-        "skipIfBusy": "Pular se o agente estiver ocupado",
-        "wakeIfStopped": "Acordar o daemon se estiver parado",
-        "catchup": "Recuperar 1 execução perdida (catchup)",
-        "fillRequiredError": "Preencha a expressão e o prompt.",
-        "creating": "Criando…",
-        "failedToCreateSchedule": "Falha ao criar o agendamento.",
-        "historyTitle": "Histórico — ${schedule}",
-        "failedToReadLog": "Falha ao ler o log.",
-        "noRecordsYet": "Nenhum registro ainda.",
-        "cronDelivered": "entregue",
-        "cronWokeDelivered": "acordou + entregue",
-        "cronFailed": "falhou",
-        "cronSkippedBusy": "pulado (ocupado)",
-        "cronSkippedStopped": "pulado (parado)",
-        "cronSkippedDisabled": "pulado (desativado)"
-      },
-      "daemons": {
-        "sectionAlwaysOnAgents": "Agentes sempre ativos",
-        "createDaemon": "Criar daemon",
-        "startAll": "Iniciar todos",
-        "stopAll": "Parar todos",
-        "restartAll": "Reiniciar todos",
-        "restartSupervisor": "Reiniciar supervisor",
-        "restartSupervisorDialogTitle": "Reiniciar o supervisor?",
-        "restartSupervisorDialogContent": "Reinicia o processo do supervisor (recarrega o código). Todos os daemons reiniciam junto e ficam offline por alguns segundos.",
-        "removeDaemonDialogTitle": "Remover daemon?",
-        "removeDaemonDialogContent": "\"${name}\" para de rodar e sai do registro. A pasta e sua configuração local são mantidas — você pode recriá-lo depois.",
-        "supervisorOfflineTitle": "Supervisor offline",
-        "supervisorOfflineDesc": "O pi-supervisord não está em execução. Instale-o com `remote-pi install` para gerenciar agentes 24/7.",
-        "failedToListDaemons": "Falha ao listar daemons.",
-        "noRegisteredAgents": "Nenhum agente registrado. Crie um a partir de uma pasta.",
-        "start": "Iniciar",
-        "stop": "Parar",
-        "edit": "Editar",
-        "stateRunning": "em execução",
-        "stateStarting": "iniciando",
-        "stateStopped": "parado",
-        "stateFailed": "falhou",
-        "newDaemonTitle": "Novo daemon",
-        "editDaemonTitle": "Editar daemon",
-        "nameLabel": "Nome",
-        "namePlaceholder": "ex.: PC, Servidor, Casa",
-        "nameRequiredError": "Digite um nome.",
-        "nameDuplicateError": "Já existe um agente com esse nome.",
-        "folderLabel": "Pasta",
-        "noFolderChosen": "Nenhuma pasta escolhida",
-        "choose": "Escolher",
-        "changeFolder": "Alterar",
-        "folderCannotBeChanged": "A pasta não pode ser alterada.",
-        "folderRequiredError": "Escolha uma pasta.",
-        "folderDuplicateError": "Já existe um agente nesta pasta.",
-        "pickFolderDialogTitle": "Escolha a pasta do Agente Daemon"
       },
       "automations": {
         "sectionCommitMessages": "Mensagens de commit",
@@ -1097,7 +1195,8 @@
       "formatterFailed": "Não foi possível executar o formatador.",
       "osFailure": "${detail}",
       "nameHasSlash": "O nome não pode conter “/”.",
-      "invalidName": "Nome inválido."
+      "invalidName": "Nome inválido.",
+      "remoteDropUnsupported": "Soltar arquivos num workspace remoto ainda não é suportado."
     }
   },
   "theme": {

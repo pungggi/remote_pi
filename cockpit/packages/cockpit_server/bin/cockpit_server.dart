@@ -9,6 +9,7 @@ import 'dart:io';
 import 'package:auto_injector/auto_injector.dart';
 import 'package:cockpit_core/cockpit_core.dart';
 import 'package:cockpit_engine/cockpit_engine.dart';
+import 'package:cockpit_protocol/cockpit_protocol.dart';
 import 'package:cockpit_server/cockpit_server.dart';
 
 Future<void> main(List<String> args) async {
@@ -28,9 +29,30 @@ Future<void> main(List<String> args) async {
 }
 
 Future<void> _run(List<String> args) async {
+  // Subcomandos que não sobem servidor nenhum: `service …` (systemd, k25) e
+  // `--version` (lê o VERSION do bundle, gravado pelo empacotador).
+  // `exit()` não espera o buffer do stdout: sem o flush, `--version` saía
+  // vazio no CI (o zip falhou na checagem da versão) mesmo com o writeln.
+  if (args.isNotEmpty && args.first == 'service') {
+    final code = await runServiceCommand(args.sublist(1));
+    await stdout.flush();
+    exit(code);
+  }
+  if (args.contains('--version')) {
+    stdout.writeln(bundleVersion() ?? 'unknown');
+    await stdout.flush();
+    exit(0);
+  }
   final socketPath =
       _argValue(args, '--socket') ??
       '${Directory.systemTemp.path}/cockpit-server-$pid.sock';
+
+  // `--tcp`: transporte TCP de loopback + token (rendezvous JSON gravado no
+  // caminho do `--socket`) em vez de socket UNIX. Existe para hosts cujo SSH
+  // não faz forward de socket UNIX — o Tailscale SSH recusa o canal
+  // `direct-streamlocal@openssh.com` com "unknown channel type" —, mas aceita
+  // o forward TCP comum de `ssh -L`. O default segue sendo socket UNIX.
+  if (args.contains('--tcp')) LocalEndpoint.debugForceTcp = true;
 
   final injector = AutoInjector()
     ..addLazySingleton<TerminalService>(NativeTerminalService.new)
@@ -69,16 +91,36 @@ Future<void> _run(List<String> args) async {
   final hookInstaller = HostHookInstaller(
     cliPathOverride: _argValue(args, '--cli'),
   );
-  unawaited(hookInstaller.ensureInstalled());
+  // `--no-hooks`: o smoke test do install.sh sobe o server DE DENTRO da pasta
+  // de staging; sem a flag ele registrava o hook com o caminho do stage, que
+  // morre no swap, e todo hook do Claude passava a falhar no host.
+  if (!args.contains('--no-hooks')) {
+    unawaited(hookInstaller.ensureInstalled());
+  }
   // Mesma CLI serve a dois papéis: o hook (acima) e os comandos digitados num
   // terminal remoto. Guardar o caminho deixa a pasta dela entrar no PATH das
   // PTYs; sem CLI, o shell remoto simplesmente segue sem o comando.
   unawaited(
-    hookInstaller.resolveCli().then((path) => RemoteServer.cliPath = path),
+    hookInstaller.resolveCli().then((path) async {
+      RemoteServer.cliPath = path;
+      // Skills do agente (plano 69): o host ganha `~/.claude/skills/cockpit-*`
+      // (e Codex/Pi, se existirem) como o desktop já fazia. Sem isto um agente
+      // numa VPS "não sabia que estava num Cockpit". `--no-skills` é do smoke
+      // test do install.sh, que sobe o server de dentro do staging.
+      if (path == null || args.contains('--no-skills')) return;
+      try {
+        await Process.run(path, const <String>['install-skill']);
+      } on ProcessException {
+        /* best-effort: sem skill o terminal segue funcionando */
+      }
+    }),
   );
 
   // Saída em inglês por decisão (CLI interna não se traduz).
-  stdout.writeln('cockpit-server listening on $socketPath');
+  stdout.writeln(
+    'cockpit-server listening on $socketPath'
+    '${LocalEndpoint.usesTcp ? ' (tcp)' : ''}',
+  );
 
   // Desligamento com TETO: `close()` fecha conexões, sessões e PTYs, e
   // qualquer uma dessas etapas pode ficar presa (PTY que não reporta saída,
@@ -104,6 +146,39 @@ Future<void> _run(List<String> args) async {
   if (!Platform.isWindows) {
     ProcessSignal.sigterm.watch().listen((_) => shutdown());
   }
+
+  // Morte ABRUPTA do app (Force Quit, `kill -9`, crash do engine, relaunch do
+  // Sparkle): nenhum handler roda, e fora do Windows não há equivalente do Job
+  // Object para amarrar o filho ao pai. O detector que funciona nos três é o
+  // PIPE: o app segura a ponta de escrita do nosso stdin e nunca escreve nela;
+  // quando ele morre — de qualquer jeito — o kernel fecha o descritor e aqui
+  // chega EOF. Não depende de sinal, de handler, nem de o app se comportar.
+  //
+  // Opt-in por flag de propósito: no bootstrap remoto o servidor sobe com
+  // `nohup … &` por SSH, e lá o stdin fecha assim que o comando ssh retorna —
+  // sem a flag, o servidor remoto morreria ao nascer.
+  if (args.contains('--exit-on-parent-close')) {
+    stdin.listen(
+      (_) {},
+      onDone: () => unawaited(shutdown()),
+      onError: (Object _) => unawaited(shutdown()),
+      cancelOnError: true,
+    );
+  }
+}
+
+/// Versão do bundle: primeira linha do `VERSION` na raiz do bundle
+/// (`bin/../VERSION`, linha 1 versão, linha 2 arquitetura), escrito pelo
+/// empacotador do zip. Ausente no build de dev.
+String? bundleVersion() {
+  final bin = File(Platform.resolvedExecutable).parent;
+  final file = File('${bin.parent.path}/VERSION');
+  if (!file.existsSync()) return null;
+  final first = file
+      .readAsLinesSync()
+      .map((l) => l.trim())
+      .firstWhere((l) => l.isNotEmpty, orElse: () => '');
+  return first.isEmpty ? null : first;
 }
 
 String? _argValue(List<String> args, String name) {

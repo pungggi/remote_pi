@@ -1,6 +1,6 @@
+import 'package:cockpit_core/cockpit_core.dart';
 import 'package:cockpit/app/cockpit/data/remote/remote_host_connector.dart';
 import 'package:cockpit/app/cockpit/data/remote/ssh_known_hosts.dart';
-import 'package:cockpit/app/cockpit/domain/contracts/ssh_tunnel.dart';
 import 'package:cockpit/app/cockpit/domain/entities/remote_host.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -19,7 +19,7 @@ void main() {
     HostKeyPrompt? prompt,
   }) => RemoteHostConnector(
     host,
-    localServerBinaryResolver: ({String? arch}) => null,
+    localServerBinaryResolver: ({String? os, String? arch}) => null,
     hostKeyPrompt: prompt,
     knownHosts: knownHosts,
   );

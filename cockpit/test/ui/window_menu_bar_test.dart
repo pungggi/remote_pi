@@ -1,12 +1,17 @@
 import 'package:cockpit/app/core/ui/menu/app_menu_bar.dart';
 import 'package:cockpit/app/core/ui/menu/menu_model.dart';
 import 'package:cockpit/app/core/ui/themes/themes.dart';
+import 'package:flutter/foundation.dart'
+    show debugDefaultTargetPlatformOverride, TargetPlatform;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 /// Windows/Linux: o menu desenhado na barra de título é **um hambúrguer só** —
-/// os menus de topo viram submenus dele (senão File/View/Window espremem o
-/// título contra os botões de janela, que no Windows moram na mesma barra).
+/// os menus de topo viram **seções achatadas** dele, separadas por divisória
+/// (senão File/View/Window espremem o título contra os botões de janela, que
+/// no Windows moram na mesma barra). Achatado, e não submenus, porque no touch
+/// submenu aninhado é ruim de acertar e a escolha da folha se perdia na corrida
+/// com o `closeAll` do shadcn.
 ///
 /// A suíte roda em macOS, onde o widget é um `SizedBox` por design → os testes
 /// usam `renderOnMacOS: true` pra exercitar o renderer desenhado.
@@ -14,10 +19,13 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 /// shadcn troca o popover ancorado por um bottom sheet
 /// (`isMobile(theme.platform) ? SheetOverlayHandler() : PopoverOverlayHandler()`).
 /// Sem isto o teste exercitaria um caminho que nenhum usuário de Windows vê.
-Widget _host(Widget child) => ShadcnApp(
+Widget _host(
+  Widget child, [
+  TargetPlatform platform = TargetPlatform.windows,
+]) => ShadcnApp(
   theme: buildTheme(
     brightness: Brightness.dark,
-  ).copyWith(platform: () => TargetPlatform.windows),
+  ).copyWith(platform: () => platform),
   home: Scaffold(
     child: Align(alignment: Alignment.topLeft, child: child),
   ),
@@ -50,7 +58,7 @@ void main() {
     expect(find.text('View'), findsNothing);
   });
 
-  testWidgets('clique no hambúrguer abre o popup com os menus de topo', (
+  testWidgets('clique no hambúrguer abre o popup com as seções achatadas', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -61,40 +69,41 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 350));
 
-    expect(find.text('File'), findsOneWidget);
-    expect(find.text('View'), findsOneWidget);
-    // Só os pais: os itens-folha ficam um nível abaixo.
-    expect(find.text('New Terminal'), findsNothing);
-  });
-
-  testWidgets('submenu aninhado abre e dispara a ação da folha', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      _host(WindowMenuBar(menus: menus(), renderOnMacOS: true)),
-    );
-
-    await tester.tap(find.byIcon(Icons.menu));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 350));
-    // Este é o caminho que a mudança estreia: MenuBarMenu dentro de subMenu.
-    await tester.tap(find.text('File'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 350));
-
+    // Achatado: as folhas de todos os menus aparecem de uma vez, e os nomes
+    // dos menus de topo (File/View) não viram itens.
     expect(find.text('New Terminal'), findsOneWidget);
     expect(find.text('Save'), findsOneWidget);
+    expect(find.text('Zoom In'), findsOneWidget);
+    expect(find.text('File'), findsNothing);
+    expect(find.text('View'), findsNothing);
+  });
+
+  testWidgets('clicar numa folha dispara a ação e fecha o menu', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _host(WindowMenuBar(menus: menus(), renderOnMacOS: true)),
+    );
+
+    await tester.tap(find.byIcon(Icons.menu));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
 
     await tester.tap(find.text('New Terminal'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 350));
     expect(newTerminalCalls, 1);
+    expect(find.text('New Terminal'), findsNothing);
   });
 
   testWidgets('no macOS não desenha nada (a barra é a nativa do SO)', (
     tester,
   ) async {
-    await tester.pumpWidget(_host(WindowMenuBar(menus: menus())));
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    await tester.pumpWidget(
+      _host(WindowMenuBar(menus: menus()), TargetPlatform.macOS),
+    );
 
     expect(find.byIcon(Icons.menu), findsNothing);
   });

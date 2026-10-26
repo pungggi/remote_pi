@@ -39,19 +39,19 @@ class TerminalUnzoomBox extends SingleChildRenderObjectWidget {
 
   @override
   RenderObject createRenderObject(BuildContext context) =>
-      _RenderTerminalUnzoom(scale);
+      RenderTerminalUnzoom(scale);
 
   @override
   void updateRenderObject(
     BuildContext context,
-    _RenderTerminalUnzoom renderObject,
+    RenderTerminalUnzoom renderObject,
   ) => renderObject.scale = scale;
 }
 
 /// Layouta o filho numa caixa [scale]x MAIOR e o apresenta reduzido por
 /// `1/scale`, sem reconstruir a subárvore (ao contrário de LayoutBuilder).
-class _RenderTerminalUnzoom extends RenderProxyBox {
-  _RenderTerminalUnzoom(this._scale);
+class RenderTerminalUnzoom extends RenderProxyBox {
+  RenderTerminalUnzoom(this._scale);
 
   double _scale;
   set scale(double value) {

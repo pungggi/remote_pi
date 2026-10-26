@@ -42,9 +42,9 @@
       "settings": "Settings…",
       "checkForUpdates": "Check for Updates…",
       "file": "File",
-      "newAgent": "New Agent",
       "newTerminal": "New Terminal",
       "openWorkspace": "Open Workspace",
+      "goToFile": "Go to File…",
       "save": "Save",
       "discard": "Discard",
       "format": "Format",
@@ -61,6 +61,8 @@
       "selectTab": "Select Tab",
       "tabN": "Tab ${n}",
       "lastTab": "Last Tab",
+      "previousWorkspace": "Previous Workspace",
+      "nextWorkspace": "Next Workspace",
       "zoomIn": "Zoom In",
       "zoomOut": "Zoom Out",
       "actualSize": "Actual Size",
@@ -102,15 +104,12 @@
       "dontSave": "Don't save",
       "saveAndClose": "Save & close"
     },
-    "historyDialog": {
-      "title": "Session history",
-      "subtitle": "Opening one replaces this agent's current transcript",
-      "empty": "No saved sessions in this folder.",
-      "untitledSession": "Untitled session",
-      "justNow": "now",
-      "minutesAgo": "${n} min ago",
-      "hoursAgo": "${n} h ago",
-      "daysAgo": "${n} d ago"
+    "neovim": {
+      "unavailable": "Neovim is not available. Opening in Cockpit instead.",
+      "openFailed": "Could not reach Neovim. Opening in Cockpit instead.",
+      "unsavedTitle": "Unsaved Neovim buffers",
+      "unsavedMessage": "Neovim has modified buffers. Close the tab and discard those changes?",
+      "closeAnyway": "Close anyway"
     },
     "worktreeCreateDialog": {
       "forkTitle": "Fork worktree",
@@ -141,13 +140,6 @@
       "searchBranch": "Search branch...",
       "back": "Back"
     },
-    "subfolderDialog": {
-      "title": "Where to work?",
-      "empty": "No subfolders here.",
-      "useRoot": "Use the root of ${project}",
-      "usePath": "Use ${project}/${rel}",
-      "useThisFolder": "Use this folder"
-    },
     "commitMessageDialog": {
       "commitTitle": "Commit",
       "stageAndCommitTitle": "Stage and Commit",
@@ -164,56 +156,6 @@
       "generating": "Generating…",
       "cancelGeneration": "Cancel generation"
     },
-    "agentEditDialog": {
-      "title": "Edit agent",
-      "agentName": "Agent name",
-      "relaySection": "Relay (remote-pi)",
-      "autoConnect": "Auto-connect on start",
-      "informationSection": "Information",
-      "folder": "Folder",
-      "model": "Model",
-      "state": "State",
-      "context": "Context",
-      "statusEmpty": "empty",
-      "statusStarting": "starting",
-      "statusReady": "ready",
-      "statusStreaming": "streaming",
-      "statusEnded": "ended"
-    },
-    "agentSetupChecklist": {
-      "title": "Set up the agent environment",
-      "intro": "Running an agent needs Pi installed. Complete the steps below — terminals and files work without any of this.",
-      "step1Title": "Pi Code installed",
-      "step1Description": "The `pi` binary must be accessible.",
-      "step2Title": "remote-pi extension on Pi",
-      "step2Description": "Registered in ~/.pi/agent/settings.json.",
-      "step3Title": "Supervisor installed",
-      "step3Description": "pi-supervisord service (remote-pi install).",
-      "install": "Install",
-      "installExtensionTitle": "Install remote-pi extension",
-      "installSupervisorTitle": "Install supervisor",
-      "createAgent": "Create agent",
-      "back": "Back",
-      "checkAgain": "Check again",
-      "notRequired": "Not required in this setup",
-      "installing": "Installing…",
-      "installedSuccessfully": "Installed successfully."
-    },
-    "agentComposer": {
-      "cmdNewDescription": "New session — clears the conversation",
-      "cmdCompactDescription": "Compacts the agent context",
-      "attachFile": "Attach file",
-      "maxImages": "Maximum of ${max} images.",
-      "placeholder": "Message to the agent, use @files or /commands",
-      "stop": "Stop",
-      "send": "Send",
-      "relayOnline": "Relay online",
-      "relayReconnecting": "Relay reconnecting...",
-      "relayOffline": "Relay offline",
-      "contextTooltip": "Context: ${pct}% of the window",
-      "visionWarning": "The current model cannot see images — switch to one with vision.",
-      "modelFallback": "model"
-    },
     "tasksPanel": {
       "reloadTasksTooltip": "Reload tasks",
       "restartTooltip": "Restart",
@@ -226,7 +168,13 @@
       "moreKeysTooltip": "More keys",
       "sectionTasks": "TASKS",
       "noTasks": "No tasks detected in this project.",
-      "createTasksJson": "Create tasks.json"
+      "createTasksJson": "Create tasks.json",
+      "generateComposeTasks": "Generate Compose tasks",
+      "selectComposeEngine": "Choose a Compose engine",
+      "noComposeEngine": "Docker Compose or Podman Compose was not found.",
+      "invalidComposeFile": "The active file is not a valid Compose file with services.",
+      "invalidTasksJson": "tasks.json is invalid. No changes were written.",
+      "composeConflicts": "Kept non-Compose tasks with conflicting labels: ${labels}"
     },
     "cockpitPage": {
       "chooseProjectFolderDialogTitle": "Choose the project folder",
@@ -249,6 +197,12 @@
       "removeWorktreeWarning": "\n\nWarning: the branch \"${name}\" has not been merged yet — removing it (git branch -D) discards the unmerged work.",
       "failedToRemoveWorktreeTitle": "Failed to remove worktree",
       "openLayoutTitle": "Open layout",
+      "replaceLayoutTitle": "Replace the current layout?",
+      "replaceLayoutMessage": {
+        "one": "1 tab will be closed, including one with a running process.",
+        "other": "${n} tabs will be closed, including ones with running processes."
+      },
+      "replaceLayoutConfirm": "Replace",
       "restartServerTooltip": "Restart server",
       "noLspAvailable": "No LSP available",
       "lspRunning": "running",
@@ -263,20 +217,24 @@
       "configureHost": "Configure host",
       "addWorkspace": "Add workspace"
     },
-    "modelPicker": {
-      "search": "Search model (${count})"
-    },
     "paneView": {
       "closePaneTitle": "Close pane?",
       "closePaneMessage": "This closes all ${count} tab(s) in this pane and ends the agents/terminals in it.",
       "close": "Close",
+      "closeOtherTabs": "Close others",
+      "closeTabsToTheRight": "Close to the right",
+      "closeAllTabs": "Close all",
+      "closeTabsTitle": "Close tabs?",
+      "closeTabsMessage": "This closes ${count} tab(s) and ends the agents/terminals in them.",
       "allTabs": "All tabs",
       "pinTab": "Pin tab",
+      "openInNewWindow": "Open in new window",
       "rename": "Rename",
+      "openAsMarkdown": "Open as markdown",
+      "openAsBoard": "Open as board",
       "resetTitle": "Reset Title",
       "copyId": "Copy Id",
-      "autoRelay": "Auto-relay",
-      "history": "History",
+      "restartTab": "Restart",
       "newTab": "New tab",
       "newTerminal": "New terminal…",
       "splitRight": "Split right",
@@ -285,7 +243,11 @@
       "dropHereToMove": "Drop here to move the tab",
       "dockAsTab": "Dock as tab",
       "openBrowser": "Open browser",
-      "openTerminal": "Open terminal"
+      "openTerminal": "Open terminal",
+      "openAsLayout": "Open as layout",
+      "openAsYaml": "Open as YAML",
+      "openAsPanel": "Open as panel",
+      "openAsHtml": "Open as HTML"
     },
     "fileTreePanel": {
       "viewDiff": "View Diff",
@@ -324,6 +286,7 @@
       "newFile": "New file",
       "newFolder": "New folder",
       "refreshTooltip": "Refresh",
+      "collapseAll": "Collapse all folders",
       "sectionSourceControl": "SOURCE CONTROL",
       "viewAsList": "View as List",
       "viewAsTree": "View as Tree",
@@ -337,10 +300,11 @@
       "openInFileManager": "Open in file manager",
       "open": "Open",
       "openWith": "Open with",
+      "openInNewWindow": "Open in new window",
       "openLayout": "Open layout",
+      "openAsMarkdown": "Open as markdown",
       "showGitDiff": "Show git diff",
-      "createAgent": "Create agent",
-      "createTerminal": "Create terminal",
+      "createTerminal": "Open terminal",
       "rename": "Rename",
       "copy": "Copy",
       "cut": "Cut",
@@ -382,13 +346,23 @@
       "diffModified": "Modified ${ref}",
       "diffWorkingTree": "Working tree",
       "diffBinaryFile": "Binary file - no text diff.",
-      "diffNoChanges": "No changes."
+      "diffNoChanges": "No changes.",
+      "diffError": "Could not read the diff: ${detail}",
+      "galleryTooltip": "Gallery",
+      "sectionGallery": "GALLERY",
+      "openAsHtml": "Open as HTML",
+      "importQuestionTitle": "Copy here?",
+      "importMessage": "Copy ${count} items into “${dest}”?",
+      "importAction": "Copy",
+      "couldNotImportTitle": "Could not copy",
+      "openInAgent": "Open in ${harness}"
     },
     "fileViewer": {
       "cantOpen": "Can't open this file.",
       "couldNotLoadImage": "Could not load the image.",
       "preview": "Preview",
-      "source": "Source"
+      "source": "Source",
+      "reload": "Reload"
     },
     "workspaceSettingsDialog": {
       "choosePhotoTitle": "Choose workspace photo",
@@ -445,7 +419,7 @@
       "saveQueryAs": "Save query as",
       "couldNotSave": "Could not save",
       "selectDatabase": "Select database",
-      "noSqlConnections": "No SQL connections — add one in the Database panel",
+      "noSqlConnections": "No SQL connections",
       "running": "Running…",
       "runSelection": "Run selection",
       "run": "Run",
@@ -495,6 +469,70 @@
         "responseTooLarge": "The response is larger than the ${bytes} byte limit."
       }
     },
+    "kanbanView": {
+      "filter": "Filter",
+      "filterTitlePlaceholder": "Search titles",
+      "filterLabels": "Labels",
+      "filterClear": "Clear",
+      "filterDependencies": "Dependencies",
+      "filterBlocked": "Blocked",
+      "filterReady": "Ready",
+      "blockedBy": "Blocked by",
+      "addBlocker": "Add a blocking card",
+      "searchCards": "Search cards",
+      "unknownCard": "unknown",
+      "boardView": "Board",
+      "listView": "List",
+      "refresh": "Refresh from disk",
+      "manageLabels": "Labels",
+      "labelsTitle": "Labels in this board",
+      "labelNamePlaceholder": "label name",
+      "labelUsage": {
+        "one": "1 card",
+        "other": "${n} cards"
+      },
+      "deleteLabel": "Delete label",
+      "newCard": "new card",
+      "newCardTitle": "New card",
+      "newColumn": "New column",
+      "columnNameTitle": "Column name",
+      "dragColumn": "Drag column",
+      "columnOptions": "Column options",
+      "renameColumn": "Rename column",
+      "moveColumnLeft": "Move left",
+      "moveColumnRight": "Move right",
+      "deleteColumn": "Delete column",
+      "newCardHere": "New card here",
+      "duplicateCard": "Duplicate",
+      "cardLabels": "Labels",
+      "deleteCard": "Delete card",
+      "advance": "Move to next column",
+      "advanceHold": "Move to next column (hold: move to last column)",
+      "advanceBack": "Move back a column",
+      "emptyColumn": "No cards",
+      "cardCount": {
+        "one": "1 card",
+        "other": "${n} cards"
+      },
+      "notes": "Note",
+      "notesPlaceholder": "Write a note",
+      "comments": "Comments",
+      "addComment": "Add comment",
+      "commentPlaceholder": "Write a comment",
+      "noComments": "No comments yet",
+      "closeDetail": "Close",
+      "notABoard": "This file has no ## columns yet — it opens as markdown.",
+      "startBoard": "Start a board",
+      "couldNotSave": "Could not save the board",
+      "unrecognizedBlock": "Not recognized by the parser — drags whole, no inline editing.",
+      "deleteColumnDialog": {
+        "title": "Delete “${name}”?",
+        "message": "This column has ${count}. Choose what happens to them.",
+        "moveCards": "Move to the previous column",
+        "deleteAll": "Delete with the column",
+        "emptyMessage": "This column is empty."
+      }
+    },
     "dbPanel": {
       "sectionDatabase": "DATABASE",
       "edit": "Edit…",
@@ -505,7 +543,8 @@
       "deleteConnectionMessage": "Remove \"${name}\" from this workspace? Any saved password is discarded. .dbq files that reference it are not touched.",
       "footer": ".cockpit/databases.json · ${n} connections",
       "footerOne": ".cockpit/databases.json · 1 connection",
-      "noConnections": "No connections yet."
+      "noConnections": "No connections yet.",
+      "passwordRequired": "Password not found on the host. Open this connection and enter it again — it is saved on the machine that runs the database, not on this one."
     },
     "dbMongoView": {
       "deleteDocumentTitle": "Delete document",
@@ -549,7 +588,8 @@
       "choosePrivateKeyPlaceholder": "Choose a private key…",
       "choosePrivateKeyDialogTitle": "Choose SSH private key",
       "keyPassphrase": "Key passphrase",
-      "savePassphrase": "Save passphrase"
+      "savePassphrase": "Save passphrase",
+      "passwordOnHost": "The password is stored on the host, not on this machine."
     },
     "sshPrompts": {
       "unknownSshHostTitle": "Unknown SSH host",
@@ -563,6 +603,10 @@
     },
     "projectsRail": {
       "workspaces": "Workspaces",
+      "keepAwakeOn": "Keeping this computer awake for remote access. Click to let it sleep again.",
+      "keepAwakeOff": "Keep this computer awake for remote access. Off again when Cockpit restarts.",
+      "keepAwakeBattery": "Keeping awake on battery power. This drains the battery.",
+      "keepAwakeLid": "Closing a laptop lid still puts it to sleep.",
       "newWorkspace": "New workspace",
       "settings": "Settings",
       "mergeToParent": "Merge to Parent",
@@ -597,6 +641,7 @@
       "next": "Next (⏎)",
       "close": "Close (Esc)",
       "badPattern": "Bad pattern",
+      "counter": "${current} of ${total}",
       "noResults": "No results"
     },
     "contentSearch": {
@@ -610,24 +655,11 @@
       "searching": "Searching…",
       "noResults": "No results."
     },
-    "emptyPane": {
-      "newAgent": "New agent",
-      "newAgentDescription": "Runs a pi in the folder you choose",
-      "newTerminal": "New terminal",
-      "newTerminalDescription": "Opens a shell in the folder you choose"
-    },
     "topbar": {
       "collapseSidebar": "Collapse sidebar",
       "toggleFiles": "Show/hide files",
       "filesUnavailable": "Files unavailable in Cockpit",
       "hideKeyboard": "Hide keyboard"
-    },
-    "transcript": {
-      "cancel": "Cancel",
-      "send": "Send",
-      "typeYourAnswer": "Type your answer",
-      "startHint": "Send a prompt to get the agent started.",
-      "workedFor": "Worked for ${duration}"
     },
     "tasks": {
       "hotReload": "Hot reload",
@@ -639,11 +671,20 @@
     "notifications": {
       "agentFinished": "Agent finished",
       "open": "Open",
-      "agentNeedsAction": "Agent needs your input",
-      "agentCrashed": "Agent stopped unexpectedly"
+      "agentNeedsAction": "Agent needs your input"
+    },
+    "terminalLink": {
+      "open": "Open",
+      "revealFinder": "Reveal in Finder",
+      "revealExplorer": "Show in Explorer",
+      "revealFolder": "Open containing folder",
+      "copyPath": "Copy path",
+      "openLink": "Open link",
+      "copyLink": "Copy link"
     },
     "terminal": {
-      "cwdFallbackWarning": "Warning: the folder \"${requested}\" does not exist. This terminal opened in \"${path}\"."
+      "cwdFallbackWarning": "Warning: the folder \"${requested}\" does not exist. This terminal opened in \"${path}\".",
+      "workspaceEnvTracked": "Notice: .env.cockpit is tracked by git (it came with the repository). Injected: ${keys}"
     },
     "remoteHost": {
       "addHost": "Add remote host",
@@ -666,8 +707,8 @@
       "pickFolderTitle": "Open folder on ${host}",
       "openHere": "Open here",
       "emptyFolder": "No subfolders",
-      "newLocal": "New local workspace",
-      "newRemote": "New remote workspace",
+      "newLocal": "Local",
+      "newRemote": "Remote",
       "chooseHost": "Choose a host",
       "newHostEntry": "New host…",
       "editHost": "Edit host",
@@ -701,6 +742,179 @@
       "reload": "Reload",
       "urlHint": "Enter URL or address",
       "go": "Go"
+    },
+    "documentWindow": {
+      "mediaNotSupported": "Audio and video open in the main Cockpit window.",
+      "fileNotFound": "File not found: ${path}"
+    },
+    "gallery": {
+      "intro": "Special Cockpit documents that give you a visual of what the AI agent is doing.",
+      "createErrorTitle": "Could not create the file",
+      "dbQuery": {
+        "title": "Database query",
+        "description": "SQL editor with a result grid, using one of the registered connections."
+      },
+      "kanban": {
+        "title": "Kanban board",
+        "description": "Columns and cards stored as plain markdown. Drag, edit and comment."
+      },
+      "layout": {
+        "title": "Pane layout",
+        "description": "Terminals and splits to open in one go, like tmuxinator. Can run automatically on new worktrees."
+      },
+      "httpRequest": {
+        "title": "HTTP requests",
+        "description": "Write requests in a file and run them with the response next to it."
+      },
+      "html": {
+        "title": "HTML view",
+        "description": "A page the agent writes and Cockpit renders directly: mind maps, diagrams, charts, whatever you need."
+      },
+      "tasks": {
+        "title": "Tasks",
+        "description": "Commands to run from the Tasks panel, such as the dev server, tests and build. Stored in .cockpit/tasks.json."
+      },
+      "notebook": {
+        "title": "Notebook",
+        "description": "A folder of short notes with tags. The agent writes, you read and edit. Also opens in Obsidian."
+      },
+      "workspaceEnv": {
+        "title": "Workspace env",
+        "description": "Variables injected into every terminal of this workspace. Put API tokens or logins here instead of pasting them into the agent's prompt. Kept out of git."
+      },
+      "panel": {
+        "title": "Panel",
+        "description": "An HTML page with a bridge to the app: its buttons run Cockpit CLI and shell commands on this machine. A playground for quick dashboards."
+      }
+    },
+    "notebook": {
+      "notes": "Notes",
+      "newNote": "New note",
+      "searchPlaceholder": "Search notes",
+      "empty": "No notes yet. Create one, or ask the agent to write here.",
+      "noMatch": "No note matches.",
+      "selectNote": "Select a note",
+      "reload": "Reload from disk",
+      "untagged": "untagged",
+      "saveFailed": "Could not save the note",
+      "createFailed": "Could not create the note",
+      "addTag": "add tag",
+      "untitled": "Untitled",
+      "deleteNote": "Delete note",
+      "deleteConfirm": "Move “${name}” to the trash?",
+      "imageFailed": "Could not save the image",
+      "format": {
+        "bold": "Bold (⌘B)",
+        "italic": "Italic (⌘I)",
+        "strike": "Strikethrough",
+        "heading1": "Heading 1",
+        "heading2": "Heading 2",
+        "heading3": "Heading 3",
+        "bullets": "Bullet list",
+        "numbered": "Numbered list",
+        "checklist": "Checklist",
+        "quote": "Quote",
+        "code": "Inline code (⌘E)",
+        "codeBlock": "Code block",
+        "link": "Link (⌘K)",
+        "rule": "Divider",
+        "noteLink": "Link to a note ([[…]])",
+        "noteLinkSearch": "Search notes",
+        "image": "Insert image…"
+      },
+      "backlinks": "Linked from",
+      "renameTag": "Rename tag",
+      "deleteTag": "Delete tag",
+      "deleteTagConfirm": "Remove “${name}” from ${count} notes? The notes stay.",
+      "showList": "Show notes list",
+      "hideList": "Hide notes list"
+    },
+    "layoutPreview": {
+      "applyFailedTitle": "Could not apply the layout",
+      "applyInCockpit": "Apply in Cockpit",
+      "applyNewWorkspace": "Open as new workspace",
+      "applyTo": "Apply to ${workspace}",
+      "autorunWorktree": "autorun: worktree. This layout is also applied on its own when you create a worktree of the workspace that holds it.",
+      "command": "Command",
+      "folder": "Folder",
+      "noCommand": "no command, opens a shell",
+      "replaceConfirm": "Replace layout",
+      "replaceMessage": "${n} open tabs of this workspace will be closed, including any running work.",
+      "replaceTitle": "Replace the layout of ${workspace}?",
+      "skippedTitle": "Not created on this system",
+      "splitDown": "split down",
+      "splitRight": "split right",
+      "splitTab": "tab",
+      "subtitle": "This layout opens ${n} terminals. Read the commands before applying."
+    },
+    "telemetry": {
+      "tooltip": "Telemetry",
+      "title": "Telemetry",
+      "liveRuns": "${n} live",
+      "noWorkspace": "Open a workspace to see its telemetry.",
+      "empty": "Nothing here yet.",
+      "emptyFiltered": "Nothing here yet.",
+      "searchHint": "Filter cases",
+      "chipOpen": "Open",
+      "chipNew": "New",
+      "chipResolved": "Resolved",
+      "chipIgnored": "Ignored",
+      "chipWarnings": "Warnings",
+      "tagNew": "new",
+      "tagRegression": "regression",
+      "tagResolved": "resolved",
+      "tagIgnored": "ignored",
+      "srcTask": "task",
+      "srcWrapper": "cockpit telemetry",
+      "run": "run ${id}",
+      "resolve": "Mark resolved",
+      "ignore": "Ignore (hide from agents too)",
+      "reopen": "Reopen",
+      "clear": "Clear occurrences",
+      "clearRun": "Clear this run",
+      "clearProject": "Clear project",
+      "openFile": "Open ${location}",
+      "showInTerminal": "Show in terminal",
+      "copyCommand": "Copy CLI command",
+      "copied": "Copied",
+      "statusOpen": "Open",
+      "statusResolved": "Resolved",
+      "statusIgnored": "Ignored",
+      "occurrences": "Occurrences",
+      "inRuns": "in ${n} runs",
+      "first": "First",
+      "last": "Last",
+      "origin": "Origin",
+      "sectionStack": "Stack",
+      "stackHint": "project frames highlighted · click opens the file",
+      "sectionCorrelated": "Correlated log",
+      "correlatedHint": "the closest JSON log before the error, same run",
+      "none": "none",
+      "sectionRuns": "Occurrences by run",
+      "runsHint": "same key (cwd, command): this is how new and regression are computed",
+      "sectionContext": "Raw context",
+      "contextHint": "terminal lines around the last occurrence",
+      "current": "current",
+      "fingerprintHint": "fingerprint = type + normalized message + ${location}",
+      "blameUncommitted": "changed in working tree",
+      "blameCommit": "changed ${ago} (${sha})",
+      "justNow": "just now",
+      "minutesAgo": "${n}m ago",
+      "hoursAgo": "${n}h ago",
+      "daysAgo": "${n}d ago",
+      "resolvedToast": "Resolved. If it comes back in a later run it reappears as a regression.",
+      "ignoredToast": "Ignored. Agents no longer see it (unless --include-ignored).",
+      "clearedToast": "Occurrences deleted. Triage rules are kept.",
+      "byHuman": "by you",
+      "byAgent": "by agent",
+      "caseTabTitle": "${type} · ${file}",
+      "srcApp": "App",
+      "chipApp": "Cockpit"
+    },
+    "panelView": {
+      "unavailable": "Panels need the embedded web view, which is not available on Linux yet.",
+      "openInBrowser": "Open in browser",
+      "openAsHtml": "Open as HTML"
     }
   },
   "settings": {
@@ -710,27 +924,6 @@
       "english": "English",
       "portugueseBr": "Português (BR)",
       "spanish": "Español"
-    },
-    "revokeDialog": {
-      "deviceRemoved": "Device removed.",
-      "failedToRevoke": "Failed to revoke the device.",
-      "revoking": "Revoking…",
-      "revokingDevice": "Revoking ${name}…",
-      "connectingMessage": "Connecting to the relay and removing access.",
-      "ok": "Ok"
-    },
-    "pairingDialog": {
-      "title": "Pair device",
-      "connectingToRelay": "Connecting to the relay…",
-      "step1": "Open the Remote Pi app on your phone.",
-      "step2": "Tap add / pair device.",
-      "step3": "Point the camera at the QR below.",
-      "qrGenerationFailed": "Could not generate the QR.",
-      "autoRefreshHint": "The code refreshes on its own. Keep this window open.",
-      "pairingFailed": "Pairing failed.",
-      "tryAgain": "Try again",
-      "copied": "Copied!",
-      "copyData": "Copy data"
     },
     "page": {
       "header": {
@@ -744,16 +937,17 @@
         "language": "Language",
         "shortcuts": "Shortcuts",
         "notifications": "Notifications",
-        "connectivity": "Connectivity",
-        "daemonAgents": "Daemon Agents",
-        "schedules": "Schedules",
         "automations": "Automations",
         "remoteHosts": "Remote hosts"
       },
       "general": {
-        "sectionAgent": "Agent",
-        "enableAgentsTitle": "Enable agents",
-        "enableAgentsDesc": "Show the option to open agent tabs (pi). When off, Cockpit works as a terminal-only workspace.",
+        "sectionEditor": "Editor",
+        "editorEngineTitle": "Engine",
+        "editorEngineCockpit": "Cockpit (default)",
+        "editorEngineNeovim": "Neovim",
+        "neovimChecking": "Looking for Neovim…",
+        "neovimNotFound": "Neovim was not found in your shell PATH.",
+        "neovimRefresh": "Check again",
         "showCockpitTitle": "Show Cockpit terminal",
         "showCockpitDesc": "Keep a pathless, terminal-only workspace pinned at the top of the rail. Turning it off closes its terminals.",
         "launchAtStartupTitle": "Launch at login",
@@ -761,13 +955,14 @@
         "sectionUpdates": "Updates",
         "checkUpdatesTitle": "Check for updates",
         "checkUpdatesDesc": "How often Cockpit should look for new versions.",
-        "agentsInUseError": "Can't turn agents off while an agent tab is open. Close all agent tabs first, then disable it.",
         "updateFrequency": {
           "daily": "Daily",
           "weekly": "Weekly",
           "monthly": "Monthly",
           "never": "Never"
-        }
+        },
+        "developerModeTitle": "Developer mode",
+        "developerModeDesc": "Records Cockpit’s own errors and warnings in a separate Telemetry store (the “Cockpit” chip) and turns on performance metrics. Only useful to whoever maintains the app."
       },
       "diagnostics": {
         "sectionTitle": "Diagnostics",
@@ -809,7 +1004,10 @@
         "engineDesc": "Used by new terminal tabs and task output buffers. Open tabs keep their current engine.",
         "shellTitle": "Shell",
         "shellDesc": "Which shell new terminal tabs open. The arrow next to + still opens any other one, just for that tab.",
-        "noWslMessage": "No WSL distros found. Install one (wsl.exe --install) and restart Cockpit to see it listed here."
+        "noWslMessage": "No WSL distros found. Install one (wsl.exe --install) and restart Cockpit to see it listed here.",
+        "sectionBehavior": "Behavior",
+        "closeOnExitTitle": "Close tab when the shell exits",
+        "closeOnExitDesc": "When a shell ends on its own (exit, Ctrl-D), close its tab instead of leaving a dead terminal."
       },
       "appearance": {
         "sectionTheme": "Theme",
@@ -884,8 +1082,6 @@
         "soundTurnDoneDesc": "An agent finished its turn.",
         "soundActionRequired": "Action required",
         "soundActionRequiredDesc": "An agent is waiting for your approval or answer.",
-        "soundAgentError": "Agent error",
-        "soundAgentErrorDesc": "An agent process stopped unexpectedly.",
         "soundDefault": "Default",
         "soundCustom": "Custom: ${name}",
         "soundChooseFile": "Choose file",
@@ -909,104 +1105,6 @@
         "saveAndRestart": "Save & restart",
         "statusResponds": "Server responds",
         "statusNotFound": "Server not found or command invalid"
-      },
-      "connectivity": {
-        "sectionRelay": "Relay",
-        "sectionPairedDevices": "Paired devices",
-        "reloadTooltip": "Reload",
-        "failedToListDevices": "Failed to list devices.",
-        "noPairedDevices": "No paired devices.",
-        "relayAddressTitle": "Relay address",
-        "relayAddressDesc": "Server that connects your agents to the phone. Applies to every agent with the relay enabled.",
-        "saving": "Saving…",
-        "check": "Check",
-        "healthOnline": "Online",
-        "healthNoResponse": "No response",
-        "healthNotChecked": "Not checked",
-        "deviceDefaultLabel": "Device",
-        "revoke": "Revoke",
-        "pairNewDevice": "Pair new device",
-        "revokeDialogTitle": "Revoke device?",
-        "revokeDialogContent": "\"${name}\" will lose access to your agents and will need to pair again.\n\nYou must be connected to the relay — the app will connect automatically to revoke."
-      },
-      "schedules": {
-        "sectionScheduledPrompts": "Scheduled prompts",
-        "createSchedule": "Create schedule",
-        "createDaemonFirst": "Create a Daemon Agent first.",
-        "supervisorOffline": "Supervisor offline. Schedules need pi-supervisord running (`remote-pi install`).",
-        "failedToListSchedules": "Failed to list schedules.",
-        "noSchedules": "No schedules. Create a recurring prompt for a daemon.",
-        "runNow": "Run now",
-        "viewLog": "View log",
-        "disabled": "disabled",
-        "nextRun": "next ${when}",
-        "lastRun": "last: ${label}",
-        "removeScheduleDialogTitle": "Remove schedule?",
-        "removeScheduleDialogContent": "The job \"${schedule}\" for ${daemon} is deleted. Its runs stop.",
-        "newScheduleTitle": "New schedule",
-        "daemonLabel": "Daemon",
-        "whenLabel": "When (cron expression)",
-        "previewPlaceholder": "Next run shows up here",
-        "previewComputed": "Next: computed on save",
-        "previewNext": "Next: ${when}",
-        "exampleEveryDay9am": "every day 9am",
-        "exampleHourly": "hourly",
-        "exampleEvery15Min": "every 15 min",
-        "exampleWeekdays6pm": "weekdays 6pm",
-        "promptLabel": "Prompt",
-        "timezoneLabel": "Timezone (optional)",
-        "skipIfBusy": "Skip if the agent is busy",
-        "wakeIfStopped": "Wake the daemon if stopped",
-        "catchup": "Recover 1 missed run (catchup)",
-        "fillRequiredError": "Fill in the expression and the prompt.",
-        "creating": "Creating…",
-        "failedToCreateSchedule": "Failed to create the schedule.",
-        "historyTitle": "History — ${schedule}",
-        "failedToReadLog": "Failed to read the log.",
-        "noRecordsYet": "No records yet.",
-        "cronDelivered": "delivered",
-        "cronWokeDelivered": "woke + delivered",
-        "cronFailed": "failed",
-        "cronSkippedBusy": "skipped (busy)",
-        "cronSkippedStopped": "skipped (stopped)",
-        "cronSkippedDisabled": "skipped (disabled)"
-      },
-      "daemons": {
-        "sectionAlwaysOnAgents": "Always-on agents",
-        "createDaemon": "Create daemon",
-        "startAll": "Start all",
-        "stopAll": "Stop all",
-        "restartAll": "Restart all",
-        "restartSupervisor": "Restart supervisor",
-        "restartSupervisorDialogTitle": "Restart the supervisor?",
-        "restartSupervisorDialogContent": "Restarts the supervisor process (reloads the code). All daemons restart with it and go offline for a few seconds.",
-        "removeDaemonDialogTitle": "Remove daemon?",
-        "removeDaemonDialogContent": "\"${name}\" stops running and leaves the registry. The folder and its local config are kept — you can recreate it later.",
-        "supervisorOfflineTitle": "Supervisor offline",
-        "supervisorOfflineDesc": "pi-supervisord is not running. Install it with `remote-pi install` to manage 24/7 agents.",
-        "failedToListDaemons": "Failed to list daemons.",
-        "noRegisteredAgents": "No registered agents. Create one from a folder.",
-        "start": "Start",
-        "stop": "Stop",
-        "edit": "Edit",
-        "stateRunning": "running",
-        "stateStarting": "starting",
-        "stateStopped": "stopped",
-        "stateFailed": "failed",
-        "newDaemonTitle": "New daemon",
-        "editDaemonTitle": "Edit daemon",
-        "nameLabel": "Name",
-        "namePlaceholder": "e.g. PC, Server, Home",
-        "nameRequiredError": "Enter a name.",
-        "nameDuplicateError": "An agent with this name already exists.",
-        "folderLabel": "Folder",
-        "noFolderChosen": "No folder chosen",
-        "choose": "Choose",
-        "changeFolder": "Change",
-        "folderCannotBeChanged": "The folder cannot be changed.",
-        "folderRequiredError": "Choose a folder.",
-        "folderDuplicateError": "An agent already exists in this folder.",
-        "pickFolderDialogTitle": "Choose the Daemon Agent folder"
       },
       "automations": {
         "sectionCommitMessages": "Commit messages",
@@ -1097,7 +1195,8 @@
       "formatterFailed": "The formatter could not run.",
       "osFailure": "${detail}",
       "nameHasSlash": "Name cannot contain “/”.",
-      "invalidName": "Invalid name."
+      "invalidName": "Invalid name.",
+      "remoteDropUnsupported": "Dropping files into a remote workspace is not supported yet."
     }
   },
   "theme": {

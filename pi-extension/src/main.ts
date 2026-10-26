@@ -101,6 +101,7 @@ import {
 } from "./session/file_index.js";
 import { formatPeerInventory } from "./session/peer_inventory.js";
 import { MeshNode } from "./session/mesh_node.js";
+import type { MeshDrainContext, MeshDeliveryController } from "./session/mesh_delivery.js";
 import {
   handleSessionCompact,
   handleModelSet,
@@ -138,6 +139,7 @@ import {
   saveLocalConfig,
 } from "./session/local_config.js";
 import { runSetupWizard, type WizardUI } from "./session/setup_wizard.js";
+import { isPiSubagentChildProcess } from "./session/pi_subagent.js";
 import { updateFooter, type FooterState } from "./ui/footer.js";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -189,6 +191,12 @@ import { enrichToolArgs, stringifyContent, stringifyToolResult } from "./tools/f
 import { startGitRefresh, stopGitRefresh } from "./git/refresh.js";
 // Preserve the public type export surface (these were `export type` in the monolith).
 export type { RemoteState, RelayConnectivity } from "./extension-state.js";
+
+// Registry callbacks are installed before any session controller is created.
+ext.meshDelivery.setErrorHandler((message) => {
+  console.error(message);
+  _safeNotify(message, "error");
+});
 
 // ── State machine ─────────────────────────────────────────────────────────────
 //
@@ -460,7 +468,7 @@ function _publishWaitingForUser(
           ...(title ? { title } : {}),
         },
         display: false,
-      });
+      }, { triggerTurn: false });
     } catch {
       // ext.pi stale (session replaced) or runtime not yet bound — same
       // discipline as _emitRelayState (upstream #55): swallow, the next
@@ -712,7 +720,11 @@ function _attachBridgeIfReady(): void {
   }
   void ext.meshNode
     .attachBridge({ relay: ext.relay, relayUrl: ext.relayUrl, keypair: ext.cachedEd25519 })
-    .catch(() => { /* best-effort — UDS mesh works regardless */ });
+    .catch((error: unknown) => {
+      // UDS still works, but make the cross-PC outage visible. MeshNode's
+      // bounded retry handles transient leader/broker/attach failures (#189).
+      console.warn(`[remote-pi] event=mesh_bridge_attach_failed reason=${String(error)}`);
+    });
 }
 
 /**
@@ -2126,7 +2138,7 @@ function _emitRelayState(force = false): void {
         ...(ext.myRoomId ? { room: ext.myRoomId } : {}),
       },
       display: false,
-    });
+    }, { triggerTurn: false });
   } catch {
     // ext.pi stale (session replaced) or extension runtime not yet bound.
   }
@@ -2249,7 +2261,7 @@ async function _renameAgent(newName: string): Promise<void> {
       : `Mesh name reassigned: "${newName}" → "${assigned}" (collision)`,
     details: { requested: newName, assigned, changed: assigned !== newName },
     display: false,
-  });
+  }, { triggerTurn: false });
 }
 
 /**
@@ -2811,7 +2823,7 @@ async function _handlePairRequest(
     content: `Paired with ${inner.device_name}`,
     details: { name: inner.device_name, peerId: appPeerId, pairedAt },
     display: false,
-  });
+  }, { triggerTurn: false });
 }
 
 // ── Extension factory (default export) ───────────────────────────────────────
@@ -2891,7 +2903,14 @@ export function onThinkingLevelSelect(event: { level?: unknown } | undefined | n
   });
 }
 
-export function onAgentStart(): void {
+function _meshIdleContext(ctx: unknown): MeshDrainContext | undefined {
+  return typeof (ctx as { isIdle?: unknown } | null | undefined)?.isIdle === "function"
+    ? ctx as MeshDrainContext
+    : undefined;
+}
+
+export function onAgentStart(pi: ExtensionAPI, ctx: ExtensionContext): void {
+  ext.meshDelivery.for(pi).agentStart(_meshIdleContext(ctx));
   ext.agentRunActive = true;
   ext.agentRunGeneration += 1;
   ext.turnText = ""; // a fresh run's replayable text starts empty
@@ -3001,7 +3020,8 @@ export function onMessageEnd(event: MessageEndEvent): void {
   _refreshContextUsage();
 }
 
-export function onAgentEnd(): void {
+export function onAgentEnd(pi: ExtensionAPI, ctx: ExtensionContext): void {
+  ext.meshDelivery.for(pi).agentEnd(_meshIdleContext(ctx));
   // Plan/149 — turn boundary: bump the turn counter and push the counters
   // (the ONLY stats push point — never per message).
   ext.statsTurns += 1;
@@ -3061,7 +3081,6 @@ export function onAgentEnd(): void {
     if (ext.currentTurnId !== null && ext.currentTurnId.startsWith("resume_")) {
       ext.currentTurnId = null;
     }
-    _scheduleMeshMessageDrain();
   }, 0);
 }
 
@@ -3152,6 +3171,9 @@ export function onSessionStart(
   ctx: ExtensionContext,
   autoStart: boolean,
 ): void {
+  // Every session gets its own delivery controller. This does NOT activate it:
+  // only _cmdJoin chooses which session receives mesh envelopes.
+  ext.meshDelivery.for(pi).captureContext(ctx);
   // Plan/134 — a session replacement/rebind kills any prompt that belonged
   // to the replaced session: clear a stale waiting_for_input so it can't
   // survive into the new session's hello/meta snapshot. Published (not just
@@ -3182,7 +3204,15 @@ export function onSessionStart(
     const restartAuthority: RootRestartAuthority = {
       rootLifecycleGeneration: ext.rootLifecycleGeneration,
     };
-    void _cmdRoot(ctx, restartAuthority);
+    // Match fresh boot: replacement must not open first-run setup in an
+    // unconfigured cwd or auto-start a marked subagent child (#203). Unmarked
+    // local-only configs still rejoin; their flag gates only the relay (#236).
+    if (
+      !isPiSubagentChildProcess()
+      && localConfigExists("cwd" in ctx ? ctx.cwd : process.cwd())
+    ) {
+      void _cmdRoot(ctx, restartAuthority);
+    }
   }
   // Auto-start remote-pi on a fresh boot when the entry's gate passed. Daemon
   // mode has no interactive UI → use the headless ctx; interactive sessions
@@ -3205,7 +3235,11 @@ export function onSessionStart(
  *  SDK replaces the session (switch_session / new / fork / reload / quit).
  *  Awaited by the SDK (`teardownCurrent`) BEFORE the replacement runtime is
  *  created, guaranteeing the next instance starts from a clean slate. */
-export async function onSessionShutdown(): Promise<void> {
+export async function onSessionShutdown(pi?: ExtensionAPI): Promise<void> {
+  // Invalidate this session's queued delivery before any teardown await. An
+  // unrelated second session has a distinct controller and remains untouched.
+  if (pi) ext.meshDelivery.dispose(pi);
+  else ext.meshDelivery.disposeActive();
   // Revoke async authority synchronously, before any teardown await. `ext.disposed`
   // blocks the outgoing continuation immediately; the root and candidate
   // generations keep queued work stale even if a same-module session_start
@@ -4001,6 +4035,7 @@ async function _cmdStop(ctx: Pick<ExtensionContext, "ui">): Promise<void> {
   // published yet.
   ext.rootLifecycleGeneration += 1;
   ext.meshJoinGeneration += 1;
+  ext.meshDelivery.disposeActive();
   const meshUp = ext.meshNode !== null;
   const relayUp = ext.state !== "idle";
   if (!meshUp && !relayUp) {
@@ -4515,59 +4550,17 @@ async function _sendWithModelOverride(
  * Wake: we inject a CUSTOM message (role:"custom"), not a user message. The
  * SDK's `convertToLlm` maps custom → a user-role LLM message, so the agent
  * still sees + replies to it, but `message_end` does NOT buffer role:"custom",
- * so it never replays as `user_input` on session_sync. Mesh messages are held
- * until the current `agent_end` listeners finish, then appended as one batch
- * before a single turn starts. This avoids calling `prompt()` during the gap
- * where Pi has stopped streaming but the current agent run is still active.
+ * so it never replays as `user_input` on session_sync. Each joining session
+ * owns its queue. Busy messages wait through `agent_end` until that session's
+ * live context is idle, then append as one FIFO batch before a separate wake.
+ * A wake request is confirmed only by `agent_start`, never assumed (#204/#216).
  * `id` lets the LLM echo it via
  * `agent_send(..., re=<id>)`.
  */
-function _meshMessageForAgent(env: MeshEnvelope) {
-  const bodyText = typeof env.body === "string" ? env.body : JSON.stringify(env.body);
-  const header = `[agent-network] message from "${env.from}" (id=${env.id}${env.re ? `, re=${env.re}` : ""}):`;
-  const footer = env.re
-    ? "(This is a reply to a previous message of yours.)"
-    : `(If a reply is expected, call agent_send with to="${env.from}" and re="${env.id}".)`;
-  return {
-    customType: "remote-pi:mesh-message",
-    content: `${header}\n${bodyText}\n\n${footer}`,
-    display: true,
-  };
-}
-
-function _scheduleMeshMessageDrain(): void {
-  if (ext.meshDrainScheduled || ext.pendingMeshMessages.length === 0) return;
-  ext.meshDrainScheduled = true;
-  queueMicrotask(() => {
-    ext.meshDrainScheduled = false;
-    const pi = ext.pi;
-    if (ext.agentRunActive || !pi || ext.pendingMeshMessages.length === 0) return;
-
-    const batch = ext.pendingMeshMessages.splice(0);
-    let delivered = 0;
-    ext.agentRunActive = true;
-    try {
-      batch.forEach((env, index) => {
-        const isLast = index === batch.length - 1;
-        pi.sendMessage(
-          _meshMessageForAgent(env),
-          isLast
-            ? { triggerTurn: true, deliverAs: "followUp" }
-            : { triggerTurn: false },
-        );
-        delivered += 1;
-      });
-    } catch (err) {
-      ext.agentRunActive = false;
-      ext.pendingMeshMessages = [...batch.slice(delivered), ...ext.pendingMeshMessages];
-      const detail = err instanceof Error ? err.message : String(err);
-      console.error(`[remote-pi] queued mesh delivery failed: ${detail}`);
-      _safeNotify(`[remote-pi] failed to process queued mesh messages: ${detail}`, "error");
-    }
-  });
-}
-
-function _deliverMeshMessageToAgent(env: MeshEnvelope): void {
+function _deliverMeshMessageToAgent(
+  env: MeshEnvelope,
+  joinedOwner?: MeshDeliveryController | null,
+): void {
   const bodyText = typeof env.body === "string" ? env.body : JSON.stringify(env.body);
   const toolCallId = `mesh_${env.id}`;
   _broadcastToActive({
@@ -4580,17 +4573,49 @@ function _deliverMeshMessageToAgent(env: MeshEnvelope): void {
   });
   _broadcastToActive({ type: "tool_result", tool_call_id: toolCallId, result: { from: env.from, message: bodyText } });
 
-  if (!ext.pi) {
-    console.error(`[remote-pi] agent-network message from "${env.from}": agent session not bound yet — message dropped`);
-    return;
+  const owner = joinedOwner ?? ext.meshDelivery.active() ?? (ext.pi ? ext.meshDelivery.for(ext.pi) : null);
+  if (!owner || !owner.deliver(env)) {
+    const reason = owner ? "agent session is shutting down" : "agent session not bound yet";
+    console.error(`[remote-pi] agent-network message from "${env.from}": ${reason} — message dropped`);
   }
-  ext.pendingMeshMessages.push(env);
-  _scheduleMeshMessageDrain();
 }
 
 /** Test-only entry point for verifying mesh-to-agent delivery semantics. */
 export function _deliverMeshMessageToAgentForTest(env: MeshEnvelope): void {
   _deliverMeshMessageToAgent(env);
+}
+
+/** Test-only entry point for the stop/dispose half of owner activation. */
+export function _disposeActiveMeshDeliveryOwnerForTest(): void {
+  ext.meshDelivery.disposeActive();
+}
+
+/** Test-only: activate the same per-pi owner that _cmdJoin would capture. */
+export function _activateMeshDeliveryOwnerForTest(pi: ExtensionAPI, ctx?: MeshDrainContext): void {
+  _activateJoinedMeshDeliveryOwner(pi, ctx);
+}
+
+/**
+ * Bind the joining session's live context immediately. A stop disposes that
+ * context, and a fresh join must not wait for another lifecycle event.
+ * Busy state comes from THIS session's isIdle(), never the process-wide
+ * agentRunActive flag: another Pi may be the one running.
+ */
+function _activateJoinedMeshDeliveryOwner(
+  ownerPi: ExtensionAPI | null,
+  idleContext?: MeshDrainContext,
+): MeshDeliveryController | null {
+  if (!ownerPi) return null;
+  const owner = ext.meshDelivery.activate(ownerPi);
+  if (!idleContext) return owner;
+  owner.captureContext(idleContext);
+  try {
+    if (!idleContext.isIdle()) owner.agentStart(idleContext);
+  } catch {
+    // A stale context clears itself on the next drain; do not invent busy
+    // state that another session would have to clear.
+  }
+  return owner;
 }
 
 /**
@@ -4616,6 +4641,10 @@ async function _cmdJoin(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<void
     ctx.ui.notify("[remote-pi] Already on the local mesh.", "warning");
     return;
   }
+  // Capture the joining session NOW. A later factory call may replace ext.pi,
+  // but it must never redirect this MeshNode's envelopes or busy state (#216).
+  const ownerPi = ext.pi;
+  const joinedOwner = _activateJoinedMeshDeliveryOwner(ownerPi, _meshIdleContext(ctx));
   const joinGeneration = ++ext.meshJoinGeneration;
 
   ensureGlobalDirs();
@@ -4678,7 +4707,7 @@ async function _cmdJoin(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<void
     // Real agent-to-agent message (SessionPeer already correlated replies via
     // env.re before this point). Show it in the app's TOOL timeline and wake
     // the agent as a CUSTOM message — never as the user's own message.
-    _deliverMeshMessageToAgent(env);
+    _deliverMeshMessageToAgent(env, joinedOwner);
   });
 
   // After failover (leader died, we re-elected): the new broker's peers map
@@ -4727,14 +4756,14 @@ async function _cmdJoin(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<void
     // accident and causes cross-folder name ping-pong across restarts. The clean
     // name (wizard / explicit `agent_name`) already lives in config or re-derives
     // from `basename(cwd)`; the event above carries the live `#N` for the UI.
-    ext.pi?.sendMessage({
+    ownerPi?.sendMessage({
       customType: "remote-pi:name-assigned",
       content: assigned === requestedName
         ? `Mesh name: ${assigned}`
         : `Mesh name reassigned: "${requestedName}" → "${assigned}" (collision)`,
       details: { requested: requestedName, assigned, changed: assigned !== requestedName },
       display: false,
-    });
+    }, { triggerTurn: false });
     ctx.ui.notify(
       `[remote-pi] Joined local mesh as "${assigned}" (${peer.currentRole()})`,
       "info",
@@ -4753,6 +4782,7 @@ async function _cmdJoin(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<void
     // A replacement/stop/newer join can invalidate this candidate before its
     // failure arrives; never notify the outgoing session ctx in that case.
     if (!isCurrentCandidate()) return;
+    if (ownerPi) ext.meshDelivery.dispose(ownerPi);
     ctx.ui.notify(`[remote-pi] join failed: ${String(err)}`, "error");
   }
 }

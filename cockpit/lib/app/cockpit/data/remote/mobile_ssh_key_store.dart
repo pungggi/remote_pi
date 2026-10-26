@@ -27,6 +27,10 @@ class MobileSshKeyStore {
   Future<List<SSHKeyPair>> identities() async =>
       SSHKeyPair.fromPem(await _ensurePem());
 
+  /// PEM da chave privada (gera+persiste na 1ª vez). É o que atravessa pra
+  /// isolate do SSH: `SSHKeyPair` não é enviável entre isolates, texto é.
+  Future<String> privateKeyPem() => _ensurePem();
+
   /// Linha `authorized_keys` pra o usuário copiar pro host.
   Future<String> publicKeyLine() async {
     final existing = await _storage.read(key: _pubKey);
@@ -81,4 +85,29 @@ String _authorizedKeyLine(Uint8List publicKey, String comment) {
   writeString(ascii.encode('ssh-ed25519'));
   writeString(publicKey);
   return 'ssh-ed25519 ${base64.encode(blob.toBytes())} $comment';
+}
+
+/// Política de host key do mobile: **TOFU** (trust on first use). Chave
+/// desconhecida é confiada e persistida na 1ª conexão; chave que MUDOU é
+/// recusada (possível MITM ou servidor reinstalado). O store é o
+/// `flutter_secure_storage` (Keychain/Keystore) — plugin Flutter, portanto
+/// isto vive na isolate principal e responde ao worker do SSH por mensagem.
+class MobileSshHostKeyStore {
+  MobileSshHostKeyStore({FlutterSecureStorage? storage})
+    : _storage = storage ?? const FlutterSecureStorage();
+
+  final FlutterSecureStorage _storage;
+
+  static const _prefix = 'cockpit.ssh.hostkey.';
+
+  /// `true` = aceita (conhecida igual, ou nova e agora persistida); `false` =
+  /// a chave guardada pra [endpoint] (`host:port`) é OUTRA.
+  Future<bool> verify(String endpoint, String fingerprint) async {
+    final key = '$_prefix$endpoint';
+    final known = await _storage.read(key: key);
+    if (known == fingerprint) return true;
+    if (known != null) return false;
+    await _storage.write(key: key, value: fingerprint);
+    return true;
+  }
 }

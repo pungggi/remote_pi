@@ -4,7 +4,7 @@
 # A assinatura (Developer ID) e a notarização NÃO acontecem aqui — são passos
 # separados no runbook (packaging/README.md), aplicados sobre o .app antes do
 # DMG e sobre o .dmg depois. No fluxo manual, o DMG é montado via hdiutil.
-title: Remote Pi Cockpit
+title: Piper Cockpit
 icon: ../../Runner/Assets.xcassets/AppIcon.appiconset/app_icon_512.png
 icon-size: 120
 window:

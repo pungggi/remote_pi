@@ -7,9 +7,19 @@ import 'package:meta/meta.dart';
 import 'package:cockpit_core/cockpit_core.dart';
 import 'package:cockpit_protocol/cockpit_protocol.dart';
 
+import 'pty_output_coalescer.dart';
+
 class _RpcUnknown implements Exception {
   const _RpcUnknown(this.method);
   final String method;
+}
+
+/// Falha tipada de um RPC sem exceção de domínio própria (`proc.run`):
+/// vira `RpcResponse{ok:false, code, detail}` como as demais.
+class RemoteRpcFailure implements Exception {
+  const RemoteRpcFailure(this.code, [this.detail]);
+  final String code;
+  final String? detail;
 }
 
 /// Servidor do protocolo Cockpit Remote sobre socket local (UDS).
@@ -29,12 +39,24 @@ class RemoteServer {
     this._git,
     this._db, {
     this.serverVersion = '0.1.0',
-  });
+    DbSecretStore? dbSecrets,
+    SshTunnel? dbTunnel,
+  }) : _dbSecrets = dbSecrets ?? DbSecretStore(),
+       _dbTunnel = dbTunnel ?? SshTunnelImpl(FileSshHostKeyStore());
 
   final TerminalService _terminals;
   final FileService _files;
   final GitService _git;
   final DbService _db;
+
+  /// Cofre de senhas de banco DESTE host (plano 62). O cliente grava e apaga
+  /// por ele, nunca lê de volta.
+  final DbSecretStore _dbSecrets;
+
+  /// Túneis SSH das conexões de banco (plano 62, onda 2). Um por servidor, e
+  /// não por conexão de cliente: o motor cacheia por (config, alvo), e abrir um
+  /// handshake SSH por query custaria ~1s em cada uma.
+  final SshTunnel _dbTunnel;
   final String serverVersion;
   static const _codec = RemoteMessageCodec();
 
@@ -280,6 +302,8 @@ class RemoteServer {
       _files,
       _git,
       _db,
+      _dbSecrets,
+      _dbTunnel,
       serverVersion,
       _statusEnv,
       _endpoint?.token,
@@ -308,6 +332,8 @@ class _Connection {
     this._files,
     this._git,
     this._db,
+    this._dbSecrets,
+    this._dbTunnel,
     this._serverVersion,
     this._statusEnv,
     this._expectedToken,
@@ -344,11 +370,99 @@ class _Connection {
 
   bool ownsTab(String tabId) => _tabIds.contains(tabId);
 
+  /// Descritor de conexão do payload, **com o segredo do host preenchido**
+  /// (plano 62).
+  ///
+  /// Este é o ponto em que a senha entra no fluxo, e ele fica do lado do host
+  /// de propósito: antes, o cliente resolvia a senha no cofre DELE e a mandava
+  /// pelo fio a cada query — o que fazia a conexão só funcionar a partir da
+  /// máquina que a cadastrou, e punha a senha em trânsito o tempo todo.
+  Future<RemoteDbConnDescriptor> _conn(Map<String, Object?> p) async {
+    var conn = RemoteDbConnDescriptor.fromJson(
+      (p['conn'] as Map).cast<String, Object?>(),
+    );
+    // Senha veio no fio (conexão sem segredo guardado): respeita o que o
+    // cliente mandou, não há o que resolver.
+    if (conn.storedSecret) {
+      final secret = _dbSecrets.read(conn.workspaceRoot, conn.connName);
+      if (secret == null || secret.isEmpty) {
+        // Conectar sem senha aqui produziria um erro do banco ("authentication
+        // failed") que não diz a coisa importante: a senha existe, só está no
+        // cofre do cliente que cadastrou a conexão, e precisa ser regravada
+        // aqui.
+        throw const DbServiceException(
+          DbErrorKind.passwordRequired,
+          'no stored password on this host for this connection',
+        );
+      }
+      conn = conn.withPassword(secret);
+    }
+    return _tunneled(conn);
+  }
+
+  /// Abre (ou reusa) o túnel SSH da conexão e devolve o descritor apontando
+  /// para a ponta local — **deste host**.
+  ///
+  /// É o passo que faltava para conexão com bastion funcionar a partir de um
+  /// cliente remoto: antes o bloco `ssh` nem viajava, o host recebia
+  /// `host:porta` cru e discava direto, sem o salto.
+  ///
+  /// A chave privada e a passphrase são as **daqui**, não as do cliente — quem
+  /// alcança o bastion é esta máquina, e é nela que a credencial tem de estar.
+  Future<RemoteDbConnDescriptor> _tunneled(RemoteDbConnDescriptor conn) async {
+    final ssh = conn.ssh;
+    if (ssh == null) return conn;
+    final passphrase = _dbSecrets.readKey(
+      DbSecretStore.sshKeyFor(conn.workspaceRoot, conn.connName),
+    );
+    try {
+      // Mongo vai por SOCKS, os demais por port-forward: num replica set o
+      // driver descobre os membros e passa a discar os hostnames reais, o que
+      // fura qualquer porta fixa. Mesma regra do caminho local.
+      if (conn.engine == 'mongo') {
+        final proxy = await _dbTunnel.ensureSocks(ssh, passphrase: passphrase);
+        return conn.withSocksProxy(proxy.host, proxy.port);
+      }
+      final endpoint = await _dbTunnel.ensure(
+        ssh,
+        targetHost: conn.host,
+        targetPort: conn.port ?? _defaultPort(conn.engine),
+        passphrase: passphrase,
+      );
+      return conn.withEndpoint(endpoint.host, endpoint.port);
+    } on SshTunnelException catch (e) {
+      // Detail estruturado (JSON) em vez de prosa: é com o `kind` que a UI
+      // decide se pode oferecer "confiar nesta host key", e com `endpoint` +
+      // `fingerprint` que ela monta o diálogo. Extrair isso de uma frase seria
+      // frágil justamente no caminho que precisa ser confiável.
+      throw DbServiceException(
+        DbErrorKind.sshTunnelFailed,
+        jsonEncode({
+          'kind': e.kind,
+          'message': e.message,
+          if (e.endpoint != null) 'endpoint': e.endpoint,
+          if (e.fingerprint != null) 'fingerprint': e.fingerprint,
+        }),
+      );
+    }
+  }
+
+  static int _defaultPort(String engine) => switch (engine) {
+    'postgres' => 5432,
+    'mysql' => 3306,
+    'mssql' => 1433,
+    'redis' => 6379,
+    'mongo' => 27017,
+    _ => 0,
+  };
+
   final Socket _socket;
   final TerminalService _terminals;
   final FileService _files;
   final GitService _git;
   final DbService _db;
+  final DbSecretStore _dbSecrets;
+  final SshTunnel _dbTunnel;
   final String _serverVersion;
 
   /// Env que leva o hook do agente até o receptor de status do HOST
@@ -362,6 +476,13 @@ class _Connection {
   final String? _expectedToken;
 
   final Map<String, StreamSubscription<PtyEvent>> _attachments = {};
+  final Map<String, PtyOutputCoalescer> _coalescers = {};
+
+  Future<void> _detach(String sessionId) async {
+    await _attachments.remove(sessionId)?.cancel();
+    _coalescers.remove(sessionId)?.dispose();
+  }
+
   final Completer<void> _done = Completer();
   bool _handshaken = false;
 
@@ -393,7 +514,7 @@ class _Connection {
       if (!_handshaken) {
         if (message is! Hello) {
           _send(const RemoteError(code: 'handshake_required'));
-          return close();
+          return await close();
         }
         if (message.version != protocolVersion) {
           _send(
@@ -402,13 +523,13 @@ class _Connection {
               detail: 'server=$protocolVersion client=${message.version}',
             ),
           );
-          return close();
+          return await close();
         }
         // Porta de loopback aceita conexão de qualquer processo da máquina;
         // o token é o que restringe ao dono do arquivo de rendezvous.
         if (_expectedToken != null && message.token != _expectedToken) {
           _send(const RemoteError(code: 'invalid_token'));
-          return close();
+          return await close();
         }
         _handshaken = true;
         _localClient = message.local;
@@ -422,6 +543,15 @@ class _Connection {
             pid: pid,
           ),
         );
+        return;
+      }
+
+      // A proc.run can invoke the CLI, which sends a reverse cli.cmd and
+      // waits for its response on this same socket. Do not hold the serial
+      // dispatcher for the process lifetime: that response must be dispatched
+      // while the process is still running, or the nested command deadlocks.
+      if (message case RpcRequest(method: 'proc.run')) {
+        unawaited(_handleRpc(message));
         return;
       }
 
@@ -500,26 +630,33 @@ class _Connection {
           );
 
         case PtyAttach():
-          await _attachments.remove(message.sessionId)?.cancel();
-          _attachments[message.sessionId] = _terminals
-              .attach(message.sessionId, fromOffset: message.fromOffset)
+          await _detach(message.sessionId);
+          final sessionId = message.sessionId;
+          final coalescer = PtyOutputCoalescer(
+            (offset, bytes) => _send(
+              PtyOutput(sessionId: sessionId, offset: offset, bytes: bytes),
+            ),
+          );
+          _coalescers[sessionId] = coalescer;
+          _attachments[sessionId] = _terminals
+              .attach(sessionId, fromOffset: message.fromOffset)
               .listen(
                 (event) => switch (event) {
-                  PtyOutputEvent(:final chunk) => _send(
-                    PtyOutput(
-                      sessionId: message.sessionId,
-                      offset: chunk.offset,
-                      bytes: chunk.bytes,
-                    ),
+                  PtyOutputEvent(:final chunk) => coalescer.add(
+                    chunk.offset,
+                    chunk.bytes,
                   ),
-                  PtyExitEvent(:final exitCode) => _send(
-                    PtyExited(sessionId: message.sessionId, exitCode: exitCode),
-                  ),
+                  // O exit vai DEPOIS do que ainda está no lote: o cliente lê
+                  // a última saída do processo antes de fechar a aba.
+                  PtyExitEvent(:final exitCode) => () {
+                    coalescer.flush();
+                    _send(PtyExited(sessionId: sessionId, exitCode: exitCode));
+                  }(),
                 },
               );
 
         case PtyDetach():
-          await _attachments.remove(message.sessionId)?.cancel();
+          await _detach(message.sessionId);
 
         case PtyInput():
           await _terminals.write(message.sessionId, message.bytes);
@@ -535,7 +672,7 @@ class _Connection {
           );
 
         case PtyKill():
-          await _attachments.remove(message.sessionId)?.cancel();
+          await _detach(message.sessionId);
           await _terminals.kill(message.sessionId);
 
         case RpcRequest():
@@ -567,6 +704,78 @@ class _Connection {
     } catch (e) {
       _send(RemoteError(code: 'internal', detail: '$e', rid: _ridOf(message)));
     }
+  }
+
+  /// `proc.run`: roda UMA linha de shell neste host e devolve
+  /// `{code, stdout, stderr, timedOut}` (mesmo mapa do `exec` local do app).
+  /// É o `cockpit exec` de um terminal remoto e o `await cockpit("exec …")`
+  /// de um `.panel` em workspace remoto: antes, o app executava no cliente,
+  /// com o cwd do host, e falhava. Shell de login (`-lc`) pelo mesmo motivo
+  /// das PTYs: o PATH do perfil do usuário vale. Env leva a CLI `cockpit` e o
+  /// socket de status, então o comando pode chamar `cockpit` de volta.
+  Future<Map<String, Object?>> _procRun(Map<String, Object?> p) async {
+    final command = (p['command'] ?? '').toString();
+    if (command.trim().isEmpty) {
+      throw const RemoteRpcFailure('bad_request', 'missing command');
+    }
+    final cwd = (p['cwd'] ?? '').toString();
+    if (cwd.isNotEmpty && !await Directory(cwd).exists()) {
+      throw RemoteRpcFailure('cwd_not_found', cwd);
+    }
+    final timeoutRaw = p['timeout'];
+    final seconds = (timeoutRaw is num ? timeoutRaw.toInt() : 60).clamp(1, 600);
+    final env = <String, String>{..._statusEnv, ..._cliPathEnv(null)};
+    // Windows has neither SHELL nor /bin/sh on a standard installation. Use
+    // the native command processor there; POSIX keeps the login-shell PATH.
+    final windows = Platform.isWindows;
+    final shell = windows
+        ? (Platform.environment['ComSpec'] ?? 'cmd.exe')
+        : (Platform.environment['SHELL'] ?? '/bin/sh');
+    final arguments = windows
+        ? <String>['/d', '/s', '/c', command]
+        : <String>['-lc', command];
+    final Process proc;
+    try {
+      proc = await Process.start(
+        shell,
+        arguments,
+        workingDirectory: cwd.isEmpty ? null : cwd,
+        environment: env,
+        includeParentEnvironment: true,
+      );
+    } on ProcessException catch (e) {
+      return <String, Object?>{
+        'code': 127,
+        'stdout': '',
+        'stderr': 'cockpit-server: spawn failed: ${e.message}',
+        'timedOut': false,
+      };
+    }
+    final out = StringBuffer();
+    final err = StringBuffer();
+    final drained = Future.wait<void>([
+      proc.stdout.transform(utf8.decoder).forEach(out.write),
+      proc.stderr.transform(utf8.decoder).forEach(err.write),
+    ]);
+    var timedOut = false;
+    final code = await proc.exitCode.timeout(
+      Duration(seconds: seconds),
+      onTimeout: () {
+        timedOut = true;
+        proc.kill(ProcessSignal.sigkill);
+        return 124;
+      },
+    );
+    await drained.timeout(
+      const Duration(seconds: 2),
+      onTimeout: () => const <void>[],
+    );
+    return <String, Object?>{
+      'code': code,
+      'stdout': out.toString(),
+      'stderr': err.toString(),
+      'timedOut': timedOut,
+    };
   }
 
   /// Prefixa a pasta da CLI `cockpit` deste host no PATH da PTY, para que
@@ -649,36 +858,74 @@ class _Connection {
           p['repo'] as String,
           (p['args'] as List).cast<String>(),
         )).toJson(),
+        'proc.run' => await _procRun(p),
         'db.query' => _db.query(
-          RemoteDbConnDescriptor.fromJson(
-            (p['conn'] as Map).cast<String, Object?>(),
-          ),
+          await _conn(p),
           p['sql'] as String,
           limit: (p['limit'] as num?)?.toInt() ?? 200,
           dml: p['dml'] as bool? ?? false,
         ),
         'db.redis' => _db.redis(
-          RemoteDbConnDescriptor.fromJson(
-            (p['conn'] as Map).cast<String, Object?>(),
-          ),
+          await _conn(p),
           (p['parts'] as List).cast<String>(),
         ),
-        'db.redisMany' => _db.redisMany(
-          RemoteDbConnDescriptor.fromJson(
-            (p['conn'] as Map).cast<String, Object?>(),
-          ),
-          [
-            for (final c in (p['commands'] as List).cast<List>())
-              c.cast<String>(),
-          ],
-        ),
+        'db.redisMany' => _db.redisMany(await _conn(p), [
+          for (final c in (p['commands'] as List).cast<List>())
+            c.cast<String>(),
+        ]),
         'db.mongo' => _db.mongo(
-          RemoteDbConnDescriptor.fromJson(
-            (p['conn'] as Map).cast<String, Object?>(),
-          ),
+          await _conn(p),
           (p['command'] as Map).cast<String, Object?>(),
           database: p['database'] as String?,
         ),
+        // Segredo de banco: escrita e remoção apenas. Não existe `db.secretGet`
+        // de propósito (plano 62, decisão B) — o cliente é mensageiro, e
+        // mensageiro não relê o que entregou.
+        // `kind` escolhe QUAL segredo da conexão: a senha do banco (default) ou
+        // a passphrase da chave SSH do túnel. São segredos distintos e a
+        // conexão pode ter um sem o outro.
+        'db.secretSet' => () {
+          final root = p['root'] as String;
+          final conn = p['conn'] as String;
+          final key = p['kind'] == 'sshPassphrase'
+              ? DbSecretStore.sshKeyFor(root, conn)
+              : DbSecretStore.keyFor(root, conn);
+          _dbSecrets.writeKey(key, p['value'] as String);
+          return null;
+        }(),
+        // Confiança numa host key de bastion: a decisão é do humano, no
+        // cliente (que tem o diálogo), e o estado fica aqui — mesmo idioma do
+        // cofre de senhas. O servidor não pergunta nada a ninguém; ele falha
+        // com `ssh_host_key_unknown` carregando o fingerprint e espera este
+        // comando.
+        'db.hostKeyTrust' => () async {
+          await FileSshHostKeyStore().trust(
+            p['endpoint'] as String,
+            p['fingerprint'] as String,
+          );
+          return null;
+        }(),
+        'db.secretDelete' => () {
+          final root = p['root'] as String;
+          final conn = p['conn'] as String;
+          _dbSecrets.deleteKey(
+            p['kind'] == 'sshPassphrase'
+                ? DbSecretStore.sshKeyFor(root, conn)
+                : DbSecretStore.keyFor(root, conn),
+          );
+          return null;
+        }(),
+        // Renome acontece AQUI, e não como delete+set no cliente, porque o
+        // cliente não pode ler o valor para regravá-lo — o segredo nunca sai
+        // do host, nem para dar a volta.
+        'db.secretRename' => () {
+          _dbSecrets.rename(
+            p['root'] as String,
+            p['from'] as String,
+            p['to'] as String,
+          );
+          return null;
+        }(),
         _ => throw _RpcUnknown(req.method),
       };
       _send(RpcResponse(rid: req.rid, ok: true, data: await _awaited(data)));
@@ -709,6 +956,10 @@ class _Connection {
           detail: e.detail,
         ),
       );
+    } on RemoteRpcFailure catch (e) {
+      _send(
+        RpcResponse(rid: req.rid, ok: false, code: e.code, detail: e.detail),
+      );
     } on _RpcUnknown catch (e) {
       _send(
         RpcResponse(
@@ -736,6 +987,10 @@ class _Connection {
       await sub.cancel();
     }
     _attachments.clear();
+    for (final c in _coalescers.values) {
+      c.dispose();
+    }
+    _coalescers.clear();
     _socket.destroy();
     if (!_done.isCompleted) _done.complete();
   }

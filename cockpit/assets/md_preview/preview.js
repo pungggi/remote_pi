@@ -153,5 +153,25 @@
         }
       }
     },
+    // Windows: a rolagem vem do Flutter (roda e gesto do touchpad), não do
+    // WebView2. O plugin injeta a roda como `SendMouseInput` e o gesto de
+    // touchpad se perdia nesse caminho (subia travado ou nem rolava). O Dart
+    // chama `captureScroll()` uma vez, que bloqueia a roda nativa (senão a roda
+    // rolaria duas vezes), e depois `scrollBy(dx, dy)` a cada evento.
+    captureScroll: function () {
+      if (window.__cockpitScrollCaptured) return;
+      window.__cockpitScrollCaptured = true;
+      window.addEventListener(
+        "wheel",
+        function (e) {
+          // Ctrl+roda segue nativo (zoom do WebView2).
+          if (!e.ctrlKey) e.preventDefault();
+        },
+        { passive: false, capture: true },
+      );
+    },
+    scrollBy: function (dx, dy) {
+      window.scrollBy({ left: dx, top: dy, behavior: "instant" });
+    },
   };
 })();

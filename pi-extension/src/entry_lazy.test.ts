@@ -38,6 +38,7 @@ function makePi() {
   const handlers = new Map<string, Handler>();
   const commands = new Map<string, { handler: (args: string, ctx: unknown) => unknown }>();
   const sent: unknown[] = [];
+  const sendOptions: unknown[] = [];
   const pi = {
     on: (event: string, handler: Handler) => { handlers.set(event, handler); },
     registerCommand: (name: string, spec: { handler: (args: string, ctx: unknown) => unknown }) => {
@@ -47,10 +48,13 @@ function makePi() {
     registerMessageRenderer: () => undefined,
     // The pi-ask bridge subscribes via pi.events; a minimal bus keeps it null-safe.
     events: { on: () => undefined, off: () => undefined },
-    sendMessage: (msg: unknown) => { sent.push(msg); },
+    sendMessage: (msg: unknown, options: unknown) => {
+      sent.push(msg);
+      sendOptions.push(options);
+    },
     sendUserMessage: () => undefined,
   } as unknown as ExtensionAPI;
-  return { pi, handlers, commands, sent };
+  return { pi, handlers, commands, sent, sendOptions };
 }
 
 const fakeCtx = { ui: { notify: () => undefined }, cwd: process.cwd() };
@@ -66,7 +70,7 @@ describe("thin-entry lazy boundary (plan/143)", () => {
   });
 
   test("factory + low-activity session events stay runtime-free", () => {
-    const { pi, handlers, sent } = makePi();
+    const { pi, handlers, sent, sendOptions } = makePi();
     extension(pi);
     // Factory preamble (bridge rebind, skill deploy) is inline — no runtime.
     expect(harness.count).toBe(0);
@@ -100,6 +104,7 @@ describe("thin-entry lazy boundary (plan/143)", () => {
     expect(ext.waitingSdkInput).toBe(true);
     expect(sent).toHaveLength(1);
     expect((sent[0] as { customType?: string }).customType).toBe("remote-pi:ui-prompt");
+    expect(sendOptions[0]).toEqual({ triggerTurn: false });
     handlers.get("ui_prompt_end")!({} as never, fakeCtx as never);
     expect(ext.waitingSdkInput).toBe(false);
     // No second message: the transition mirror keys off
@@ -138,7 +143,9 @@ describe("thin-entry lazy boundary (plan/143)", () => {
       // auto-start gate passes (daemon + direct config) → deferred fwd starts
       // the runtime import, now parked behind the gate.
       handlers.get("session_start")!({ type: "session_start" } as never, fakeCtx as never);
-      expect(harness.count).toBe(1);
+      // Dynamic-import mocking starts asynchronously under Vitest 4. Wait for
+      // the factory to begin, while its gate still blocks the actual resolve.
+      await vi.waitFor(() => expect(harness.count).toBe(1));
       expect(harness.resolved).toBe(0);
 
       // shutdown interleaves BEFORE the import resolves: inline teardown sets

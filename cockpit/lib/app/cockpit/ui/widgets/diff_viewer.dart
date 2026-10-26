@@ -196,6 +196,15 @@ class _DiffBodyState extends State<_DiffBody> {
         context.t.cockpit.fileTreePanel.diffBinaryFile,
       );
     }
+    if (diff.kind == FileDiffKind.error) {
+      return _messageBody(
+        context,
+        diff,
+        context.t.cockpit.fileTreePanel.diffError(
+          detail: diff.errorDetail ?? '',
+        ),
+      );
+    }
     if (diff.kind == FileDiffKind.unchanged || diff.hunks.isEmpty) {
       return _messageBody(
         context,

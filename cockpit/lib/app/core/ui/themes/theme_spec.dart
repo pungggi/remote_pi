@@ -206,4 +206,4 @@ class CockpitThemeSpec {
 /// propósito — quem escreve tema quer o autocomplete do formato atual, e o
 /// `$schema` não participa do parse (o app ignora o campo ao ler o tema).
 const String themeSchemaUrl =
-    'https://raw.githubusercontent.com/jacobaraujo7/remote_pi/main/cockpit/docs/theme.schema.json';
+    'https://raw.githubusercontent.com/pungggi/remote_pi/main/cockpit/docs/theme.schema.json';

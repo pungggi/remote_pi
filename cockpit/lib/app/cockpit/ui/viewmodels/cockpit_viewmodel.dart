@@ -1,20 +1,32 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io'
-    show Directory, File, FileSystemEntity, FileSystemException, Platform;
+    show
+        Directory,
+        File,
+        FileMode,
+        FileSystemEntity,
+        FileSystemEntityType,
+        FileSystemException,
+        Platform;
 import 'dart:math' show max;
 
+import 'package:cockpit/app/core/data/diagnostics/diagnostics_log.dart';
+import 'package:cockpit/app/core/data/diagnostics/performance_diagnostics.dart';
 import 'package:cockpit/app/core/data/setup/remote_pi_resolver.dart';
+import 'package:flutter/scheduler.dart' show SchedulerBinding;
 import 'package:flutter/services.dart' show PlatformException;
 import 'package:url_launcher/url_launcher.dart' as url_launcher;
+import 'package:window_manager/window_manager.dart';
 
 import 'package:cockpit/app/cockpit/domain/contracts/app_launcher.dart';
+import 'package:cockpit/app/cockpit/domain/services/terminal_path_resolver.dart';
 import 'package:cockpit/app/cockpit/domain/services/db_query_service.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/content_searcher.dart';
+import 'package:cockpit/app/cockpit/domain/contracts/file_change_watcher.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/file_reader.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/file_searcher.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/file_system_reader.dart';
-import 'package:cockpit/app/cockpit/domain/contracts/folder_lister.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/git_command_runner.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/git_diff_reader.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/git_history_reader.dart';
@@ -25,16 +37,16 @@ import 'package:cockpit/app/cockpit/domain/services/scm_line_decoration_calculat
 import 'package:cockpit/app/cockpit/domain/contracts/http_request_runner.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/layout_loader.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/project_repository.dart';
-import 'package:cockpit/app/cockpit/domain/contracts/rpc_gateway_factory.dart';
-import 'package:cockpit/app/cockpit/domain/contracts/session_history.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_gateway_factory.dart';
 import 'package:cockpit/app/core/domain/contracts/terminal_profile_resolver.dart';
+import 'package:cockpit/app/core/domain/contracts/neovim_gateway.dart';
 import 'package:cockpit/app/core/domain/entities/terminal_profile.dart';
 import 'package:cockpit/app/core/domain/entities/app_settings.dart';
 import 'package:cockpit/app/core/domain/entities/sound_event.dart';
 import 'package:cockpit/app/core/domain/entities/automation.dart';
 import 'package:cockpit/app/core/domain/exceptions/automation_error.dart';
 import 'package:cockpit/app/core/domain/exceptions/file_operation_error.dart';
+import 'package:cockpit/app/core/domain/exceptions/neovim_error.dart';
 import 'package:cockpit/app/core/domain/services/commit_message_prompt.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_status_server.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/workspace_layout_store.dart';
@@ -42,22 +54,33 @@ import 'package:cockpit/app/cockpit/domain/contracts/worktree_manager.dart';
 import 'package:cockpit/app/cockpit/domain/entities/content_search.dart';
 import 'package:cockpit/app/cockpit/domain/entities/file_diff.dart';
 import 'package:cockpit/app/cockpit/domain/entities/file_node.dart';
+import 'package:cockpit/app/cockpit/domain/entities/gallery_template.dart';
+import 'package:cockpit/app/core/utils/workspace_env.dart';
+import 'package:cockpit/app/cockpit/domain/services/workspace_cycle.dart';
+import 'package:cockpit/app/cockpit/ui/session/document_host.dart';
+import 'package:cockpit/app/cockpit/data/panel/panel_command.dart';
+import 'package:cockpit/app/cockpit/data/remote/remote_host_terminal_gateway.dart';
+import 'package:cockpit/i18n/strings.g.dart' as slang;
+import 'package:cockpit/app/cockpit/domain/entities/notebook_document.dart';
 import 'package:cockpit/app/cockpit/domain/entities/file_view.dart';
+import 'package:cockpit/app/cockpit/domain/entities/kanban_document.dart';
+import 'package:cockpit/app/cockpit/domain/services/kanban_editor.dart';
 import 'package:cockpit/app/cockpit/domain/entities/git_commit.dart';
 import 'package:cockpit/app/cockpit/domain/entities/git_history_commit.dart';
 import 'package:cockpit/app/cockpit/domain/entities/git_history_file_change.dart';
 import 'package:cockpit/app/cockpit/domain/git_history_parsers.dart';
 import 'package:cockpit/app/cockpit/domain/entities/layout_spec.dart';
+import 'package:cockpit/app/cockpit/domain/services/layout_apply_runner.dart';
+import 'package:cockpit/app/cockpit/domain/services/layout_destinations.dart';
 import 'package:cockpit/app/cockpit/domain/entities/git_file_status.dart';
 import 'package:cockpit/app/cockpit/domain/entities/git_info.dart';
 import 'package:cockpit/app/cockpit/domain/entities/launchable_app.dart';
 import 'package:cockpit/app/cockpit/domain/entities/project.dart';
 import 'package:cockpit/app/cockpit/domain/entities/realm.dart';
 import 'package:cockpit/app/cockpit/domain/value_objects/uid.dart';
-import 'package:cockpit/app/cockpit/domain/entities/session_info.dart';
-import 'package:cockpit/app/cockpit/domain/entities/thinking_level.dart';
 import 'package:cockpit/app/cockpit/domain/entities/worktree.dart';
 import 'package:cockpit/app/cockpit/domain/services/worktree_reconciler.dart';
+import 'package:cockpit/app/cockpit/domain/services/file_editor_facade.dart';
 import 'package:cockpit/app/cockpit/ui/session/scm_line_decoration_coordinator.dart';
 import 'package:cockpit/app/core/data/lsp/lsp_server_pool.dart';
 import 'package:cockpit/app/core/data/lsp/lsp_text_edit.dart';
@@ -68,10 +91,12 @@ import 'package:cockpit/app/core/ui/automation_controller.dart';
 import 'package:cockpit/app/core/utils/path_utils.dart';
 import 'package:cockpit/app/core/utils/platform_kind.dart';
 import 'package:cockpit/app/core/utils/user_home.dart';
-import 'package:cockpit/app/cockpit/ui/session/agent_session.dart';
+import 'package:cockpit/app/cockpit/ui/session/empty_tab.dart';
 import 'package:cockpit/app/cockpit/ui/session/diff_viewer_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/file_viewer_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/mongo_browser_session.dart';
+import 'package:cockpit/app/cockpit/ui/session/notebook_session.dart';
+import 'package:cockpit/app/cockpit/ui/session/neovim_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/pane_item.dart';
 import 'package:cockpit/app/cockpit/domain/entities/browser_capability.dart';
 import 'package:cockpit/app/cockpit/ui/session/browser_session.dart';
@@ -79,19 +104,23 @@ import 'package:cockpit/app/cockpit/ui/session/redis_browser_session.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/task_discovery.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/task_runner_gateway.dart';
 import 'package:cockpit/app/cockpit/ui/session/task_output_session.dart';
+import 'package:cockpit/app/cockpit/ui/session/telemetry_case_session.dart';
 import 'package:cockpit/app/cockpit/ui/session/task_terminal_store.dart';
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_scrollback_store.dart';
 import 'package:cockpit/app/cockpit/domain/services/terminal_harness_monitor.dart';
 import 'package:cockpit/app/cockpit/ui/session/terminal_session.dart';
 import 'package:cockpit/app/cockpit/ui/states/pane_node.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/cockpit_cli_handler.dart';
+import 'package:cockpit/app/cockpit/ui/viewmodels/telemetry_cli_handler.dart';
+import 'package:cockpit/app/cockpit/domain/contracts/telemetry_ingest.dart';
+import 'package:cockpit/app/cockpit/domain/contracts/telemetry_store.dart';
 import 'package:cockpit_remote/cockpit_remote.dart' show RemoteCliCommand;
 import 'package:cockpit/app/cockpit/data/filesystem/unified_diff_parser.dart';
 import 'package:cockpit/app/cockpit/domain/entities/remote_host.dart';
 import 'package:cockpit/app/cockpit/domain/entities/remote_workspace_pin.dart';
-import 'package:cockpit_core/cockpit_core.dart' show GitRunResult;
+import 'package:cockpit_core/cockpit_core.dart' show GitException, GitRunResult;
 import 'package:cockpit_remote/cockpit_remote.dart'
-    show RemoteGitService, RemoteTurnStatus;
+    show RemoteGitService, RemoteRpcException, RemoteTurnStatus;
 import 'package:cockpit/app/cockpit/domain/contracts/terminal_gateway.dart';
 import 'package:cockpit/app/cockpit/ui/remote/remote_hosts_controller.dart';
 import 'package:cockpit/app/cockpit/ui/viewmodels/file_ops_controller.dart';
@@ -112,17 +141,15 @@ import 'package:flutter/scheduler.dart';
 ///
 /// As operações de pane agem no **projeto ativo** ([_selectedProjectId]) — o
 /// `IndexedStack` garante que só o projeto ativo é interativo.
-class CockpitViewModel extends ChangeNotifier {
+class CockpitViewModel extends ChangeNotifier implements DocumentHost {
   CockpitViewModel(
     this._projects,
-    this._factory,
-    this._folders,
-    this._history,
     this._fileSystem,
     this._terminalFactory,
     this._sidecar,
     this._terminalProfiles,
     this._fileReader,
+    this._fileChanges,
     this._layoutStore,
     this.git,
     this._fileSearcher,
@@ -150,7 +177,16 @@ class CockpitViewModel extends ChangeNotifier {
     this.remote,
     this.files,
     this.notifications,
+    this._neovim,
+    this._telemetryStores,
+    this._telemetryIngest,
   ) {
+    _fileEditorFacade = FileEditorFacade(
+      FileEditorRegistry({
+        FileEditorEngine.cockpit: _openWithCockpitEditor,
+        FileEditorEngine.neovim: _openWithNeovimEditor,
+      }),
+    );
     _worktreeReconciler = WorktreeReconciler(_worktreeMgr);
     // Contexto do shell que o GitController precisa (page-scoped, mesma vida).
     git
@@ -170,6 +206,9 @@ class CockpitViewModel extends ChangeNotifier {
       ..selectProject = selectProject
       ..forkOrigin = ((forkId) => _forkOrigin[forkId])
       ..applyForks = _applyRemoteForks;
+    // Retry automático só pro host do workspace selecionado: host fora de
+    // foco não fica spawnando ssh a cada 30s enquanto ninguém olha.
+    _remoteHosts.isHostFocused = (hostId) => remote.activeHost?.id == hostId;
     files
       ..openFile = openFile
       ..retargetSessions = _retargetSessions
@@ -178,7 +217,7 @@ class CockpitViewModel extends ChangeNotifier {
     notifications
       ..focusedTabId = (() => _focusedAgentId)
       ..workspaceName = ((projectId) => _projectById(projectId)?.name ?? '');
-    notifications.addListener(notifyListeners);
+    notifications.addListener(_onNotificationsChanged);
     files.addListener(notifyListeners);
     remote.addListener(notifyListeners);
     _lastGitRevision = git.revision;
@@ -250,9 +289,7 @@ class CockpitViewModel extends ChangeNotifier {
   final LayoutLoader _layoutLoader;
   final RemoteHostsController _remoteHosts;
   final TerminalHarnessMonitor _harnessMonitor;
-  final RpcGatewayFactory _factory;
-  final FolderLister _folders;
-  final SessionHistory _history;
+  final NeovimGateway _neovim;
   final FileSystemReader _fileSystem;
   final TerminalGatewayFactory _terminalFactory;
 
@@ -261,6 +298,9 @@ class CockpitViewModel extends ChangeNotifier {
   final TurnStatusSource _sidecar;
   final TerminalProfileResolver _terminalProfiles;
   final FileReader _fileReader;
+
+  /// Live-reload de abas de arquivo e cadernos (rename atômico, re-arm, poll).
+  final FileChangeWatcher _fileChanges;
   final WorkspaceLayoutStore _layoutStore;
 
   /// Estado git extraído (info/roots/watcher/poll/comandos). O VM delega as
@@ -313,6 +353,7 @@ class CockpitViewModel extends ChangeNotifier {
   }
 
   /// Garante coordenador SCM na sessão (abertura, restore ou mount do FileViewer).
+  @override
   void ensureScmCoordinator(FileViewerSession session) =>
       _ensureScmCoordinator(session);
 
@@ -347,6 +388,13 @@ class CockpitViewModel extends ChangeNotifier {
   String? _selectedProjectId;
   final Map<String, PaneItem> _sessions = <String, PaneItem>{};
 
+  /// Fila por workspace: dois cliques simultâneos nunca podem observar "sem
+  /// Neovim" e criar duas instâncias.
+  final Map<String, Future<void>> _neovimTails = <String, Future<void>>{};
+
+  /// Erros são tipados; a página traduz e apresenta o toast na borda da UI.
+  void Function(NeovimError error)? onNeovimError;
+
   /// Realms (conjuntos de workspaces) e o recorte ativo. [_projectList] guarda
   /// os workspaces de TODOS os realms (sessões de realms ocultos seguem vivas);
   /// só o filtro de exibição ([rootProjects]) muda com [realmCtrl.activeId].
@@ -358,13 +406,21 @@ class CockpitViewModel extends ChangeNotifier {
 
   /// Watcher por aba de arquivo: relê o conteúdo ao vivo quando o disco muda
   /// (o agente edita o arquivo). Chaveado pelo id da sessão; cancelado no
-  /// `_disposeSession`. O [_fileWatchDebounce] junta rajadas de eventos do editor.
+  /// `_disposeSession`. O debounce da rajada de eventos é do [_fileChanges].
   final Map<String, StreamSubscription<void>> _fileWatchers =
       <String, StreamSubscription<void>>{};
-  final Map<String, Timer> _fileWatchDebounce = <String, Timer>{};
+
+  /// Leitura mais recente disparada por aba: duas mudanças seguidas geram
+  /// duas leituras concorrentes, e só a última pode ser adotada.
+  final Map<String, int> _fileWatchSeq = <String, int>{};
 
   /// Árvore de splits por projeto (workspace).
   final Map<String, PaneNode> _trees = <String, PaneNode>{};
+
+  /// Evita restaurar o mesmo layout duas vezes se a seleção mudar durante o load.
+  final Map<String, Future<void>> _projectActivations =
+      <String, Future<void>>{};
+  int _projectSelectionGeneration = 0;
 
   /// Pane focada por projeto.
   final Map<String, String> _focused = <String, String>{};
@@ -422,8 +478,8 @@ class CockpitViewModel extends ChangeNotifier {
   /// layout salvo (e daí no default expandido) enquanto não houver override.
   final Map<String, bool> _worktreesExpanded = <String, bool>{};
 
-  /// `true` enquanto reconstruímos um projeto — evita gravar layout meio-feito.
-  bool _restoring = false;
+  /// Quantos projetos estão em restore — evita gravar layout meio-feito.
+  int _restoringCount = 0;
 
   /// Worktrees (forks) por workspace raiz, na ordem do `git worktree list`
   /// (decisão 20). Reconciliado contra o git nos ganchos de refresh; a
@@ -431,6 +487,7 @@ class CockpitViewModel extends ChangeNotifier {
   /// também entram em [_projectList] (pro IndexedStack e o lookup).
   final Map<String, List<Project>> _worktrees = <String, List<Project>>{};
   late final WorktreeReconciler _worktreeReconciler;
+  int _worktreePollCursor = 0;
 
   /// Root (path absoluto) que **originou** cada fork (fork.id → root path).
   /// Em single-root é o próprio path do pai; em multi-root, o repo filho de
@@ -516,6 +573,17 @@ class CockpitViewModel extends ChangeNotifier {
     _defaultTerminalEngine = engine;
     _taskTerminals.setDefaultEngine(engine);
   }
+
+  /// Espelha `AppSettings.closeTabOnShellExit`: quando ligado, uma aba de shell
+  /// fecha ao encerrar o processo sozinho (ver [_watchTerminalSession] /
+  /// `onProcessExit`). A `CockpitPage` empurra o valor (app-scoped → VM).
+  bool _closeTabOnShellExit = false;
+  void setCloseTabOnShellExit(bool value) => _closeTabOnShellExit = value;
+
+  late final FileEditorFacade _fileEditorFacade;
+
+  void setFileEditorEngine(FileEditorEngine engine) =>
+      _fileEditorFacade.engine = engine;
 
   /// Perfis descobertos, para o seletor ao lado do `+`. Já aquecidos no boot.
   List<TerminalProfile> get terminalProfiles =>
@@ -665,6 +733,12 @@ class CockpitViewModel extends ChangeNotifier {
 
   /// Handler da CLI interna `cockpit` — colaborador extraído; criado aqui
   /// (e não no módulo) porque referencia o próprio VM.
+  /// Fábrica de contexto de tasks remoto pra CLI (mesma da página/painel).
+  set remoteTaskContextFor(
+    ({TaskDiscovery discovery, TaskRunnerGateway runner})? Function(String)?
+    factory,
+  ) => _cli.remoteContextFor = factory;
+
   late final CockpitCliHandler _cli = CockpitCliHandler(
     this,
     _dbService,
@@ -672,14 +746,22 @@ class CockpitViewModel extends ChangeNotifier {
     _taskDiscovery,
     _taskRunner,
     _taskTerminals,
+    TelemetryCliHandler(
+      _telemetryStores,
+      _telemetryIngest,
+      lastEditAt: (id) => _lastEditAt[id],
+      rootsOf: rootsOf,
+    ),
   );
 
-  /// `true` se existe ao menos uma aba de agente **real** (não o placeholder
-  /// vazio `AgentStatus.empty`). Usado pra impedir desligar `enableAgent` com
-  /// agentes em uso.
-  bool get hasAgentTabsInUse => _sessions.values.whereType<AgentSession>().any(
-    (a) => a.status != AgentStatus.empty,
-  );
+  // Telemetria (plano 66): stores por workspace + ingest, e o último save do
+  // editor por projeto (janela `--since-edit` da CLI).
+  final TelemetryStoreProvider _telemetryStores;
+  final TelemetryIngest _telemetryIngest;
+  final _lastEditAt = <String, DateTime>{};
+
+  /// Último save do editor no projeto (`null` = nenhum nesta sessão).
+  DateTime? lastEditAt(String projectId) => _lastEditAt[projectId];
 
   /// Roots git do projeto. Sempre não-vazio: single-root = `[path]`
   /// (comportamento histórico, N=1); multi-root = as filhas-repo derivadas.
@@ -695,6 +777,12 @@ class CockpitViewModel extends ChangeNotifier {
   /// `true` se [projectId] é um workspace de host remoto.
   bool _isRemote(String projectId) =>
       projectById(projectId)?.isRemoteTerminal ?? false;
+
+  /// Arquivo do projeto pode ir para uma janela de documento? A janela lê o
+  /// caminho do disco LOCAL; num workspace remoto ela abriria "arquivo não
+  /// encontrado" (ou, pior, um arquivo local homônimo). Fica de fora até a
+  /// janela saber ler do host.
+  bool canOpenInWindow(String projectId) => !_isRemote(projectId);
 
   /// Estado git de uma **root** específica ([rootPath] absoluto) do workspace
   /// ativo. Para perguntar por outro workspace (badge do rail), use
@@ -767,8 +855,14 @@ class CockpitViewModel extends ChangeNotifier {
   /// Filhos de uma pasta (lazy-load da árvore de arquivos). Roteia pro
   /// filesystem REMOTO quando o workspace ativo é um host remoto (plano 58);
   /// senão, o filesystem local.
-  Future<List<FileNode>> listChildren(String path) async {
-    final host = _activeRemoteHost();
+  @override
+  Future<List<FileNode>> listChildren(
+    String path, {
+    String? workspaceId,
+  }) async {
+    final host = workspaceId == null
+        ? _activeRemoteHost()
+        : remoteHostForWorkspace(workspaceId);
     if (host == null) return _fileSystem.children(path);
     try {
       final service = await _remoteHosts.fileServiceFor(host);
@@ -783,14 +877,21 @@ class CockpitViewModel extends ChangeNotifier {
         final joined = path.endsWith('/')
             ? '$path${e.name}'
             : '$path/${e.name}';
-        (e.isDirectory ? dirs : files).add(
+        // `.notebook` ordena entre os arquivos (mesma regra do lister local).
+        (e.isDirectory && !isNotebookFolder(e.name) ? dirs : files).add(
           FileNode(name: e.name, path: joined, isDirectory: e.isDirectory),
         );
       }
+      int byName(FileNode a, FileNode b) =>
+          a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      dirs.sort(byName);
+      files.sort(byName);
       return [...dirs, ...files];
-    } catch (_) {
+    } on Object catch (e) {
       // Falha de conexão/permissão → árvore vazia (sem crash); o badge de
-      // conexão do host já sinaliza o estado.
+      // conexão do host já sinaliza o estado. Fica registrado: "árvore vazia"
+      // sem motivo era o sintoma que ninguém conseguia explicar.
+      DiagnosticsLog.instance.warn('remote-tree', 'listing failed', error: e);
       return const <FileNode>[];
     }
   }
@@ -841,8 +942,13 @@ class CockpitViewModel extends ChangeNotifier {
       }
       if (ext == 'svg') return FileViewSvg(path, text);
       return FileViewText(text, language: ext.isEmpty ? null : ext);
-    } catch (_) {
+    } on Object catch (e) {
       // fs.read falhou (too_large, permissão, conexão) → não abre.
+      DiagnosticsLog.instance.warn(
+        'remote-read',
+        'read failed: $path',
+        error: e,
+      );
       return const FileViewUnsupported();
     }
   }
@@ -864,8 +970,15 @@ class CockpitViewModel extends ChangeNotifier {
       final (hunks, kind) = parseUnifiedDiff(raw);
       if (hunks.isEmpty) return FileDiff.unchanged(absPath);
       return FileDiff(path: absPath, kind: kind, hunks: hunks);
-    } catch (_) {
-      return FileDiff.unchanged(absPath);
+    } on GitException catch (e) {
+      // Erro vira estado tipado com o detalhe cru; a UI traduz a moldura.
+      // Antes caía em `unchanged` e o viewer dizia "No changes" pra qualquer
+      // falha (root errada, RPC caído), escondendo a causa.
+      return FileDiff.error(absPath, e.detail ?? e.kind.name);
+    } on RemoteRpcException catch (e) {
+      return FileDiff.error(absPath, '${e.code}: ${e.detail ?? ''}');
+    } on Object catch (e) {
+      return FileDiff.error(absPath, '$e');
     }
   }
 
@@ -975,19 +1088,21 @@ class CockpitViewModel extends ChangeNotifier {
     final paneId = projectId == null ? null : _focused[projectId];
     if (projectId == null || tree == null || paneId == null) return;
 
-    // Já aberta nesta pane? só foca.
+    // Já aberta? só foca, na pane que DE FATO contém a aba. Gravar o id na
+    // pane focada deixava esta com `active` órfão (aba de outra pane): todas
+    // as suas abas viravam inativas e o terminal sumia até o próximo clique.
     for (final entry in _sessions.entries) {
       final s = entry.value;
       if (s is TaskOutputSession &&
           s.taskId == taskId &&
           s.projectId == projectId) {
-        _trees[projectId] = updateLeaf(
-          tree,
-          paneId,
-          (p) => p.copyWith(active: entry.key),
-        );
-        notifyListeners();
-        return;
+        for (final leaf in leaves(tree)) {
+          if (leaf.tabs.contains(entry.key)) {
+            selectTab(leaf.id, entry.key);
+            return;
+          }
+        }
+        break;
       }
     }
 
@@ -1003,9 +1118,7 @@ class CockpitViewModel extends ChangeNotifier {
 
     final lf = findLeaf(tree, paneId);
     final only = lf?.tabs.length == 1 ? _sessions[lf!.tabs.first] : null;
-    if (lf != null &&
-        only is AgentSession &&
-        only.status == AgentStatus.empty) {
+    if (lf != null && only is EmptyTab) {
       // Pane só com placeholder vazio → substitui.
       final emptyId = lf.tabs.first;
       _trees[projectId] = updateLeaf(
@@ -1024,21 +1137,209 @@ class CockpitViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// `true` se há aba aberta pro caso [fingerprint] no workspace ativo.
+  bool isTelemetryCaseOpen(String fingerprint) => _sessions.values.any(
+    (s) =>
+        s is TelemetryCaseSession &&
+        s.fingerprint == fingerprint &&
+        s.projectId == _selectedProjectId,
+  );
+
+  /// Abre (ou foca) a aba de detalhe de um caso da Telemetry (plano 66).
+  /// Mesma mecânica do [openTaskOutput]: reusa a aba existente, senão cria na
+  /// pane focada (substituindo um [EmptyTab] solitário).
+  void openTelemetryCase(String fingerprint, String title) {
+    final projectId = _selectedProjectId;
+    final tree = _activeTree;
+    final paneId = projectId == null ? null : _focused[projectId];
+    if (projectId == null || tree == null || paneId == null) return;
+
+    for (final entry in _sessions.entries) {
+      final s = entry.value;
+      if (s is TelemetryCaseSession &&
+          s.fingerprint == fingerprint &&
+          s.projectId == projectId) {
+        for (final leaf in leaves(tree)) {
+          if (leaf.tabs.contains(entry.key)) {
+            selectTab(leaf.id, entry.key);
+            return;
+          }
+        }
+        break;
+      }
+    }
+
+    final session = TelemetryCaseSession(
+      id: _nid('y'),
+      projectId: projectId,
+      fingerprint: fingerprint,
+      title: title,
+      workingDirectory: selectedProject?.path ?? '',
+    );
+    _sessions[session.id] = session;
+
+    final lf = findLeaf(tree, paneId);
+    final only = lf?.tabs.length == 1 ? _sessions[lf!.tabs.first] : null;
+    if (lf != null && only is EmptyTab) {
+      final emptyId = lf.tabs.first;
+      _trees[projectId] = updateLeaf(
+        tree,
+        paneId,
+        (p) => p.copyWith(tabs: [session.id], active: session.id),
+      );
+      _disposeSession(emptyId);
+    } else {
+      _trees[projectId] = updateLeaf(
+        tree,
+        paneId,
+        (p) => p.copyWith(tabs: [...p.tabs, session.id], active: session.id),
+      );
+    }
+    notifyListeners();
+  }
+
+  /// Guarda a visualização escolhida num `.kanban` (quadro ou lista) e a
+  /// persiste no layout — reabrir o app devolve a aba como o usuário a deixou.
+  void setKanbanListView(String sessionId, bool asList) {
+    final s = _sessions[sessionId];
+    if (s is! FileViewerSession) return;
+    s.setBoardAsList(asList);
+    _scheduleSave(s.projectId);
+  }
+
+  /// Adota o `title:` do frontmatter de um `.kanban` como rótulo da aba.
+  ///
+  /// Chamado em todo ponto onde a `view` de um viewer é preenchida (abrir,
+  /// reusar preview, restaurar layout, salvar, recarregar) — assim o nome vem
+  /// do ARQUIVO, e não só do layout: quem clonar o repo abre o quadro já com o
+  /// nome certo, e o agente que editar o frontmatter vê a aba acompanhar.
+  void _applyKanbanBoardTitle(FileViewerSession s) {
+    if (!s.path.toLowerCase().endsWith('.kanban')) return;
+    final text = switch (s.view) {
+      FileViewText(:final text) => text,
+      FileViewMarkdown(:final text) => text,
+      _ => null,
+    };
+    if (text == null) return;
+    final title = KanbanDocument.parse(text).title;
+    // Sem `title:` no arquivo o rótulo some: o arquivo é a fonte de verdade
+    // deste nome, então um rótulo velho no layout não pode sobreviver a ele.
+    s.restoreManualLabel(title);
+  }
+
+  /// Grava o rótulo da aba no frontmatter do `.kanban` (ou o remove, com
+  /// `null`). Silencioso para qualquer outra extensão.
+  Future<void> _writeKanbanBoardTitle(
+    FileViewerSession s,
+    String? title,
+  ) async {
+    if (!s.path.toLowerCase().endsWith('.kanban')) return;
+    final text = switch (s.view) {
+      FileViewText(:final text) => text,
+      FileViewMarkdown(:final text) => text,
+      _ => null,
+    };
+    if (text == null) return;
+    final doc = KanbanDocument.parse(text);
+    if ((doc.title ?? '') == (title ?? '')) return;
+    await saveFile(s.id, KanbanEditor.setBoardTitle(doc, title));
+  }
+
+  /// Abre [path] mostrando o TEXTO cru, mesmo quando a extensão tem editor
+  /// próprio (`.kanban`). Reusa o [openFile] e só liga a chave na sessão
+  /// resultante — enfiar o modo nos quatro caminhos de abertura (já aberta,
+  /// remota, preview reusado, aba nova) espalharia a decisão por todos eles.
+  Future<void> openFileAsSource(String path) async {
+    final result = await _dispatchFileOpen(
+      path,
+      isPreview: false,
+      asSource: true,
+    );
+    if (result?.engine != FileEditorEngine.cockpit ||
+        result?.outcome != FileOpenOutcome.opened) {
+      return;
+    }
+    for (final s in _sessions.values) {
+      if (s is FileViewerSession && s.path == path && !s.rawSource) {
+        s.toggleRawSource();
+      }
+    }
+  }
+
   Future<void> openFile(
     String path, {
     String? inPane,
     bool isPreview = true,
     int? revealLine,
   }) async {
+    await _dispatchFileOpen(
+      path,
+      inPane: inPane,
+      isPreview: isPreview,
+      revealLine: revealLine,
+    );
+  }
+
+  Future<FileOpenResult?> _dispatchFileOpen(
+    String path, {
+    String? inPane,
+    bool isPreview = true,
+    int? revealLine,
+    bool asSource = false,
+  }) async {
     final projectId = _selectedProjectId;
     final tree = _activeTree;
     final paneId = inPane ?? (projectId == null ? null : _focused[projectId]);
-    if (projectId == null || tree == null || paneId == null) return;
+    if (projectId == null || tree == null || paneId == null) return null;
+    return _fileEditorFacade.open(
+      FileOpenRequest(
+        path: path,
+        projectId: projectId,
+        paneId: paneId,
+        isRemote: _isRemoteWorkspace(projectId),
+        isPreview: isPreview,
+        revealLine: revealLine,
+        asSource: asSource,
+        isNotebook: isNotebookFolder(path.split('/').last),
+        focusPane: inPane != null,
+      ),
+    );
+  }
+
+  Future<FileOpenOutcome> _openWithCockpitEditor(
+    FileOpenRequest request,
+  ) async {
+    if (request.isNotebook) {
+      openNotebook(request.path);
+      return FileOpenOutcome.opened;
+    }
+    await _openFileInCockpit(request);
+    return FileOpenOutcome.opened;
+  }
+
+  Future<FileOpenOutcome> _openWithNeovimEditor(FileOpenRequest request) async {
+    final opened = await _enqueueNeovimOpen(
+      request.projectId,
+      request.paneId,
+      request.path,
+      line: request.revealLine,
+    );
+    return opened ? FileOpenOutcome.opened : FileOpenOutcome.notHandled;
+  }
+
+  Future<void> _openFileInCockpit(FileOpenRequest request) async {
+    final path = request.path;
+    final projectId = request.projectId;
+    final tree = _trees[projectId];
+    final paneId = request.paneId;
+    final isPreview = request.isPreview;
+    final revealLine = request.revealLine;
+    if (tree == null) return;
     final leaf = findLeaf(tree, paneId);
     if (leaf == null) return;
     _recordHistoryBeforeSwitch(paneId);
     // Soltar um arquivo numa pane específica também a foca.
-    if (inPane != null) _focused[projectId] = inPane;
+    if (request.focusPane) _focused[projectId] = paneId;
 
     // Se isPreview, tenta reutilizar a aba de preview existente ou substituir a ativa.
     // Se não é preview, cria uma aba normal (comportamento original).
@@ -1090,6 +1391,7 @@ class CockpitViewModel extends ChangeNotifier {
     if (isPreview && previewCandidate != null) {
       previewCandidate.path = path;
       previewCandidate.view = view;
+      _applyKanbanBoardTitle(previewCandidate);
       previewCandidate.dirty = false;
       previewCandidate.revealLine = null;
       previewCandidate.setScmDecorations(ScmLineDecorations.empty);
@@ -1117,11 +1419,189 @@ class CockpitViewModel extends ChangeNotifier {
       view: view,
       isPreview: isPreview,
     );
+    _applyKanbanBoardTitle(viewer);
     _ensureScmCoordinator(viewer);
     if (revealLine != null) viewer.reveal(revealLine, select: false);
     _sessions[viewer.id] = viewer;
     _watchFileViewer(viewer);
     _placeNewViewer(viewer, projectId, paneId, tree, isPreview: isPreview);
+  }
+
+  Future<bool> _enqueueNeovimOpen(
+    String projectId,
+    String paneId,
+    String path, {
+    int? line,
+  }) async {
+    final previous = _neovimTails[projectId] ?? Future<void>.value();
+    final turn = Completer<void>();
+    final tail = turn.future;
+    _neovimTails[projectId] = tail;
+    await previous;
+    try {
+      return await _openInNeovim(projectId, paneId, path, line: line);
+    } finally {
+      turn.complete();
+      if (identical(_neovimTails[projectId], tail)) {
+        _neovimTails.remove(projectId);
+      }
+    }
+  }
+
+  Future<bool> _openInNeovim(
+    String projectId,
+    String paneId,
+    String path, {
+    int? line,
+  }) async {
+    final executable = await _neovim.executable();
+    if (executable == null) {
+      onNeovimError?.call(const NeovimError(NeovimErrorKind.unavailable));
+      return false;
+    }
+
+    NeovimSession? existing;
+    for (final session in _sessions.values) {
+      if (session is NeovimSession && session.projectId == projectId) {
+        existing = session;
+        break;
+      }
+    }
+
+    if (existing != null && await _waitForNeovim(existing)) {
+      // A aba pode ter ficado desmontada enquanto o pane/janela mudava de
+      // tamanho. Ativá-la primeiro permite que a view publique a grade atual;
+      // só então pedimos ao Neovim que desenhe o novo buffer.
+      _focusNeovim(existing);
+      await SchedulerBinding.instance.endOfFrame;
+      await existing.synchronizeDisplay();
+      final result = await existing.open(path, line: line);
+      if (result.isSuccess) {
+        return true;
+      }
+    }
+
+    final currentTree = _trees[projectId];
+    if (currentTree == null) return false;
+    final oldLeafId = existing == null
+        ? null
+        : leafOfTab(projectId, existing.id);
+    final targetPane = oldLeafId ?? paneId;
+    final leaf = findLeaf(currentTree, targetPane);
+    if (leaf == null) return false;
+
+    if (existing != null) {
+      _sessions.remove(existing.id);
+      await existing.dispose();
+    }
+
+    final address = _neovim.serverAddress(projectId);
+    await _neovim.prepareServer(address);
+    final session = NeovimSession(
+      id: _nid('n'),
+      projectId: projectId,
+      workingDirectory: _projectById(projectId)?.path ?? '',
+      terminalGateway: _gatewayForProject(projectId),
+      neovimGateway: _neovim,
+      executable: executable,
+      serverAddress: address,
+      lastPath: path,
+      lastLine: line,
+      engine: _defaultTerminalEngine,
+    );
+    _watchNeovimSession(session);
+    _sessions[session.id] = session;
+
+    final oldId = existing?.id;
+    final active = _sessions[leaf.active];
+    final replaceEmpty = active is EmptyTab;
+    _trees[projectId] = updateLeaf(currentTree, leaf.id, (p) {
+      if (oldId != null && p.tabs.contains(oldId)) {
+        return p.copyWith(
+          tabs: p.tabs.map((id) => id == oldId ? session.id : id).toList(),
+          active: session.id,
+        );
+      }
+      if (replaceEmpty) {
+        return p.copyWith(
+          tabs: p.tabs.map((id) => id == p.active ? session.id : id).toList(),
+          active: session.id,
+        );
+      }
+      return p.copyWith(tabs: [...p.tabs, session.id], active: session.id);
+    });
+    if (replaceEmpty) _disposeSession(leaf.active);
+    _focused[projectId] = leaf.id;
+    _requestPaneKeyboard();
+    notifyListeners();
+    if (!await _waitForNeovim(session)) {
+      onNeovimError?.call(const NeovimError(NeovimErrorKind.connectionFailed));
+      if (_sessions[session.id] == session) {
+        closeTab(leaf.id, session.id);
+      }
+      return false;
+    }
+    await SchedulerBinding.instance.endOfFrame;
+    await session.synchronizeDisplay();
+    return true;
+  }
+
+  void _watchNeovimSession(NeovimSession session) {
+    session.onActivePathChanged = (path) {
+      unawaited(_revealNeovimPath(session, path));
+    };
+    // A aba é o editor: saiu do Neovim (`:q`, `:wq`, ou o processo morreu),
+    // a aba vai junto em vez de virar um terminal morto que ninguém usa.
+    session.onProcessExit = () {
+      if (_sessions[session.id] != session) return;
+      final paneId = leafOfTab(session.projectId, session.id);
+      if (paneId == null) return;
+      _closeTabIn(
+        session.projectId,
+        paneId,
+        session.id,
+        disposeAfterFrame: true,
+      );
+    };
+  }
+
+  Future<void> _revealNeovimPath(NeovimSession session, String path) async {
+    if (_sessions[session.id] != session ||
+        session.projectId != _selectedProjectId ||
+        !isInsideProject(session.projectId, path) ||
+        !await File(path).exists()) {
+      return;
+    }
+    // A consulta ao filesystem é assíncrona; não deixa uma resposta antiga
+    // vencer uma troca de buffer mais recente.
+    if (_sessions[session.id] != session || session.lastPath != path) return;
+    _selectedFileInTree = path;
+    _treeRevealPath = path;
+    _treeRevealGen++;
+    notifyListeners();
+  }
+
+  Future<bool> _waitForNeovim(NeovimSession session) async {
+    for (var attempt = 0; attempt < 20; attempt++) {
+      if (await session.isAlive()) return true;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    return false;
+  }
+
+  void _focusNeovim(NeovimSession session) {
+    final tree = _trees[session.projectId];
+    final leafId = leafOfTab(session.projectId, session.id);
+    if (tree == null || leafId == null) return;
+    _recordHistoryBeforeSwitch(leafId);
+    _trees[session.projectId] = updateLeaf(
+      tree,
+      leafId,
+      (leaf) => leaf.copyWith(active: session.id),
+    );
+    _focused[session.projectId] = leafId;
+    _requestPaneKeyboard();
+    notifyListeners();
   }
 
   /// Insere uma aba de viewer recém-criada na pane [paneId]: substitui o
@@ -1161,9 +1641,7 @@ class CockpitViewModel extends ChangeNotifier {
         ),
       );
       _disposeSession(oldId!);
-    } else if (lf != null &&
-        only is AgentSession &&
-        only.status == AgentStatus.empty) {
+    } else if (lf != null && only is EmptyTab) {
       // Placeholder vazio → substitui.
       final emptyId = lf.tabs.first;
       _trees[projectId] = updateLeaf(
@@ -1245,6 +1723,7 @@ class CockpitViewModel extends ChangeNotifier {
       return;
     }
     target.view = view;
+    _applyKanbanBoardTitle(target);
     target.loading = false;
     _ensureScmCoordinator(target);
     if (revealLine != null) {
@@ -1451,6 +1930,130 @@ class CockpitViewModel extends ChangeNotifier {
     return true;
   }
 
+  /// Abre (ou foca) a aba do caderno em [folderPath] (plano 62, passo 4). Uma
+  /// tab por pasta+projeto.
+  NotebookSession? openNotebook(String folderPath, {String? projectId}) {
+    final session = _openBrowserTab(
+      projectId,
+      matches: (s) => s is NotebookSession && s.path == folderPath,
+      make: (id, pid, _) =>
+          NotebookSession(id: id, projectId: pid, path: folderPath),
+    );
+    return session as NotebookSession?;
+  }
+
+  /// Texto de um arquivo (local ou host remoto) pra widgets que leem vários
+  /// arquivos de uma pasta (caderno). `null` = binário/ilegível.
+  @override
+  Future<String?> readTextAt(String path, {String? workspaceId}) async {
+    if (workspaceId != null) {
+      final bytes = await readBytesAt(path, workspaceId: workspaceId);
+      if (bytes == null) return null;
+      try {
+        return utf8.decode(bytes);
+      } on FormatException {
+        return null;
+      }
+    }
+    final view = await _readFile(path);
+    return switch (view) {
+      FileViewMarkdown(:final text) => text,
+      FileViewText(:final text) => text,
+      _ => null,
+    };
+  }
+
+  /// Raw bytes from the workspace that issued the request. An explicit ID
+  /// prevents a background remote tab from reading the selected workspace or
+  /// the client filesystem by accident.
+  @override
+  Future<Uint8List?> readBytesAt(String path, {String? workspaceId}) async {
+    final host = workspaceId == null
+        ? _activeRemoteHost()
+        : remoteHostForWorkspace(workspaceId);
+    if (host != null) {
+      try {
+        final service = await _remoteHosts.fileServiceFor(host);
+        return await service.read(path);
+      } on Object {
+        return null;
+      }
+    }
+    try {
+      return await File(path).readAsBytes();
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  /// Eventos de mudança numa pasta (caderno). Local = [_fileChanges];
+  /// remoto = vazio (o painel tem "recarregar"; plano 58 não tem fs.watch).
+  @override
+  Stream<void> watchFolder(String path) {
+    if (_activeRemoteHost() != null || path.isEmpty) {
+      return const Stream<void>.empty();
+    }
+    return _fileChanges.watchFolder(path);
+  }
+
+  /// Sessão de caderno aberta para [folderPath], se houver.
+  NotebookSession? notebookSessionFor(String folderPath) {
+    for (final s in _sessions.values) {
+      if (s is NotebookSession && s.path == folderPath) return s;
+    }
+    return null;
+  }
+
+  /// Grava bytes em [path] (local ou host remoto), criando a pasta-pai local
+  /// se faltar. Usado pelo caderno para `_assets/` (imagem colada/arrastada).
+  @override
+  Future<bool> writeBytesAt(String path, Uint8List bytes) async {
+    final host = _activeRemoteHost();
+    if (host != null) {
+      try {
+        final service = await _remoteHosts.fileServiceFor(host);
+        await service.write(path, bytes);
+      } catch (_) {
+        return false;
+      }
+    } else {
+      try {
+        final f = File(path);
+        await f.parent.create(recursive: true);
+        await f.writeAsBytes(bytes, flush: true);
+      } catch (_) {
+        return false;
+      }
+    }
+    _bumpFileTree();
+    return true;
+  }
+
+  /// Grava [content] em [path] (local ou host remoto) e bumpa a árvore.
+  /// Contraparte de [readTextAt] pra abas que não são `FileViewerSession`.
+  @override
+  Future<bool> writeTextAt(
+    String path,
+    String content, {
+    String? workspaceId,
+  }) async {
+    final host = workspaceId == null
+        ? _activeRemoteHost()
+        : remoteHostForWorkspace(workspaceId);
+    if (host != null) {
+      try {
+        final service = await _remoteHosts.fileServiceFor(host);
+        await service.write(path, utf8.encode(content));
+      } catch (_) {
+        return false;
+      }
+    } else if (!await _fileReader.write(path, content)) {
+      return false;
+    }
+    _bumpFileTree();
+    return true;
+  }
+
   /// Abre [url] no browser do SO — fallback das plataformas sem webview
   /// inline (plano 58) e caminho do auto-open de task no Linux.
   Future<bool> openUrlExternally(String url) async {
@@ -1608,9 +2211,7 @@ class CockpitViewModel extends ChangeNotifier {
     if (current == null) return;
     final lf = findLeaf(current, paneId);
     final only = lf?.tabs.length == 1 ? _sessions[lf!.tabs.first] : null;
-    if (lf != null &&
-        only is AgentSession &&
-        only.status == AgentStatus.empty) {
+    if (lf != null && only is EmptyTab) {
       final emptyId = lf.tabs.first;
       _trees[projectId] = updateLeaf(
         current,
@@ -1709,7 +2310,12 @@ class CockpitViewModel extends ChangeNotifier {
   }) async {
     final projectId = _selectedProjectId;
     final tree = _activeTree;
-    final paneId = projectId == null ? null : _focused[projectId];
+    // Mesmo fallback do [openFile]: sem pane focada (mobile, onde ninguém
+    // clica numa pane antes de tocar no Source Control) cai na primeira.
+    final paneId = projectId == null
+        ? null
+        : _focused[projectId] ??
+              (tree == null ? null : leaves(tree).firstOrNull?.id);
     if (projectId == null || tree == null || paneId == null) return;
     final leaf = findLeaf(tree, paneId);
     if (leaf == null) return;
@@ -1804,9 +2410,7 @@ class CockpitViewModel extends ChangeNotifier {
         ),
       );
       _disposeSession(oldId!);
-    } else if (lf != null &&
-        only is AgentSession &&
-        only.status == AgentStatus.empty) {
+    } else if (lf != null && only is EmptyTab) {
       // Placeholder vazio → substitui.
       final emptyId = lf.tabs.first;
       _trees[projectId] = updateLeaf(
@@ -1889,54 +2493,23 @@ class CockpitViewModel extends ChangeNotifier {
   /// aba normal e revela [line] (base 1) quando informada. Sem-op se o token não
   /// resolve. O FileViewer trata caminho inexistente por conta própria.
   Future<void> openTerminalPath(String token, {String? cwd, int? line}) async {
-    final abs = _resolveTerminalPath(token, cwd);
+    final projectId = _selectedProjectId;
+    // Remoto: o disco é do host, não dá pra conferir daqui qual pasta tem o
+    // arquivo — fica o cwd + caminho.
+    final local = projectId != null && !_isRemote(projectId);
+    final abs = TerminalPathResolver.resolve(
+      token,
+      cwd: cwd,
+      home: userHome(),
+      roots: local
+          ? {?projectRootOf(projectId), ...rootsOf(projectId)}.toList()
+          : const [],
+      exists: local
+          ? (p) => FileSystemEntity.typeSync(p) != FileSystemEntityType.notFound
+          : null,
+    );
     if (abs == null) return;
-    await openFile(abs, isPreview: false);
-    if (line != null) {
-      for (final s in _sessions.values) {
-        if (s is FileViewerSession && s.path == abs) s.reveal(line);
-      }
-    }
-  }
-
-  /// Resolve um token de caminho do terminal para absoluto: expande `~`, junta
-  /// com [cwd] se relativo, e normaliza `.`/`..`. `null` se não dá pra resolver.
-  String? _resolveTerminalPath(String token, String? cwd) {
-    var t = token.trim();
-    if (t.isEmpty) return null;
-    if (t == '~' || t.startsWith('~/')) {
-      final home = userHome();
-      if (home == null) return null;
-      t = t == '~' ? home : '$home/${t.substring(2)}';
-    }
-    final isAbsolute =
-        t.startsWith('/') ||
-        (Platform.isWindows && RegExp(r'^[a-zA-Z]:[\\/]').hasMatch(t));
-    if (!isAbsolute) {
-      if (cwd == null || cwd.isEmpty) return null;
-      t = '$cwd/$t';
-    }
-    return _normalizePath(t);
-  }
-
-  /// Colapsa segmentos `.` e `..` de um caminho POSIX-ish (mantém a raiz `/`).
-  String _normalizePath(String path) {
-    final isAbs = path.startsWith('/');
-    final out = <String>[];
-    for (final part in path.split('/')) {
-      if (part.isEmpty || part == '.') continue;
-      if (part == '..') {
-        if (out.isNotEmpty && out.last != '..') {
-          out.removeLast();
-        } else if (!isAbs) {
-          out.add('..');
-        }
-      } else {
-        out.add(part);
-      }
-    }
-    final joined = out.join('/');
-    return isAbs ? '/$joined' : joined;
+    await openFile(abs, isPreview: false, revealLine: line);
   }
 
   /// Abre um arquivo do projeto **por caminho relativo** (palette Cmd+P). Aba
@@ -1951,10 +2524,7 @@ class CockpitViewModel extends ChangeNotifier {
   Future<void> openSearchResult(String relative, int line) async {
     final abs = _absoluteOf(relative);
     if (abs == null) return;
-    await openFile(abs);
-    for (final s in _sessions.values) {
-      if (s is FileViewerSession && s.path == abs) s.reveal(line);
-    }
+    await openFile(abs, revealLine: line);
   }
 
   /// `true` se [path] está **dentro** do workspace [projectId] (ele mesmo ou
@@ -1969,6 +2539,7 @@ class CockpitViewModel extends ChangeNotifier {
   /// Caminho a exibir no breadcrumb do viewer: **relativo** à raiz do workspace
   /// quando o arquivo está dentro dele; **absoluto** quando é externo (drop do
   /// SO). Sem barra inicial — a UI fatia por `/`.
+  @override
   String displayPath(String projectId, String absolutePath) {
     final root = _projectById(projectId)?.path;
     if (root != null && _isUnder(absolutePath, root)) {
@@ -2011,13 +2582,31 @@ class CockpitViewModel extends ChangeNotifier {
       final ok = await _fileReader.write(s.path, content, encoding: encoding);
       if (!ok) return false;
     }
+    _lastEditAt[s.projectId] = DateTime.now();
     final fresh = await _readFile(s.path);
     final cur = _sessions[sessionId];
     if (cur is FileViewerSession && fresh is! FileViewUnsupported) {
       cur.view = fresh;
+      _applyKanbanBoardTitle(cur);
       notifyListeners();
     }
     return true;
+  }
+
+  /// Relê o arquivo de uma aba de viewer do disco (ou do host, em workspace
+  /// remoto) e reclassifica o `view`. É o "atualizar" da tab: em remoto o aviso
+  /// de mudança pode não chegar, mas pedir o arquivo de novo sempre funciona.
+  Future<void> reloadFile(String sessionId) async {
+    final s = _sessions[sessionId];
+    if (s is! FileViewerSession) return;
+    final fresh = await _readFile(s.path);
+    if (fresh is FileViewUnsupported) return;
+    final cur = _sessions[sessionId];
+    if (cur is! FileViewerSession) return;
+    cur.view = fresh;
+    _applyKanbanBoardTitle(cur);
+    cur.notifyListeners();
+    notifyListeners();
   }
 
   /// Extrai o [Encoding] original de uma [FileView] editável. Usado no save para
@@ -2033,6 +2622,7 @@ class CockpitViewModel extends ChangeNotifier {
 
   /// Diagnostics de todos os language servers (mesclados). O `FileViewer` filtra
   /// pelo `uri` do seu documento. Ver [LspServerPool].
+  @override
   Stream<LspDiagnosticsBatch> get lspDiagnostics => _lsp.diagnostics;
 
   /// Abre [path] no LSP (didOpen). O fallback de raiz é o caminho do projeto —
@@ -2041,6 +2631,7 @@ class CockpitViewModel extends ChangeNotifier {
   /// arquivos fora dele (classe do SDK aberta por go-to-definition): o pool usa
   /// isso pra rotear o arquivo externo ao servidor que já existe, em vez de
   /// subir um novo com raiz no SDK. Ver `LspServerPool._rootFor`.
+  @override
   Future<void> lspOpenDocument(String path, String text, String projectId) =>
       _lsp.openDocument(
         path: path,
@@ -2049,10 +2640,12 @@ class CockpitViewModel extends ChangeNotifier {
       );
 
   /// Notifica edição (didChange, full sync).
+  @override
   Future<void> lspChangeDocument(String path, String text) =>
       _lsp.changeDocument(path: path, text: text);
 
   /// Fecha o documento no LSP (didClose + refcount).
+  @override
   Future<void> lspCloseDocument(String path) => _lsp.closeDocument(path);
 
   /// Aplica os overrides de comando do LSP (da tela "Language") no pool. Vale
@@ -2098,6 +2691,7 @@ class CockpitViewModel extends ChangeNotifier {
   /// Formata [path] via LSP. Faz um `didChange` com [text] antes (flush do
   /// debounce) pra o servidor formatar o conteúdo mais recente, e devolve os
   /// edits a aplicar no buffer. Lista vazia = sem servidor / sem suporte / erro.
+  @override
   Future<List<LspTextEdit>> lspFormat(String path, String text) async {
     await _lsp.changeDocument(path: path, text: text);
     return _lsp.formatDocument(path);
@@ -2105,11 +2699,13 @@ class CockpitViewModel extends ChangeNotifier {
 
   /// Tokens semânticos do documento via LSP. Lista vazia se sem servidor /
   /// sem suporte / erro.
+  @override
   Future<SemanticTokens> lspSemanticTokensFull(String path) =>
       _lsp.semanticTokensFull(path);
 
   /// Go to definition: resolve location no servidor, abre arquivo + revela linha.
   /// No-op silencioso se sem servidor / sem definição / erro.
+  @override
   Future<void> goToDefinition(String path, int line, int character) async {
     final location = await _lsp.definition(path, line, character);
     if (location == null) return;
@@ -2141,18 +2737,176 @@ class CockpitViewModel extends ChangeNotifier {
     String name,
   ) => files.createDirIn(dirPath, name);
 
+  /// Cria o documento de [template] na **raiz do workspace** ativo (em
+  /// multi-root é a pasta-mãe, não um dos repos) e abre na tab. Nome livre
+  /// (`dev.ckp` → `dev-2.ckp`…), salvo `fixedName` (ex.: `.cockpit/tasks.json`),
+  /// que **abre** o existente. Subpasta (`relativeDir`) é criada quando falta.
+  /// Funciona local e remoto: no remoto lista a pasta via `fs.list` pra achar
+  /// o nome e grava via `fs.write` (o host cria a pasta-pai).
+  Future<Result<String, FileOperationError>> createFromTemplate(
+    GalleryTemplate template,
+  ) async {
+    final root = treeRootPath;
+    if (root.isEmpty) {
+      return const Failure(
+        FileOperationError(FileOperationErrorKind.noWorkspace),
+      );
+    }
+    final dir = template.relativeDir.isEmpty
+        ? root
+        : joinPath(root, template.relativeDir);
+    final host = _activeRemoteHost();
+    var taken = const <String>[];
+    try {
+      if (host != null) {
+        final service = await _remoteHosts.fileServiceFor(host);
+        try {
+          taken = (await service.list(dir)).map((e) => e.name).toList();
+        } catch (_) {
+          // Subpasta ainda não existe no host — nada tomado.
+          if (template.relativeDir.isEmpty) rethrow;
+        }
+      } else {
+        final d = Directory(dir);
+        if (await d.exists()) {
+          taken = await d
+              .list(followLinks: false)
+              .map((e) => e.path.split(Platform.pathSeparator).last)
+              .toList();
+        } else if (template.relativeDir.isNotEmpty) {
+          await d.create(recursive: true);
+        }
+      }
+    } catch (e) {
+      return Failure(
+        FileOperationError(
+          FileOperationErrorKind.osFailure,
+          detail: e.toString(),
+        ),
+      );
+    }
+    final lowerTaken = taken.map((n) => n.toLowerCase()).toSet();
+    if (template.fixedName &&
+        lowerTaken.contains(template.fileName.toLowerCase())) {
+      final existing = joinPath(dir, template.fileName);
+      if (template.opensParent) {
+        openNotebook(dir);
+      } else {
+        await openFile(existing, isPreview: false);
+      }
+      return Success(existing);
+    }
+    final name = template.fixedName
+        ? template.fileName
+        : template.uniqueFileName(taken);
+    final path = joinPath(dir, name);
+    if (host != null) {
+      try {
+        final service = await _remoteHosts.fileServiceFor(host);
+        await service.write(path, utf8.encode(template.content));
+      } catch (e) {
+        return Failure(
+          FileOperationError(
+            FileOperationErrorKind.osFailure,
+            detail: e.toString(),
+          ),
+        );
+      }
+    } else if (!await _fileReader.write(path, template.content)) {
+      return const Failure(
+        FileOperationError(FileOperationErrorKind.writeFailed),
+      );
+    } else if (template == GalleryTemplate.workspaceEnv) {
+      await _excludeFromGit(root, name);
+    }
+    _bumpFileTree();
+    if (template.opensParent) {
+      openNotebook(dir)?.requestReload();
+    } else {
+      await openFile(path, isPreview: false);
+    }
+    return Success(path);
+  }
+
   Future<Result<void, FileOperationError>> renamePath(
     String path,
     String newName,
   ) => files.renamePath(path, newName);
+
+  /// Tira [relative] do git de [root] sem tocar em arquivo versionado: se o
+  /// repo ainda não o ignora, acrescenta em `.git/info/exclude` (local, nunca
+  /// comitado). Cobre o `.env.cockpit` em repo cujo `.gitignore` não tem
+  /// `.env*`. Best-effort: pasta sem git, ou git ausente, só não exclui.
+  Future<void> _excludeFromGit(String root, String relative) async {
+    try {
+      final (code, _) = await git.output(root, [
+        'check-ignore',
+        '-q',
+        '--',
+        relative,
+      ]);
+      // 0 = já ignorado; 1 = não ignorado; 128 = não é repo git.
+      if (code != 1) return;
+      final (pathCode, excludePath) = await git.output(root, [
+        'rev-parse',
+        '--git-path',
+        'info/exclude',
+      ]);
+      final trimmed = excludePath.trim();
+      if (pathCode != 0 || trimmed.isEmpty) return;
+      // `--git-path` devolve relativo ao cwd no repo comum e absoluto em
+      // worktree; resolvemos os dois.
+      final absolute =
+          trimmed.startsWith('/') ||
+          RegExp(r'^[A-Za-z]:[\\/]').hasMatch(trimmed);
+      final file = File(absolute ? trimmed : joinPath(root, trimmed));
+      await file.parent.create(recursive: true);
+      final existing = await file.exists() ? await file.readAsString() : '';
+      final sep = existing.isEmpty || existing.endsWith('\n') ? '' : '\n';
+      await file.writeAsString(
+        '$sep/$relative\n',
+        mode: FileMode.append,
+        flush: true,
+      );
+    } on Object catch (e) {
+      debugPrint('gallery: exclude de $relative falhou ($e)');
+    }
+  }
 
   Future<Result<void, FileOperationError>> movePath(
     String path,
     String targetDir,
   ) => files.movePath(path, targetDir);
 
+  @override
   Future<Result<void, FileOperationError>> deletePath(String path) =>
       files.deletePath(path);
+
+  /// Drop nativo do SO na árvore (Finder/Explorer/gerenciador GTK). Remoto
+  /// não tem upload por SSH ainda, então recusa com erro tipado.
+  Future<Result<void, FileOperationError>> importPaths(
+    List<String> sources,
+    String targetDir,
+  ) {
+    final project = selectedProject;
+    if (project != null && project.isRemoteTerminal) {
+      return Future.value(
+        const Failure(
+          FileOperationError(FileOperationErrorKind.remoteDropUnsupported),
+        ),
+      );
+    }
+    return files.importInto(sources, targetDir, workspaceRoot: treeRootPath);
+  }
+
+  /// Harnesses de CLI instalados na máquina (Claude Code, Codex, Pi...),
+  /// descobertos pelo `AutomationController` (mesma lista das automações).
+  /// Vazio até [discoverHarnesses] completar.
+  List<AutomationHarness> get installedHarnesses => _automation.harnesses;
+
+  /// Dispara a descoberta uma vez (idempotente); a página chama no boot para o
+  /// menu "Open in (agent)" da árvore já nascer preenchido.
+  Future<void> discoverHarnesses() => _automation.ensureInitialized();
 
   bool get canPaste => files.canPaste;
 
@@ -2182,7 +2936,7 @@ class CockpitViewModel extends ChangeNotifier {
           : '$to${s.path.substring(from.length)}';
       s.retarget(newPath);
       final fresh = await _fileReader.read(newPath);
-      if (fresh is! FileViewUnsupported) s.view = fresh;
+      if (fresh is! FileViewUnsupported) s.adoptDisk(fresh);
       _fileWatchers.remove(s.id)?.cancel();
       _watchFileViewer(s);
     }
@@ -2227,7 +2981,7 @@ class CockpitViewModel extends ChangeNotifier {
     if (paneId == null || tabId == null) return null;
     final item = _sessions[tabId];
     if (item == null) return null;
-    if (item is AgentSession && item.status == AgentStatus.empty) return null;
+    if (item is EmptyTab) return null;
     return (paneId, tabId, item);
   }
 
@@ -2358,6 +3112,7 @@ class CockpitViewModel extends ChangeNotifier {
     // PTY. Corrigido com `rid` de correlação (ver PtyOpen.rid). O adiamento
     // ficou por mérito próprio: tela na frente do spawn.
     _ready = true;
+    PerformanceDiagnostics.instance.markBootReady();
     notifyListeners();
     if (selected != null) {
       SchedulerBinding.instance.addPostFrameCallback((_) async {
@@ -2835,9 +3590,7 @@ class CockpitViewModel extends ChangeNotifier {
     // workspaces distintos em realms diferentes (ids são UUIDs).
     for (final existing in _projectList) {
       if (existing.path == path && existing.realmId == realmCtrl.activeId) {
-        _selectedProjectId = existing.id;
-        unawaited(_projects.saveLastSelected(realmCtrl.activeId, existing.id));
-        notifyListeners();
+        selectProject(existing.id);
         return existing;
       }
     }
@@ -3287,8 +4040,9 @@ class CockpitViewModel extends ChangeNotifier {
     String root, {
     int limit = 100,
   }) async {
-    if (_activeRemoteHost() == null)
+    if (_activeRemoteHost() == null) {
       return _gitHistory.read(root, limit: limit);
+    }
     try {
       final r = await (await _activeRemoteGit()).run(root, [
         'log',
@@ -3917,6 +4671,11 @@ class CockpitViewModel extends ChangeNotifier {
 
   void selectProject(String id) {
     if (_selectedProjectId == id) return;
+    final diagnostics = PerformanceDiagnostics.instance;
+    diagnostics.timeToNextFrame(PerfMetric.workspaceSwitch);
+    final readyClock = diagnostics.enabled ? (Stopwatch()..start()) : null;
+    final cold = !_trees.containsKey(id);
+    final selection = ++_projectSelectionGeneration;
     // Seleção vinda de fora do recorte atual (clique em notificação, CLI
     // `cockpit open`, restauração): troca o realm ativo junto — selecionar um
     // workspace de outro realm sem trazê-lo deixaria o rail "sem seleção".
@@ -3937,12 +4696,20 @@ class CockpitViewModel extends ChangeNotifier {
     }
     _selectedProjectId = id;
     _sessionSelectionByRealm[realmCtrl.activeId] = id;
+    _remoteHosts.focusChanged(); // host remoto em foco retoma retry adiado
     _requestPaneKeyboard();
     // Persiste o workspace (raiz) pra pré-selecionar na próxima abertura —
     // por realm: cada realm lembra a própria última seleção.
     unawaited(_projects.saveLastSelected(realmCtrl.activeId, _rootOf(id)));
     _clearFocusedNotification();
-    unawaited(_activateProject(id)); // reconstrói (lazy) se ainda não ativo
+    final activation = _activateProject(id); // reconstrói (lazy) se necessário
+    if (readyClock != null) {
+      unawaited(
+        _measureProjectReady(id, selection, cold, readyClock, activation),
+      );
+    } else {
+      unawaited(activation);
+    }
     git.watchProject(id); // segue o working tree do novo projeto ao vivo
     unawaited(git.refresh(id)); // pode ter mudado desde a última vez
     unawaited(_refreshWorktrees(_rootOf(id))); // reflete worktrees externas
@@ -3957,51 +4724,13 @@ class CockpitViewModel extends ChangeNotifier {
   /// pull-to-refresh do painel). No-op se o ativo é local.
   Future<void> refreshRemoteGit() => _refreshRemoteGit();
 
-  /// Subpastas do projeto selecionado em [relativePath] (vazio = raiz), para o
-  /// seletor navegável de "onde o agente atua". [relativePath] usa `/` e fica
-  /// sempre **dentro** do root do projeto (o dialog não sobe acima dele).
-  Future<List<String>> subfolders([String relativePath = '']) async {
-    final project = selectedProject;
-    if (project == null) return const <String>[];
-    final base = relativePath.isEmpty
-        ? project.path
-        : '${project.path}/$relativePath';
-    return _folders.subfolders(base);
-  }
-
-  /// Sessões salvas do pi para uma pasta (histórico), mais recentes primeiro.
-  Future<List<SessionInfo>> historyFor(String cwd) =>
-      _history.sessionsFor(cwd, withTitle: true);
-
-  /// Aplica nome e relay ao agente. Se houver mudança real e o processo estiver
-  /// rodando, reinicia com a nova config (preservando `sessionPath`).
-  Future<void> saveAgentConfig(
-    String sessionId, {
-    required String agentName,
-    required bool autoStartRelay,
-  }) async {
-    final s = _sessions[sessionId];
-    if (s is! AgentSession) return;
-
-    final nameChanged = agentName.trim() != s.title;
-    final relayChanged = autoStartRelay != s.autoStartRelay;
-    if (!nameChanged && !relayChanged) return;
-
-    s.rename(agentName.trim());
-    s.autoStartRelay = autoStartRelay;
-    if (nameChanged && s.isAlive) {
-      unawaited(s.sendRelayControl('rename:${agentName.trim()}'));
-    }
-    notifyListeners();
-  }
-
   /// Define o rótulo manual (nome estável) de uma aba e persiste o layout.
-  /// Diferente de [saveAgentConfig]: não mexe na identidade do agente/harness —
-  /// só no nome exibido/CLI, travando-o contra o título automático (OSC etc).
+  /// Só o nome exibido/CLI, travando-o contra o título automático (OSC etc).
   void setPaneLabel(String sessionId, String label) {
     final s = _sessions[sessionId];
     if (s == null) return;
     s.setManualLabel(label);
+    if (s is FileViewerSession) unawaited(_writeKanbanBoardTitle(s, label));
     _scheduleSave(s.projectId);
     notifyListeners();
   }
@@ -4011,6 +4740,7 @@ class CockpitViewModel extends ChangeNotifier {
     final s = _sessions[sessionId];
     if (s == null) return;
     s.clearManualLabel();
+    if (s is FileViewerSession) unawaited(_writeKanbanBoardTitle(s, null));
     _scheduleSave(s.projectId);
     notifyListeners();
   }
@@ -4047,6 +4777,7 @@ class CockpitViewModel extends ChangeNotifier {
   }
 
   void selectTab(String paneId, String agentId) {
+    PerformanceDiagnostics.instance.timeToNextFrame(PerfMetric.tabSwitch);
     final tree = _activeTree;
     if (tree == null) return;
     _recordHistoryBeforeSwitch(paneId);
@@ -4102,6 +4833,20 @@ class CockpitViewModel extends ChangeNotifier {
     selectTab(paneId, leaf.tabs.last);
   }
 
+  /// Troca o workspace selecionado pelo vizinho no rail — ⇧⌘M avança, ⇧⌘N
+  /// volta. A ordem é a visual: cada raiz seguida dos seus worktrees, e dá a
+  /// volta nas pontas. O terminal de sistema "Cockpit" fica fora do ciclo.
+  void cycleWorkspace(int delta) {
+    final order = <String>[
+      for (final root in rootProjects) ...[
+        root.id,
+        for (final fork in worktreesOf(root.id)) fork.id,
+      ],
+    ];
+    final next = nextWorkspaceId(order, _selectedProjectId, delta);
+    if (next != null) selectProject(next);
+  }
+
   /// Move o foco pra pane vizinha na direção [move] — os atalhos ⌘⌥ + setas.
   /// No-op se há só uma pane ou não existe vizinha naquela direção (fica onde
   /// está, sem ciclar). Deriva a vizinhança da árvore via [neighborLeaf].
@@ -4136,27 +4881,38 @@ class CockpitViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Cria uma aba (agente ou terminal) direto na subpasta [subRelative] do
-  /// projeto ativo, na pane focada — **sem dialog**. Usada pelo menu de contexto
-  /// da árvore de arquivos. Se a pane focada está num placeholder "Novo" vazio,
+  /// Cria uma aba de terminal direto na subpasta [subRelative] do projeto
+  /// ativo, na pane focada — **sem dialog**. Usada pelo menu de contexto da
+  /// árvore de arquivos. Se a pane focada está num placeholder "Novo" vazio,
   /// substitui-o; senão, anexa uma aba nova e a ativa.
   void newTabIn(
     String subRelative, {
-    required bool terminal,
     // Plano 50: perfil específico (seletor ao lado do `+`). `null` = padrão
-    // efetivo. Ignorado quando `terminal` é `false`.
+    // efetivo.
     TerminalProfile? profile,
   }) {
     final projectId = _selectedProjectId;
     final tree = _activeTree;
     if (projectId == null || tree == null) return;
     final paneId = _focused[projectId] ?? leaves(tree).first.id;
+    newTerminalInPane(paneId, subRelative: subRelative, profile: profile);
+  }
+
+  /// Cria o terminal diretamente na pane que recebeu o clique no `+`.
+  /// Evita montar um EmptyTab e esperar outro frame para iniciar o shell.
+  void newTerminalInPane(
+    String paneId, {
+    String subRelative = '',
+    TerminalProfile? profile,
+  }) {
+    final projectId = _selectedProjectId;
+    final tree = _activeTree;
+    if (projectId == null || tree == null) return;
     final leaf = findLeaf(tree, paneId) ?? leaves(tree).first;
-    final s = _spawn(subRelative, terminal: terminal, profile: profile);
+    final s = _spawn(subRelative, profile: profile);
 
     final active = _sessions[leaf.active];
-    final replaceEmpty =
-        active is AgentSession && active.status == AgentStatus.empty;
+    final replaceEmpty = active is EmptyTab;
 
     _setActiveTree(
       updateLeaf(tree, leaf.id, (p) {
@@ -4184,6 +4940,9 @@ class CockpitViewModel extends ChangeNotifier {
     String? title,
     String? inPane,
     SplitDir? splitDir,
+    // Comando digitado no shell assim que ele sobe (ex.: `claude` no "Open in
+    // Claude Code" do menu da pasta). `null` = só o shell.
+    String? startupCommand,
   }) {
     final projectId = _selectedProjectId;
     final tree = _activeTree;
@@ -4198,6 +4957,7 @@ class CockpitViewModel extends ChangeNotifier {
       projectId,
       cwd,
       title: title ?? _sanitizeName(_basename(cwd)),
+      startupCommand: startupCommand,
     );
     if (title != null && title.trim().isNotEmpty) {
       s.setManualLabel(title);
@@ -4207,8 +4967,7 @@ class CockpitViewModel extends ChangeNotifier {
       // Mesma pane: anexa como aba nova (substituindo o placeholder "Novo",
       // se for a aba ativa — mesma regra do `newTabIn`).
       final active = _sessions[leaf.active];
-      final replaceEmpty =
-          active is AgentSession && active.status == AgentStatus.empty;
+      final replaceEmpty = active is EmptyTab;
       _setActiveTree(
         updateLeaf(tree, leaf.id, (p) {
           if (replaceEmpty) {
@@ -4235,22 +4994,169 @@ class CockpitViewModel extends ChangeNotifier {
 
   /// Aplica um layout `.ckp` no workspace selecionado (orquestração de panes).
   ///
-  /// Merge **idempotente**: pane cujo `name` já existe como rótulo de tab no
-  /// workspace é pulado — rodar duas vezes é no-op. O split é relativo ao
-  /// pane **anterior criado nesta execução**; se o anterior foi pulado, o
-  /// próximo nasce como aba normal (geometria perfeita só em workspace vazio,
-  /// o caso do worktree/autorun). Nunca fecha nada — reset é ação separada
-  /// do chamador.
+  /// Default [LayoutApplyMode.replace] (card k21): abrir um layout significa
+  /// "seja este layout" — **todas** as abas do workspace são fechadas antes
+  /// (inclusive as com rótulo manual: não há aba fixada imune, o layout é o
+  /// estado inteiro), e só então os panes nascem — geometria determinística.
+  /// O arquivo é validado ANTES de fechar qualquer coisa: `.ckp` inválido
+  /// deixa o workspace intocado. A confirmação com o usuário (abas com
+  /// processo rodando) é da UI — ver [layoutReplaceImpact].
+  ///
+  /// [LayoutApplyMode.append] é o merge **idempotente** antigo: pane cujo
+  /// `name` já existe como rótulo de tab no workspace é pulado — rodar duas
+  /// vezes é no-op. O split é relativo ao pane **anterior criado nesta
+  /// execução**; se o anterior foi pulado, o próximo nasce como aba normal.
+  ///
+  /// [keepTabId]: aba poupada do fechamento em `replace` — a CLI passa a aba
+  /// emissora, senão `cockpit orchestrate` mataria o próprio processo que
+  /// ainda espera a resposta.
   Future<Result<LayoutApplyReport, String>> applyLayoutFile(
+    String ckpPath, {
+    LayoutApplyMode mode = LayoutApplyMode.replace,
+    String? keepTabId,
+  }) {
+    return const LayoutApplyRunner().run(
+      mode: mode,
+      load: () => _layoutLoader.load(ckpPath),
+      closeAll: () => _closeAllTabsInSelectedWorkspace(keepTabId: keepTabId),
+      apply: (spec) => _applyLayout(spec, _dirname(ckpPath)),
+    );
+  }
+
+  /// `.ckp` que a **janela de documento** mandou aplicar (comando
+  /// `apply-layout` no socket). A página consome no próximo notify e conduz o
+  /// resto na UI: resolver destino, perguntar se for ambíguo, confirmar o
+  /// fechamento das abas. O VM não abre diálogo — só guarda o pedido.
+  String? _pendingLayoutApply;
+
+  /// Registra o pedido e acorda a UI. Traz a janela principal para a frente:
+  /// o clique foi noutra janela, e o que vem a seguir é um diálogo.
+  void requestLayoutApply(String ckpPath) {
+    _pendingLayoutApply = ckpPath;
+    if (!isMobilePlatform) {
+      unawaited(windowManager.show());
+      unawaited(windowManager.focus());
+    }
+    notifyListeners();
+  }
+
+  /// Devolve (uma vez) o pedido pendente.
+  String? takePendingLayoutApply() {
+    final path = _pendingLayoutApply;
+    _pendingLayoutApply = null;
+    return path;
+  }
+
+  /// Workspaces abertos que contêm o `.ckp` — os destinos possíveis do botão
+  /// Apply do viewer de layout. Vazio = o arquivo está fora de qualquer
+  /// workspace (Downloads), e o destino vira um workspace novo na pasta dele.
+  /// Ver [layoutDestinationsFor] para a regra e os casos ambíguos.
+  List<Project> layoutDestinations(String ckpPath) =>
+      layoutDestinationsFor(ckpPath, _projectList);
+
+  /// Impacto de substituir o layout de um workspace **qualquer** (não só o
+  /// selecionado): o viewer precisa dizer no diálogo quantas abas fecham no
+  /// destino escolhido, que pode nem estar na frente.
+  ({int tabs, bool running}) layoutReplaceImpactOf(String projectId) {
+    final tabs = allSessions
+        .where((s) => s.projectId == projectId && !_isEmptyPlaceholder(s))
+        .toList();
+    final running = tabs.any(
+      (s) =>
+          s.isWorking ||
+          (s is TerminalSession && s.activeHarness != null) ||
+          (s is TaskOutputSession && _taskRunner.runOf(s.taskId).isActive),
+    );
+    return (tabs: tabs.length, running: running);
+  }
+
+  /// Aplica o `.ckp` num workspace **específico** (o destino do Apply).
+  ///
+  /// Seleciona o destino antes de aplicar, porque [applyLayoutFile] age no
+  /// workspace selecionado. A ordem importa: **ativa primeiro** (garante a
+  /// árvore de panes carregada, inclusive de um workspace que ainda não foi
+  /// aberto nesta sessão) e só então seleciona — assim o `_activateProject`
+  /// disparado lá dentro vira no-op em vez de correr em paralelo com este.
+  /// Trocar de realm, quando o destino é de outro, é responsabilidade do
+  /// [selectProject].
+  Future<Result<LayoutApplyReport, String>> applyLayoutFileTo(
+    String projectId,
     String ckpPath,
   ) async {
-    final spec = await _layoutLoader.load(ckpPath);
-    switch (spec) {
-      case Failure(:final error):
-        return Failure(error);
-      case Success(:final value):
-        return _applyLayout(value, _dirname(ckpPath));
+    if (_selectedProjectId != projectId) {
+      await _activateProject(projectId);
+      selectProject(projectId);
     }
+    return applyLayoutFile(ckpPath);
+  }
+
+  /// Abre um workspace novo na pasta do `.ckp` e aplica o layout nele. É o
+  /// caso do arquivo solto (fora de qualquer workspace): a pasta do arquivo é
+  /// para onde os `cwd` do layout apontam de qualquer forma, e o workspace
+  /// nasce vazio — não há aba de ninguém para fechar.
+  Future<Result<LayoutApplyReport, String>> openWorkspaceAndApplyLayout(
+    String ckpPath,
+  ) async {
+    final project = await addProject(_dirname(ckpPath));
+    return applyLayoutFileTo(project.id, ckpPath);
+  }
+
+  /// Impacto de substituir o layout do workspace selecionado: quantas abas
+  /// seriam fechadas e se alguma tem trabalho em andamento (harness/agente
+  /// no meio de um turno, task com processo vivo). A UI usa pra decidir se
+  /// pede confirmação antes do [applyLayoutFile] em modo `replace`.
+  ({int tabs, bool running}) layoutReplaceImpact() {
+    final projectId = _selectedProjectId;
+    if (projectId == null) return (tabs: 0, running: false);
+    final tabs = allSessions
+        .where((s) => s.projectId == projectId && !_isEmptyPlaceholder(s))
+        .toList();
+    final running = tabs.any(
+      (s) =>
+          s.isWorking ||
+          (s is TerminalSession && s.activeHarness != null) ||
+          (s is TaskOutputSession && _taskRunner.runOf(s.taskId).isActive),
+    );
+    return (tabs: tabs.length, running: running);
+  }
+
+  /// Placeholder "New" (aba vazia) — não conta como aba do usuário.
+  bool _isEmptyPlaceholder(PaneItem? s) => s is EmptyTab;
+
+  /// Fecha todas as abas do workspace selecionado, deixando uma única folha
+  /// com o placeholder vazio (mesmo estado de um workspace recém-aberto).
+  /// Devolve quantas abas de usuário foram fechadas.
+  ///
+  /// Mesma ordem do [removeProject]: troca a árvore, notifica, **espera o
+  /// frame** desmontar as views e só então descarta as sessões (o
+  /// `libghostty` segfaulta se o terminal nativo some com a `TerminalView`
+  /// ainda montada). O descarte em si é o do "x" da aba ([_disposeSession]:
+  /// mata PTY/agente e apaga o scrollback persistido).
+  Future<int> _closeAllTabsInSelectedWorkspace({String? keepTabId}) async {
+    final projectId = _selectedProjectId;
+    final tree = _activeTree;
+    if (projectId == null || tree == null) return 0;
+    final all = <String>[for (final leaf in leaves(tree)) ...leaf.tabs];
+    final keep = keepTabId != null && all.contains(keepTabId)
+        ? keepTabId
+        : null;
+    final old = all.where((id) => id != keep).toList();
+    if (old.isEmpty) return 0;
+    final closed = old
+        .where((id) => !_isEmptyPlaceholder(_sessions[id]))
+        .length;
+    // Folha única: a aba poupada (se houver) ou o placeholder vazio.
+    final survivor = keep ?? _makeEmpty(projectId).id;
+    final leaf = LeafPane(id: _nid('pane'), tabs: [survivor], active: survivor);
+    _setActiveTree(leaf);
+    _focused[projectId] = leaf.id;
+    _ensureFocusValid();
+    notifyListeners();
+    await _endOfFrame();
+    for (final id in old) {
+      _disposeSession(id);
+    }
+    return closed;
   }
 
   Future<Result<LayoutApplyReport, String>> _applyLayout(
@@ -4316,11 +5222,15 @@ class CockpitViewModel extends ChangeNotifier {
   /// Digita [command] + Enter no terminal [tabId] após uma folga pro shell
   /// terminar o boot (.zshrc etc). O PTY bufferiza, mas shells com zle podem
   /// descartar input chegado no meio do init — a folga evita isso.
+  ///
+  /// Enter é `\r` (o byte da tecla), igual ao `startupCommand` da restauração:
+  /// `\n` só submete em tty Unix; no ConPTY/PSReadLine vira quebra de linha no
+  /// buffer e o comando fica esperando um Enter manual.
   void _typeWhenReady(String tabId, String command) {
     unawaited(
       Future<void>.delayed(const Duration(milliseconds: 700)).then((_) {
         final s = _sessions[tabId];
-        if (s is TerminalSession) s.insertText('$command\n');
+        if (s is TerminalSession) s.insertText('$command\r');
       }),
     );
   }
@@ -4348,6 +5258,8 @@ class CockpitViewModel extends ChangeNotifier {
     // Folga pra ativação do fork terminar de montar a árvore de panes.
     await Future<void>.delayed(const Duration(milliseconds: 400));
     final (path, spec) = specs.single;
+    // Worktree recém-criada: merge (append) — nada a substituir, e o caminho
+    // é automático (sem UI pra confirmar), então nunca fecha aba nenhuma.
     await _applyLayout(spec, _dirname(path));
   }
 
@@ -4380,17 +5292,6 @@ class CockpitViewModel extends ChangeNotifier {
     return active is TerminalSession;
   }
 
-  /// `true` se a aba ativa da pane é um AGENTE de verdade (não placeholder). Só
-  /// nesse caso o split pergunta a subpasta — as demais abas (terminal, browser,
-  /// viewer, db) abrem direto na raiz do workspace, sem modal.
-  bool paneActiveIsAgent(String paneId) {
-    final tree = _activeTree;
-    if (tree == null) return false;
-    final leaf = findLeaf(tree, paneId);
-    final active = leaf == null ? null : _sessions[leaf.active];
-    return active is AgentSession && active.status != AgentStatus.empty;
-  }
-
   /// `true` se a aba ativa da pane [paneId] é um placeholder "Novo" (ainda não
   /// virou agente nem terminal). O split usa isso pra criar outro placeholder
   /// — que mostra o seletor Agent/Terminal — em vez de espelhar um tipo que
@@ -4400,7 +5301,7 @@ class CockpitViewModel extends ChangeNotifier {
     if (tree == null) return false;
     final leaf = findLeaf(tree, paneId);
     final active = leaf == null ? null : _sessions[leaf.active];
-    return active is AgentSession && active.status == AgentStatus.empty;
+    return active is EmptyTab;
   }
 
   /// Divide a pane criando uma aba "Novo" (placeholder vazio) ao lado/abaixo.
@@ -4423,15 +5324,11 @@ class CockpitViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Divide a pane criando um agente novo ao lado/abaixo.
+  /// Divide a pane criando um terminal novo ao lado/abaixo.
   void splitPane(String paneId, SplitDir dir, String subRelative) {
     final tree = _activeTree;
     if (tree == null) return;
-    // O novo pane espelha o tipo da aba ativa: terminal → terminal, agente → agente.
-    final leaf = findLeaf(tree, paneId);
-    final active = leaf == null ? null : _sessions[leaf.active];
-    final terminal = active is TerminalSession;
-    final s = _spawn(subRelative, terminal: terminal);
+    final s = _spawn(subRelative);
     final newLeaf = LeafPane(id: _nid('pane'), tabs: [s.id], active: s.id);
     _setActiveTree(splitLeaf(tree, paneId, dir, newLeaf, splitId: _nid('sp')));
     _focused[_selectedProjectId!] = newLeaf.id;
@@ -4474,6 +5371,10 @@ class CockpitViewModel extends ChangeNotifier {
     _setActiveTree(t);
     _focused[projectId] = targetPaneId;
     _ensureFocusValid();
+    PerformanceDiagnostics.instance.timeToNextFrame(
+      PerfMetric.terminalDockFrame,
+      tabs: _sessions.length,
+    );
     notifyListeners();
   }
 
@@ -4527,6 +5428,10 @@ class CockpitViewModel extends ChangeNotifier {
     _setActiveTree(t);
     _focused[projectId] = newLeaf.id;
     _ensureFocusValid();
+    PerformanceDiagnostics.instance.timeToNextFrame(
+      PerfMetric.terminalDockFrame,
+      tabs: _sessions.length,
+    );
     notifyListeners();
   }
 
@@ -4557,6 +5462,10 @@ class CockpitViewModel extends ChangeNotifier {
         ),
       );
       _focused[projectId] = srcPaneId;
+      PerformanceDiagnostics.instance.timeToNextFrame(
+        PerfMetric.terminalDockFrame,
+        tabs: _sessions.length,
+      );
       notifyListeners();
       return;
     }
@@ -4585,7 +5494,50 @@ class CockpitViewModel extends ChangeNotifier {
     _setActiveTree(t);
     _focused[projectId] = targetPaneId;
     _ensureFocusValid();
+    PerformanceDiagnostics.instance.timeToNextFrame(
+      PerfMetric.terminalDockFrame,
+      tabs: _sessions.length,
+    );
     notifyListeners();
+  }
+
+  /// Inclui o restore assíncrono e o primeiro frame com a árvore carregada.
+  /// `workspaceSwitch` acima mede apenas o primeiro frame após a seleção, que
+  /// pode ser uma tela ainda vazia quando o projeto é ativado pela primeira vez.
+  Future<void> _measureProjectReady(
+    String id,
+    int selection,
+    bool cold,
+    Stopwatch clock,
+    Future<void> activation,
+  ) async {
+    try {
+      await activation;
+    } on Object catch (error, stack) {
+      DiagnosticsLog.instance.logError('activate-project', error, stack);
+      return;
+    }
+    if (_selectedProjectId != id || _projectSelectionGeneration != selection) {
+      return;
+    }
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (_selectedProjectId != id ||
+          _projectSelectionGeneration != selection) {
+        return;
+      }
+      final tree = _trees[id];
+      final tabs = tree == null
+          ? 0
+          : leaves(
+              tree,
+            ).fold<int>(0, (count, leaf) => count + leaf.tabs.length);
+      PerformanceDiagnostics.instance.record(PerfMetric.workspaceReadyFrame, {
+        PerfField.durationUs: clock.elapsedMicroseconds,
+        PerfField.tabs: tabs,
+        PerfField.cold: cold ? 1 : 0,
+      }, force: true);
+    });
+    SchedulerBinding.instance.scheduleFrame();
   }
 
   /// Qual aba fica ativa numa folha após [removedId] sair (mantém a ativa se não
@@ -4596,16 +5548,11 @@ class CockpitViewModel extends ChangeNotifier {
     return remaining[(idx - 1).clamp(0, remaining.length - 1)];
   }
 
-  /// Preenche uma pane vazia: troca o placeholder por um agente ou terminal.
-  void fillEmpty(
-    String paneId,
-    String emptyId,
-    String subRelative, {
-    bool terminal = false,
-  }) {
+  /// Preenche uma pane vazia: troca o placeholder por um terminal.
+  void fillEmpty(String paneId, String emptyId, String subRelative) {
     final tree = _activeTree;
     if (tree == null) return;
-    final s = _spawn(subRelative, terminal: terminal);
+    final s = _spawn(subRelative);
     _setActiveTree(
       updateLeaf(tree, paneId, (p) {
         final tabs = p.tabs.map((t) => t == emptyId ? s.id : t).toList();
@@ -4619,36 +5566,121 @@ class CockpitViewModel extends ChangeNotifier {
 
   void closeTab(String paneId, String agentId) {
     final projectId = _selectedProjectId;
-    final tree = _activeTree;
-    if (projectId == null || tree == null) return;
+    if (projectId == null) return;
+    _closeTabIn(projectId, paneId, agentId);
+  }
+
+  /// [closeTab] em um workspace qualquer, não só no selecionado: um processo
+  /// pode terminar (e levar a aba junto) enquanto o usuário está em outro
+  /// workspace, e a aba precisa sumir lá também.
+  ///
+  /// Com [disposeAfterFrame], a sessão só é destruída depois do frame que tira
+  /// a aba da tela. É o que um fechamento disparado pelo **próprio processo**
+  /// (o `:q` do Neovim) precisa: a view ainda está montada neste turno e o
+  /// resto da digitação em trânsito cairia num controller de terminal já
+  /// descartado (`Bad state: TerminalController is disposed`).
+  void _closeTabIn(
+    String projectId,
+    String paneId,
+    String tabId, {
+    bool disposeAfterFrame = false,
+  }) {
+    final tree = _trees[projectId];
+    if (tree == null) return;
     final leaf = findLeaf(tree, paneId);
     if (leaf == null) return;
-    final tabs = leaf.tabs.where((t) => t != agentId).toList();
+    final tabs = leaf.tabs.where((t) => t != tabId).toList();
     if (tabs.isEmpty) {
       if (leaves(tree).length == 1) {
         final empty = _makeEmpty(projectId);
-        _setActiveTree(
-          updateLeaf(
-            tree,
-            paneId,
-            (p) => p.copyWith(tabs: [empty.id], active: empty.id),
-          ),
+        _trees[projectId] = updateLeaf(
+          tree,
+          paneId,
+          (p) => p.copyWith(tabs: [empty.id], active: empty.id),
         );
       } else {
-        _setActiveTree(removeLeaf(tree, paneId));
+        _trees[projectId] = removeLeaf(tree, paneId);
       }
     } else {
       var active = leaf.active;
-      if (active == agentId) {
-        final idx = leaf.tabs.indexOf(agentId);
+      if (active == tabId) {
+        final idx = leaf.tabs.indexOf(tabId);
         active = tabs[(idx - 1).clamp(0, tabs.length - 1)];
       }
-      _setActiveTree(
-        updateLeaf(tree, paneId, (p) => p.copyWith(tabs: tabs, active: active)),
+      _trees[projectId] = updateLeaf(
+        tree,
+        paneId,
+        (p) => p.copyWith(tabs: tabs, active: active),
       );
     }
-    _disposeSession(agentId);
+    if (disposeAfterFrame) {
+      unawaited(_disposeSessionAfterFrame(tabId));
+    } else {
+      _disposeSession(tabId);
+    }
+    _ensureFocusValid(projectId);
+    notifyListeners();
+    // `notifyListeners` só agenda a gravação do workspace selecionado.
+    if (_restoringCount == 0 && projectId != _selectedProjectId) {
+      _scheduleSave(projectId);
+    }
+  }
+
+  /// Reinicia a aba de terminal [tabId] do pane [paneId]: mata o processo e
+  /// sobe outro **no mesmo lugar**, pelo mesmo caminho da restauração de boot
+  /// (scrollback como replay, cwd vivo do OSC 7, `--resume` do harness que
+  /// rodava, rótulo manual e perfil preservados). É o jeito de um shell pegar
+  /// um `.env.cockpit` novo, ou de destravar um processo preso, sem perder a
+  /// posição da aba.
+  ///
+  /// A sessão nova tem **id novo** (trocado na folha do pane): o corpo da aba é
+  /// keyed pelo id, então o State antigo (listeners do terminal velho) é
+  /// descartado em vez de apontar pra um controller já disposto. O id também é
+  /// o `COCKPIT_TAB_ID` do processo, que de fato é outro.
+  Future<void> restartTerminal(String paneId, String tabId) async {
+    final old = _sessions[tabId];
+    final tree = _activeTree;
+    if (old is! TerminalSession || tree == null) return;
+    final leaf = findLeaf(tree, paneId);
+    if (leaf == null || !leaf.tabs.contains(tabId)) return;
+
+    final projectId = old.projectId;
+    final cwd = old.currentDirectory ?? old.workingDirectory;
+    final snapshot = old.scrollbackSnapshot;
+    final sid = old.claudeSessionId;
+    final startup = sid == null || sid.isEmpty
+        ? null
+        : old.agentHarness.resumeCommand(sid);
+
+    final fresh = _buildTerminal(
+      _nid('t'),
+      projectId,
+      cwd,
+      title: old.title,
+      // Mesmo formato do restore: RIS antes (limpa alt-screen residual), pop do
+      // kitty depois (o push gravado no replay nunca teve o pop do processo
+      // morto), prompt novo em linha fresca.
+      replay: snapshot.isEmpty ? null : '\x1bc$snapshot\x1b[<9u\r\n',
+      startupCommand: startup,
+      manualLabel: old.manualLabel,
+      profile: old.profile,
+      engine: old.terminal.engine,
+    );
+
+    final tabs = leaf.tabs.map((t) => t == tabId ? fresh.id : t).toList();
+    _setActiveTree(
+      updateLeaf(
+        tree,
+        paneId,
+        (p) => p.copyWith(
+          tabs: tabs,
+          active: p.active == tabId ? fresh.id : p.active,
+        ),
+      ),
+    );
+    _disposeSession(tabId);
     _ensureFocusValid();
+    _scheduleSave(projectId);
     notifyListeners();
   }
 
@@ -4699,6 +5731,11 @@ class CockpitViewModel extends ChangeNotifier {
     _setActiveTree(
       setFrac(tree, splitId, (split.frac + dFrac).clamp(0.16, 0.84)),
     );
+    PerformanceDiagnostics.instance.timeToNextFrame(
+      PerfMetric.terminalResizeFrame,
+      tabs: _sessions.length,
+      coalesce: true,
+    );
     notifyListeners();
   }
 
@@ -4721,6 +5758,7 @@ class CockpitViewModel extends ChangeNotifier {
   /// 58) o `path` é vazio; a root efetiva é a pasta do pin (`remotePath`), a
   /// mesma que o painel de DB usa via `treeRootPath` — sem isso o `.dbq`
   /// resolveria conexões num root errado e listaria "(none)".
+  @override
   String? projectRootOf(String projectId) {
     final p = _projectById(projectId);
     if (p == null) return null;
@@ -4768,11 +5806,7 @@ class CockpitViewModel extends ChangeNotifier {
     return _terminalFactory.create();
   }
 
-  PaneItem _spawn(
-    String subRelative, {
-    required bool terminal,
-    TerminalProfile? profile,
-  }) {
+  PaneItem _spawn(String subRelative, {TerminalProfile? profile}) {
     final project = selectedProject!;
     // Workspace remoto (via SSH): PTY no cockpit-server do host, na PASTA do
     // pin (vazio = HOME remota). Gateway roteado pro connector daquele host.
@@ -4786,7 +5820,7 @@ class CockpitViewModel extends ChangeNotifier {
       );
     }
     // Cockpit (terminal-only, sem pasta): shell sempre no HOME do usuário,
-    // ignorando `subRelative`. Nunca spawna agente aqui (a UI força terminal).
+    // ignorando `subRelative`.
     if (project.isSystemTerminal) {
       return _buildTerminal(
         _nid('t'),
@@ -4802,15 +5836,13 @@ class CockpitViewModel extends ChangeNotifier {
     final title = _sanitizeName(
       subRelative.isEmpty ? project.name : _basename(subRelative),
     );
-    return terminal
-        ? _buildTerminal(
-            _nid('t'),
-            project.id,
-            cwd,
-            title: title,
-            profile: profile,
-          )
-        : _buildAgent(_nid('a'), project, cwd, title: title);
+    return _buildTerminal(
+      _nid('t'),
+      project.id,
+      cwd,
+      title: title,
+      profile: profile,
+    );
   }
 
   TerminalSession _buildTerminal(
@@ -4826,11 +5858,34 @@ class CockpitViewModel extends ChangeNotifier {
     TerminalProfile? profile,
     TerminalEngine? engine,
   }) {
+    final openWatch = PerformanceDiagnostics.instance.enabled
+        ? (Stopwatch()..start())
+        : null;
+    // `.env.cockpit` do workspace (raiz + cada root em multi-root), lido a
+    // cada spawn: aba nova já vê a chave nova. Só local: no remoto o arquivo
+    // mora no host e este processo não o enxerga.
+    final remote = _isRemoteWorkspace(projectId);
+    // Remoto: o arquivo mora no host e é lido pelo gateway antes do spawn;
+    // aqui entra só o que já foi lido numa aba anterior (pra redação nascer
+    // certa). A aba nova ainda recebe [updateRedaction] quando o load fecha.
+    final workspaceEnv = remote
+        ? (_remoteWorkspaceEnv[projectId] ?? const <String, String>{})
+        : _workspaceEnvFor(projectId);
+    final gateway = _gatewayForProject(projectId);
+    TerminalSession? built;
+    if (remote && gateway is RemoteHostTerminalGateway) {
+      gateway.workspaceEnvLoader = () async {
+        final env = await _loadRemoteWorkspaceEnv(projectId);
+        _remoteWorkspaceEnv[projectId] = env;
+        built?.updateRedaction(env.values);
+        return env;
+      };
+    }
     final t = TerminalSession(
       id: id,
       projectId: projectId,
       workingDirectory: cwd,
-      gateway: _gatewayForProject(projectId),
+      gateway: gateway,
       // Workspace REMOTO sem escolha explícita: quem decide o shell é o host.
       // O padrão local não vale do outro lado — um cliente Windows pedia
       // `powershell.exe` num host macOS e a aba abria vazia, sem erro.
@@ -4854,7 +5909,14 @@ class CockpitViewModel extends ChangeNotifier {
       // O `cockpit-hook` do claude herda e reporta status de turno de volta.
       // `COCKPIT_TAB_ID` é o nome correto (o que a CLI endereça é uma tab);
       // `COCKPIT_PANE_ID` fica como alias legado (hook + binários antigos).
+      // Os VALORES do `.env.cockpit` viram `***` na saída desta aba: `env`,
+      // `echo $TOKEN` ou `curl -v` não expõem o segredo na tela, no
+      // scrollback nem no `read-tab` de um agente.
+      redactSecrets: workspaceEnv.values,
       spawnEnv: <String, String>{
+        // Env do workspace vem PRIMEIRO pra nunca sobrescrever o
+        // roteamento/transporte do Cockpit abaixo.
+        ...workspaceEnv,
         'COCKPIT_TAB_ID': id,
         'COCKPIT_PANE_ID': id,
         ..._statusServer.hookEnv,
@@ -4871,72 +5933,108 @@ class CockpitViewModel extends ChangeNotifier {
     t.onTurnFinished = () => unawaited(notifications.turnFinished(t));
     // cwd vivo (OSC 7) mudou → persiste o layout pra restaurar o shell ali.
     t.onCwdChanged = () => _scheduleSave(projectId);
+    // Shell encerrou sozinho (`exit`, Ctrl-D, processo morto) e a preferência
+    // está ligada: fecha a aba em vez de deixar o terminal morto na tela — como
+    // a aba do Neovim fecha no `:q` (ver [_watchNeovimSession]). Desligada, a
+    // aba permanece (comportamento histórico).
+    t.onProcessExit = () {
+      if (!_closeTabOnShellExit) return;
+      if (_sessions[t.id] != t) return;
+      final paneId = leafOfTab(projectId, t.id);
+      if (paneId == null) return;
+      _closeTabIn(projectId, paneId, t.id, disposeAfterFrame: true);
+    };
     // Restauração: re-arma a trava de nome sem notificar (aba ainda não montada).
     if (manualLabel != null) t.restoreManualLabel(manualLabel);
+    built = t;
     _sessions[t.id] = t;
+    if (!remote) _warnTrackedWorkspaceEnv(t, projectId);
+    if (openWatch != null && _restoringCount == 0) {
+      PerformanceDiagnostics.instance.record(PerfMetric.terminalOpen, {
+        PerfField.durationUs: openWatch.elapsedMicroseconds,
+        PerfField.tabs: _sessions.length,
+      }, force: true);
+      PerformanceDiagnostics.instance.timeToNextFrame(
+        PerfMetric.terminalOpenFrame,
+        tabs: _sessions.length,
+      );
+    }
     return t;
   }
 
-  /// Cria e boota um agente. [restoreSessionPath] (restauração) faz reanexar a
-  /// conversa salva via `switch_session`; senão, a VM captura o arquivo de
-  /// sessão que o pi criar (no 1º fim de turno) pra poder restaurar depois.
-  /// O nome final é atribuído pelo broker via evento `remote-pi:name-assigned`
-  /// quando houver colisão de mesh — [AgentSession] trata o evento e persiste.
-  AgentSession _buildAgent(
-    String id,
-    Project project,
-    String cwd, {
-    String? title,
-    bool autoStartRelay = false,
-    String? restoreSessionPath,
-    String? preferredModelId,
-    ThinkingLevel preferredThinking = ThinkingLevel.off,
-  }) {
-    final s =
-        AgentSession(
-            id: id,
-            projectId: project.id,
-            workingDirectory: cwd,
-            factory: _factory,
-            title: title,
-            autoStartRelay: autoStartRelay,
-          )
-          ..preferredModelId = preferredModelId
-          ..preferredThinking = preferredThinking;
-    s.onTurnEnd = () => _onAgentTurnEnd(s);
-    s.onCrashed = () => unawaited(notifications.agentCrashed(s));
-    s.onPreferenceChanged = () => _scheduleSave(project.id);
-    _sessions[s.id] = s;
-    unawaited(_bootAgent(s, cwd, project, restoreSessionPath));
-    return s;
-  }
+  /// Último `.env.cockpit` lido de cada workspace remoto (valores pra redação
+  /// de abas abertas depois; o gateway relê o arquivo a cada spawn).
+  final Map<String, Map<String, String>> _remoteWorkspaceEnv = {};
 
-  Future<void> _bootAgent(
-    AgentSession s,
-    String cwd,
-    Project project,
-    String? restoreSessionPath,
-  ) async {
-    s.sessionBaseline = (await _history.sessionsFor(
-      cwd,
-    )).map((e) => e.path).toSet();
-    await s.boot(
-      environment: _buildDirectConfig(s, project),
-      restoreSessionPath: restoreSessionPath,
+  /// Lê o `.env.cockpit` da raiz remota (e de cada root em multi-root) pelo
+  /// `fs.read` do host. Arquivo ausente ou ilegível contribui com nada.
+  Future<Map<String, String>> _loadRemoteWorkspaceEnv(String projectId) async {
+    final host = remoteHostForWorkspace(projectId);
+    final root = _projectById(projectId)?.remotePath ?? '';
+    if (host == null || root.isEmpty) return const <String, String>{};
+    final service = await _remoteHosts.fileServiceFor(host);
+    return loadWorkspaceEnvRemote(
+      <String>{root, ...remote.rootsOf(projectId)},
+      (path) async {
+        try {
+          return utf8.decode(await service.read(path, maxBytes: 64 * 1024));
+        } on Object {
+          return null; // sem arquivo (o comum) ou falha de leitura
+        }
+      },
     );
   }
 
-  /// Serializa `agent_name`, `auto_start_relay` e `workspace` em
-  /// `REMOTE_PI_DIRECT_CONFIG` para o processo filho.
-  Map<String, String> _buildDirectConfig(AgentSession s, Project project) {
-    return {
-      'REMOTE_PI_DIRECT_CONFIG': jsonEncode(<String, dynamic>{
-        'agent_name': s.title,
-        'workspace': project.name,
-        'auto_start_relay': s.autoStartRelay,
-      }),
-      'REMOTE_PI_DAEMON': '1',
-    };
+  /// Cache por root: o `.env.cockpit` está rastreado pelo git? Um arquivo
+  /// comitado veio do repositório (clone), não do usuário, e merece aviso.
+  final Map<String, bool> _trackedWorkspaceEnv = <String, bool>{};
+
+  /// Escreve no terminal uma linha amarela com as chaves injetadas quando o
+  /// `.env.cockpit` de alguma root do workspace é rastreado pelo git. Só
+  /// nomes, nunca valores. Best-effort e assíncrono: o spawn é síncrono e um
+  /// `git ls-files` de poucos ms cabe antes do prompt do shell de login.
+  void _warnTrackedWorkspaceEnv(TerminalSession t, String projectId) {
+    final path = _projectById(projectId)?.path ?? '';
+    if (path.isEmpty) return;
+    final roots = workspaceEnvRootsWithFile(<String>{
+      path,
+      ...rootsOf(projectId),
+    });
+    if (roots.isEmpty) return;
+    unawaited(() async {
+      final tracked = <String>[];
+      for (final root in roots) {
+        var isTracked = _trackedWorkspaceEnv[root];
+        if (isTracked == null) {
+          final (code, _) = await git.output(root, [
+            'ls-files',
+            '--error-unmatch',
+            '--',
+            kWorkspaceEnvFileName,
+          ]);
+          isTracked = code == 0;
+          _trackedWorkspaceEnv[root] = isTracked;
+        }
+        if (isTracked) tracked.add(root);
+      }
+      if (tracked.isEmpty || _sessions[t.id] != t) return;
+      final keys = loadWorkspaceEnvSync(tracked).keys.join(', ');
+      // Fora da árvore de widgets: `t` global é o acesso certo (regra i18n).
+      t.terminal.write(
+        '\x1b[33m'
+        '${slang.t.cockpit.terminal.workspaceEnvTracked(keys: keys)}'
+        '\x1b[0m\r\n',
+      );
+    }());
+  }
+
+  /// Variáveis do `.env.cockpit` de um workspace local: a raiz do workspace e,
+  /// em multi-root, cada root por cima (na ordem das roots). Workspace sem
+  /// path (terminal de sistema) contribui com nada.
+  Map<String, String> _workspaceEnvFor(String projectId) {
+    final path = _projectById(projectId)?.path ?? '';
+    if (path.isEmpty) return const <String, String>{};
+    return loadWorkspaceEnvSync(<String>{path, ...rootsOf(projectId)});
   }
 
   // ---- notificações ---------------------------------------------------------
@@ -5003,6 +6101,34 @@ class CockpitViewModel extends ChangeNotifier {
     return project != null && project.isRemoteTerminal;
   }
 
+  /// Ambiente que um processo precisa para falar com o app pela CLI interna:
+  /// roteamento (`COCKPIT_TAB_ID`, quando há aba emissora), transporte do
+  /// socket e o PATH com o binário `cockpit`. É o mesmo que as abas de
+  /// terminal locais recebem; usado pelo `exec` e pela ponte dos `.panel`.
+  Map<String, String> cliEnvironment({String? tabId}) => <String, String>{
+    if (tabId != null && tabId.isNotEmpty) ...{
+      'COCKPIT_TAB_ID': tabId,
+      'COCKPIT_PANE_ID': tabId,
+    },
+    ..._statusServer.hookEnv,
+    ..._cliPathEnv(),
+  };
+
+  /// Ponte dos `.panel` (plano 67): roda `cockpit <line>` com o mesmo env das
+  /// abas (PATH da CLI interna + socket do app) e devolve o mapa que a página
+  /// espera. A execução em si é [runPanelCommandLine], compartilhada com a
+  /// janela de documento.
+  Future<Map<String, Object?>> runPanelCommand(
+    String line, {
+    required String sessionId,
+    required String cwd,
+  }) => runPanelCommandLine(
+    line,
+    cwd: cwd,
+    environment: cliEnvironment(tabId: sessionId),
+    profile: defaultTerminalProfile,
+  );
+
   Map<String, String> _cliPathEnv() {
     final binDir = cockpitCliDir();
     if (binDir == null) return const <String, String>{};
@@ -5013,13 +6139,6 @@ class CockpitViewModel extends ChangeNotifier {
     };
   }
 
-  void _onAgentTurnEnd(AgentSession s) {
-    if (s.sessionPath == null) unawaited(_captureSessionPath(s));
-    unawaited(git.refresh(s.projectId));
-    unawaited(_refreshWorktrees(_rootOf(s.projectId)));
-    unawaited(notifications.turnFinished(s));
-  }
-
   /// Limpa a notificação do agente que acabou de virar o focado.
   void _clearFocusedNotification() {
     final id = _focusedAgentId;
@@ -5027,17 +6146,11 @@ class CockpitViewModel extends ChangeNotifier {
     if (s != null && s.unseenFinish) s.clearUnseen();
   }
 
-  AgentSession _makeEmpty(String projectId) =>
+  EmptyTab _makeEmpty(String projectId) =>
       _makeEmptyWithId(_nid('a'), projectId);
 
-  AgentSession _makeEmptyWithId(String id, String projectId) {
-    final s = AgentSession(
-      id: id,
-      projectId: projectId,
-      workingDirectory: '',
-      factory: _factory,
-      title: 'New',
-    );
+  EmptyTab _makeEmptyWithId(String id, String projectId) {
+    final s = EmptyTab(id: id, projectId: projectId, workingDirectory: '');
     _sessions[s.id] = s;
     return s;
   }
@@ -5065,9 +6178,24 @@ class CockpitViewModel extends ChangeNotifier {
     return ids;
   }
 
-  void _disposeSession(String id) {
+  /// [_disposeSession] com a destruição adiada pro fim do frame, para quem
+  /// fecha a aba com a view dela ainda montada (ver [_closeTabIn]). A sessão
+  /// sai do registro na hora: quem for procurá-la no meio do caminho — o
+  /// `_openInNeovim` atrás de uma instância viva, por exemplo — não pode achar
+  /// uma sessão que está de saída e tentar destruí-la de novo.
+  Future<void> _disposeSessionAfterFrame(String id) async {
+    final session = _detachSession(id);
+    await _endOfFrame();
+    session?.dispose();
+  }
+
+  void _disposeSession(String id) => _detachSession(id)?.dispose();
+
+  /// Tira a sessão [id] do registro (com o que está pendurado nela) e a
+  /// devolve, sem destruir.
+  PaneItem? _detachSession(String id) {
     _fileWatchers.remove(id)?.cancel();
-    _fileWatchDebounce.remove(id)?.cancel();
+    _fileWatchSeq.remove(id);
     final s = _sessions.remove(id);
     // Aba fechada explicitamente → descarta o scrollback persistido (só abas de
     // terminal têm). O app-quit NÃO passa por aqui (chama `s.dispose()` direto em
@@ -5075,47 +6203,67 @@ class CockpitViewModel extends ChangeNotifier {
     if (s is TerminalSession) {
       unawaited(_scrollback.delete(projectId: s.projectId, sessionId: id));
     }
-    s?.dispose();
+    return s;
   }
 
   /// Observa o arquivo de uma aba de viewer e relê o conteúdo ao vivo quando ele
-  /// muda no disco (decisão de UX — antes a aba congelava até fechar/reabrir). O
-  /// debounce junta a rajada de eventos que um editor dispara num save; o re-read
-  /// que volta `FileViewUnsupported` (sumiu/binário transitório) é ignorado pra
-  /// não piscar. Tudo guardado por id de sessão e cancelado no `_disposeSession`.
+  /// muda no disco (decisão de UX — antes a aba congelava até fechar/reabrir).
+  /// Rename atômico, rajada de eventos e stream do SO que morre são problema do
+  /// [_fileChanges]; aqui só se relê. O re-read que volta `FileViewUnsupported`
+  /// (sumiu/binário transitório) é ignorado pra não piscar. Tudo guardado por
+  /// id de sessão e cancelado no `_disposeSession`.
   void _watchFileViewer(FileViewerSession viewer) {
+    final id = viewer.id;
+    _fileWatchers.remove(id)?.cancel();
     // A/V: live-reload desligado (plano 46). Recarregar recriaria o player no
     // meio da reprodução; mídia raramente é reescrita em disco.
     if (viewer.view is FileViewAudio || viewer.view is FileViewVideo) return;
-    final id = viewer.id;
-    _fileWatchers.remove(id)?.cancel();
-    _fileWatchers[id] = _fileReader.watch(viewer.path).listen(
-      (_) {
-        _fileWatchDebounce[id]?.cancel();
-        _fileWatchDebounce[id] = Timer(
-          const Duration(milliseconds: 120),
-          () async {
-            _fileWatchDebounce.remove(id);
-            if (_sessions[id] is! FileViewerSession) return; // aba fechou
-            final fresh = await _fileReader.read(viewer.path);
-            if (fresh is FileViewUnsupported) return;
-            final s = _sessions[id];
-            if (s is! FileViewerSession) return; // fechou durante o read
-            s.view = fresh;
-            notifyListeners();
-          },
-        );
-      },
-      onError: (_) {}, // watch falhou (sandbox, rename) → sem live-reload
-    );
+    // Remoto: o caminho é do host, não deste disco (o `cockpit-server` não tem
+    // fs.watch). Vigiar aqui leria um arquivo local homônimo, se existisse.
+    if (_isRemote(viewer.projectId)) return;
+    _fileWatchers[id] = _fileChanges.watchFile(viewer.path).listen((_) async {
+      if (_sessions[id] is! FileViewerSession) return; // aba fechou
+      final seq = (_fileWatchSeq[id] ?? 0) + 1;
+      _fileWatchSeq[id] = seq;
+      final fresh = await _fileReader.read(viewer.path);
+      if (_fileWatchSeq[id] != seq) return; // leitura mais nova a caminho
+      if (fresh is FileViewUnsupported) return;
+      final s = _sessions[id];
+      if (s is! FileViewerSession) return; // fechou durante o read
+      // A ABA é quem escuta a sessão (o viewer e o quadro se reconstroem pelo
+      // `_onSession` dela): `adoptDisk` notifica. Sem isso, uma edição
+      // externa — um agente escrevendo o markdown, que é o caso comum — só
+      // aparecia depois de apertar "atualizar".
+      s.adoptDisk(fresh);
+      _applyKanbanBoardTitle(s);
+      notifyListeners();
+    });
   }
 
   // ---- persistência do layout ----------------------------------------------
 
   /// Ativa um projeto (sobe os processos). Se há layout salvo, reconstrói a
   /// árvore + sessões; senão, abre uma pane vazia. Idempotente: já-ativo é no-op.
-  Future<void> _activateProject(String id) async {
-    if (_trees.containsKey(id)) return;
+  Future<void> _activateProject(String id) {
+    final pending = _projectActivations[id];
+    if (pending != null) return pending;
+    if (_trees.containsKey(id)) return Future<void>.value();
+    final done = Completer<void>();
+    _projectActivations[id] = done.future;
+    unawaited(() async {
+      try {
+        await _activateProjectOnce(id);
+        done.complete();
+      } on Object catch (error, stack) {
+        done.completeError(error, stack);
+      } finally {
+        _projectActivations.remove(id);
+      }
+    }());
+    return done.future;
+  }
+
+  Future<void> _activateProjectOnce(String id) async {
     // Projeto que entrou na lista DEPOIS do boot — todo fork de worktree é
     // assim, local ou remoto: eles são derivados do `git worktree list`, que
     // só responde depois das duas passagens de carga do `init`. Sem esta
@@ -5145,25 +6293,65 @@ class CockpitViewModel extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    _restoring = true;
+    _restoringCount++;
     try {
       await _restoreProject(id, doc);
     } finally {
-      _restoring = false;
+      _restoringCount--;
     }
     notifyListeners();
   }
 
   Future<void> _restoreProject(String id, Map<String, dynamic> doc) async {
+    final restoreClock = Stopwatch()..start();
+    try {
+      await _restoreProjectInner(id, doc);
+    } finally {
+      final tabs = ((doc['sessions'] as Map?) ?? const {}).length;
+      PerformanceDiagnostics.instance.record(PerfMetric.restore, {
+        PerfField.durationUs: restoreClock.elapsedMicroseconds,
+        PerfField.tabs: tabs,
+      }, force: true);
+    }
+  }
+
+  Future<void> _restoreProjectInner(String id, Map<String, dynamic> doc) async {
     final project = _projectById(id);
     final treeJson = doc['tree'];
     if (project == null || treeJson is! Map) {
       _initTree(id);
       return;
     }
-    final sessionsJson =
+    var sessionsJson =
         (doc['sessions'] as Map?)?.cast<String, dynamic>() ??
         const <String, dynamic>{};
+    var tree = paneNodeFromJson(treeJson.cast<String, dynamic>());
+    // ANTES de gerar id novo: `_nid` não pode colidir com os que vêm do disco.
+    _bumpSeqPast(sessionsJson.keys, tree);
+
+    // Colisão entre workspaces: `_sessions` é um mapa GLOBAL, mas cada layout
+    // guarda os ids da sua época (t3, t4...). Um workspace restaurado depois
+    // (lazy, ao ser selecionado) chegava com um id que outro workspace já
+    // usa VIVO e o sobrescrevia: o pane do primeiro passava a mostrar o
+    // terminal do segundo. Raro (precisa do mesmo sufixo em dois layouts),
+    // visto no macOS e no Windows. Remapeia os que colidem pra ids novos.
+    final remap = <String, String>{};
+    for (final oldId in sessionsJson.keys) {
+      if (!_sessions.containsKey(oldId)) continue;
+      final prefix = RegExp(r'^[A-Za-z]+').firstMatch(oldId)?.group(0) ?? 't';
+      remap[oldId] = _nid(prefix);
+    }
+    if (remap.isNotEmpty) {
+      DiagnosticsLog.instance.warn(
+        'restore',
+        'tab id collision across workspaces; remapped ${remap.length} '
+            'session(s) while restoring "${project.name}"',
+      );
+      sessionsJson = <String, dynamic>{
+        for (final e in sessionsJson.entries) remap[e.key] ?? e.key: e.value,
+      };
+      tree = _remapTabs(tree, remap);
+    }
 
     // Recria cada sessão (agente boota e reanexa; viewer re-lê o arquivo).
     final created = <String>{};
@@ -5183,8 +6371,6 @@ class CockpitViewModel extends ChangeNotifier {
       }
     }
 
-    var tree = paneNodeFromJson(treeJson.cast<String, dynamic>());
-    _bumpSeqPast(sessionsJson.keys, tree); // antes do sanitize criar ids novos
     tree = _sanitizeTree(
       tree,
       created,
@@ -5209,7 +6395,68 @@ class CockpitViewModel extends ChangeNotifier {
       return sub.isEmpty ? project.path : '${project.path}/$sub';
     }
 
+    Future<bool> restoreCockpitViewer(String path) async {
+      final view = await _readFile(path);
+      if (view is FileViewUnsupported) return false;
+      final viewer = FileViewerSession(
+        id: id,
+        projectId: project.id,
+        path: path,
+        view: view,
+      );
+      viewer.boardAsList = desc['boardAsList'] as bool? ?? false;
+      viewer.rawSource = desc['rawSource'] as bool? ?? false;
+      viewer.restoreManualLabel(desc['label'] as String?);
+      _applyKanbanBoardTitle(viewer);
+      _ensureScmCoordinator(viewer);
+      _sessions[id] = viewer;
+      _watchFileViewer(viewer);
+      return true;
+    }
+
     switch (desc['type']) {
+      case 'file_engine':
+      case 'neovim':
+        final path = desc['path'] as String?;
+        if (path == null || path.isEmpty) return false;
+        final fileEngine = desc['type'] == 'neovim'
+            ? FileEditorEngine.neovim
+            : _enumByName(
+                FileEditorEngine.values,
+                desc['fileEngine'],
+                FileEditorEngine.cockpit,
+              );
+        if (fileEngine != FileEditorEngine.neovim || project.isRemoteTerminal) {
+          return restoreCockpitViewer(path);
+        }
+        if (_sessions.values.whereType<NeovimSession>().any(
+          (session) => session.projectId == project.id,
+        )) {
+          return restoreCockpitViewer(path);
+        }
+        final executable = await _neovim.executable();
+        if (executable == null) return restoreCockpitViewer(path);
+        final address = _neovim.serverAddress(project.id);
+        await _neovim.prepareServer(address);
+        final neovimSession = NeovimSession(
+          id: id,
+          projectId: project.id,
+          workingDirectory: project.path,
+          terminalGateway: _gatewayForProject(project.id),
+          neovimGateway: _neovim,
+          executable: executable,
+          serverAddress: address,
+          lastPath: path,
+          lastLine: desc['line'] as int?,
+          engine: _enumByName(
+            TerminalEngine.values,
+            desc['type'] == 'neovim' ? desc['engine'] : desc['terminalEngine'],
+            _defaultTerminalEngine,
+          ),
+        );
+        _watchNeovimSession(neovimSession);
+        _sessions[id] = neovimSession;
+        return true;
       case 'terminal':
         // Carrega o scrollback salvo e o reproduz no terminal restaurado. O
         // `\x1bc` (RIS) prepended limpa qualquer modo residual (alt-screen) em
@@ -5259,24 +6506,7 @@ class CockpitViewModel extends ChangeNotifier {
       case 'viewer':
         final path = desc['path'] as String?;
         if (path == null) return false;
-        // `_readFile` roteia pro host quando o workspace ativo é remoto (o
-        // restore no boot roda só pro projeto selecionado); local usa o
-        // `_fileReader`. Sem isto, aba de arquivo de workspace remoto tentava
-        // ler no disco do cliente e caía fora (não restaurava).
-        final view = await _readFile(path);
-        if (view is FileViewUnsupported) return false;
-        final viewer = FileViewerSession(
-          id: id,
-          projectId: project.id,
-          path: path,
-          view: view,
-        );
-        // Same pipeline as openFile: SCM coordinator + live-reload.
-        // Without this, restored tabs have no diff gutter until reopen.
-        _ensureScmCoordinator(viewer);
-        _sessions[id] = viewer;
-        _watchFileViewer(viewer);
-        return true;
+        return restoreCockpitViewer(path);
       case 'diff':
         final path = desc['path'] as String?;
         if (path == null) return false;
@@ -5328,6 +6558,15 @@ class CockpitViewModel extends ChangeNotifier {
           workingDirectory: project.path,
         );
         return true;
+      case 'notebook':
+        final nbPath = desc['path'] as String?;
+        if (nbPath == null || nbPath.isEmpty) return false;
+        _sessions[id] = NotebookSession(
+          id: id,
+          projectId: project.id,
+          path: nbPath,
+        );
+        return true;
       case 'browser':
         _sessions[id] = BrowserSession(
           id: id,
@@ -5362,23 +6601,12 @@ class CockpitViewModel extends ChangeNotifier {
           workingDirectory: project.path,
         );
         return true;
+      // Abas do agente nativo (`pi --mode rpc`), removido na 2.0: layouts
+      // antigos ainda as citam. Descartadas aqui; o `_sanitizeTree` repõe o
+      // placeholder se a folha ficar vazia. Tipo desconhecido cai no mesmo.
       case 'agent':
       default:
-        _buildAgent(
-          id,
-          project,
-          cwdOf(),
-          title: desc['title'] as String?,
-          autoStartRelay: desc['auto_start_relay'] == true,
-          restoreSessionPath: desc['sessionPath'] as String?,
-          preferredModelId: desc['preferred_model'] as String?,
-          preferredThinking: _enumByName(
-            ThinkingLevel.values,
-            desc['preferred_thinking'],
-            ThinkingLevel.off,
-          ),
-        );
-        return true;
+        return false;
     }
   }
 
@@ -5415,6 +6643,23 @@ class CockpitViewModel extends ChangeNotifier {
     }
   }
 
+  /// Troca ids de aba na árvore conforme [remap] (ver colisão em
+  /// [_restoreProject]). Ids de leaf não mudam: são por árvore.
+  PaneNode _remapTabs(PaneNode node, Map<String, String> remap) {
+    switch (node) {
+      case LeafPane():
+        return node.copyWith(
+          tabs: [for (final t in node.tabs) remap[t] ?? t],
+          active: remap[node.active] ?? node.active,
+        );
+      case SplitPane():
+        return node.copyWith(
+          a: _remapTabs(node.a, remap),
+          b: _remapTabs(node.b, remap),
+        );
+    }
+  }
+
   /// Avança `_seq` além de qualquer sufixo numérico dos ids restaurados, pra
   /// `_nid` não colidir com ids reaproveitados.
   void _bumpSeqPast(Iterable<String> sessionIds, PaneNode tree) {
@@ -5438,19 +6683,6 @@ class CockpitViewModel extends ChangeNotifier {
 
     walk(tree);
     _seq = maxN;
-  }
-
-  /// Descobre, por diferença com a [AgentSession.sessionBaseline], qual arquivo
-  /// de sessão o pi criou pra este agente, e o guarda pra restaurar depois.
-  Future<void> _captureSessionPath(AgentSession s) async {
-    final baseline = s.sessionBaseline;
-    if (baseline == null || s.sessionPath != null) return;
-    final now = await _history.sessionsFor(s.workingDirectory);
-    final fresh = now.where((e) => !baseline.contains(e.path)).toList();
-    if (fresh.isEmpty) return;
-    fresh.sort((a, b) => b.modifiedAt.compareTo(a.modifiedAt));
-    s.sessionPath = fresh.first.path;
-    notifyListeners(); // persiste o path
   }
 
   Map<String, dynamic> _serializeLayout(String projectId) {
@@ -5495,8 +6727,13 @@ class CockpitViewModel extends ChangeNotifier {
     final newSessions = <String, dynamic>{};
     for (final entry in sessionsJson.entries) {
       final desc = Map<String, dynamic>.from(entry.value as Map);
-      // worktree não replica viewers nem diffs (efêmeros)
-      if (desc['type'] == 'viewer' || desc['type'] == 'diff') continue;
+      // worktree não replica viewers/diffs nem a instância de editor do pai.
+      if (desc['type'] == 'viewer' ||
+          desc['type'] == 'diff' ||
+          desc['type'] == 'neovim' ||
+          desc['type'] == 'file_engine') {
+        continue;
+      }
       // Zera qualquer estado de continuação — o worktree é um workspace novo,
       // sessões começam do zero. `sessionPath` (agente) e `claude_sid`
       // (terminal: dispararia `claude --resume <sid>` do pai) reanexariam a
@@ -5559,6 +6796,15 @@ class CockpitViewModel extends ChangeNotifier {
   }
 
   Map<String, dynamic> _sessionToJson(PaneItem s, Project project) {
+    if (s is NeovimSession) {
+      return <String, dynamic>{
+        'type': 'file_engine',
+        'fileEngine': FileEditorEngine.neovim.name,
+        'path': s.lastPath,
+        if (s.lastLine != null) 'line': s.lastLine,
+        'terminalEngine': s.terminal.engine.name,
+      };
+    }
     if (s is TerminalSession) {
       return <String, dynamic>{
         'type': 'terminal',
@@ -5577,12 +6823,31 @@ class CockpitViewModel extends ChangeNotifier {
         // hook) pra reatar a sessão no restore. `harness` diz de quem é o id —
         // sem ele o restore assumiria Claude e o `codex` daria "No conversation
         // found". Chave `claude_sid` mantida por compat com layouts antigos.
-        if (s.claudeSessionId != null) 'claude_sid': s.claudeSessionId,
-        if (s.claudeSessionId != null) 'harness': s.agentHarness.wire,
+        if (s.claudeSessionId != null) ...{
+          'claude_sid': s.claudeSessionId,
+          'harness': s.agentHarness.wire,
+        } else if (s.activeHarness == HarnessKind.pi) ...{
+          'claude_sid': 'latest',
+          'harness': AgentHarness.pi.wire,
+        } else if (s.activeHarness == HarnessKind.claudeCode) ...{
+          'claude_sid': 'latest',
+          'harness': AgentHarness.claude.wire,
+        } else if (s.activeHarness == HarnessKind.codex) ...{
+          'claude_sid': 'latest',
+          'harness': AgentHarness.codex.wire,
+        },
       };
     }
     if (s is FileViewerSession) {
-      return <String, dynamic>{'type': 'viewer', 'path': s.path};
+      return <String, dynamic>{
+        'type': 'viewer',
+        'path': s.path,
+        // Preferências de visualização da aba: sem elas, um quadro deixado em
+        // lista (ou em markdown cru) voltava no modo padrão a cada reinício.
+        if (s.boardAsList) 'boardAsList': true,
+        if (s.rawSource) 'rawSource': true,
+        if (s.manualLabel != null) 'label': s.manualLabel,
+      };
     }
     if (s is DiffViewerSession) {
       return <String, dynamic>{
@@ -5599,6 +6864,9 @@ class CockpitViewModel extends ChangeNotifier {
     }
     if (s is BrowserSession) {
       return <String, dynamic>{'type': 'browser', 'url': s.url};
+    }
+    if (s is NotebookSession) {
+      return <String, dynamic>{'type': 'notebook', 'path': s.path};
     }
     if (s is MongoBrowserSession) {
       return <String, dynamic>{
@@ -5618,20 +6886,8 @@ class CockpitViewModel extends ChangeNotifier {
         'engine': s.terminal.engine.name,
       };
     }
-    final a = s as AgentSession;
-    if (a.status == AgentStatus.empty) {
-      return <String, dynamic>{'type': 'empty', 'title': a.title};
-    }
-    return <String, dynamic>{
-      'type': 'agent',
-      'sub': relativeUnder(a.workingDirectory, project.path),
-      'title': a.title,
-      if (a.sessionPath != null) 'sessionPath': a.sessionPath,
-      if (a.autoStartRelay) 'auto_start_relay': true,
-      if (a.preferredModelId != null) 'preferred_model': a.preferredModelId,
-      if (a.preferredThinking != ThinkingLevel.off)
-        'preferred_thinking': a.preferredThinking.name,
-    };
+    // Sobrou só o placeholder ([EmptyTab]).
+    return <String, dynamic>{'type': 'empty', 'title': s.title};
   }
 
   /// Caminho de [cwd] relativo à raiz [root] do projeto ('' = raiz). Devolve
@@ -5662,11 +6918,9 @@ class CockpitViewModel extends ChangeNotifier {
     });
   }
 
-  /// Reconcilia as worktrees de TODOS os workspaces raiz abertos contra o git —
-  /// disparado a cada tick do poll do [GitController]. Pega worktrees criadas ou
-  /// removidas por fora (outro terminal, o terminal do próprio fork) sem exigir
-  /// reabrir o workspace. [_refreshWorktrees] deduplica e só notifica se a lista
-  /// mudou, então o custo em repos parados é nulo.
+  /// Reconcilia a raiz selecionada e uma raiz inativa por tick. Antes, cada tick
+  /// percorria TODAS as roots e criava uma tempestade de `git worktree list`
+  /// justamente quando builds e agentes também disputavam disco/CPU.
   void _reconcileOpenWorktrees() {
     // Snapshot: [_refreshWorktrees] muda [_projectList] (após um await), então
     // não iteramos a lista viva.
@@ -5674,9 +6928,17 @@ class CockpitViewModel extends ChangeNotifier {
         .where((p) => p.parentId == null && !p.isSystemTerminal)
         .map((p) => p.id)
         .toList();
-    for (final rootId in roots) {
-      unawaited(_refreshWorktrees(rootId));
+    if (roots.isEmpty) return;
+    final selectedRoot = _selectedProjectId == null
+        ? null
+        : _rootOf(_selectedProjectId!);
+    if (selectedRoot != null && roots.contains(selectedRoot)) {
+      unawaited(_refreshWorktrees(selectedRoot));
     }
+    final inactive = roots.where((id) => id != selectedRoot).toList();
+    if (inactive.isEmpty) return;
+    _worktreePollCursor %= inactive.length;
+    unawaited(_refreshWorktrees(inactive[_worktreePollCursor++]));
   }
 
   /// Reconcilia as worktrees de um workspace raiz contra o git (decisões 4, 5,
@@ -5799,8 +7061,8 @@ class CockpitViewModel extends ChangeNotifier {
     if (switched || !listEquals(oldSig, newSig)) notifyListeners();
   }
 
-  void _ensureFocusValid() {
-    final id = _selectedProjectId;
+  void _ensureFocusValid([String? projectId]) {
+    final id = projectId ?? _selectedProjectId;
     if (id == null) return;
     final tree = _trees[id];
     if (tree == null) return;
@@ -5821,10 +7083,14 @@ class CockpitViewModel extends ChangeNotifier {
   @override
   void notifyListeners() {
     super.notifyListeners();
-    if (_restoring) return;
+    if (_restoringCount > 0) return;
     final id = _selectedProjectId;
     if (id != null && _trees.containsKey(id)) _scheduleSave(id);
   }
+
+  /// O badge de conclusão não altera o layout. Atualiza a rail sem reiniciar
+  /// o timer de serialização do workspace a cada notificação simultânea.
+  void _onNotificationsChanged() => super.notifyListeners();
 
   /// Re-sincroniza os workspaces remotos quando o [RemoteHostsController] muda
   /// por fora (aba "Remote hosts" das Configurações). Idempotente.
@@ -5847,7 +7113,7 @@ class CockpitViewModel extends ChangeNotifier {
     git.removeListener(_onGitNotify);
     remote.removeListener(notifyListeners);
     files.removeListener(notifyListeners);
-    notifications.removeListener(notifyListeners);
+    notifications.removeListener(_onNotificationsChanged);
     realmCtrl.removeListener(notifyListeners);
     for (final t in _saveTimers.values) {
       t.cancel();
@@ -5857,10 +7123,6 @@ class CockpitViewModel extends ChangeNotifier {
       w.cancel();
     }
     _fileWatchers.clear();
-    for (final t in _fileWatchDebounce.values) {
-      t.cancel();
-    }
-    _fileWatchDebounce.clear();
     // Grava o output pendente das tasks antes de sair (o debounce de 1s do
     // `TaskTerminalStore` pode não ter disparado) → o restore reabre a aba.
     unawaited(_taskTerminals.flushAll());
