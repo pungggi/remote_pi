@@ -30,6 +30,9 @@ export interface RoomsRegistryEntry {
   roomId: string;
   /** Epoch ms of the last relay connect that held this room. */
   lastSeenAt: number;
+  /** Plan/152 — exact Pi session ID used to resume this room after it goes
+   *  offline. Kept PC-side; the phone only supplies the room's cwd + name. */
+  sessionId?: string;
   /** Plan/149 — GitHub ref linked to the session (manual/gh-sourced).
    *  Durable source of truth for offline + keeper tiles. */
   ghRef?: WireGhRef | null;
@@ -73,6 +76,9 @@ export function readRoomsRegistry(path: string = roomsRegistryPath()): Map<strin
       if (typeof e.cwd !== "string" || typeof e.roomId !== "string") continue;
       const lastSeenAt = typeof e.lastSeenAt === "number" ? e.lastSeenAt : 0;
       const out2: RoomsRegistryEntry = { cwd: e.cwd, roomId, lastSeenAt };
+      if (typeof e.sessionId === "string" && e.sessionId.trim()) {
+        out2.sessionId = e.sessionId.trim();
+      }
       const ghRef = sanitizeGhRef(e.ghRef);
       const stats = sanitizeStats(e.stats);
       if (ghRef) out2.ghRef = ghRef;
@@ -126,6 +132,7 @@ export function upsertRoom(
   map.set(entry.roomId, {
     ...entry,
     lastSeenAt: Math.max(entry.lastSeenAt, prev?.lastSeenAt ?? 0),
+    sessionId: entry.sessionId !== undefined ? entry.sessionId : prev?.sessionId,
     ghRef: entry.ghRef !== undefined ? entry.ghRef : prev?.ghRef ?? null,
     stats: entry.stats !== undefined ? entry.stats : prev?.stats ?? null,
   });

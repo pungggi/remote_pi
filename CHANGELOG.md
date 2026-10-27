@@ -13,6 +13,12 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
+- **Exact offline session resume (plan/152)** — Start session now opens a
+  terminal in the original folder and runs `pi --session <id>` when the
+  room registry has a stored Pi session ID. Session replacement refreshes
+  the ID immediately. Older rooms keep the supervisor's headless
+  `--continue` fallback, and the app/relay request shape is unchanged.
+
 - **Home session slot: GitHub ref + activity stats (plan/149)** — the 40px
   letter avatar becomes a 44px rounded-square info slot with three mono
   lines. With a linked ref: `PR #70` / `#12` (PR slot wins the display,

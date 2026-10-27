@@ -8382,3 +8382,55 @@ describe("plan/149 session slot (gh_ref + stats)", () => {
   });
 });
 
+// ── Plan/152: exact Pi session identity for terminal resume ─────────────────
+
+describe("plan/152 exact session identity", () => {
+  let tmpHome: string;
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    relayRef.current = null;
+    relayInstances.length = 0;
+    _defaultConnectImpl = async () => undefined;
+    const stop = captureHandler("remote-pi stop");
+    await stop("", makeMockCtx());
+    tmpHome = mkdtempSync(join(tmpdir(), "plan152-home-"));
+    process.env["REMOTE_PI_HOME"] = tmpHome;
+  });
+  afterEach(async () => {
+    const stop = captureHandler("remote-pi stop");
+    await stop("", makeMockCtx());
+    delete process.env["REMOTE_PI_HOME"];
+    rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  test("connect persists the current ID and session_start replaces it without a reconnect", async () => {
+    const cwd = makeMockCtx().cwd;
+    const initialCtx = {
+      ...makeMockCtx(cwd),
+      sessionManager: { getSessionId: () => "session-before-connect" },
+    };
+    const main = await import("./main.js");
+    main.onSessionStart(makeMockPi().pi, initialCtx as any, false);
+
+    await _pairForTest("owner152__1234567890");
+    const roomId = relayRef.current!.connect.mock.calls[0]![0]!.roomId as string;
+    const { readRoomsRegistry, roomsRegistryPath } = await import("./session/rooms_registry.js");
+    expect(readRoomsRegistry(roomsRegistryPath()).get(roomId)?.sessionId)
+      .toBe("session-before-connect");
+
+    const replacementCtx = {
+      ...makeMockCtx(cwd),
+      sessionManager: { getSessionId: () => "session-after-new" },
+    };
+    const harness = captureEventHarness();
+    harness.handler("session_start")(
+      { type: "session_start", reason: "new" },
+      replacementCtx,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(readRoomsRegistry(roomsRegistryPath()).get(roomId)?.sessionId)
+      .toBe("session-after-new");
+  });
+});
+

@@ -30,7 +30,23 @@ vi.mock("./cwd_policy.js", () => ({
   remoteCwdAllowed: vi.fn(() => true),
 }));
 
+vi.mock("../rooms.js", () => ({
+  roomIdFor: vi.fn(() => "room-1"),
+}));
+
+vi.mock("../session/rooms_registry.js", () => ({
+  readRoomsRegistry: vi.fn(() => new Map()),
+}));
+
+vi.mock("./open_terminal.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./open_terminal.js")>(),
+  openTerminalTab: vi.fn(),
+}));
+
 import { handleStartSession } from "./start_session.js";
+import { roomIdFor } from "../rooms.js";
+import { readRoomsRegistry } from "../session/rooms_registry.js";
+import { openTerminalTab } from "./open_terminal.js";
 import type { ClientMessage, ServerMessage } from "../protocol/types.js";
 
 type StartMsg = Extract<ClientMessage, { type: "start_session_request" }>;
@@ -49,7 +65,54 @@ function flush() {
 describe("handleStartSession (plan/124)", () => {
   // Each test asserts on callSupervisor's call history — clear it between
   // tests so `not.toHaveBeenCalled` reflects only the current test.
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Exact-resume tests replace the registry mock; restore the legacy
+    // no-ID baseline so it cannot leak into the supervisor fallback tests.
+    vi.mocked(readRoomsRegistry).mockReturnValue(new Map());
+    vi.mocked(openTerminalTab).mockReset();
+  });
+
+  test("plan/152: opens a terminal with the exact saved session ID and skips the supervisor", async () => {
+    const sessionId = "123e4567-e89b-42d3-a456-426614174000";
+    vi.mocked(readRoomsRegistry).mockReturnValue(new Map([
+      ["room-1", { cwd: "/x", roomId: "room-1", lastSeenAt: 1, sessionId }],
+    ]));
+    vi.mocked(openTerminalTab).mockResolvedValue({ ok: true, message: "opened", method: "wt" });
+    const s = fakeSender();
+
+    handleStartSession(s as any, {
+      type: "start_session_request", id: "exact-1", cwd: "/x", name: "worker",
+    } as StartMsg);
+    await flush();
+
+    expect(roomIdFor).toHaveBeenCalledWith("/x", "worker");
+    expect(openTerminalTab).toHaveBeenCalledWith("/x", `pi --session '${sessionId}'`);
+    expect(callSupervisor).not.toHaveBeenCalled();
+    expect(s.sent).toEqual([{
+      type: "start_session_result",
+      in_reply_to: "exact-1",
+      ok: true,
+      room_id: "room-1",
+      message: "Opened terminal — resuming the saved Pi session.",
+    }]);
+  });
+
+  test("plan/152: terminal launch failure is returned without falling back to a different session", async () => {
+    vi.mocked(readRoomsRegistry).mockReturnValue(new Map([
+      ["room-1", { cwd: "/x", roomId: "room-1", lastSeenAt: 1, sessionId: "saved-id" }],
+    ]));
+    vi.mocked(openTerminalTab).mockResolvedValue({ ok: false, message: "wt failed", method: "wt" });
+    const s = fakeSender();
+
+    handleStartSession(s as any, {
+      type: "start_session_request", id: "exact-2", cwd: "/x",
+    } as StartMsg);
+    await flush();
+
+    expect(callSupervisor).not.toHaveBeenCalled();
+    expect(s.sent[0]).toMatchObject({ ok: false, room_id: "room-1", message: "wt failed" });
+  });
 
   test("replies ok:true + room_id on a successful transient spawn", async () => {
     vi.mocked(callSupervisor).mockResolvedValue({

@@ -160,6 +160,9 @@ export interface ExtensionState {
   currentThinking: ThinkingLevel | undefined;
   pendingModelRevert: FullSdkModel | null;
   sessionStartedAt: number | null;
+  /** Plan/152 — SDK session ID persisted in the room registry for exact
+   *  terminal resume after the process goes offline. */
+  piSessionId: string | null;
   /** Plan/137 — the two OR-ed sources behind `myRoomMeta.waiting_for_input`:
    *  the SDK's `ui_prompt_start/end` signal (plan/134, any blocking ctx.ui
    *  prompt) and the ask-bridge's active-flow signal (fallback for pis that
@@ -266,6 +269,7 @@ export const ext: ExtensionState = {
   currentThinking: undefined,
   pendingModelRevert: null,
   sessionStartedAt: null,
+  piSessionId: null,
   waitingSdkInput: false,
   waitingBridgeFlow: false,
   roomSeq: 0,
@@ -369,6 +373,7 @@ export function resetExtensionState(): void {
     currentThinking: undefined,
     pendingModelRevert: null,
     sessionStartedAt: null,
+    piSessionId: null,
     waitingSdkInput: false,
     waitingBridgeFlow: false,
     roomSeq: 0,

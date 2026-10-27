@@ -147,14 +147,12 @@ abstract class IActionsRepository extends Repository {
   /// [ChangeLayoutResult.message]) for unknown layout / Cockpit missing.
   Future<ChangeLayoutResult> changeLayout(String layout);
 
-  /// Plan/124 — bring an OFFLINE session back to life in its own cwd (no new
-  /// worktree, no pin). Call after switching the connection to room
-  /// [kDeviceRoom]; the device daemon asks the supervisor for a transient
-  /// `pi --mode rpc --continue` at [cwd], which resumes the existing
-  /// conversation and re-announces the same room — so the tapped tile flips
-  /// live on its own. [name] scopes the room for custom-named sessions.
-  /// Throws [ActionFailure] on offline/timeout or when the supervisor is
-  /// unavailable (e.g. only the Cockpit is running, no supervisor).
+  /// Plan/124 + plan/152 — bring an OFFLINE session back to life in its own
+  /// cwd (no new worktree, no pin). Call after switching to [kDeviceRoom].
+  /// The daemon resumes a stored session ID in a terminal, or uses the
+  /// supervisor's transient `--continue` fallback for older rooms. Both
+  /// re-announce the same room. [name] scopes custom-named sessions.
+  /// Throws [ActionFailure] on offline/timeout or launch failure.
   Future<StartSessionResult> startSession({required String cwd, String? name});
 
   /// Plan/149 — store (or clear, [ghRef] null) the GitHub ref linked to a

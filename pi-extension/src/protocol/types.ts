@@ -255,12 +255,12 @@ export type ClientMessage =
   // extension) to a `.ckp` under the configured projects roots and runs the
   // Cockpit CLI's `orchestrate` verb; see actions/change_layout.ts.
   | { type: "change_layout_request"; id: string; layout: string }
-  // Plan/124 — bring an offline session back to life in its OWN cwd (no new
-  // worktree, no pin). The device daemon asks the supervisor to spawn a
-  // transient `pi --mode rpc --continue` at `cwd`; `--continue` resumes the
-  // existing conversation and the room re-announces, flipping the tile live.
-  // `name` scopes the room for custom-named sessions (omit/default → legacy
-  // cwd-only room).
+  // Plan/124 + plan/152 — bring an offline session back to life in its OWN
+  // cwd (no new worktree, no pin). A registry-stored Pi session ID opens a
+  // terminal with `pi --session <id>`; older rooms fall back to the
+  // supervisor's transient `pi --mode rpc --continue`. Both re-announce the
+  // same room. `name` scopes custom-named sessions (omit/default → legacy
+  // cwd-only room). The request shape is unchanged by plan/152.
   | { type: "start_session_request"; id: string; cwd: string; name?: string | null }
   // Plan/149 — store (or clear, gh_ref null) the GitHub ref for a session
   // room. Served by BOTH the live session extension (when room_id is its own
