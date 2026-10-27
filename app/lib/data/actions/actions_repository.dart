@@ -149,9 +149,9 @@ abstract class IActionsRepository extends Repository {
 
   /// Plan/124 + plan/152 — bring an OFFLINE session back to life in its own
   /// cwd (no new worktree, no pin). Call after switching to [kDeviceRoom].
-  /// The daemon resumes a stored session ID in a terminal, or uses the
-  /// supervisor's transient `--continue` fallback for older rooms. Both
-  /// re-announce the same room. [name] scopes custom-named sessions.
+  /// The daemon resumes a stored session ID in a terminal, or uses visible
+  /// `pi --continue` for older rooms. Both re-announce the same room.
+  /// [name] scopes custom-named sessions.
   /// Throws [ActionFailure] on offline/timeout or launch failure.
   Future<StartSessionResult> startSession({required String cwd, String? name});
 

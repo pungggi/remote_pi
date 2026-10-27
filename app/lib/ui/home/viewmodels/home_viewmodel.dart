@@ -740,8 +740,8 @@ class HomeViewModel extends ViewModel<HomeState> {
 
   /// Plan/124 + plan/152 — bring an OFFLINE session back to life in its own
   /// cwd (no new worktree, no pin). Routes through the device daemon. A stored
-  /// Pi session ID resumes exactly in a terminal; older rooms use the
-  /// supervisor's transient `--continue` fallback. Either path re-announces
+  /// Pi session ID resumes exactly in a terminal; older rooms use visible
+  /// `pi --continue` instead of hidden RPC. Either path re-announces
   /// the SAME room, so the tile flips live via the rooms push without polling.
   /// [name] scopes custom-named sessions.
   ///
@@ -772,8 +772,8 @@ class HomeViewModel extends ViewModel<HomeState> {
       }
     }
     // Revive always rides the device daemon: the target session's own room is
-    // offline by definition. The daemon resumes the stored ID in a terminal
-    // or forwards the no-ID fallback to the supervisor's transient spawn.
+    // offline by definition. The daemon opens a visible terminal and resumes
+    // the stored ID exactly or continues the latest session for older rooms.
     // If the device room isn't live, the supervisor isn't running there → fail
     // fast with an actionable message instead of waiting out the dispatch
     // timeout.

@@ -9,7 +9,7 @@ That resumes the most recent conversation in the folder, not necessarily the con
 The replacement behavior is:
 
 - **Known Pi session ID**: open a new visible terminal window in the original folder and run `pi --session <id>`.
-- **No stored ID**: retain the existing headless `--continue` fallback for older rooms.
+- **No stored ID**: open the same visible terminal with `pi --continue`, preserving the latest-in-folder fallback without hidden RPC.
 - **Entry point**: replace only Home → long-press → **Start session**. Tile taps keep their current behavior.
 
 This gives the user a visible terminal and exact conversation continuity without creating a worktree or pinning a daemon.
@@ -18,7 +18,7 @@ This gives the user a visible terminal and exact conversation continuity without
 
 - `pi-extension/src/session/rooms_registry.ts`: persist an optional Pi `sessionId` on each room.
 - `pi-extension/src/extension-state.ts` and `main.ts`: capture the current SDK session ID and refresh the registry on session replacement and relay connection.
-- `pi-extension/src/actions/start_session.ts`: choose exact terminal resume when the registry has an ID; otherwise call the existing supervisor fallback.
+- `pi-extension/src/actions/start_session.ts`: choose exact terminal resume when the registry has an ID; otherwise open visible `pi --continue`.
 - `pi-extension/src/actions/open_terminal.ts`: build the safely quoted Pi resume command through the existing terminal launcher.
 - `app/lib/ui/home/home_page.dart`: show the action result message so terminal-launch failures and success are visible.
 - Focused registry, session-lifecycle, handler, and app tests.
@@ -42,8 +42,8 @@ No relay change is required. The existing `start_session_request {cwd, name}` al
    - **Acceptance:** handler tests prove exact terminal launch and that the supervisor is not called on this path.
 
 3. **Preserve legacy fallback**
-   - If the room is absent or has no ID, retain the current `start_transient` supervisor call unchanged.
-   - **Acceptance:** existing fallback tests stay green, with explicit no-ID coverage.
+   - If the room is absent or has no ID, open the same visible terminal with `pi --continue`; do not spawn hidden RPC.
+   - **Acceptance:** fallback tests prove a visible `pi --continue` launch with explicit no-ID coverage.
 
 4. **Surface the outcome**
    - Display a non-empty `StartSessionResult.message`; retain the current generic success toast otherwise.

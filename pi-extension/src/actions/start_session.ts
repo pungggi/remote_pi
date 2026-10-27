@@ -6,22 +6,19 @@
  * has the Pi session ID, open a NEW VISIBLE terminal window running
  * `pi --session <id>` (a background MRU tab is not sufficient).
  *
- * Older rooms have no stored ID. They retain the plan/124 fallback: ask the
- * supervisor to spawn a TRANSIENT `pi --mode rpc --continue`, which resumes
- * the cwd's most-recent session JSONL. Because the App↔Pi room is
- * `roomIdFor(cwd, name)`, either path re-announces the SAME room and the
- * offline tile flips live via the rooms push.
+ * Older rooms have no stored ID. They open the SAME kind of visible terminal
+ * with `pi --continue`, preserving the cwd's most-recent conversation without
+ * a hidden RPC process. Because the App↔Pi room is `roomIdFor(cwd, name)`,
+ * either path re-announces the SAME room and the tile flips live.
  *
- * The fallback requires the supervisor. Exact terminal resume uses the same
- * Windows launcher as open_terminal and currently reports unsupported on
- * other platforms.
+ * Both paths use the Windows launcher from open_terminal and currently report
+ * unsupported on other platforms.
  *
  * Always replies (never hangs the action channel).
  */
 import type { ClientMessage } from "../protocol/types.js";
 import type { ActionReplySender } from "./handlers.js";
 import { remoteCwdAllowed } from "./cwd_policy.js";
-import { callSupervisor, SupervisorOfflineError } from "../daemon/client.js";
 import { roomIdFor } from "../rooms.js";
 import { readRoomsRegistry } from "../session/rooms_registry.js";
 import { openTerminalTab, piSessionResumeCommand } from "./open_terminal.js";
@@ -63,57 +60,28 @@ export function handleStartSession(
   }
   const roomId = roomIdFor(cwd, name);
   const sessionId = readRoomsRegistry().get(roomId)?.sessionId?.trim();
-  if (sessionId) {
-    void openTerminalTab(cwd, piSessionResumeCommand(sessionId), { newWindow: true }).then(
-      (outcome) => {
-        sender.send({
-          type: "start_session_result",
-          in_reply_to: msg.id,
-          ok: outcome.ok,
-          room_id: roomId,
-          message: outcome.ok
-            ? "Opened terminal — resuming the saved Pi session."
-            : outcome.message,
-        });
-      },
-      (e: unknown) => {
-        sender.send({
-          type: "start_session_result",
-          in_reply_to: msg.id,
-          ok: false,
-          room_id: roomId,
-          message: e instanceof Error ? e.message : String(e),
-        });
-      },
-    );
-    return;
-  }
-
-  void callSupervisor({
-    op: "start_transient",
-    cwd,
-    ...(name ? { name } : {}),
-  })
-    .then((r) => {
+  const command = sessionId ? piSessionResumeCommand(sessionId) : "pi --continue";
+  const successMessage = sessionId
+    ? "Opened terminal — resuming the saved Pi session."
+    : "Opened terminal — continuing the latest Pi session in this folder.";
+  void openTerminalTab(cwd, command, { newWindow: true }).then(
+    (outcome) => {
       sender.send({
         type: "start_session_result",
         in_reply_to: msg.id,
-        ok: true,
-        room_id: r.room_id,
+        ok: outcome.ok,
+        room_id: roomId,
+        message: outcome.ok ? successMessage : outcome.message,
       });
-    })
-    .catch((e: unknown) => {
-      const message =
-        e instanceof SupervisorOfflineError
-          ? "Supervisor not running — run `/remote-pi install` or start pi-supervisord."
-          : e instanceof Error
-            ? e.message
-            : String(e);
+    },
+    (e: unknown) => {
       sender.send({
         type: "start_session_result",
         in_reply_to: msg.id,
         ok: false,
-        message,
+        room_id: roomId,
+        message: e instanceof Error ? e.message : String(e),
       });
-    });
+    },
+  );
 }
