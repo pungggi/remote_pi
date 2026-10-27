@@ -8,7 +8,7 @@ That resumes the most recent conversation in the folder, not necessarily the con
 
 The replacement behavior is:
 
-- **Known Pi session ID**: open a terminal in the original folder and run `pi --session <id>`.
+- **Known Pi session ID**: open a new visible terminal window in the original folder and run `pi --session <id>`.
 - **No stored ID**: retain the existing headless `--continue` fallback for older rooms.
 - **Entry point**: replace only Home → long-press → **Start session**. Tile taps keep their current behavior.
 

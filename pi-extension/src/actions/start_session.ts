@@ -3,7 +3,8 @@
  *
  * Brings an OFFLINE session back to life in its OWN cwd (no new worktree, no
  * pin). Plan/152 prefers an exact interactive resume: when the room registry
- * has the Pi session ID, open a terminal running `pi --session <id>`.
+ * has the Pi session ID, open a NEW VISIBLE terminal window running
+ * `pi --session <id>` (a background MRU tab is not sufficient).
  *
  * Older rooms have no stored ID. They retain the plan/124 fallback: ask the
  * supervisor to spawn a TRANSIENT `pi --mode rpc --continue`, which resumes
@@ -63,7 +64,7 @@ export function handleStartSession(
   const roomId = roomIdFor(cwd, name);
   const sessionId = readRoomsRegistry().get(roomId)?.sessionId?.trim();
   if (sessionId) {
-    void openTerminalTab(cwd, piSessionResumeCommand(sessionId)).then(
+    void openTerminalTab(cwd, piSessionResumeCommand(sessionId), { newWindow: true }).then(
       (outcome) => {
         sender.send({
           type: "start_session_result",

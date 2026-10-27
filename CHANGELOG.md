@@ -50,6 +50,10 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Fixed
 
+- **Exact-resume terminal visibility** — Start session now opens a NEW visible
+  Windows Terminal window (`-w new`, not a background MRU tab), so the resumed
+  Pi process is visible on the PC as well as online in the app.
+
 - **Home provider-error status**: failed LLM API turns now publish
   `room_meta.provider_error`, turning the live session slot/avatar red even
   when no chat is attached. A new turn or session clears the failure;
