@@ -91,7 +91,7 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
         currentModel: state.currentModel,
         currentModelName: state.currentModelName,
       ));
-      _errorController.add(e.message);
+      _reportError(e.message);
       rethrow;
     }
   }
@@ -121,7 +121,7 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
         currentModelName: previousName,
         currentThinking: state.currentThinking,
       ));
-      _errorController.add(e.message);
+      _reportError(e.message);
       rethrow;
     }
   }
@@ -147,7 +147,7 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
         currentModel: state.currentModel,
         currentModelName: state.currentModelName,
       ));
-      _errorController.add(e.message);
+      _reportError(e.message);
       rethrow;
     }
   }
@@ -170,7 +170,7 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
       }
       return catalogue;
     } on ActionFailure catch (e) {
-      _errorController.add(e.message);
+      _reportError(e.message);
       rethrow;
     }
   }
@@ -242,9 +242,16 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
         currentModel: state.currentModel,
         currentModelName: state.currentModelName,
       ));
-      _errorController.add(e.message);
+      _reportError(e.message);
       rethrow;
     }
+  }
+
+  /// Late action replies can arrive after the sheet's provider disposed this
+  /// VM. Preserve the original ActionFailure for the page instead of throwing
+  /// StateError by writing to a closed stream controller.
+  void _reportError(String message) {
+    if (!_disposed) _errorController.add(message);
   }
 
   void _emitIfAlive(QuickActionsState next) {

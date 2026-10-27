@@ -105,6 +105,8 @@ export interface ActionCtx {
   compact?: (options?: object) => void;
   /** Requests a graceful shutdown. Available on base and command contexts. */
   shutdown?: () => void;
+  /** False while a prompt/tool turn is still running. */
+  isIdle?: () => boolean;
   /**
    * Starts a new session. `withSession` is the SDK's blessed hook for
    * post-replacement work: it receives a FRESH, command-capable ctx bound to
@@ -235,6 +237,11 @@ export function handleSessionShutdown(
 ): boolean {
   return runSync(sender, msg, "session_shutdown", () => {
     if (!ctx?.shutdown) throw new Error("shutdown unavailable (no active session ctx)");
+    // RPC defers shutdown until agent_settled. Never acknowledge a Quit that
+    // would need the daemon fallback while a turn/tool is still running.
+    if (ctx.isIdle?.() === false) {
+      throw new Error("Session is busy — wait for the current turn to finish before quitting");
+    }
     ctx.shutdown();
   });
 }

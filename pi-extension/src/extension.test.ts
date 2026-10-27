@@ -5125,6 +5125,45 @@ describe("session_shutdown teardown", () => {
     expect(_getState()).toBe("idle");
   });
 
+  test("daemon Quit fallback stands down once SDK session teardown begins", async () => {
+    await _pairForTest(OWNER_STANDARD_FIXTURE);
+    const harness = captureEventHarness();
+    const ctx = {
+      ...makeMockCtx(),
+      isIdle: () => true,
+      shutdown: vi.fn(),
+    };
+    harness.handler("session_start")({ type: "session_start" }, ctx);
+
+    const previousDaemon = process.env["REMOTE_PI_DAEMON"];
+    process.env["REMOTE_PI_DAEMON"] = "1";
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    vi.useFakeTimers();
+    try {
+      await routeClientMessage(
+        { type: "session_shutdown", id: "quit-cleanup" },
+        { abort: () => undefined },
+      );
+      expect(ctx.shutdown).toHaveBeenCalledTimes(1);
+
+      // RPC has started graceful disposal. Its own shutdown() will exit only
+      // after runtimeHost.dispose(); the relay fallback must not preempt it.
+      const teardown = Promise.resolve(harness.handler("session_shutdown")({
+        type: "session_shutdown",
+        reason: "quit",
+      }));
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(exitSpy).not.toHaveBeenCalled();
+      await teardown;
+    } finally {
+      vi.useRealTimers();
+      exitSpy.mockRestore();
+      if (previousDaemon === undefined) delete process.env["REMOTE_PI_DAEMON"];
+      else process.env["REMOTE_PI_DAEMON"] = previousDaemon;
+      _setDisposedForTest(false);
+    }
+  });
+
   test("session_shutdown invalidates without bye before a deferred mesh leave", async () => {
     await _pairForTest(OWNER_STANDARD_FIXTURE);
     const relay = relayRef.current!;

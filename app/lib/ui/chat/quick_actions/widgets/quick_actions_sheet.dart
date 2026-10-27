@@ -51,12 +51,24 @@ Future<void> showQuickActionsSheet(BuildContext context) {
           child: QuickActionsSheetBody(
             messenger: messenger,
             onSessionReset: chat.clearActiveSession,
-            onSessionShutdown: () async => router.go(RoutePaths.home),
+            onSessionShutdown: () =>
+                finishSessionShutdownNavigation(selection, router),
           ),
         ),
       );
     },
   );
+}
+
+/// Clears the tablet detail selection before returning to Home. On tablet the
+/// master route is already /home, so navigation alone leaves the dead chat up.
+@visibleForTesting
+Future<void> finishSessionShutdownNavigation(
+  SessionSelection selection,
+  GoRouter router,
+) async {
+  selection.clear();
+  router.go(RoutePaths.home);
 }
 
 /// Body of the Quick Actions sheet. Public so widget tests can drive the

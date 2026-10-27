@@ -5135,10 +5135,15 @@ export function _routeClientMessageFrom(
         _goIdle("shutdown");
         if (process.env["REMOTE_PI_DAEMON"] === "1") {
           // RPC only observes ctx.shutdown() after another RPC command or an
-          // agent-settled event. An idle daemon may have neither, so guarantee
-          // a clean child exit (code 0); the supervisor deliberately does not
-          // restart intentional exits. The delay lets action_ok + bye flush.
-          setTimeout(() => process.exit(0), 100);
+          // agent-settled event. An idle daemon may have neither, so retain a
+          // clean-exit fallback. If SDK teardown starts first, ext.disposed
+          // stands the fallback down and RPC finishes runtimeHost.dispose()
+          // before exiting. A newly active turn likewise owns the wait via
+          // agent_settled; never kill either lifecycle after a fixed delay.
+          setTimeout(() => {
+            if (ext.disposed || ext.agentRunActive) return;
+            process.exit(0);
+          }, 1000);
         }
       }
       break;
