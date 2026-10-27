@@ -194,6 +194,10 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             .and_then(|m| m.get("waiting_for_input"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let provider_error = room_meta_val
+            .and_then(|m| m.get("provider_error"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         // Plan/107b — opaque git snapshot (the relay forwards it verbatim;
         // the app parses the shape).
         let git = room_meta_val.and_then(|m| m.get("git")).cloned();
@@ -221,6 +225,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             thinking,
             working,
             waiting_for_input,
+            provider_error,
             git,
             keeper,
             context_usage,
@@ -500,6 +505,9 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     let waiting_for_input_patch = meta_obj
                                         .and_then(|m| m.get("waiting_for_input"))
                                         .and_then(|v| v.as_bool());
+                                    let provider_error_patch = meta_obj
+                                        .and_then(|m| m.get("provider_error"))
+                                        .and_then(|v| v.as_bool());
                                     // Plan/107b — opaque git passthrough.
                                     let git_patch = meta_obj
                                         .and_then(|m| m.get("git"))
@@ -540,6 +548,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                         thinking: thinking_patch,
                                         working: working_patch,
                                         waiting_for_input: waiting_for_input_patch,
+                                        provider_error: provider_error_patch,
                                         git: git_patch,
                                         context_usage: context_usage_patch,
                                         gh_ref: gh_ref_patch,

@@ -20,6 +20,11 @@ void main() {
       expect(j, {'type': 'session_new', 'id': 'r2'});
     });
 
+    test('SessionShutdown encodes as session_shutdown', () {
+      final j = SessionShutdown(id: 'r2q').toJson();
+      expect(j, {'type': 'session_shutdown', 'id': 'r2q'});
+    });
+
     test('ModelSet encodes provider + model_id', () {
       final j =
           ModelSet(id: 'r3', provider: 'anthropic', modelId: 'claude-opus-4-7')
@@ -73,6 +78,10 @@ void main() {
   group('ActionName — wire round-trip', () {
     test('parses each known action', () {
       expect(ActionName.fromWire('session_new'), ActionName.sessionNew);
+      expect(
+        ActionName.fromWire('session_shutdown'),
+        ActionName.sessionShutdown,
+      );
       expect(
         ActionName.fromWire('session_compact'),
         ActionName.sessionCompact,

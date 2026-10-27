@@ -561,7 +561,9 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
         }
       } catch { /* defensive — never block a turn on a model lookup */ }
     }
-    if (ext.myRoomMeta) ext.myRoomMeta = { ...ext.myRoomMeta, working: true };
+    if (ext.myRoomMeta) {
+      ext.myRoomMeta = { ...ext.myRoomMeta, working: true, provider_error: false };
+    }
   });
   pi.on("turn_end", () => {
     if (mainLoaded || !runtimeIdle()) { fwd((m) => m.onTurnEnd()); return; }
@@ -671,7 +673,8 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
       autoStart ||
       !runtimeIdle() ||
       ext.disposed ||
-      ext.myRoomMeta?.waiting_for_input === true;
+      ext.myRoomMeta?.waiting_for_input === true ||
+      ext.myRoomMeta?.provider_error === true;
     if (needsRuntime) {
       // PR #62 review (race fix): if session_shutdown fires while the runtime
       // import is still resolving, its teardown bumps rootLifecycleGeneration

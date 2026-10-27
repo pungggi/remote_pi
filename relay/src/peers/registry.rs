@@ -466,6 +466,7 @@ impl PeerRegistry {
             current_thinking,
             current_working,
             current_waiting_for_input,
+            current_provider_error,
             current_git,
             current_context_usage,
             current_gh_ref,
@@ -493,6 +494,7 @@ impl PeerRegistry {
                             meta.thinking.clone(),
                             meta.working,
                             meta.waiting_for_input,
+                            meta.provider_error,
                             meta.git.clone(),
                             meta.context_usage.clone(),
                             meta.gh_ref.clone(),
@@ -511,6 +513,9 @@ impl PeerRegistry {
                         // Plan/134 — blocking-prompt flag toggle.
                         if let Some(w) = patch.waiting_for_input {
                             meta.waiting_for_input = w;
+                        }
+                        if let Some(provider_error) = patch.provider_error {
+                            meta.provider_error = provider_error;
                         }
                         // Plan/107b — opaque git snapshot passthrough.
                         if let Some(ref g) = patch.git {
@@ -536,6 +541,7 @@ impl PeerRegistry {
                             meta.thinking.clone(),
                             meta.working,
                             meta.waiting_for_input,
+                            meta.provider_error,
                             meta.git.clone(),
                             meta.context_usage.clone(),
                             meta.gh_ref.clone(),
@@ -556,6 +562,7 @@ impl PeerRegistry {
                         head.1.thinking.clone(),
                         head.1.working,
                         head.1.waiting_for_input,
+                        head.1.provider_error,
                         head.1.git.clone(),
                         head.1.context_usage.clone(),
                         head.1.gh_ref.clone(),
@@ -614,6 +621,10 @@ impl PeerRegistry {
             meta_obj.insert(
                 "waiting_for_input".to_string(),
                 serde_json::Value::Bool(current_waiting_for_input),
+            );
+            meta_obj.insert(
+                "provider_error".to_string(),
+                serde_json::Value::Bool(current_provider_error),
             );
             // Plan/107b — opaque git snapshot (only when the Pi reported one).
             if let Some(g) = &current_git {
@@ -729,6 +740,7 @@ mod tests {
             thinking: None,
             working: false,
             waiting_for_input: false,
+            provider_error: false,
             git: None,
             keeper: None,
             context_usage: None,
@@ -1345,6 +1357,54 @@ mod tests {
             v["meta"]["waiting_for_input"], true,
             "absent `waiting_for_input` in a patch must not clear it"
         );
+    }
+
+    /// Provider failures are stored room state: true broadcasts red, unrelated
+    /// patches preserve it, and the next turn clears it with false.
+    #[tokio::test]
+    async fn provider_error_patch_set_preserve_and_clear() {
+        let (reg, _metrics, pi, mut rx_app) = meta_fixture().await;
+
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    provider_error: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        assert_eq!(recv_meta(&mut rx_app)["meta"]["provider_error"], true);
+
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    working: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        let working_update = recv_meta(&mut rx_app);
+        assert_eq!(working_update["meta"]["working"], true);
+        assert_eq!(working_update["meta"]["provider_error"], true);
+
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    provider_error: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        assert_eq!(recv_meta(&mut rx_app)["meta"]["provider_error"], false);
     }
 
     /// Suppression fix (2026-08-22): a patch that re-writes the values the

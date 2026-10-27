@@ -14,6 +14,7 @@ import { describe, expect, test } from "vitest";
 import {
   handleSessionCompact,
   handleSessionNew,
+  handleSessionShutdown,
   handleModelSet,
   handleThinkingSet,
   handleListModels,
@@ -161,6 +162,33 @@ describe("handleSessionNew", () => {
     );
     expect(created).toBe(true);
     expect(recaptured).toBe(freshCtx);
+  });
+});
+
+// ── session_shutdown ───────────────────────────────────────────────────────
+
+describe("handleSessionShutdown", () => {
+  test("requests shutdown before acknowledging success", () => {
+    const calls: string[] = [];
+    const ctx: ActionCtx = { shutdown: () => { calls.push("shutdown"); } };
+    const sender = makeSender();
+    const accepted = handleSessionShutdown(ctx, sender, { type: "session_shutdown", id: "q1" });
+    calls.push(sender.sent[0]?.type ?? "missing");
+    expect(accepted).toBe(true);
+    expect(calls).toEqual(["shutdown", "action_ok"]);
+    expect(sender.sent).toEqual([
+      { type: "action_ok", in_reply_to: "q1", action: "session_shutdown" },
+    ]);
+  });
+
+  test("missing or throwing shutdown returns action_error without acceptance", () => {
+    for (const ctx of [null, { shutdown: () => { throw new Error("stale ctx"); } }] as (ActionCtx | null)[]) {
+      const sender = makeSender();
+      const accepted = handleSessionShutdown(ctx, sender, { type: "session_shutdown", id: "q2" });
+      expect(accepted).toBe(false);
+      expect(sender.sent).toHaveLength(1);
+      expect(sender.sent[0]).toMatchObject({ type: "action_error", action: "session_shutdown" });
+    }
   });
 });
 

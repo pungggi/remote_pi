@@ -17,6 +17,7 @@ import 'package:provider/provider.dart';
 class _FakeRepo implements IActionsRepository {
   int compactCalls = 0;
   int newSessionCalls = 0;
+  int shutdownCalls = 0;
   ThinkingLevel? thinking;
   WireModel? modelArg;
 
@@ -24,6 +25,7 @@ class _FakeRepo implements IActionsRepository {
   /// failure path (error toast + sheet stays open).
   bool failCompact = false;
   bool failNewSession = false;
+  bool failShutdown = false;
 
   @override
   ActiveRoomMeta get activeRoomMeta => const ActiveRoomMeta();
@@ -102,6 +104,12 @@ class _FakeRepo implements IActionsRepository {
   }
 
   @override
+  Future<void> shutdown() async {
+    shutdownCalls++;
+    if (failShutdown) throw const ActionFailure('shutdown boom');
+  }
+
+  @override
   Future<void> setModel(String provider, String modelId) async {
     modelArg = WireModel(
       id: modelId,
@@ -128,16 +136,20 @@ class _FakeRepo implements IActionsRepository {
 
 /// Opens the real sheet body over a host Scaffold. Returns the fake repo and
 /// a list appended to by the `onSessionReset` callback.
-Future<({_FakeRepo repo, List<int> resetCalls})> _openSheet(
+Future<({_FakeRepo repo, List<int> resetCalls, List<int> homeCalls})>
+    _openSheet(
   WidgetTester tester, {
   bool failCompact = false,
   bool failNewSession = false,
+  bool failShutdown = false,
 }) async {
   final repo = _FakeRepo()
     ..failCompact = failCompact
-    ..failNewSession = failNewSession;
+    ..failNewSession = failNewSession
+    ..failShutdown = failShutdown;
   final vm = QuickActionsViewModel(repo);
   final resetCalls = <int>[];
+  final homeCalls = <int>[];
 
   await tester.pumpWidget(MaterialApp(
     home: Scaffold(
@@ -156,6 +168,7 @@ Future<({_FakeRepo repo, List<int> resetCalls})> _openSheet(
                 child: QuickActionsSheetBody(
                   messenger: messenger,
                   onSessionReset: () async => resetCalls.add(1),
+                  onSessionShutdown: () async => homeCalls.add(1),
                 ),
               ),
             );
@@ -167,7 +180,7 @@ Future<({_FakeRepo repo, List<int> resetCalls})> _openSheet(
   ));
   await tester.tap(find.text('open'));
   await tester.pumpAndSettle();
-  return (repo: repo, resetCalls: resetCalls);
+  return (repo: repo, resetCalls: resetCalls, homeCalls: homeCalls);
 }
 
 void main() {
@@ -313,6 +326,48 @@ void main() {
     // surfaced as a toast (the user re-opens Quick Actions to retry).
     expect(find.byKey(const Key('qa-new-session')), findsNothing);
     expect(find.text('new boom'), findsOneWidget);
+  });
+
+  testWidgets('Quit session: confirm shuts down Pi and returns Home',
+      (tester) async {
+    final s = await _openSheet(tester);
+    await tester.tap(find.byKey(const Key('qa-quit-session')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Quit this session?'), findsOneWidget);
+    expect(find.byKey(const Key('qa-quit-session')), findsNothing);
+    await tester.tap(find.text('Quit session'));
+    await tester.pumpAndSettle();
+
+    expect(s.repo.shutdownCalls, 1);
+    expect(s.homeCalls.length, 1);
+    expect(find.text('Quit this session?'), findsNothing);
+  });
+
+  testWidgets('Quit session: Cancel fires neither shutdown nor navigation',
+      (tester) async {
+    final s = await _openSheet(tester);
+    await tester.tap(find.byKey(const Key('qa-quit-session')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(s.repo.shutdownCalls, 0);
+    expect(s.homeCalls, isEmpty);
+    expect(find.text('Quit this session?'), findsNothing);
+  });
+
+  testWidgets('Quit session: failure toasts and stays out of Home',
+      (tester) async {
+    final s = await _openSheet(tester, failShutdown: true);
+    await tester.tap(find.byKey(const Key('qa-quit-session')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Quit session'));
+    await tester.pumpAndSettle();
+
+    expect(s.repo.shutdownCalls, 1);
+    expect(s.homeCalls, isEmpty);
+    expect(find.text('shutdown boom'), findsOneWidget);
   });
 
   testWidgets('thinking segment forwards level to repo', (tester) async {

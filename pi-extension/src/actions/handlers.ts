@@ -15,6 +15,7 @@
  *                                  event when done
  *   - `ctx.newSession()`         — only on `ExtensionCommandContext`;
  *                                  resolves with `{cancelled}` flag
+ *   - `ctx.shutdown()`           — requests a graceful Pi shutdown
  *   - `pi.setModel(model)`       — returns `false` if no auth configured
  *   - `pi.setThinkingLevel(lvl)` — synchronous
  *   - `ctx.getModel()`           — optional, undefined before first turn
@@ -102,6 +103,8 @@ export interface ActionCtx {
    */
   scopedModels?: readonly ActionScopedModel[];
   compact?: (options?: object) => void;
+  /** Requests a graceful shutdown. Available on base and command contexts. */
+  shutdown?: () => void;
   /**
    * Starts a new session. `withSession` is the SDK's blessed hook for
    * post-replacement work: it receives a FRESH, command-capable ctx bound to
@@ -168,12 +171,14 @@ function runSync(
   msg: { id: string },
   action: ActionName,
   body: () => void,
-): void {
+): boolean {
   try {
     body();
     ok(sender, msg, action);
+    return true;
   } catch (e) {
     fail(sender, msg, action, e);
+    return false;
   }
 }
 
@@ -198,6 +203,7 @@ async function runAsync(
 
 type SessionCompactMsg = Extract<ClientMessage, { type: "session_compact" }>;
 type SessionNewMsg = Extract<ClientMessage, { type: "session_new" }>;
+type SessionShutdownMsg = Extract<ClientMessage, { type: "session_shutdown" }>;
 type ModelSetMsg = Extract<ClientMessage, { type: "model_set" }>;
 type ThinkingSetMsg = Extract<ClientMessage, { type: "thinking_set" }>;
 type ListModelsMsg = Extract<ClientMessage, { type: "list_models" }>;
@@ -217,6 +223,19 @@ export function handleSessionCompact(
       customInstructions:
         "Always write the compaction summary in English, even if the conversation is in another language.",
     });
+  });
+}
+
+/** Returns true only after Pi accepted the shutdown request. The caller uses
+ *  this to send `bye` and, in daemon mode, guarantee process termination. */
+export function handleSessionShutdown(
+  ctx: ActionCtx | null,
+  sender: ActionReplySender,
+  msg: SessionShutdownMsg,
+): boolean {
+  return runSync(sender, msg, "session_shutdown", () => {
+    if (!ctx?.shutdown) throw new Error("shutdown unavailable (no active session ctx)");
+    ctx.shutdown();
   });
 }
 

@@ -77,7 +77,8 @@ class HomeViewModel extends ViewModel<HomeState> {
     this._actions,
     this._completion, {
     LocalBoxes? boxes,
-  }) : _boxes = boxes ?? LocalBoxes(), super(const HomeLoading()) {
+  }) : _boxes = boxes ?? LocalBoxes(),
+       super(const HomeLoading()) {
     _relayConnected = _conn.status is StatusOnline;
     _load();
     _presenceSub = _conn.presenceStream.listen(_onPresence);
@@ -229,15 +230,6 @@ class HomeViewModel extends ViewModel<HomeState> {
       emit(const HomeNoPeer());
       return;
     }
-    // Bug 2026-10-24 — preserve the user's tab across reloads. EVERY
-    // PairingStorage write (each non-identical room_announced persists rooms)
-    // lands here via _onStorageChanged, and a fresh HomeList used to reset
-    // the filter to its `online` default — tapping "Offline" snapped back
-    // within seconds while any session was active or a keeper cycled. The
-    // filter is a view preference, not data; only the very first load
-    // (state is still HomeLoading) starts on the default tab.
-    final current = state;
-    final filter = current is HomeList ? current.filter : HomeFilter.online;
     // Plan/149 / PR #71 review — open every room's msgs box BEFORE emitting
     // the HomeList: a tile's unread listenable merges the msgs box only
     // when it is already open, and ViewModel.emit suppresses identical
@@ -273,7 +265,6 @@ class HomeViewModel extends ViewModel<HomeState> {
         statusByEpk: _conn.presenceSnapshot,
         roomsByPeer: _conn.roomsSnapshot,
         gitByKey: _gitByKey,
-        filter: filter,
       ),
     );
     // Plan/107b — seed the active session's git snapshot now that the
@@ -313,15 +304,11 @@ class HomeViewModel extends ViewModel<HomeState> {
     if (s is HomeList) {
       // emit a duplicate-looking HomeList so context.watch() triggers
       // even though peers / roomsByPeer / presence didn't change.
-      // Preserve `filter` — otherwise a status flip would silently reset
-      // the user's tab back to the Online default (and, because the new
-      // object would then differ, actually fire that reset).
       _emitHome(
         HomeList(
           peers: s.peers,
           statusByEpk: s.statusByEpk,
           roomsByPeer: s.roomsByPeer,
-          filter: s.filter,
           gitByKey: _gitByKey,
         ),
       );
@@ -371,55 +358,24 @@ class HomeViewModel extends ViewModel<HomeState> {
     _emitHome(s.copyWith(gitByKey: _gitByKey));
   }
 
-  /// Plan-38 Fase 3 — switch the presence tab. No reload: it only swaps the
-  /// `filter` in state so [visibleItems] re-derives. No-op when the state
-  /// isn't a list or the filter is unchanged.
-  void setFilter(HomeFilter filter) {
-    final s = state;
-    if (s is! HomeList) return;
-    if (s.filter == filter) return;
-    _emitHome(s.copyWith(filter: filter));
-  }
-
-  /// `true` when `(epk, roomId)` is live on the relay AND the relay itself
-  /// is reachable. The single source of truth for the Online/Offline split.
-  /// [ConnectionManager.isRoomLive] is already gated on `StatusOnline`, so
-  /// the `_relayConnected &&` is belt-and-suspenders that also documents
-  /// intent: "online" requires a live relay.
-  bool _online(HomeItem it) => _roomOnline(it.peer.remoteEpk, it.room);
+  /// `true` when this tile is a real live session on a reachable relay.
+  /// Keeper mirrors always count as offline, including for the status color.
+  bool isRoomOnline(HomeItem it) => _roomOnline(it.peer.remoteEpk, it.room);
 
   /// Plan/140 C — a keeper-held room is a durable-history mirror, not a live
-  /// agent: it counts as offline everywhere (filter tabs AND plan/148
-  /// cleanup gating).
+  /// agent: it counts as offline for status and plan/148 cleanup gating.
   bool _roomOnline(String epk, RoomInfo room) =>
       !room.keeper && _relayConnected && _conn.isRoomLive(epk, room.roomId);
 
-  /// Plan-38 Fase 3 — the items the current [HomeList.filter] keeps. A pure
-  /// view over `state.items()`; returns `const []` outside a list state.
+  /// One combined session list: live, cached/offline, and keeper mirrors.
+  /// Keeper mirrors sort last so real sessions stay prominent.
   List<HomeItem> get visibleItems {
     final s = state;
     if (s is! HomeList) return const [];
-    final all = s.items(normalizeEpk: normalizeEpkForLookup);
-    return switch (s.filter) {
-      // Plan/140 C — keeper-held (archive) sessions sort last in All.
-      HomeFilter.all =>
-        all.toList()..sort((a, b) {
-          if (a.room.keeper == b.room.keeper) return 0;
-          return a.room.keeper ? 1 : -1;
-        }),
-      HomeFilter.online => all.where(_online).toList(),
-      HomeFilter.offline => all.where((i) => !_online(i)).toList(),
-    };
-  }
-
-  /// Plan-38 Fase 3 — per-tab counts for the filter badges. Independent of
-  /// the active tab (each badge always shows its own slice's size).
-  ({int all, int online, int offline}) get counts {
-    final s = state;
-    if (s is! HomeList) return (all: 0, online: 0, offline: 0);
-    final all = s.items(normalizeEpk: normalizeEpkForLookup);
-    final online = all.where(_online).length;
-    return (all: all.length, online: online, offline: all.length - online);
+    return s.items(normalizeEpk: normalizeEpkForLookup)..sort((a, b) {
+      if (a.room.keeper == b.room.keeper) return 0;
+      return a.room.keeper ? 1 : -1;
+    });
   }
 
   /// Remember which (peer, room) the user picked. Falls back to
@@ -559,17 +515,13 @@ class HomeViewModel extends ViewModel<HomeState> {
     // removes a CLEAN worktree an agent is using — liveness, not dirtiness,
     // is what protects here — so re-check EVERY same-peer session anchored at
     // or under the worktree folder, not just the tile that was long-pressed.
-    final liveOwner = _liveWorktreeOwner(
-      epk,
-      worktree,
-      exceptRoomId: roomId,
-    );
+    final liveOwner = _liveWorktreeOwner(epk, worktree, exceptRoomId: roomId);
     if (liveOwner != null) {
       throw ActionFailure(
         liveOwner == roomId
             ? 'This session is running again — nothing was removed.'
             : 'Another session on this computer is using this folder — '
-                'nothing was removed.',
+                  'nothing was removed.',
       );
     }
     final room = _actionRoomFor(epk, roomId);
@@ -784,60 +736,6 @@ class HomeViewModel extends ViewModel<HomeState> {
     final dispatchRoom = (!targetLive && deviceLive) ? kDeviceRoom : roomId;
     _conn.switchRoom(dispatchRoom);
     return _actions.openTerminal(cwd: cwd, runPi: runPi, branch: branch);
-  }
-
-  /// Plan/149 — store (or clear, [ghRef] null) the GitHub ref linked to a
-  /// session. Routes like [openTerminal]: switch to the tapped session's
-  /// peer, then dispatch to the session's own room when live, else to the
-  /// device daemon (which writes the rooms registry directly, so the link
-  /// works while the session is offline). [cwd] is the fallback for rooms
-  /// never registered on the PC (pre-plan/140 sessions).
-  ///
-  /// Throws [ActionFailure] on transport issues; `ok:false` in the result
-  /// carries the Pi's user-presentable reason.
-  Future<SetSessionRefResult> setSessionRef({
-    required String epk,
-    required String roomId,
-    required GhRef? ghRef,
-    String? cwd,
-  }) async {
-    final peers = await _storage.listPeers();
-    if (_disposed) {
-      throw const ActionFailure('cancelled');
-    }
-    final match = peers.where((p) => p.remoteEpk == epk).cast<PeerRecord?>();
-    if (match.isEmpty) {
-      throw const ActionFailure('peer not found');
-    }
-    final peer = match.first!;
-    final samePeer = _conn.activePeer?.remoteEpk == epk;
-    if (!samePeer || !_relayConnected) {
-      await _conn.switchTo(peer);
-      if (_disposed) {
-        throw const ActionFailure('cancelled');
-      }
-      if (_conn.status is! StatusOnline) {
-        await _waitForOnline(kTerminalOpenConnectTimeout);
-      }
-    }
-    // The session's own room applies the ref live (meta push + registry);
-    // when it is offline, the device daemon takes the registry-only path.
-    // PR #71 review — `isRoomRealLive`, NOT `isRoomLive`: a keeper-held
-    // (offline) room counts as live for STATE purposes, but the keeper
-    // only serves `session_sync`; a request routed at it times out. The
-    // request must reach the device daemon's connection instead.
-    final targetLive = _conn.isRoomRealLive(epk, roomId);
-    final deviceLive = _conn.isRoomRealLive(epk, kDeviceRoom);
-    if (!targetLive && !deviceLive) {
-      final label = _peerLabelForError();
-      throw ActionFailure(
-        'Could not reach $label — no live Pi or device daemon to store the '
-        'link.',
-      );
-    }
-    final dispatchRoom = (!targetLive && deviceLive) ? kDeviceRoom : roomId;
-    _conn.switchRoom(dispatchRoom);
-    return _actions.setSessionRef(roomId: roomId, ghRef: ghRef, cwd: cwd);
   }
 
   /// Plan/124 — bring an OFFLINE session back to life in its own cwd (no new

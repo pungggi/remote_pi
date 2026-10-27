@@ -71,6 +71,7 @@ fn test_room_meta() -> RoomMeta {
         thinking: None,
         working: false,
         waiting_for_input: false,
+        provider_error: false,
         git: None,
         keeper: None,
         context_usage: None,

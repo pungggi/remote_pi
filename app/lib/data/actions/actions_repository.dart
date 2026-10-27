@@ -93,6 +93,7 @@ class ActionFailure implements Exception {
 abstract class IActionsRepository extends Repository {
   Future<void> compact();
   Future<void> newSession();
+  Future<void> shutdown();
   Future<void> setModel(String provider, String modelId);
   Future<void> setThinking(ThinkingLevel level);
 
@@ -379,7 +380,7 @@ class ActionsRepository extends Repository implements IActionsRepository {
             );
           }
         }
-      // Plan/149 — set-session-ref reply (Link Issue / PR sheet).
+      // Plan/149 — set-session-ref compatibility reply.
       case SetSessionRefResult(
         :final inReplyTo,
         :final ok,
@@ -479,6 +480,11 @@ class ActionsRepository extends Repository implements IActionsRepository {
   @override
   Future<void> newSession() async {
     await _dispatch<void>((id) => SessionNew(id: id));
+  }
+
+  @override
+  Future<void> shutdown() async {
+    await _dispatch<void>((id) => SessionShutdown(id: id));
   }
 
   @override

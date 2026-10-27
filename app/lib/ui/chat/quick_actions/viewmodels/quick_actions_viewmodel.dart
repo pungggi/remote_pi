@@ -55,6 +55,10 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
     await _runVoid(ActionName.sessionNew, _repo.newSession);
   }
 
+  Future<void> shutdown() async {
+    await _runVoid(ActionName.sessionShutdown, _repo.shutdown);
+  }
+
   /// Plan/108 — open a terminal at [cwd] (or the session cwd). Returns the
   /// Pi's outcome so the sheet can toast ok/fail. Throws [ActionFailure] only
   /// on transport issues (offline / timeout); a launch failure returns ok:false.

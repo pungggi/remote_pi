@@ -7,6 +7,7 @@
 
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
+import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/home/widgets/session_tile.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -18,17 +19,42 @@ PeerRecord _peer() => PeerRecord(
       pairedAt: '2026-01-01T00:00:00Z',
     );
 
-Future<void> _pump(WidgetTester tester, {RoomInfo? room}) {
+Future<void> _pump(
+  WidgetTester tester, {
+  RoomInfo? room,
+  bool isLive = true,
+  bool isReconnecting = false,
+  bool isWorking = false,
+  bool isWaitingForInput = false,
+  int unread = 0,
+}) {
   return tester.pumpWidget(
     MaterialApp(
       home: Scaffold(
-        body: SessionTile(peer: _peer(), isLive: true, room: room, onOpen: () {}),
+        body: SessionTile(
+          peer: _peer(),
+          isLive: isLive,
+          isReconnecting: isReconnecting,
+          isWorking: isWorking,
+          isWaitingForInput: isWaitingForInput,
+          unread: unread,
+          room: room,
+          onOpen: () {},
+        ),
       ),
     ),
   );
 }
 
 const _fillKey = ValueKey('session-tile-context-fill');
+const _slotKey = ValueKey('session-tile-session-slot');
+const _avatarKey = ValueKey('session-tile-avatar');
+
+const _statusRoom = RoomInfo(
+  roomId: 'r1',
+  startedAt: 1,
+  stats: SessionStats(turns: 3, userMsgs: 7),
+);
 
 AnimatedFractionallySizedBox _fill(WidgetTester tester) =>
     tester.widget<AnimatedFractionallySizedBox>(find.byKey(_fillKey));
@@ -38,6 +64,15 @@ BoxDecoration _fillDecoration(WidgetTester tester) => tester
       find.descendant(of: find.byKey(_fillKey), matching: find.byType(DecoratedBox)),
     )
     .decoration as BoxDecoration;
+
+BoxDecoration _containerDecoration(WidgetTester tester, Key key) =>
+    tester.widget<Container>(find.byKey(key)).decoration! as BoxDecoration;
+
+Color _borderColor(BoxDecoration decoration) =>
+    (decoration.border! as Border).top.color;
+
+Color _textColor(WidgetTester tester, String text) =>
+    tester.widget<Text>(find.text(text)).style!.color!;
 
 void main() {
   group('context fill (plan/147)', () {
@@ -360,6 +395,182 @@ void main() {
       expect(find.text('T9'), findsOneWidget);
       expect(find.text('M12'), findsOneWidget);
       expect(find.text('·'), findsOneWidget); // unread line, zero
+    });
+  });
+
+  group('session status color', () {
+    testWidgets('provider error turns the whole live slot red',
+        (tester) async {
+      const colors = AppColors.dark;
+      await _pump(
+        tester,
+        room: _statusRoom.copyWith(providerError: true),
+        isWorking: true,
+        isWaitingForInput: true,
+      );
+
+      final decoration = _containerDecoration(tester, _slotKey);
+      expect(_borderColor(decoration), colors.error);
+      expect(decoration.color, colors.error.withValues(alpha: 0.10));
+      for (final label in ['T3', 'M7', '·']) {
+        expect(_textColor(tester, label), colors.error);
+      }
+    });
+
+    testWidgets('cached provider error keeps reconnecting amber',
+        (tester) async {
+      const colors = AppColors.dark;
+      await _pump(
+        tester,
+        room: _statusRoom.copyWith(providerError: true),
+        isLive: false,
+        isReconnecting: true,
+      );
+
+      final decoration = _containerDecoration(tester, _slotKey);
+      expect(_borderColor(decoration), colors.warning);
+      expect(decoration.color, colors.warning.withValues(alpha: 0.10));
+      for (final label in ['T3', 'M7', '·']) {
+        expect(_textColor(tester, label), colors.warning);
+      }
+    });
+
+    testWidgets('cached provider error keeps an offline slot grey',
+        (tester) async {
+      const colors = AppColors.dark;
+      await _pump(
+        tester,
+        room: _statusRoom.copyWith(providerError: true),
+        isLive: false,
+      );
+
+      final decoration = _containerDecoration(tester, _slotKey);
+      expect(_borderColor(decoration), colors.muted);
+      expect(decoration.color, colors.muted.withValues(alpha: 0.10));
+      for (final label in ['T3', 'M7', '·']) {
+        expect(_textColor(tester, label), colors.muted);
+      }
+    });
+
+    testWidgets('slot keeps waiting > working > reconnecting > live > offline',
+        (tester) async {
+      const colors = AppColors.dark;
+      final cases = <({
+        String name,
+        Color color,
+        bool isLive,
+        bool isReconnecting,
+        bool isWorking,
+        bool isWaitingForInput,
+      })>[
+        (
+          name: 'waiting',
+          color: colors.warning,
+          isLive: true,
+          isReconnecting: true,
+          isWorking: true,
+          isWaitingForInput: true,
+        ),
+        (
+          name: 'working',
+          color: colors.working,
+          isLive: true,
+          isReconnecting: true,
+          isWorking: true,
+          isWaitingForInput: false,
+        ),
+        (
+          name: 'reconnecting',
+          color: colors.warning,
+          isLive: true,
+          isReconnecting: true,
+          isWorking: false,
+          isWaitingForInput: false,
+        ),
+        (
+          name: 'live',
+          color: colors.success,
+          isLive: true,
+          isReconnecting: false,
+          isWorking: false,
+          isWaitingForInput: false,
+        ),
+        (
+          name: 'offline',
+          color: colors.muted,
+          isLive: false,
+          isReconnecting: false,
+          isWorking: false,
+          isWaitingForInput: false,
+        ),
+      ];
+
+      for (final c in cases) {
+        await _pump(
+          tester,
+          room: _statusRoom,
+          isLive: c.isLive,
+          isReconnecting: c.isReconnecting,
+          isWorking: c.isWorking,
+          isWaitingForInput: c.isWaitingForInput,
+        );
+        final decoration = _containerDecoration(tester, _slotKey);
+        expect(_borderColor(decoration), c.color, reason: c.name);
+        expect(
+          decoration.color,
+          c.color.withValues(alpha: 0.10),
+          reason: '${c.name} fill',
+        );
+        for (final label in ['T3', 'M7', '·']) {
+          expect(
+            _textColor(tester, label),
+            c.color,
+            reason: '${c.name} $label text',
+          );
+        }
+      }
+    });
+
+    testWidgets('unread keeps count and emphasis in the same status color',
+        (tester) async {
+      const colors = AppColors.dark;
+      await _pump(
+        tester,
+        room: _statusRoom,
+        isWorking: true,
+        unread: 2,
+      );
+
+      final decoration = _containerDecoration(tester, _slotKey);
+      expect(_borderColor(decoration), colors.working);
+      expect(decoration.color, colors.working.withValues(alpha: 0.10));
+      for (final label in ['T3', 'M7', '2']) {
+        expect(_textColor(tester, label), colors.working);
+      }
+      expect(
+        tester.widget<Text>(find.text('M7')).style!.fontWeight,
+        FontWeight.w400,
+      );
+      expect(
+        tester.widget<Text>(find.text('2')).style!.fontWeight,
+        FontWeight.w600,
+      );
+    });
+
+    testWidgets('avatar fallback carries status instead of the removed dot',
+        (tester) async {
+      const colors = AppColors.dark;
+      await _pump(
+        tester,
+        room: const RoomInfo(roomId: 'r1', startedAt: 1, name: 'alpha'),
+        isWorking: true,
+      );
+
+      expect(find.byKey(_slotKey), findsNothing);
+      final decoration = _containerDecoration(tester, _avatarKey);
+      expect(_borderColor(decoration), colors.working);
+      expect(decoration.color, colors.working.withValues(alpha: 0.10));
+      expect(_textColor(tester, 'A'), colors.working);
     });
   });
 }

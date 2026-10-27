@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 class _FakeActionsRepository implements IActionsRepository {
   int compactCalls = 0;
   int newSessionCalls = 0;
+  int shutdownCalls = 0;
   String? lastProvider;
   String? lastModelId;
   ThinkingLevel? lastThinking;
@@ -107,6 +108,11 @@ class _FakeActionsRepository implements IActionsRepository {
   }
 
   @override
+  Future<void> shutdown() async {
+    shutdownCalls++;
+  }
+
+  @override
   Future<void> setModel(String provider, String modelId) async {
     lastProvider = provider;
     lastModelId = modelId;
@@ -142,6 +148,22 @@ void main() {
       expect(transitions.first, isA<QuickActionsBusy>());
       expect((transitions.first as QuickActionsBusy).action,
           ActionName.sessionCompact);
+      expect(transitions.last, isA<QuickActionsIdle>());
+      vm.dispose();
+    });
+
+    test('shutdown() flips to busy then back to idle', () async {
+      final repo = _FakeActionsRepository();
+      final vm = QuickActionsViewModel(repo);
+      final transitions = <QuickActionsState>[];
+      vm.addListener(() => transitions.add(vm.state));
+      await vm.shutdown();
+      expect(repo.shutdownCalls, 1);
+      expect(transitions.first, isA<QuickActionsBusy>());
+      expect(
+        (transitions.first as QuickActionsBusy).action,
+        ActionName.sessionShutdown,
+      );
       expect(transitions.last, isA<QuickActionsIdle>());
       vm.dispose();
     });

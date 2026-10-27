@@ -44,6 +44,11 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Fixed
 
+- **Home provider-error status**: failed LLM API turns now publish
+  `room_meta.provider_error`, turning the live session slot/avatar red even
+  when no chat is attached. A new turn or session clears the failure;
+  reconnect and offline status colors retain their existing behavior.
+
 - **PR #71 review fixes (plan/149 hardening)**:
   - **Relay**: a `gh_ref`/`gh_suggestion`/`stats` key explicitly cleared
     by a patch is now broadcast as an explicit `null` instead of being

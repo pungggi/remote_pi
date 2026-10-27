@@ -324,7 +324,12 @@ ver se o broadcast atual cobre — senão adicionar.
 ### Notas pendentes
 
 3. **Flake test pré-existente** (`pending UserMsg survives WS reconnect`) falhou na primeira run da Wave C, ficou verde depois. Agent não tocou. Suspeito de timing flake — registrar pra observação.
-4. **`abort`/`shutdown` actions**: backloged. Adicionar quando user demandar; ambas precisam confirm dialog.
+4. **`abort`/`shutdown` actions**: shutdown foi adicionado em 2026-10-27 como
+   Quick Action **Quit session**, com confirm dialog e retorno à Home. O usuário
+   escolheu especificamente Quick Action, não um parser `/quit` no composer.
+   `session_shutdown` chama `ctx.shutdown()`, envia `bye{reason:"shutdown"}`
+   e, em daemon RPC, sai com código 0 para o supervisor não reiniciar o filho.
+   Abort continua backloged.
 
 ## Próximos planos
 

@@ -11,6 +11,13 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Provider API failures are visible on Home**: the session rectangle turns
+  red after an LLM API error, including rate limits. It returns to the normal
+  activity color when a new turn starts. Offline and reconnecting sessions
+  keep their existing colors.
+
 ## [1.4.3] — 2026-10-24
 
 ### Added
