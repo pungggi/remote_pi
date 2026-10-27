@@ -55,6 +55,10 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
     await _runVoid(ActionName.sessionNew, _repo.newSession);
   }
 
+  Future<void> shutdown() async {
+    await _runVoid(ActionName.sessionShutdown, _repo.shutdown);
+  }
+
   /// Plan/108 — open a terminal at [cwd] (or the session cwd). Returns the
   /// Pi's outcome so the sheet can toast ok/fail. Throws [ActionFailure] only
   /// on transport issues (offline / timeout); a launch failure returns ok:false.
@@ -87,7 +91,7 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
         currentModel: state.currentModel,
         currentModelName: state.currentModelName,
       ));
-      _errorController.add(e.message);
+      _reportError(e.message);
       rethrow;
     }
   }
@@ -117,7 +121,7 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
         currentModelName: previousName,
         currentThinking: state.currentThinking,
       ));
-      _errorController.add(e.message);
+      _reportError(e.message);
       rethrow;
     }
   }
@@ -143,7 +147,7 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
         currentModel: state.currentModel,
         currentModelName: state.currentModelName,
       ));
-      _errorController.add(e.message);
+      _reportError(e.message);
       rethrow;
     }
   }
@@ -166,7 +170,7 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
       }
       return catalogue;
     } on ActionFailure catch (e) {
-      _errorController.add(e.message);
+      _reportError(e.message);
       rethrow;
     }
   }
@@ -238,9 +242,16 @@ class QuickActionsViewModel extends ViewModel<QuickActionsState> {
         currentModel: state.currentModel,
         currentModelName: state.currentModelName,
       ));
-      _errorController.add(e.message);
+      _reportError(e.message);
       rethrow;
     }
+  }
+
+  /// Late action replies can arrive after the sheet's provider disposed this
+  /// VM. Preserve the original ActionFailure for the page instead of throwing
+  /// StateError by writing to a closed stream controller.
+  void _reportError(String message) {
+    if (!_disposed) _errorController.add(message);
   }
 
   void _emitIfAlive(QuickActionsState next) {

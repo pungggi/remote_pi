@@ -40,6 +40,9 @@ sealed class ControlInbound {
         // Plan/134 — same both-places read for the blocking-prompt flag.
         final rawWaitingForInput = (j['waiting_for_input'] as bool?) ??
             (metaJson?['waiting_for_input'] as bool?);
+        final rawProviderError =
+            (j['provider_error'] as bool?) ??
+            (metaJson?['provider_error'] as bool?);
         final rawGit = j['git'] ?? metaJson?['git'];
         final rawContextUsage =
             j['context_usage'] ?? metaJson?['context_usage'];
@@ -64,6 +67,7 @@ sealed class ControlInbound {
               : null,
           working: rawWorking,
           waitingForInput: rawWaitingForInput,
+          providerError: rawProviderError,
           git: rawGit is Map<String, dynamic>
               ? GitStatus.fromJson(rawGit)
               : null,
@@ -135,6 +139,8 @@ sealed class ControlInbound {
           // Plan/134 — blocking-prompt flag: nullable-as-absent like
           // `working` (the flag only ever toggles).
           waitingForInput: meta?['waiting_for_input'] as bool?,
+          // Latest provider failure; nullable-as-absent like `working`.
+          providerError: meta?['provider_error'] as bool?,
           // Plan/132 — run-completion marker: nullable-as-absent like
           // `working` (an object key is either absent or present — there is
           // no "explicitly null" form on the wire).
@@ -298,6 +304,11 @@ class RoomInfo {
   /// Defaults to `false` (idle / legacy relay).
   final bool waitingForInput;
 
+  /// `true` when the latest LLM turn failed at the provider (for example a
+  /// rate-limit or API error). Cleared when a new turn/session starts. Home
+  /// shows this only for live rooms so an offline cache never stays red.
+  final bool providerError;
+
   /// Plan/107b — git status snapshot the Pi-extension pushes via
   /// `room_meta.git` (computed from the session cwd). `null` = not a repo /
   /// not reported yet → the tile falls back to the model subtitle.
@@ -336,6 +347,7 @@ class RoomInfo {
     this.thinking,
     this.working = false,
     this.waitingForInput = false,
+    this.providerError = false,
     this.git,
     this.contextUsage,
     this.keeper = false,
@@ -357,6 +369,7 @@ class RoomInfo {
           : null,
       working: (j['working'] as bool?) ?? false,
       waitingForInput: (j['waiting_for_input'] as bool?) ?? false,
+      providerError: (j['provider_error'] as bool?) ?? false,
       keeper: (j['keeper'] as bool?) ?? false,
       git: j['git'] is Map<String, dynamic>
           ? GitStatus.fromJson(j['git'] as Map<String, dynamic>)
@@ -385,6 +398,7 @@ class RoomInfo {
     if (thinking != null) 'thinking': thinking!.wire,
     'working': working,
     'waiting_for_input': waitingForInput,
+    'provider_error': providerError,
     if (git != null) 'git': git!.toJson(),
     if (contextUsage != null) 'context_usage': contextUsage!.toJson(),
     if (ghRef != null) 'gh_ref': ghRef!.toJson(),
@@ -400,6 +414,7 @@ class RoomInfo {
     Object? thinking = _kRoomInfoUnset,
     bool? working,
     bool? waitingForInput,
+    bool? providerError,
     Object? git = _kRoomInfoUnset,
     Object? contextUsage = _kRoomInfoUnset,
     Object? ghRef = _kRoomInfoUnset,
@@ -416,6 +431,7 @@ class RoomInfo {
         : thinking as ThinkingLevel?,
     working: working ?? this.working,
     waitingForInput: waitingForInput ?? this.waitingForInput,
+    providerError: providerError ?? this.providerError,
     git: identical(git, _kRoomInfoUnset) ? this.git : git as GitStatus?,
     contextUsage: identical(contextUsage, _kRoomInfoUnset)
         ? this.contextUsage
@@ -440,6 +456,7 @@ class RoomInfo {
       other.thinking == thinking &&
       other.working == working &&
       other.waitingForInput == waitingForInput &&
+      other.providerError == providerError &&
       other.git == git &&
       other.contextUsage == contextUsage &&
       other.ghRef == ghRef &&
@@ -456,6 +473,7 @@ class RoomInfo {
     thinking,
     working,
     waitingForInput,
+    providerError,
     git,
     contextUsage,
     ghRef,
@@ -488,6 +506,10 @@ class RoomAnnounced extends ControlInbound {
   /// preserve convention as [working].
   final bool? waitingForInput;
 
+  /// Provider-failure flag at announce time. Same nullable preserve
+  /// convention as [working].
+  final bool? providerError;
+
   /// Plan/107b — git snapshot from `room_meta.git` (flat in room_announced).
   final GitStatus? git;
 
@@ -518,6 +540,7 @@ class RoomAnnounced extends ControlInbound {
     this.thinking,
     this.working,
     this.waitingForInput,
+    this.providerError,
     this.git,
     this.contextUsage,
     this.keeper = false,
@@ -601,6 +624,10 @@ class RoomMetaUpdated extends ControlInbound {
   /// `working` — a prompt opens MID-turn and the turn stays open.
   final bool? waitingForInput;
 
+  /// Latest provider failure. Nullable-as-absent like [working]: null
+  /// preserves the cached value, while false clears it on a new turn.
+  final bool? providerError;
+
   /// Plan/107b — git snapshot patch from `meta.git`. `null` = the update
   /// either cleared git or the cwd isn't a repo; [hasGit] distinguishes
   /// "git key absent" (preserve) from "git present" (apply, even if null).
@@ -642,6 +669,7 @@ class RoomMetaUpdated extends ControlInbound {
     this.thinking,
     this.working,
     this.waitingForInput,
+    this.providerError,
     this.git,
     this.contextUsage,
     this.runDone,
@@ -1070,6 +1098,7 @@ class ReportSeq extends ClientMessage {
 /// `pi-extension/src/actions/handlers.ts`.
 enum ActionName {
   sessionNew('session_new'),
+  sessionShutdown('session_shutdown'),
   sessionCompact('session_compact'),
   modelSet('model_set'),
   thinkingSet('thinking_set'),
@@ -1193,6 +1222,14 @@ class SessionNew extends ClientMessage {
 
   @override
   Map<String, dynamic> toJson() => {'type': 'session_new', 'id': id};
+}
+
+class SessionShutdown extends ClientMessage {
+  final String id;
+  SessionShutdown({required this.id});
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'session_shutdown', 'id': id};
 }
 
 class ModelSet extends ClientMessage {
@@ -1449,7 +1486,7 @@ sealed class ServerMessage {
       'change_layout_result' => ChangeLayoutResult.fromJson(json),
       // Plan/124 — reply to StartSessionRequest (revive offline session).
       'start_session_result' => StartSessionResult.fromJson(json),
-      // Plan/149 — reply to SetSessionRefRequest (Link Issue / PR sheet).
+      // Plan/149 — reply to SetSessionRefRequest.
       'set_session_ref_result' => SetSessionRefResult.fromJson(json),
       // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors
       // the SDK's extension_ui_request RPC contract; optional `ask` envelope
@@ -2230,64 +2267,6 @@ class GhRef {
     final d = display;
     if (d == null) return '';
     return pr != null ? 'PR #${d.number}' : '#${d.number}';
-  }
-
-  /// Plan/149 — app-side manual parse (the Link sheet's text field).
-  /// Accepts a full GitHub PR / issue URL (also buried in prose) or
-  /// `owner/repo#123`; a bare `#123` is REJECTED (never enough on its own —
-  /// plan/149 decision) as is anything that isn't a GitHub ref. Mirrors the
-  /// Pi-side `parseManualRefInput` so both ends agree on what counts.
-  static GhRef? tryParseInput(String raw) {
-    final text = raw.trim();
-    if (text.isEmpty) return null;
-
-    GhRefSlot slot(int number, String url) =>
-        GhRefSlot(number: number, url: url, state: null);
-
-    // Full GitHub URLs (PR first: /pull/ is never an issue path).
-    final prUrl = RegExp(
-      r'https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/(\d+)',
-    ).firstMatch(text);
-    if (prUrl != null) {
-      final n = int.tryParse(prUrl.group(3)!) ?? 0;
-      if (n > 0) {
-        return GhRef(
-          pr: slot(n, prUrl.group(0)!),
-          issue: null,
-          source: 'manual',
-        );
-      }
-    }
-    final issueUrl = RegExp(
-      r'https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/(\d+)',
-    ).firstMatch(text);
-    if (issueUrl != null) {
-      final n = int.tryParse(issueUrl.group(3)!) ?? 0;
-      if (n > 0) {
-        return GhRef(
-          pr: null,
-          issue: slot(n, issueUrl.group(0)!),
-          source: 'manual',
-        );
-      }
-    }
-    // owner/repo#123 → issue slot (the URL is derived).
-    final short = RegExp(
-      r'\b([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#(\d+)\b',
-    ).firstMatch(text);
-    if (short != null) {
-      final n = int.tryParse(short.group(3)!) ?? 0;
-      if (n > 0) {
-        final owner = short.group(1)!;
-        final repo = short.group(2)!;
-        return GhRef(
-          pr: null,
-          issue: slot(n, 'https://github.com/$owner/$repo/issues/$n'),
-          source: 'manual',
-        );
-      }
-    }
-    return null;
   }
 
   @override

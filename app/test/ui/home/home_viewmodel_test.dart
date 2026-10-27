@@ -161,8 +161,7 @@ class _StubCompletionNotifications extends ICompletionNotifications {
   bool permissionGranted = true;
 
   @override
-  bool isEnabled(String epk, String roomId) =>
-      toggles['$epk:$roomId'] == true;
+  bool isEnabled(String epk, String roomId) => toggles['$epk:$roomId'] == true;
 
   @override
   Future<bool> setEnabled(String epk, String roomId, bool value) async {
@@ -220,6 +219,7 @@ class _RecordingActions implements IActionsRepository {
     removedIds.add(worktreeId);
     return nextRemoveResult;
   }
+
   @override
   Future<GitStatus?> gitStatus() async => null;
   @override
@@ -232,6 +232,7 @@ class _RecordingActions implements IActionsRepository {
     openCalls.add(_OpenCall(cwd: cwd, runPi: runPi, branch: branch));
     return nextResult;
   }
+
   @override
   Future<StartSessionResult> startSession({
     required String cwd,
@@ -416,7 +417,13 @@ void main() {
           emitDebounce: Duration.zero,
         );
         final prefs = Preferences(_FakeSecureStorage());
-        final vm = HomeViewModel(storage, prefs, conn, _fakeActions(), _stubCompletion());
+        final vm = HomeViewModel(
+          storage,
+          prefs,
+          conn,
+          _fakeActions(),
+          _stubCompletion(),
+        );
         await conn.connectTo(_peerA);
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
@@ -463,7 +470,13 @@ void main() {
     test('initial state is HomeLoading', () {
       final storage = _FakeStorage([_peerA]);
       final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions(), _stubCompletion());
+      final vm = HomeViewModel(
+        storage,
+        prefs,
+        _conn(storage: storage),
+        _fakeActions(),
+        _stubCompletion(),
+      );
       expect(vm.state, isA<HomeLoading>());
       vm.dispose();
     });
@@ -471,7 +484,13 @@ void main() {
     test('empty storage → HomeNoPeer', () async {
       final storage = _FakeStorage([]);
       final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions(), _stubCompletion());
+      final vm = HomeViewModel(
+        storage,
+        prefs,
+        _conn(storage: storage),
+        _fakeActions(),
+        _stubCompletion(),
+      );
       await Future<void>.delayed(Duration.zero);
       expect(vm.state, isA<HomeNoPeer>());
       vm.dispose();
@@ -480,7 +499,13 @@ void main() {
     test('two peers → HomeList containing both', () async {
       final storage = _FakeStorage([_peerA, _peerB]);
       final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions(), _stubCompletion());
+      final vm = HomeViewModel(
+        storage,
+        prefs,
+        _conn(storage: storage),
+        _fakeActions(),
+        _stubCompletion(),
+      );
       await Future<void>.delayed(Duration.zero);
 
       final s = vm.state as HomeList;
@@ -492,7 +517,13 @@ void main() {
     test('openSession writes selectedPeerEpk to Preferences', () async {
       final storage = _FakeStorage([_peerA, _peerB]);
       final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions(), _stubCompletion());
+      final vm = HomeViewModel(
+        storage,
+        prefs,
+        _conn(storage: storage),
+        _fakeActions(),
+        _stubCompletion(),
+      );
       await Future<void>.delayed(Duration.zero);
 
       await vm.openSession('epk_B');
@@ -515,7 +546,13 @@ void main() {
           },
           storage: storage,
         );
-        final vm = HomeViewModel(storage, prefs, conn, _fakeActions(), _stubCompletion());
+        final vm = HomeViewModel(
+          storage,
+          prefs,
+          conn,
+          _fakeActions(),
+          _stubCompletion(),
+        );
         await Future<void>.delayed(Duration.zero);
 
         await vm.openSession('epk_B');
@@ -539,7 +576,13 @@ void main() {
     test('openSession with unknown epk is a no-op', () async {
       final storage = _FakeStorage([_peerA]);
       final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions(), _stubCompletion());
+      final vm = HomeViewModel(
+        storage,
+        prefs,
+        _conn(storage: storage),
+        _fakeActions(),
+        _stubCompletion(),
+      );
       await Future<void>.delayed(Duration.zero);
 
       await vm.openSession('epk_unknown');
@@ -555,7 +598,13 @@ void main() {
       () async {
         final storage = _FakeStorage([_peerA]);
         final prefs = Preferences(_FakeSecureStorage());
-        final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions(), _stubCompletion());
+        final vm = HomeViewModel(
+          storage,
+          prefs,
+          _conn(storage: storage),
+          _fakeActions(),
+          _stubCompletion(),
+        );
         await Future<void>.delayed(Duration.zero);
 
         // Seed prefs with a DIFFERENT room (simulating the previous
@@ -577,121 +626,9 @@ void main() {
     );
   });
 
-  group('HomeViewModel — presence filter (plan-38 Fase 3)', () {
-    test('counts / visibleItems split rooms by liveness; setFilter re-derives '
-        'without reloading', () async {
-      final ch = _ControllableChannel();
-      final storage = _FakeStorage([_peerA]);
-      final conn = ConnectionManager(
-        factory: (_, _) async => ch,
-        storage: storage,
-        emitDebounce: Duration.zero,
-      );
-      final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, conn, _fakeActions(), _stubCompletion());
-      await conn.connectTo(_peerA);
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-
-      // r1 stays live; r2 is announced then ended → cached but offline
-      // (grey tile — still in _roomsByPeer, dropped from _liveRoomIds).
-      ch.pushControl(
-        const RoomAnnounced(peer: 'epk_A', roomId: 'r1', startedAt: 1),
-      );
-      ch.pushControl(
-        const RoomAnnounced(peer: 'epk_A', roomId: 'r2', startedAt: 2),
-      );
-      ch.pushControl(const RoomEnded(peer: 'epk_A', roomId: 'r2', sinceTs: 3));
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-
-      // Sanity — one live, one cached/offline.
-      expect(vm.isRoomLive('epk_A', 'r1'), isTrue);
-      expect(vm.isRoomLive('epk_A', 'r2'), isFalse);
-
-      // Counts are independent of the selected tab.
-      expect(vm.counts, (all: 2, online: 1, offline: 1));
-
-      // Default tab is Online → only the live room is visible.
-      expect((vm.state as HomeList).filter, HomeFilter.online);
-      expect(vm.visibleItems.map((i) => i.room.roomId).toList(), ['r1']);
-
-      // Offline → only the cached room.
-      vm.setFilter(HomeFilter.offline);
-      expect((vm.state as HomeList).filter, HomeFilter.offline);
-      expect(vm.visibleItems.map((i) => i.room.roomId).toList(), ['r2']);
-
-      // All → both (sorted), and the counts are unchanged.
-      vm.setFilter(HomeFilter.all);
-      expect(vm.visibleItems.map((i) => i.room.roomId).toList(), ['r1', 'r2']);
-      expect(vm.counts, (all: 2, online: 1, offline: 1));
-
-      vm.dispose();
-      await conn.disconnect();
-      conn.dispose();
-    });
-
+  group('HomeViewModel — combined session list', () {
     test(
-      'setFilter is a no-op when the tab is unchanged, and emits exactly once '
-      'when it changes',
-      () async {
-        final storage = _FakeStorage([_peerA]);
-        final prefs = Preferences(_FakeSecureStorage());
-        final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions(), _stubCompletion());
-        await Future<void>.delayed(Duration.zero);
-
-        expect((vm.state as HomeList).filter, HomeFilter.online);
-        var notifies = 0;
-        vm.addListener(() => notifies++);
-
-        vm.setFilter(HomeFilter.online); // same tab → no emit
-        expect(notifies, 0);
-
-        vm.setFilter(HomeFilter.offline); // changed → one emit
-        expect(notifies, 1);
-        expect((vm.state as HomeList).filter, HomeFilter.offline);
-
-        vm.dispose();
-      },
-    );
-
-    test(
-      'storage reloads preserve the selected tab (bug 2026-10-24: the '
-      '"Offline" tab snapped back to Online on every rooms persist)',
-      () async {
-        final h = await _cleanupHarness();
-        final vm = h.vm;
-
-        vm.setFilter(HomeFilter.offline);
-        expect((vm.state as HomeList).filter, HomeFilter.offline);
-
-        // Any PairingStorage write notifies (the real saveRooms does; rooms
-        // are re-persisted on every non-identical room_announced — working
-        // flag flips, keeper cycling) → the VM fully reloads through
-        // _onStorageChanged → _load(). The reloaded list must keep the tab.
-        h.storage.notifyListeners();
-        await Future<void>.delayed(Duration.zero);
-
-        expect((vm.state as HomeList).filter, HomeFilter.offline);
-
-        await h.dispose();
-      },
-    );
-
-    test('counts / visibleItems are empty-safe outside a HomeList', () {
-      final storage = _FakeStorage([_peerA]);
-      final prefs = Preferences(_FakeSecureStorage());
-      final vm = HomeViewModel(storage, prefs, _conn(storage: storage), _fakeActions(), _stubCompletion());
-
-      // Synchronously still HomeLoading — the getters must not throw.
-      expect(vm.state, isA<HomeLoading>());
-      expect(vm.counts, (all: 0, online: 0, offline: 0));
-      expect(vm.visibleItems, isEmpty);
-
-      vm.dispose();
-    });
-
-    test(
-      'plan/120 — the device room is filtered from the Home list '
-      '(never appears in any tab)',
+      'visibleItems includes live + cached rooms, keeper mirrors last',
       () async {
         final ch = _ControllableChannel();
         final storage = _FakeStorage([_peerA]);
@@ -701,7 +638,92 @@ void main() {
           emitDebounce: Duration.zero,
         );
         final prefs = Preferences(_FakeSecureStorage());
-        final vm = HomeViewModel(storage, prefs, conn, _fakeActions(), _stubCompletion());
+        final vm = HomeViewModel(
+          storage,
+          prefs,
+          conn,
+          _fakeActions(),
+          _stubCompletion(),
+        );
+        await conn.connectTo(_peerA);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        // r1 stays live; r2 is announced then ended → cached but offline
+        // (grey tile — still in _roomsByPeer, dropped from _liveRoomIds).
+        ch.pushControl(
+          const RoomAnnounced(peer: 'epk_A', roomId: 'r1', startedAt: 1),
+        );
+        ch.pushControl(
+          const RoomAnnounced(peer: 'epk_A', roomId: 'r2', startedAt: 2),
+        );
+        ch.pushControl(
+          const RoomEnded(peer: 'epk_A', roomId: 'r2', sinceTs: 3),
+        );
+        ch.pushControl(
+          const RoomAnnounced(
+            peer: 'epk_A',
+            roomId: 'r0',
+            startedAt: 4,
+            keeper: true,
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        // Sanity — one live, one cached/offline.
+        expect(vm.isRoomLive('epk_A', 'r1'), isTrue);
+        expect(vm.isRoomLive('epk_A', 'r2'), isFalse);
+
+        // No presence filter: live and cached rooms share one list, with
+        // keeper mirrors after every real session.
+        expect(vm.isRoomLive('epk_A', 'r0'), isTrue);
+        expect(vm.visibleItems.map((i) => i.room.roomId).toList(), [
+          'r1',
+          'r2',
+          'r0',
+        ]);
+
+        vm.dispose();
+        await conn.disconnect();
+        conn.dispose();
+      },
+    );
+
+    test('visibleItems is empty-safe outside a HomeList', () {
+      final storage = _FakeStorage([_peerA]);
+      final prefs = Preferences(_FakeSecureStorage());
+      final vm = HomeViewModel(
+        storage,
+        prefs,
+        _conn(storage: storage),
+        _fakeActions(),
+        _stubCompletion(),
+      );
+
+      // Synchronously still HomeLoading — the getters must not throw.
+      expect(vm.state, isA<HomeLoading>());
+      expect(vm.visibleItems, isEmpty);
+
+      vm.dispose();
+    });
+
+    test(
+      'plan/120 — the device room is filtered from the combined list',
+      () async {
+        final ch = _ControllableChannel();
+        final storage = _FakeStorage([_peerA]);
+        final conn = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: storage,
+          emitDebounce: Duration.zero,
+        );
+        final prefs = Preferences(_FakeSecureStorage());
+        final vm = HomeViewModel(
+          storage,
+          prefs,
+          conn,
+          _fakeActions(),
+          _stubCompletion(),
+        );
         await conn.connectTo(_peerA);
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
@@ -714,12 +736,8 @@ void main() {
         );
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
-        // The device room must NOT appear in any filter.
-        for (final f in HomeFilter.values) {
-          vm.setFilter(f);
-          final ids = vm.visibleItems.map((i) => i.room.roomId).toList();
-          expect(ids, isNot(contains('device')));
-        }
+        final ids = vm.visibleItems.map((i) => i.room.roomId).toList();
+        expect(ids, ['r1']);
 
         vm.dispose();
         await conn.disconnect();
@@ -729,49 +747,52 @@ void main() {
   });
 
   group('HomeViewModel.openTerminal (plan/108 — session-list entry)', () {
-    test(
-      'routes to the tapped peer when it is NOT active: switchTo + '
-      'openTerminal with the room cwd/branch',
-      () async {
-        final storage = _FakeStorage([_peerA, _peerB]);
-        final connects = <String>[];
-        final conn = ConnectionManager(
-          factory: (peer, _) async {
-            connects.add(peer.remoteEpk);
-            return _channel();
-          },
-          storage: storage,
-        );
-        final prefs = Preferences(_FakeSecureStorage());
-        final actions = _RecordingActions();
-        final vm = HomeViewModel(storage, prefs, conn, actions, _stubCompletion());
-        // Seed the active peer as A so the call below has to switch.
-        await conn.connectTo(_peerA);
-        await Future<void>.delayed(Duration.zero);
-        expect(conn.activePeer?.remoteEpk, 'epk_A');
+    test('routes to the tapped peer when it is NOT active: switchTo + '
+        'openTerminal with the room cwd/branch', () async {
+      final storage = _FakeStorage([_peerA, _peerB]);
+      final connects = <String>[];
+      final conn = ConnectionManager(
+        factory: (peer, _) async {
+          connects.add(peer.remoteEpk);
+          return _channel();
+        },
+        storage: storage,
+      );
+      final prefs = Preferences(_FakeSecureStorage());
+      final actions = _RecordingActions();
+      final vm = HomeViewModel(
+        storage,
+        prefs,
+        conn,
+        actions,
+        _stubCompletion(),
+      );
+      // Seed the active peer as A so the call below has to switch.
+      await conn.connectTo(_peerA);
+      await Future<void>.delayed(Duration.zero);
+      expect(conn.activePeer?.remoteEpk, 'epk_A');
 
-        final r = await vm.openTerminal(
-          epk: 'epk_B',
-          roomId: 'r1',
-          cwd: '/home/me/proj',
-          branch: 'feat',
-        );
+      final r = await vm.openTerminal(
+        epk: 'epk_B',
+        roomId: 'r1',
+        cwd: '/home/me/proj',
+        branch: 'feat',
+      );
 
-        // switchTo B landed on the connection (factory saw B after A).
-        expect(connects, ['epk_A', 'epk_B']);
-        expect(conn.activePeer?.remoteEpk, 'epk_B');
-        // The tapped cwd + branch reached the action repo, verbatim.
-        expect(actions.openCalls.length, 1);
-        expect(actions.openCalls.single.cwd, '/home/me/proj');
-        expect(actions.openCalls.single.branch, 'feat');
-        expect(actions.openCalls.single.runPi, isTrue);
-        expect(r.ok, isTrue);
+      // switchTo B landed on the connection (factory saw B after A).
+      expect(connects, ['epk_A', 'epk_B']);
+      expect(conn.activePeer?.remoteEpk, 'epk_B');
+      // The tapped cwd + branch reached the action repo, verbatim.
+      expect(actions.openCalls.length, 1);
+      expect(actions.openCalls.single.cwd, '/home/me/proj');
+      expect(actions.openCalls.single.branch, 'feat');
+      expect(actions.openCalls.single.runPi, isTrue);
+      expect(r.ok, isTrue);
 
-        vm.dispose();
-        await conn.disconnect();
-        conn.dispose();
-      },
-    );
+      vm.dispose();
+      await conn.disconnect();
+      conn.dispose();
+    });
 
     test('does NOT switchTo when the tapped peer is already active', () async {
       final storage = _FakeStorage([_peerA]);
@@ -785,7 +806,13 @@ void main() {
       );
       final prefs = Preferences(_FakeSecureStorage());
       final actions = _RecordingActions();
-      final vm = HomeViewModel(storage, prefs, conn, actions, _stubCompletion());
+      final vm = HomeViewModel(
+        storage,
+        prefs,
+        conn,
+        actions,
+        _stubCompletion(),
+      );
       await conn.connectTo(_peerA);
       // Let StatusOnline propagate to the VM's _relayConnected before we
       // act — the gate below is (samePeer && online).
@@ -803,45 +830,48 @@ void main() {
       conn.dispose();
     });
 
-    test(
-      'still switchTo (reconnect) when the active peer matches but the '
-      'link is offline (review #3)',
-      () async {
-        final storage = _FakeStorage([_peerA]);
-        final connects = <String>[];
-        // First call (connectTo) fails → seeds activePeer=A but _relayConnected
-        // stays false. Second call (switchTo from openTerminal) succeeds so
-        // _waitForOnline resolves immediately.
-        var attempt = 0;
-        final conn = ConnectionManager(
-          factory: (peer, _) async {
-            connects.add(peer.remoteEpk);
-            attempt++;
-            if (attempt == 1) throw Exception('offline');
-            return _channel();
-          },
-          storage: storage,
-        );
-        final prefs = Preferences(_FakeSecureStorage());
-        final actions = _RecordingActions();
-        final vm = HomeViewModel(storage, prefs, conn, actions, _stubCompletion());
-        await conn.connectTo(_peerA);
-        await Future<void>.delayed(const Duration(milliseconds: 10));
-        expect(conn.activePeer?.remoteEpk, 'epk_A');
+    test('still switchTo (reconnect) when the active peer matches but the '
+        'link is offline (review #3)', () async {
+      final storage = _FakeStorage([_peerA]);
+      final connects = <String>[];
+      // First call (connectTo) fails → seeds activePeer=A but _relayConnected
+      // stays false. Second call (switchTo from openTerminal) succeeds so
+      // _waitForOnline resolves immediately.
+      var attempt = 0;
+      final conn = ConnectionManager(
+        factory: (peer, _) async {
+          connects.add(peer.remoteEpk);
+          attempt++;
+          if (attempt == 1) throw Exception('offline');
+          return _channel();
+        },
+        storage: storage,
+      );
+      final prefs = Preferences(_FakeSecureStorage());
+      final actions = _RecordingActions();
+      final vm = HomeViewModel(
+        storage,
+        prefs,
+        conn,
+        actions,
+        _stubCompletion(),
+      );
+      await conn.connectTo(_peerA);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(conn.activePeer?.remoteEpk, 'epk_A');
 
-        await vm.openTerminal(epk: 'epk_A', roomId: 'r1', branch: 'b');
+      await vm.openTerminal(epk: 'epk_A', roomId: 'r1', branch: 'b');
 
-        // The old epk-only check skipped switchTo here and dispatched into
-        // a dead channel. Now we switchTo (reconnect): a second factory
-        // call beyond the seed.
-        expect(connects.length, greaterThanOrEqualTo(2));
-        expect(actions.openCalls.single.branch, 'b');
+      // The old epk-only check skipped switchTo here and dispatched into
+      // a dead channel. Now we switchTo (reconnect): a second factory
+      // call beyond the seed.
+      expect(connects.length, greaterThanOrEqualTo(2));
+      expect(actions.openCalls.single.branch, 'b');
 
-        vm.dispose();
-        await conn.disconnect();
-        conn.dispose();
-      },
-    );
+      vm.dispose();
+      await conn.disconnect();
+      conn.dispose();
+    });
 
     test('unknown peer throws ActionFailure and dispatches nothing', () async {
       final storage = _FakeStorage([_peerA]);
@@ -851,7 +881,13 @@ void main() {
       );
       final prefs = Preferences(_FakeSecureStorage());
       final actions = _RecordingActions();
-      final vm = HomeViewModel(storage, prefs, conn, actions, _stubCompletion());
+      final vm = HomeViewModel(
+        storage,
+        prefs,
+        conn,
+        actions,
+        _stubCompletion(),
+      );
       await conn.connectTo(_peerA);
       await Future<void>.delayed(Duration.zero);
 
@@ -880,7 +916,13 @@ void main() {
         );
         final prefs = Preferences(_FakeSecureStorage());
         final actions = _RecordingActions();
-        final vm = HomeViewModel(storage, prefs, conn, actions, _stubCompletion());
+        final vm = HomeViewModel(
+          storage,
+          prefs,
+          conn,
+          actions,
+          _stubCompletion(),
+        );
         await conn.connectTo(_peerA);
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
@@ -927,7 +969,13 @@ void main() {
         );
         final prefs = Preferences(_FakeSecureStorage());
         final actions = _RecordingActions();
-        final vm = HomeViewModel(storage, prefs, conn, actions, _stubCompletion());
+        final vm = HomeViewModel(
+          storage,
+          prefs,
+          conn,
+          actions,
+          _stubCompletion(),
+        );
         await conn.connectTo(_peerA);
         await Future<void>.delayed(const Duration(milliseconds: 10));
         // Device room never announced → not live → fail fast with an
@@ -954,7 +1002,13 @@ void main() {
       );
       final prefs = Preferences(_FakeSecureStorage());
       final actions = _RecordingActions();
-      final vm = HomeViewModel(storage, prefs, conn, actions, _stubCompletion());
+      final vm = HomeViewModel(
+        storage,
+        prefs,
+        conn,
+        actions,
+        _stubCompletion(),
+      );
       await conn.connectTo(_peerA);
       await Future<void>.delayed(Duration.zero);
 
@@ -998,122 +1052,110 @@ void main() {
     test('a LIVE tile is never offered (its worktree is busy)', () async {
       final h = await _cleanupHarness(roomOffline: false);
 
+      expect(h.vm.isRoomOnline(h.item('r1')), isTrue);
       expect(h.vm.mayOfferCleanup(h.item('r1')), isFalse);
 
       await h.dispose();
     });
 
-    test(
-      'a keeper-held (archive) tile counts as offline → offered '
-      '(user decision 2026-10-23)',
-      () async {
-        final h = await _cleanupHarness(roomOffline: false, keeper: true);
+    test('a keeper-held (archive) tile counts as offline → offered '
+        '(user decision 2026-10-23)', () async {
+      final h = await _cleanupHarness(roomOffline: false, keeper: true);
 
-        // The relay still has a connection in that room (the keeper), but it
-        // is a history mirror, not an agent — cleanup stays available.
-        expect(h.vm.isRoomLive('epk_A', 'r1'), isTrue);
-        expect(h.vm.mayOfferCleanup(h.item('r1')), isTrue);
-
-        await h.dispose();
-      },
-    );
-
-    test(
-      'untracked folder → findWorktreeFor returns null and the cached '
-      'registry hides the entry afterwards',
-      () async {
-        final h = await _cleanupHarness(
-          roomCwd: '/home/me/main-checkout',
-          worktrees: const [],
-        );
-
-        final it = h.item('r1');
-        expect(h.vm.mayOfferCleanup(it), isTrue); // optimistic, unknown yet
-
-        expect(
-          await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'),
-          isNull,
-        );
-        expect(h.vm.mayOfferCleanup(it), isFalse); // now known-untracked
-
-        await h.dispose();
-      },
-    );
-
-    test(
-      'routing skips keeper-held rooms: keeper target + live sibling + no '
-      'device → the sibling answers the fetch (review #6)',
-      () async {
-        final h = await _cleanupHarness(
-          roomOffline: false,
-          keeper: true,
-          deviceLive: false,
-          extraRooms: const [
-            _SeedRoom('epk_A', roomId: 'r2', cwd: '/src/other'),
-          ],
-        );
-
-        final w = await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1');
-        expect(w?.id, 'w1');
-        // NOT the keeper connection — it only serves session_sync and would
-        // have let the dispatch time out.
-        expect(h.conn.activeRoomId, 'r2');
-
-        await h.dispose();
-      },
-    );
-  });
-
-  group('HomeViewModel — worktree cleanup execution (plan/148, PR #70 review)', () {
-    test('removes the worktree and drops the phone-side tile', () async {
-      final h = await _cleanupHarness();
-      final w = await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1');
-
-      final res = await h.vm.cleanupWorktree(
-        epk: 'epk_A',
-        roomId: 'r1',
-        worktree: w!,
-      );
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-
-      expect(res.ok, isTrue);
-      expect(h.actions.removedIds, ['w1']);
-      // Same-frame disappearance: the delete path ran through
-      // ConnectionManager.deleteCachedRoom.
-      expect(h.hasRoom('r1'), isFalse);
-
-      await h.dispose();
-    });
-
-    test('a git refusal keeps the registry entry and the tile', () async {
-      final h = await _cleanupHarness();
-      final w = (await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'))!;
-      h.actions.nextRemoveResult = RemoveWorktreeResult(
-        inReplyTo: 'x',
-        ok: false,
-        message: 'worktree is dirty — nothing removed',
-      );
-
-      final res = await h.vm.cleanupWorktree(
-        epk: 'epk_A',
-        roomId: 'r1',
-        worktree: w,
-      );
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-
-      expect(res.ok, isFalse);
-      expect(res.message, contains('dirty'));
-      expect(h.hasRoom('r1'), isTrue);
-      // Cache kept → the entry stays visible for a retry without a fetch.
+      // The relay still has a connection in that room (the keeper), but it
+      // is a history mirror, not an agent — cleanup stays available.
+      expect(h.vm.isRoomLive('epk_A', 'r1'), isTrue);
+      expect(h.vm.isRoomOnline(h.item('r1')), isFalse);
       expect(h.vm.mayOfferCleanup(h.item('r1')), isTrue);
 
       await h.dispose();
     });
 
-    test(
-      'the target session coming back online aborts BEFORE dispatching '
-      'the remove',
-      () async {
+    test('untracked folder → findWorktreeFor returns null and the cached '
+        'registry hides the entry afterwards', () async {
+      final h = await _cleanupHarness(
+        roomCwd: '/home/me/main-checkout',
+        worktrees: const [],
+      );
+
+      final it = h.item('r1');
+      expect(h.vm.mayOfferCleanup(it), isTrue); // optimistic, unknown yet
+
+      expect(await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'), isNull);
+      expect(h.vm.mayOfferCleanup(it), isFalse); // now known-untracked
+
+      await h.dispose();
+    });
+
+    test('routing skips keeper-held rooms: keeper target + live sibling + no '
+        'device → the sibling answers the fetch (review #6)', () async {
+      final h = await _cleanupHarness(
+        roomOffline: false,
+        keeper: true,
+        deviceLive: false,
+        extraRooms: const [_SeedRoom('epk_A', roomId: 'r2', cwd: '/src/other')],
+      );
+
+      final w = await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1');
+      expect(w?.id, 'w1');
+      // NOT the keeper connection — it only serves session_sync and would
+      // have let the dispatch time out.
+      expect(h.conn.activeRoomId, 'r2');
+
+      await h.dispose();
+    });
+  });
+
+  group(
+    'HomeViewModel — worktree cleanup execution (plan/148, PR #70 review)',
+    () {
+      test('removes the worktree and drops the phone-side tile', () async {
+        final h = await _cleanupHarness();
+        final w = await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1');
+
+        final res = await h.vm.cleanupWorktree(
+          epk: 'epk_A',
+          roomId: 'r1',
+          worktree: w!,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        expect(res.ok, isTrue);
+        expect(h.actions.removedIds, ['w1']);
+        // Same-frame disappearance: the delete path ran through
+        // ConnectionManager.deleteCachedRoom.
+        expect(h.hasRoom('r1'), isFalse);
+
+        await h.dispose();
+      });
+
+      test('a git refusal keeps the registry entry and the tile', () async {
+        final h = await _cleanupHarness();
+        final w = (await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'))!;
+        h.actions.nextRemoveResult = RemoveWorktreeResult(
+          inReplyTo: 'x',
+          ok: false,
+          message: 'worktree is dirty — nothing removed',
+        );
+
+        final res = await h.vm.cleanupWorktree(
+          epk: 'epk_A',
+          roomId: 'r1',
+          worktree: w,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        expect(res.ok, isFalse);
+        expect(res.message, contains('dirty'));
+        expect(h.hasRoom('r1'), isTrue);
+        // Cache kept → the entry stays visible for a retry without a fetch.
+        expect(h.vm.mayOfferCleanup(h.item('r1')), isTrue);
+
+        await h.dispose();
+      });
+
+      test('the target session coming back online aborts BEFORE dispatching '
+          'the remove', () async {
         final h = await _cleanupHarness();
         final w = (await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'))!;
 
@@ -1140,13 +1182,10 @@ void main() {
         expect(h.hasRoom('r1'), isTrue);
 
         await h.dispose();
-      },
-    );
+      });
 
-    test(
-      'a live session at the worktree ROOT (another room, same folder) '
-      'blocks the remove',
-      () async {
+      test('a live session at the worktree ROOT (another room, same folder) '
+          'blocks the remove', () async {
         final h = await _cleanupHarness(
           extraRooms: const [
             _SeedRoom('epk_A', roomId: 'r2', cwd: _kWorktreeCwd),
@@ -1167,34 +1206,35 @@ void main() {
         expect(h.actions.removedIds, isEmpty);
 
         await h.dispose();
-      },
-    );
+      });
 
-    test(
-      'a live session in a NESTED folder of the worktree blocks the remove '
-      '(review #3 — /w1/sub dies with /w1)',
-      () async {
-        final h = await _cleanupHarness(
-          extraRooms: const [
-            _SeedRoom('epk_A', roomId: 'r2', cwd: '$_kWorktreeCwd/packages/app'),
-          ],
-        );
-        final w = (await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'))!;
+      test(
+        'a live session in a NESTED folder of the worktree blocks the remove '
+        '(review #3 — /w1/sub dies with /w1)',
+        () async {
+          final h = await _cleanupHarness(
+            extraRooms: const [
+              _SeedRoom(
+                'epk_A',
+                roomId: 'r2',
+                cwd: '$_kWorktreeCwd/packages/app',
+              ),
+            ],
+          );
+          final w = (await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'))!;
 
-        await expectLater(
-          h.vm.cleanupWorktree(epk: 'epk_A', roomId: 'r1', worktree: w),
-          throwsA(isA<ActionFailure>()),
-        );
-        expect(h.actions.removedIds, isEmpty);
+          await expectLater(
+            h.vm.cleanupWorktree(epk: 'epk_A', roomId: 'r1', worktree: w),
+            throwsA(isA<ActionFailure>()),
+          );
+          expect(h.actions.removedIds, isEmpty);
 
-        await h.dispose();
-      },
-    );
+          await h.dispose();
+        },
+      );
 
-    test(
-      'a live room on ANOTHER PC with the same absolute path does NOT '
-      'block (review #5 — unrelated folders)',
-      () async {
+      test('a live room on ANOTHER PC with the same absolute path does NOT '
+          'block (review #5 — unrelated folders)', () async {
         final h = await _cleanupHarness(
           withPeerB: true,
           extraRooms: const [
@@ -1215,99 +1255,54 @@ void main() {
         expect(h.actions.removedIds, ['w1']);
 
         await h.dispose();
-      },
-    );
+      });
 
-    test(
-      'a live session that appeared INSIDE the folder while the dialog was '
-      'open aborts the remove (review #2 — guard covers all rooms)',
-      () async {
-        final h = await _cleanupHarness();
-        final w = (await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'))!;
+      test(
+        'a live session that appeared INSIDE the folder while the dialog was '
+        'open aborts the remove (review #2 — guard covers all rooms)',
+        () async {
+          final h = await _cleanupHarness();
+          final w = (await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'))!;
 
-        // While the confirmation dialog is open, a duplicate comes online.
-        h.ch.pushControl(
-          const RoomAnnounced(
-            peer: 'epk_A',
-            roomId: 'r2',
-            startedAt: 90,
-            cwd: _kWorktreeCwd,
-          ),
-        );
-        await Future<void>.delayed(const Duration(milliseconds: 10));
-
-        await expectLater(
-          h.vm.cleanupWorktree(epk: 'epk_A', roomId: 'r1', worktree: w),
-          throwsA(
-            isA<ActionFailure>().having(
-              (e) => e.message,
-              'message',
-              contains('Another session'),
+          // While the confirmation dialog is open, a duplicate comes online.
+          h.ch.pushControl(
+            const RoomAnnounced(
+              peer: 'epk_A',
+              roomId: 'r2',
+              startedAt: 90,
+              cwd: _kWorktreeCwd,
             ),
-          ),
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+
+          await expectLater(
+            h.vm.cleanupWorktree(epk: 'epk_A', roomId: 'r1', worktree: w),
+            throwsA(
+              isA<ActionFailure>().having(
+                (e) => e.message,
+                'message',
+                contains('Another session'),
+              ),
+            ),
+          );
+          expect(h.actions.removedIds, isEmpty);
+
+          await h.dispose();
+        },
+      );
+
+      test('unreachable PC → ActionFailure, nothing removed', () async {
+        final h = await _cleanupHarness(deviceLive: false);
+        // No device room and the target room is dead → nobody can answer.
+        await expectLater(
+          h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'),
+          throwsA(isA<ActionFailure>()),
         );
         expect(h.actions.removedIds, isEmpty);
+        expect(h.hasRoom('r1'), isTrue);
 
         await h.dispose();
-      },
-    );
-
-    test('unreachable PC → ActionFailure, nothing removed', () async {
-      final h = await _cleanupHarness(deviceLive: false);
-      // No device room and the target room is dead → nobody can answer.
-      await expectLater(
-        h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'),
-        throwsA(isA<ActionFailure>()),
-      );
-      expect(h.actions.removedIds, isEmpty);
-      expect(h.hasRoom('r1'), isTrue);
-
-      await h.dispose();
-    });
-  });
-
-  group('HomeViewModel - session-ref routing (plan/149, PR #71 review)', () {
-    test(
-      'keeper-held target routes to the DEVICE daemon room, not the keeper',
-      () async {
-        // r1 is held by the supervisor's keeper mirror: `isRoomLive` is
-        // true (it announces durable state) but the keeper only serves
-        // session_sync â€” the request must reach the device daemon instead.
-        final h = await _cleanupHarness(roomOffline: false, keeper: true);
-        expect(h.vm.isRoomLive('epk_A', 'r1'), isTrue);
-        expect(h.conn.isRoomRealLive('epk_A', 'r1'), isFalse);
-        expect(h.conn.isRoomRealLive('epk_A', kDeviceRoom), isTrue);
-
-        final res = await h.vm.setSessionRef(
-          epk: 'epk_A',
-          roomId: 'r1',
-          ghRef: null,
-        );
-        expect(res.ok, isTrue);
-        // Dispatched over the device daemon's room ...
-        expect(h.conn.activeRoomId, kDeviceRoom);
-        // ... but carrying the TARGET room in the payload (the daemon's
-        // handler takes the registry-only path for it).
-        expect(h.actions.setSessionRefCalls.single.roomId, 'r1');
-
-        await h.dispose();
-      },
-    );
-
-    test('REAL live target dispatches in its own room', () async {
-      final h = await _cleanupHarness(roomOffline: false, keeper: false);
-      expect(h.conn.isRoomRealLive('epk_A', 'r1'), isTrue);
-
-      final res = await h.vm.setSessionRef(
-        epk: 'epk_A',
-        roomId: 'r1',
-        ghRef: null,
-      );
-      expect(res.ok, isTrue);
-      expect(h.conn.activeRoomId, 'r1');
-      expect(h.actions.setSessionRefCalls.single.roomId, 'r1');
-
-      await h.dispose();
-    });
-  });
+      });
+    },
+  );
 }

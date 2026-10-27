@@ -9,9 +9,10 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 /// A row in the Home list.
 ///
-/// Renders an inline presence dot (plano 12) driven by
-/// [ConnectionManager.presenceStream]: green = online, grey = offline,
-/// no dot = relay hasn't reported yet.
+/// Carries session status in the leading slot/avatar color, driven by
+/// [ConnectionManager.presenceStream]: green = online, grey = offline.
+/// Working, waiting, and provider-error states reuse the same surface instead
+/// of adding a separate presence dot.
 ///
 /// Plan/147 — when the room publishes `context_usage`, a subtle
 /// full-height background wedge (width = used fraction of the model's
@@ -26,23 +27,23 @@ class SessionTile extends StatelessWidget {
   final PeerRecord peer;
 
   /// `true` when the room is announced live on the relay AND the
-  /// relay itself is reachable. Drives the green dot.
+  /// relay itself is reachable. Drives the green status color.
   final bool isLive;
 
   /// `true` when the WS to the relay is currently retrying / down.
-  /// Overrides `isLive` and renders an amber "reconnecting" dot —
+  /// Overrides `isLive` and renders an amber "reconnecting" status —
   /// the app has no fresh signal on any room right now.
   final bool isReconnecting;
 
   /// Plan-18 follow-up — `true` when the agent in this room is
-  /// currently producing a response. Blue dot — second-highest priority
+  /// currently producing a response. Blue status — second-highest priority
   /// colour after [isWaitingForInput].
   final bool isWorking;
 
   /// Plan/134 — `true` when the agent is blocked on a user-facing
   /// ctx.ui prompt (any extension's). Beats `isWorking` in the tri-state
   /// derivation: the room isn't computing, it's waiting for the human.
-  /// Renders amber — distinct from the blue working dot.
+  /// Renders amber — distinct from the blue working status.
   final bool isWaitingForInput;
   final RoomInfo? room;
 
@@ -65,12 +66,12 @@ class SessionTile extends StatelessWidget {
   final VoidCallback? onLongPress;
 
   /// Plan/132 — `true` when completion notifications are toggled on for
-  /// this session. Paints a small bell glyph next to the presence dot so
-  /// the state is visible at a glance on the Home list.
+  /// this session. Paints a small bell glyph on the trailing edge so the
+  /// state is visible at a glance on the Home list.
   final bool notifyOnDone;
 
   /// Plan/149 — unread message count (msgs box rows past the session's
-  /// read marker). Drives the slot's third line + accent tint.
+  /// read marker). Drives the slot's third line + bold emphasis.
   final int unread;
 
   /// Plan/149 — opens the linked GitHub ref's URL (slot tap). Null when
@@ -97,6 +98,7 @@ class SessionTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final statusColor = _statusColor(colors);
     final contextFraction = _contextFraction(room?.contextUsage);
     return Material(
       color: colors.bg,
@@ -146,10 +148,11 @@ class SessionTile extends StatelessWidget {
                         ghRef: room?.ghRef,
                         stats: room?.stats,
                         unread: unread,
+                        statusColor: statusColor,
                         onOpen: onOpenRef,
                       )
                     else
-                      _Avatar(name: _avatarName()),
+                      _Avatar(name: _avatarName(), statusColor: statusColor),
                     const SizedBox(width: 14),
                     Expanded(
                       child: _TitleBlock(peer: peer, room: room, git: git),
@@ -158,20 +161,12 @@ class SessionTile extends StatelessWidget {
                       // Plan/140 C — durable-history mirror: the room is served
                       // from the transcript by the PC's keeper; no live agent.
                       Icon(LucideIcons.archive, size: 13, color: colors.muted),
-                      const SizedBox(width: 8),
+                      if (notifyOnDone) const SizedBox(width: 8),
                     ],
-                    if (notifyOnDone) ...[
+                    if (notifyOnDone)
                       // Plan/132 — muted bell so it never competes with the
-                      // presence dot; it's a state marker, not an alert.
+                      // status color; it's a state marker, not an alert.
                       Icon(LucideIcons.bell, size: 13, color: colors.muted),
-                      const SizedBox(width: 8),
-                    ],
-                    _PresenceDot(
-                      isLive: isLive,
-                      isReconnecting: isReconnecting,
-                      isWorking: isWorking,
-                      isWaitingForInput: isWaitingForInput,
-                    ),
                   ],
                 ),
               ),
@@ -201,6 +196,19 @@ class SessionTile extends StatelessWidget {
   /// tile keeps the plain initial avatar.
   bool get _slotHasContent =>
       (room?.ghRef?.display != null) || (room?.stats != null) || unread > 0;
+
+  /// The slot owns the status color now that the separate dot is gone.
+  /// Priority high → low: provider error, waiting, working, reconnecting,
+  /// live, offline. A cached error only applies to a live room: dead rooms
+  /// stay grey and a relay reconnect keeps its amber state.
+  Color _statusColor(AppColors colors) {
+    if (isLive && (room?.providerError ?? false)) return colors.error;
+    if (isWaitingForInput) return colors.warning;
+    if (isWorking) return colors.working;
+    if (isReconnecting) return colors.warning;
+    if (isLive) return colors.success;
+    return colors.muted;
+  }
 }
 
 /// Plan/149 — the session slot: a 44×44 rounded square with three mono
@@ -212,22 +220,25 @@ class SessionTile extends StatelessWidget {
 /// Unknown values (pre-149 extension: no stats) render as `·`; a session
 /// with neither ref, stats nor unread keeps the initial avatar (never an
 /// empty square). Tapping opens the ref's URL when it has one.
+/// Border, tinted fill, and every line share the session status color;
+/// unread uses font weight rather than introducing a second hue.
 class _SessionSlot extends StatelessWidget {
   final GhRef? ghRef;
   final SessionStats? stats;
   final int unread;
+  final Color statusColor;
   final VoidCallback? onOpen;
 
   const _SessionSlot({
     required this.ghRef,
     required this.stats,
     required this.unread,
+    required this.statusColor,
     this.onOpen,
   });
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.colors;
     final display = ghRef?.display;
     final hasRef = display != null;
     final s = stats;
@@ -256,34 +267,35 @@ class _SessionSlot extends StatelessWidget {
       onTap: onOpen,
       behavior: onOpen != null ? HitTestBehavior.opaque : HitTestBehavior.deferToChild,
       child: Container(
+        key: const ValueKey('session-tile-session-slot'),
         width: 44,
         height: 44,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(10),
-          color: unread > 0
-              ? colors.accent.withValues(alpha: 0.10)
-              : colors.surface,
-          border: Border.all(
-            color: unread > 0 ? colors.accent : colors.border,
-          ),
+          color: statusColor.withValues(alpha: 0.10),
+          border: Border.all(color: statusColor),
         ),
         alignment: Alignment.center,
         padding: const EdgeInsets.symmetric(horizontal: 3),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            _slotLine(l1, colors, emphasis: true),
+            _slotLine(l1, statusColor, emphasis: true),
             const SizedBox(height: 1),
-            _slotLine(l2, colors),
+            _slotLine(l2, statusColor),
             const SizedBox(height: 1),
-            _slotLine(l3, colors, emphasis: unread > 0),
+            _slotLine(l3, statusColor, emphasis: unread > 0),
           ],
         ),
       ),
     );
   }
 
-  Widget _slotLine(String text, AppColors colors, {bool emphasis = false}) {
+  Widget _slotLine(
+    String text,
+    Color statusColor, {
+    bool emphasis = false,
+  }) {
     return Text(
       text,
       maxLines: 1,
@@ -291,54 +303,11 @@ class _SessionSlot extends StatelessWidget {
       // No explicit lineHeight: with three 8.5px lines the default leading
       // already stacks them inside 44px; forcing one clips the last line.
       style: TextStyle(
-        color: emphasis ? colors.accent : colors.text,
+        color: statusColor,
         fontFamily: kMonoFamily,
         fontSize: 8.5,
         fontWeight: emphasis ? FontWeight.w600 : FontWeight.w400,
       ),
-    );
-  }
-}
-
-class _PresenceDot extends StatelessWidget {
-  final bool isLive;
-  final bool isReconnecting;
-  final bool isWorking;
-  final bool isWaitingForInput;
-  const _PresenceDot({
-    required this.isLive,
-    required this.isReconnecting,
-    this.isWorking = false,
-    this.isWaitingForInput = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    // Plan/134 — 5-state dot. Priority high → low:
-    //   waiting (blocked on a prompt) → amber (distinct from working blue)
-    //   working (agent streaming)     → blue
-    //   reconnecting (relay down)     → amber
-    //   live (relay up + announced)   → green
-    //   else (cached / offline)       → grey
-    //
-    // `waiting` and `reconnecting` share the amber family but can never
-    // mislead: waiting implies a live link, and the two states answer
-    // different questions ("the agent needs you" vs "we lost the relay").
-    // The chat pill disambiguates with a label.
-    final colors = context.colors;
-    final Color color = isWaitingForInput
-        ? colors.warning
-        : isWorking
-        ? colors.working
-        : isReconnecting
-        ? colors.warning
-        : isLive
-        ? colors.success
-        : colors.muted;
-    return Container(
-      width: 10,
-      height: 10,
-      decoration: BoxDecoration(shape: BoxShape.circle, color: color),
     );
   }
 }
@@ -584,25 +553,27 @@ class _ContextFill extends StatelessWidget {
 
 class _Avatar extends StatelessWidget {
   final String name;
-  const _Avatar({required this.name});
+  final Color statusColor;
+  const _Avatar({required this.name, required this.statusColor});
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.colors;
     final initial = _initial(name);
     return Container(
+      key: const ValueKey('session-tile-avatar'),
       width: 40,
       height: 40,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: colors.surface,
-        border: Border.all(color: colors.border),
+        // Legacy fallback tiles must not lose status when the dot is absent.
+        color: statusColor.withValues(alpha: 0.10),
+        border: Border.all(color: statusColor),
       ),
       alignment: Alignment.center,
       child: Text(
         initial,
         style: TextStyle(
-          color: colors.accent,
+          color: statusColor,
           fontFamily: kMonoFamily,
           fontSize: 16,
           fontWeight: FontWeight.w600,

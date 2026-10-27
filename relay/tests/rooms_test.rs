@@ -982,12 +982,11 @@ async fn room_announced_and_rooms_check_include_working_from_hello() {
     );
 }
 
-/// Plan 134 (Wave 2): `room_meta.waiting_for_input` from the hello frame
-/// rides `room_announced` (flat, like `working`) and `rooms_check`
-/// snapshots, and a later `room_meta_update` toggles it independently of
-/// `working` (merge-patch absence on both sides).
+/// Plan 134 (Wave 2) + provider errors: room flags from the hello frame ride
+/// `room_announced` and later merge patches independently of each other and
+/// `working`. Provider errors additionally verify the new-turn false clear.
 #[tokio::test]
-async fn waiting_for_input_rides_hello_announce_and_updates() {
+async fn waiting_and_provider_error_ride_hello_announce_and_updates() {
     let port = start_relay().await;
     let sk_pi = random_key();
     use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
@@ -1021,6 +1020,7 @@ async fn waiting_for_input_rides_hello_announce_and_updates() {
                     "name": "blocked-room",
                     "working": true,
                     "waiting_for_input": true,
+                    "provider_error": true,
                 },
             })
             .to_string(),
@@ -1054,6 +1054,10 @@ async fn waiting_for_input_rides_hello_announce_and_updates() {
         v["waiting_for_input"], true,
         "waiting_for_input flat on room_announced: {v}"
     );
+    assert_eq!(
+        v["provider_error"], true,
+        "provider_error flat on room_announced: {v}"
+    );
 
     // Prompt answered at the terminal: ui_prompt_end publishes
     // waiting_for_input=false while the turn keeps working — the update must
@@ -1080,6 +1084,32 @@ async fn waiting_for_input_rides_hello_announce_and_updates() {
         u["meta"]["working"], true,
         "waiting-only patch must not clear working: {u}"
     );
+    assert_eq!(
+        u["meta"]["provider_error"], true,
+        "waiting-only patch must preserve provider_error: {u}"
+    );
+
+    // A new turn clears the old API failure without touching the other flags.
+    ws_pi
+        .send(Message::text(
+            json!({
+                "type": "room_meta_update",
+                "room_id": "main",
+                "meta": {"provider_error": false},
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    let cleared = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_app.next())
+        .await
+        .expect("timed out on provider_error clear")
+        .unwrap()
+        .unwrap();
+    let c: serde_json::Value = serde_json::from_str(cleared.to_text().unwrap()).unwrap();
+    assert_eq!(c["meta"]["provider_error"], false);
+    assert_eq!(c["meta"]["waiting_for_input"], false);
+    assert_eq!(c["meta"]["working"], true);
 }
 
 /// rooms_check after room_meta_update reflects the updated model.

@@ -7,16 +7,20 @@
 
 import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/protocol/protocol.dart';
+import 'package:app/routing/adaptive.dart';
+import 'package:app/routing/routes.dart';
 import 'package:app/ui/chat/quick_actions/states/quick_actions_state.dart';
 import 'package:app/ui/chat/quick_actions/viewmodels/quick_actions_viewmodel.dart';
 import 'package:app/ui/chat/quick_actions/widgets/quick_actions_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 class _FakeRepo implements IActionsRepository {
   int compactCalls = 0;
   int newSessionCalls = 0;
+  int shutdownCalls = 0;
   ThinkingLevel? thinking;
   WireModel? modelArg;
 
@@ -24,6 +28,7 @@ class _FakeRepo implements IActionsRepository {
   /// failure path (error toast + sheet stays open).
   bool failCompact = false;
   bool failNewSession = false;
+  bool failShutdown = false;
 
   @override
   ActiveRoomMeta get activeRoomMeta => const ActiveRoomMeta();
@@ -102,6 +107,12 @@ class _FakeRepo implements IActionsRepository {
   }
 
   @override
+  Future<void> shutdown() async {
+    shutdownCalls++;
+    if (failShutdown) throw const ActionFailure('shutdown boom');
+  }
+
+  @override
   Future<void> setModel(String provider, String modelId) async {
     modelArg = WireModel(
       id: modelId,
@@ -128,16 +139,21 @@ class _FakeRepo implements IActionsRepository {
 
 /// Opens the real sheet body over a host Scaffold. Returns the fake repo and
 /// a list appended to by the `onSessionReset` callback.
-Future<({_FakeRepo repo, List<int> resetCalls})> _openSheet(
+Future<({_FakeRepo repo, List<int> resetCalls, List<int> homeCalls})>
+    _openSheet(
   WidgetTester tester, {
   bool failCompact = false,
   bool failNewSession = false,
+  bool failShutdown = false,
+  bool providerOwned = false,
 }) async {
   final repo = _FakeRepo()
     ..failCompact = failCompact
-    ..failNewSession = failNewSession;
+    ..failNewSession = failNewSession
+    ..failShutdown = failShutdown;
   final vm = QuickActionsViewModel(repo);
   final resetCalls = <int>[];
+  final homeCalls = <int>[];
 
   await tester.pumpWidget(MaterialApp(
     home: Scaffold(
@@ -145,19 +161,25 @@ Future<({_FakeRepo repo, List<int> resetCalls})> _openSheet(
         builder: (ctx) => ElevatedButton(
           onPressed: () {
             final messenger = ScaffoldMessenger.of(ctx);
+            final body = QuickActionsSheetBody(
+              messenger: messenger,
+              onSessionReset: () async => resetCalls.add(1),
+              onSessionShutdown: () async => homeCalls.add(1),
+            );
             showModalBottomSheet<void>(
               context: ctx,
               // Mirror the production entry point so the full body has room
               // (otherwise the Column overflows the half-height default).
               isScrollControlled: true,
-              builder: (_) =>
-                  ChangeNotifierProvider<QuickActionsViewModel>.value(
-                value: vm,
-                child: QuickActionsSheetBody(
-                  messenger: messenger,
-                  onSessionReset: () async => resetCalls.add(1),
-                ),
-              ),
+              builder: (_) => providerOwned
+                  ? ChangeNotifierProvider<QuickActionsViewModel>(
+                      create: (_) => vm,
+                      child: body,
+                    )
+                  : ChangeNotifierProvider<QuickActionsViewModel>.value(
+                      value: vm,
+                      child: body,
+                    ),
             );
           },
           child: const Text('open'),
@@ -167,10 +189,36 @@ Future<({_FakeRepo repo, List<int> resetCalls})> _openSheet(
   ));
   await tester.tap(find.text('open'));
   await tester.pumpAndSettle();
-  return (repo: repo, resetCalls: resetCalls);
+  return (repo: repo, resetCalls: resetCalls, homeCalls: homeCalls);
 }
 
 void main() {
+  testWidgets('Quit navigation clears tablet selection even when already Home',
+      (tester) async {
+    final selection = SessionSelection()
+      ..select('epk', 'room', 'Terminated chat');
+    final router = GoRouter(
+      initialLocation: RoutePaths.home,
+      routes: [
+        GoRoute(
+          path: RoutePaths.home,
+          builder: (_, _) => const SizedBox(),
+        ),
+        GoRoute(
+          path: RoutePaths.chat,
+          builder: (_, _) => const SizedBox(),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+
+    await finishSessionShutdownNavigation(selection, router);
+    await tester.pump();
+
+    expect(selection.current, isNull);
+  });
+
   testWidgets('Compact: tap sends and closes the sheet — no success toast',
       (tester) async {
     final s = await _openSheet(tester);
@@ -314,6 +362,71 @@ void main() {
     expect(find.byKey(const Key('qa-new-session')), findsNothing);
     expect(find.text('new boom'), findsOneWidget);
   });
+
+  testWidgets('Quit session: confirm shuts down Pi and returns Home',
+      (tester) async {
+    final s = await _openSheet(tester);
+    await tester.tap(find.byKey(const Key('qa-quit-session')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Quit this session?'), findsOneWidget);
+    expect(find.byKey(const Key('qa-quit-session')), findsNothing);
+    await tester.tap(find.text('Quit session'));
+    await tester.pumpAndSettle();
+
+    expect(s.repo.shutdownCalls, 1);
+    expect(s.homeCalls.length, 1);
+    expect(find.text('Quit this session?'), findsNothing);
+  });
+
+  testWidgets('Quit session: Cancel fires neither shutdown nor navigation',
+      (tester) async {
+    final s = await _openSheet(tester);
+    await tester.tap(find.byKey(const Key('qa-quit-session')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(s.repo.shutdownCalls, 0);
+    expect(s.homeCalls, isEmpty);
+    expect(find.text('Quit this session?'), findsNothing);
+  });
+
+  testWidgets('Quit session: failure toasts and stays out of Home',
+      (tester) async {
+    final s = await _openSheet(tester, failShutdown: true);
+    await tester.tap(find.byKey(const Key('qa-quit-session')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Quit session'));
+    await tester.pumpAndSettle();
+
+    expect(s.repo.shutdownCalls, 1);
+    expect(s.homeCalls, isEmpty);
+    expect(find.text('shutdown boom'), findsOneWidget);
+  });
+
+  testWidgets(
+    'Quit session: provider-owned VM disposal cannot swallow a late failure',
+    (tester) async {
+      final s = await _openSheet(
+        tester,
+        failShutdown: true,
+        providerOwned: true,
+      );
+      await tester.tap(find.byKey(const Key('qa-quit-session')));
+      await tester.pumpAndSettle();
+      // Production closes the sheet before confirmation, so this provider
+      // has disposed its VM by the time shutdown fails.
+      expect(find.byKey(const Key('qa-quit-session')), findsNothing);
+
+      await tester.tap(find.text('Quit session'));
+      await tester.pumpAndSettle();
+
+      expect(s.repo.shutdownCalls, 1);
+      expect(s.homeCalls, isEmpty);
+      expect(find.text('shutdown boom'), findsOneWidget);
+    },
+  );
 
   testWidgets('thinking segment forwards level to repo', (tester) async {
     final s = await _openSheet(tester);

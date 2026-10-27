@@ -6,15 +6,6 @@ sealed class HomeState {
   const HomeState();
 }
 
-/// Plan-38 Fase 3 — which presence slice of the Home list is shown.
-/// Pure view filter over the existing (peer → room) list; the tabs never
-/// reload or regroup data. Default is [online] (see [HomeList.filter]).
-///
-///   - [all]     — every known session (live + cached/offline).
-///   - [online]  — only sessions live on the relay right now.
-///   - [offline] — only cached sessions that aren't live.
-enum HomeFilter { all, online, offline }
-
 class HomeLoading extends HomeState {
   const HomeLoading();
 }
@@ -67,11 +58,6 @@ class HomeList extends HomeState {
   final Map<String, PresenceState> statusByEpk;
   final Map<String, List<RoomInfo>> roomsByPeer;
 
-  /// Plan-38 Fase 3 — the selected presence tab. Part of the immutable
-  /// state (per the `ViewModel<T>` pattern) so the choice is reactive and
-  /// survives presence/rooms/status re-emits. Default [HomeFilter.online].
-  final HomeFilter filter;
-
   /// Plan/107b — on-demand git status snapshot per session, keyed
   /// `"${standardB64(epk)}|$roomId"`. Populated by [HomeViewModel] when
   /// the user lands on the session list (or pulls to refresh); each entry
@@ -94,7 +80,6 @@ class HomeList extends HomeState {
     required this.peers,
     this.statusByEpk = const {},
     this.roomsByPeer = const {},
-    this.filter = HomeFilter.online,
     this.gitByKey = const {},
     this.showReliabilityBanner = false,
     this.showInsecureTransportBanner = false,
@@ -104,7 +89,6 @@ class HomeList extends HomeState {
     List<PeerRecord>? peers,
     Map<String, PresenceState>? statusByEpk,
     Map<String, List<RoomInfo>>? roomsByPeer,
-    HomeFilter? filter,
     Map<String, GitStatus?>? gitByKey,
     bool? showReliabilityBanner,
     bool? showInsecureTransportBanner,
@@ -112,7 +96,6 @@ class HomeList extends HomeState {
     peers: peers ?? this.peers,
     statusByEpk: statusByEpk ?? this.statusByEpk,
     roomsByPeer: roomsByPeer ?? this.roomsByPeer,
-    filter: filter ?? this.filter,
     gitByKey: gitByKey ?? this.gitByKey,
     showReliabilityBanner: showReliabilityBanner ?? this.showReliabilityBanner,
     showInsecureTransportBanner:
@@ -180,7 +163,6 @@ class HomeList extends HomeState {
   @override
   bool operator ==(Object other) =>
       other is HomeList &&
-      other.filter == filter &&
       other.showReliabilityBanner == showReliabilityBanner &&
       other.showInsecureTransportBanner == showInsecureTransportBanner &&
       listEquals(other.peers, peers) &&
@@ -190,7 +172,6 @@ class HomeList extends HomeState {
 
   @override
   int get hashCode => Object.hash(
-    filter,
     showReliabilityBanner,
     showInsecureTransportBanner,
     Object.hashAll(peers),

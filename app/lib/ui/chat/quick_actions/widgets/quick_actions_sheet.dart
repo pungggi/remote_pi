@@ -4,6 +4,7 @@ import 'package:app/config/dependencies.dart';
 import 'package:app/data/actions/actions_repository.dart' show ActionFailure;
 import 'package:app/protocol/protocol.dart';
 import 'package:app/routing/adaptive.dart';
+import 'package:app/routing/routes.dart';
 import 'package:go_router/go_router.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/core/widgets/branch_name_dialog.dart';
@@ -28,6 +29,7 @@ import 'package:provider/provider.dart';
 /// `context.read<ChatViewModel>()` inside the sheet would not resolve.
 Future<void> showQuickActionsSheet(BuildContext context) {
   final messenger = ScaffoldMessenger.of(context);
+  final router = GoRouter.of(context);
   final chat = context.read<ChatViewModel>();
   // Captured to auto-close the sheet if the tablet's selected session changes
   // out from under it (the sheet lives on the detail-pane navigator).
@@ -49,11 +51,24 @@ Future<void> showQuickActionsSheet(BuildContext context) {
           child: QuickActionsSheetBody(
             messenger: messenger,
             onSessionReset: chat.clearActiveSession,
+            onSessionShutdown: () =>
+                finishSessionShutdownNavigation(selection, router),
           ),
         ),
       );
     },
   );
+}
+
+/// Clears the tablet detail selection before returning to Home. On tablet the
+/// master route is already /home, so navigation alone leaves the dead chat up.
+@visibleForTesting
+Future<void> finishSessionShutdownNavigation(
+  SessionSelection selection,
+  GoRouter router,
+) async {
+  selection.clear();
+  router.go(RoutePaths.home);
 }
 
 /// Body of the Quick Actions sheet. Public so widget tests can drive the
@@ -67,10 +82,15 @@ class QuickActionsSheetBody extends StatefulWidget {
   /// [ChatViewModel.clearActiveSession].
   final Future<void> Function()? onSessionReset;
 
+  /// Invoked after Pi acknowledges shutdown, to leave the doomed chat and
+  /// show the session list. Optional so isolated widget tests can omit it.
+  final Future<void> Function()? onSessionShutdown;
+
   const QuickActionsSheetBody({
     super.key,
     required this.messenger,
     this.onSessionReset,
+    this.onSessionShutdown,
   });
 
   @override
@@ -154,6 +174,15 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
               subtitle: 'Clears the conversation on the Pi.',
               busy: busyAction == ActionName.sessionNew,
               onTap: () => _onNewSession(vm),
+            ),
+            const _Divider(),
+            _ActionTile(
+              key: const Key('qa-quit-session'),
+              icon: LucideIcons.logOut,
+              label: 'Quit session',
+              subtitle: 'Shut down this Pi session.',
+              busy: busyAction == ActionName.sessionShutdown,
+              onTap: () => _onQuitSession(vm),
             ),
             const _Divider(),
             _ActionTile(
@@ -316,6 +345,70 @@ class _QuickActionsSheetBodyState extends State<QuickActionsSheetBody> {
     // session. The sheet is already closed; no success toast (quiet action,
     // the cleared chat is feedback enough).
     await widget.onSessionReset?.call();
+  }
+
+  Future<void> _onQuitSession(QuickActionsViewModel vm) async {
+    // Match New session: dismiss the sheet before showing root confirmation.
+    // On success the injected callback navigates away from the closing chat.
+    final rootNavigator = Navigator.of(context, rootNavigator: true);
+    Navigator.of(context).pop();
+    final confirm = await showDialog<bool>(
+      context: rootNavigator.context,
+      builder: (dCtx) {
+        final colors = dCtx.colors;
+        return AlertDialog(
+          backgroundColor: colors.bg,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: BorderSide(color: colors.border),
+          ),
+          title: Text(
+            'Quit this session?',
+            style: TextStyle(
+              fontFamily: kMonoFamily,
+              fontSize: 14,
+              color: colors.text,
+            ),
+          ),
+          content: Text(
+            'This shuts down the current Pi process. Your conversation stays '
+            'saved on the computer.',
+            style: TextStyle(
+              fontFamily: kMonoFamily,
+              fontSize: 12,
+              color: colors.muted,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dCtx).pop(false),
+              child: Text(
+                'Cancel',
+                style: TextStyle(fontFamily: kMonoFamily, color: colors.muted),
+              ),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dCtx).pop(true),
+              child: Text(
+                'Quit session',
+                style: TextStyle(fontFamily: kMonoFamily, color: colors.error),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirm != true) return;
+    try {
+      await vm.shutdown();
+    } on ActionFailure catch (e) {
+      // The sheet and its error listener are gone; use the captured messenger.
+      _showError(e.message);
+      return;
+    } catch (_) {
+      return;
+    }
+    await widget.onSessionShutdown?.call();
   }
 
   Future<void> _onThinking(

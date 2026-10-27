@@ -352,7 +352,18 @@ const OTHER_OWNER_STANDARD_FIXTURE = OTHER_OWNER_PUBLIC_FIXTURE.toString("base64
 
 // Clean ext slate before every test so state can't leak across tests. Runs
 // before each describe's own beforeEach, which re-establishes what it needs.
-beforeEach(() => resetExtensionState());
+const remotePiHomeBeforeTests = process.env["REMOTE_PI_HOME"];
+let extensionTestHome: string;
+beforeEach(() => {
+  extensionTestHome = mkdtempSync(join(tmpdir(), "remote-pi-extension-test-"));
+  process.env["REMOTE_PI_HOME"] = extensionTestHome;
+  resetExtensionState();
+});
+afterEach(() => {
+  if (remotePiHomeBeforeTests === undefined) delete process.env["REMOTE_PI_HOME"];
+  else process.env["REMOTE_PI_HOME"] = remotePiHomeBeforeTests;
+  rmSync(extensionTestHome, { recursive: true, force: true });
+});
 
 describe("extension default export", () => {
   test("is an ExtensionFactory function", () => {
@@ -3277,10 +3288,11 @@ describe("multi-channel broadcast (W2D)", () => {
     )).toBe(true);
   });
 
-  test("provider error (assistant stopReason:error) → forwards `error` to owners (was silent)", async () => {
+  test("provider error forwards to owners, colors room state, and clears on retry", async () => {
     await _pairForTest("ownerA__1234567890");
     const onMsgEnd = captureEventHandler("message_end");
     const sendsBefore = relayRef.current!.send.mock.calls.length;
+    const ctrlBefore = relayRef.current!.sendControl.mock.calls.length;
 
     onMsgEnd({
       type: "message_end",
@@ -3296,6 +3308,49 @@ describe("multi-channel broadcast (W2D)", () => {
     expect(err?.inner).toMatchObject({
       type: "error", code: "provider_error", message: "Provider finish_reason: error",
     });
+    expect(_getRoomMetaForTest()?.provider_error).toBe(true);
+    const failureUpdates = relayRef.current!.sendControl.mock.calls.slice(ctrlBefore)
+      .map((c) => c[0] as { type: string; meta?: { provider_error?: boolean } })
+      .filter((f) => f.type === "room_meta_update" && f.meta?.provider_error !== undefined);
+    expect(failureUpdates.map((f) => f.meta?.provider_error)).toEqual([true]);
+
+    const onTurnStart = captureEventHandler("turn_start");
+    onTurnStart({ type: "turn_start", turnIndex: 1, timestamp: 1 });
+    expect(_getRoomMetaForTest()?.provider_error).toBe(false);
+    const retryControls = relayRef.current!.sendControl.mock.calls.slice(ctrlBefore)
+      .map((c) => c[0] as {
+        type: string;
+        meta?: { working?: boolean; provider_error?: boolean };
+      })
+      .filter((f) => f.type === "room_meta_update");
+    const retryUpdates = retryControls
+      .filter((f) => f.meta?.provider_error !== undefined);
+    expect(retryUpdates.map((f) => f.meta?.provider_error)).toEqual([true, false]);
+    const workingIndex = retryControls.findIndex((f) => f.meta?.working === true);
+    const clearIndex = retryControls.findIndex((f) => f.meta?.provider_error === false);
+    expect(workingIndex).toBeGreaterThanOrEqual(0);
+    expect(workingIndex).toBeLessThan(clearIndex);
+  });
+
+  test("provider error updates room meta even with no owner attached", async () => {
+    captureHandler("remote-pi");
+    await _connectForTest(makeMockCtx("/tmp/remote-pi-provider-error-home"));
+    const onMsgEnd = captureEventHandler("message_end");
+
+    onMsgEnd({
+      type: "message_end",
+      message: {
+        role: "assistant", stopReason: "error",
+        errorMessage: "429 rate limit", content: [],
+      },
+    });
+
+    expect(_getActivePeerCountForTest()).toBe(0);
+    expect(_getRoomMetaForTest()?.provider_error).toBe(true);
+    const updates = relayRef.current!.sendControl.mock.calls
+      .map((c) => c[0] as { type: string; meta?: { provider_error?: boolean } })
+      .filter((f) => f.type === "room_meta_update" && f.meta?.provider_error === true);
+    expect(updates).toHaveLength(1);
   });
 
   test("normal assistant turn (stopReason:stop) → no error forwarded", async () => {
@@ -5068,6 +5123,45 @@ describe("session_shutdown teardown", () => {
     // the re-evaluated instance starts from a clean slate (one connection).
     expect(relay.close).toHaveBeenCalled();
     expect(_getState()).toBe("idle");
+  });
+
+  test("daemon Quit fallback stands down once SDK session teardown begins", async () => {
+    await _pairForTest(OWNER_STANDARD_FIXTURE);
+    const harness = captureEventHarness();
+    const ctx = {
+      ...makeMockCtx(),
+      isIdle: () => true,
+      shutdown: vi.fn(),
+    };
+    harness.handler("session_start")({ type: "session_start" }, ctx);
+
+    const previousDaemon = process.env["REMOTE_PI_DAEMON"];
+    process.env["REMOTE_PI_DAEMON"] = "1";
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    vi.useFakeTimers();
+    try {
+      await routeClientMessage(
+        { type: "session_shutdown", id: "quit-cleanup" },
+        { abort: () => undefined },
+      );
+      expect(ctx.shutdown).toHaveBeenCalledTimes(1);
+
+      // RPC has started graceful disposal. Its own shutdown() will exit only
+      // after runtimeHost.dispose(); the relay fallback must not preempt it.
+      const teardown = Promise.resolve(harness.handler("session_shutdown")({
+        type: "session_shutdown",
+        reason: "quit",
+      }));
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(exitSpy).not.toHaveBeenCalled();
+      await teardown;
+    } finally {
+      vi.useRealTimers();
+      exitSpy.mockRestore();
+      if (previousDaemon === undefined) delete process.env["REMOTE_PI_DAEMON"];
+      else process.env["REMOTE_PI_DAEMON"] = previousDaemon;
+      _setDisposedForTest(false);
+    }
   });
 
   test("session_shutdown invalidates without bye before a deferred mesh leave", async () => {
@@ -8037,7 +8131,6 @@ describe("model meta", () => {
 // ── Plan/149: session slot (gh_ref + stats) ──────────────────────────────────
 
 describe("plan/149 session slot (gh_ref + stats)", () => {
-  let tmpHome: string;
   beforeEach(async () => {
     vi.clearAllMocks();
     _knownPeers.length = 0;
@@ -8056,13 +8149,6 @@ describe("plan/149 session slot (gh_ref + stats)", () => {
     );
     const stop = captureHandler("remote-pi stop");
     await stop("", makeMockCtx());
-    // Hermetic registry: route all rooms.json reads/writes into a temp home.
-    tmpHome = mkdtempSync(join(tmpdir(), "plan149-home-"));
-    process.env["REMOTE_PI_HOME"] = tmpHome;
-  });
-  afterEach(() => {
-    delete process.env["REMOTE_PI_HOME"];
-    rmSync(tmpHome, { recursive: true, force: true });
   });
 
   function ctrlFrames(): Array<{ type?: string; room_id?: string; meta?: Record<string, unknown> }> {

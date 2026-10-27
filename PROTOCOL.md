@@ -225,6 +225,7 @@ Vocabulário curado de ações tipadas que o app mobile invoca sobre a sessão d
 |---|---|---|
 | Compact context | `session_compact` | `ctx.compact()` |
 | New session | `session_new` | `ctx.newSession()` |
+| Quit session | `session_shutdown` | `ctx.shutdown()` + daemon exit 0 |
 | Set model | `model_set {provider, model_id}` | `ModelRegistry.find(...)` + `pi.setModel(model)` |
 | Set thinking | `thinking_set {level}` | `pi.setThinkingLevel(level)` |
 | List models | `list_models` | `ModelRegistry.getAvailable()` |
@@ -605,6 +606,41 @@ O sinal também nasce de uma **segunda fonte**: a extension publica
 separados para que a borda de queda de uma não apague o prompt ainda aberto
 da outra. Isso cobre pis < 0.84.4 (sem eventos) e dobra a robustez do caso
 mais comum (ask_user) — belt-and-suspenders.
+
+---
+
+## Falha do provedor (`meta.provider_error`) — 2026-10-27
+
+Uma falha da API do LLM, como um rate limit 429, também é estado da sessão.
+Assim a Home mostra o problema sem depender do chat aberto ou de um owner
+conectado no momento da falha.
+
+### Wire
+
+```jsonc
+// extension → relay, após assistant.stopReason === "error"
+{ "type": "room_meta_update", "room_id": "<room>",
+  "meta": { "provider_error": true } }
+
+// extension → relay, no início do próximo turno ou sessão
+{ "type": "room_meta_update", "room_id": "<room>",
+  "meta": { "provider_error": false } }
+```
+
+### Semântica
+
+- **Estado persistido no relay**: viaja em `hello`, `room_announced`, snapshot
+  `rooms` e republicação após reconnect. Merge-patch ausente preserva o valor;
+  o relay sempre serializa o boolean no broadcast pós-patch.
+- **Limpeza na nova tentativa**: `turn_start` publica `working=true` e então
+  limpa a falha anterior, fazendo a transição vermelho → azul sem flash verde.
+  `session_start` também impede herdar o erro da sessão substituída.
+- **Prioridade visual**: uma sala live com `provider_error=true` usa vermelho
+  no border, tint e textos do slot/avatar. Vermelho vence waiting e working;
+  sala offline continua cinza e reconnect continua âmbar.
+- **Compatibilidade**: relay antigo derruba a chave desconhecida e app antigo
+  a ignora. O evento de chat `error{code:"provider_error"}` permanece
+  inalterado para mostrar a mensagem detalhada da API.
 
 ---
 

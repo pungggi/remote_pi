@@ -136,6 +136,23 @@ void main() {
       s.cm.dispose();
     });
 
+    test('shutdown() sends session_shutdown and resolves on ack', () async {
+      final s = await _setup();
+      final future = s.repo.shutdown();
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      final sent = s.ch.sent.single as SessionShutdown;
+      expect(sent.toJson()['type'], 'session_shutdown');
+      s.ch.push(
+        ActionOk(
+          inReplyTo: sent.id,
+          action: ActionName.sessionShutdown,
+          rawAction: 'session_shutdown',
+        ),
+      );
+      await future;
+      s.cm.dispose();
+    });
+
     test('setModel(provider, modelId) sends model_set', () async {
       final s = await _setup();
       final future = s.repo.setModel('anthropic', 'claude-opus-4-7');

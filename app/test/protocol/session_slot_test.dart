@@ -1,6 +1,6 @@
 // Plan/149 — session slot wire parsing: gh_ref / gh_suggestion / stats on
-// room_announced, the rooms snapshot and room_meta_updated; manual-input
-// parse (Link sheet); set_session_ref request/reply shapes.
+// room_announced, the rooms snapshot and room_meta_updated; display labels;
+// set_session_ref request/reply shapes retained for client compatibility.
 
 import 'package:app/protocol/protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -97,11 +97,12 @@ void main() {
   group('plan/149 room_meta_updated has-flag semantics', () {
     RoomMetaUpdated parse(Map<String, dynamic> meta) =>
         ControlInbound.tryFromJson({
-          'type': 'room_meta_updated',
-          'peer': 'epkA',
-          'room_id': 'r1',
-          'meta': meta,
-        })! as RoomMetaUpdated;
+              'type': 'room_meta_updated',
+              'peer': 'epkA',
+              'room_id': 'r1',
+              'meta': meta,
+            })!
+            as RoomMetaUpdated;
 
     test('present-but-null gh_ref is a clear (hasGhRef, value null)', () {
       final u = parse({'gh_ref': null});
@@ -130,53 +131,9 @@ void main() {
     });
   });
 
-  group('plan/149 GhRef.tryParseInput (Link sheet manual field)', () {
-    test('full PR URL', () {
-      final g = GhRef.tryParseInput(
-        'https://github.com/pungggi/remote_pi/pull/70',
-      )!;
-      expect(g.pr?.number, 70);
-      expect(g.source, 'manual');
-      expect(g.issue, isNull);
-    });
-
-    test('issues URL → issue slot', () {
-      final g = GhRef.tryParseInput(
-        'https://github.com/pungggi/remote_pi/issues/123',
-      )!;
-      expect(g.issue?.number, 123);
-      expect(g.pr, isNull);
-    });
-
-    test('owner/repo#123 → issue slot with derived URL', () {
-      final g = GhRef.tryParseInput('pungggi/remote_pi#123')!;
-      expect(g.issue?.number, 123);
-      expect(g.issue?.url, 'https://github.com/pungggi/remote_pi/issues/123');
-    });
-
-    test('URL buried in prose parses', () {
-      final g = GhRef.tryParseInput(
-        'fixes https://github.com/o/r/pull/9 when ready',
-      )!;
-      expect(g.pr?.number, 9);
-    });
-
-    test('bare #123 is REJECTED (ambiguous)', () {
-      expect(GhRef.tryParseInput('#123'), isNull);
-      expect(GhRef.tryParseInput('see #123 and #456'), isNull);
-    });
-
-    test('garbage / empty rejected', () {
-      expect(GhRef.tryParseInput(''), isNull);
-      expect(GhRef.tryParseInput('hello world'), isNull);
-      expect(GhRef.tryParseInput('https://example.com/o/r/pull/1'), isNull);
-    });
-
+  group('plan/149 GhRef display label', () {
     test('label prefers the PR slot', () {
-      expect(
-        GhRef(pr: const GhRefSlot(number: 70)).label,
-        'PR #70',
-      );
+      expect(GhRef(pr: const GhRefSlot(number: 70)).label, 'PR #70');
       expect(GhRef(issue: const GhRefSlot(number: 12)).label, '#12');
       expect(const GhRef().label, '');
     });
@@ -188,7 +145,10 @@ void main() {
         id: 'ref-1',
         roomId: 'r1',
         ghRef: GhRef(
-          pr: const GhRefSlot(number: 70, url: 'https://github.com/o/r/pull/70'),
+          pr: const GhRefSlot(
+            number: 70,
+            url: 'https://github.com/o/r/pull/70',
+          ),
         ),
       );
       final j = req.toJson();

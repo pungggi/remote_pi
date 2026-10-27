@@ -130,9 +130,9 @@ class HomePage extends StatelessWidget {
         ),
         const SizedBox(width: 4),
       ],
-      // Title rendering happens entirely inside flexibleSpace so we
-      // can cross-fade between the large form (expanded) and the
-      // compact form (collapsed). Using `SliverAppBar.title` here
+      // Title rendering happens entirely inside flexibleSpace so the
+      // large form (expanded) and compact form (collapsed) never
+      // overlap. Using `SliverAppBar.title` here
       // would overlay the compact title on top of the large one
       // while expanded — that was the "two app bars" bug.
       flexibleSpace: LayoutBuilder(
@@ -175,16 +175,17 @@ class HomePage extends StatelessWidget {
                   ),
                 ),
               ),
-              // Compact title — fades IN as we collapse.
+              // Compact title — only appears once almost collapsed.
+              // A mid-scroll cross-fade showed BOTH Piper labels at once.
               Positioned(
                 left: 20,
                 right: 64, // leave space for the actions icon
                 top: 0,
                 height: 56,
                 child: IgnorePointer(
-                  ignoring: t > 0.95,
+                  ignoring: t >= 0.05,
                   child: Opacity(
-                    opacity: 1 - t,
+                    opacity: t < 0.05 ? 1 : 0,
                     child: Align(
                       alignment: Alignment.centerLeft,
                       child: Text(
@@ -305,46 +306,17 @@ class HomePage extends StatelessWidget {
     HomeViewModel vm,
     HomeList state,
   ) {
-    final counts = vm.counts;
-    // Globally empty (paired Pi, no rooms at all): keep the original lonely
-    // state and DON'T show the tabs — there's nothing to filter.
-    if (counts.all == 0) {
+    final visible = vm.visibleItems;
+    if (visible.isEmpty) {
       return const SliverFillRemaining(
         hasScrollBody: false,
         child: _LonelyEmptyState(),
       );
     }
 
-    // Plan-38 Fase 3 — presence filter at the top of the list. Pure view:
-    // tapping a tab only swaps `state.filter` → `vm.visibleItems` re-derives.
-    final tabs = SliverToBoxAdapter(
-      child: HomeFilterTabs(
-        filter: state.filter,
-        counts: counts,
-        onSelected: vm.setFilter,
-      ),
-    );
-
-    final visible = vm.visibleItems;
-    if (visible.isEmpty) {
-      // Items exist, but none match this tab → per-tab empty state beneath
-      // the tabs (which stay visible so the user can switch back).
-      return SliverMainAxisGroup(
-        slivers: [
-          tabs,
-          SliverFillRemaining(
-            hasScrollBody: false,
-            child: HomeFilterEmptyState(filter: state.filter),
-          ),
-        ],
-      );
-    }
-
-    // Build the per-peer groups over the VISIBLE items: each group is
-    // [header, tile, tile, …]. Plan-18 follow-up — always include a header
-    // even when there's a single Mac, per the mock. A peer with no visible
-    // item in this filter contributes no header (the `lastEpk` cursor only
-    // advances on rows we actually render).
+    // One combined list, sectioned by pairing. Each group is
+    // [header, tile, tile, …]; peers without visible rooms contribute no
+    // header (the `lastEpk` cursor only advances on rendered rows).
     final children = <Widget>[];
     String? lastEpk;
     for (final it in visible) {
@@ -354,19 +326,14 @@ class HomePage extends StatelessWidget {
       }
       children.add(_buildItemRowAt(context, vm, state, it));
     }
-    return SliverMainAxisGroup(
-      slivers: [
-        tabs,
-        SliverPadding(
-          padding: const EdgeInsets.fromLTRB(0, 0, 0, 24),
-          sliver: SliverList(
-            delegate: SliverChildBuilderDelegate(
-              (ctx, i) => children[i],
-              childCount: children.length,
-            ),
-          ),
+    return SliverPadding(
+      padding: const EdgeInsets.fromLTRB(0, 0, 0, 24),
+      sliver: SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (ctx, i) => children[i],
+          childCount: children.length,
         ),
-      ],
+      ),
     );
   }
 
@@ -377,7 +344,7 @@ class HomePage extends StatelessWidget {
     HomeItem it,
   ) {
     final colors = context.colors;
-    final isLive = vm.isRoomLive(it.peer.remoteEpk, it.room.roomId);
+    final isLive = vm.isRoomOnline(it);
     final isReconnecting = !vm.isRelayConnected;
     final isWorking = vm.isRoomWorking(it.peer.remoteEpk, it.room.roomId);
     // Plan/134 — the tri-state input: waiting beats working in the tile's
@@ -413,9 +380,10 @@ class HomePage extends StatelessWidget {
             isSelected: isSelected,
             notifyOnDone: vm.notifyOnDone(it.peer.remoteEpk, it.room.roomId),
             room: it.room,
-            git: it.room.git ??
-                state.gitByKey[
-                    '${toStandardB64(it.peer.remoteEpk)}|${it.room.roomId}'],
+            git:
+                it.room.git ??
+                state
+                    .gitByKey['${toStandardB64(it.peer.remoteEpk)}|${it.room.roomId}'],
             unread: vm.unreadCount(it.peer.remoteEpk, it.room.roomId),
             onOpenRef: _openRefUrl(context, it.room),
             onOpen: () => _open(context, vm, it.peer, it.room),
@@ -465,215 +433,166 @@ class HomePage extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-              // Plan/132 — per-session completion notification toggle.
-              // Lives at the top (the session's own setting) and keeps the
-              // sheet open so the user can see the state flip. Stateful so
-              // the switch repaints without closing the menu; the tile's
-              // bell badge updates via the HomeViewModel re-emit.
-              StatefulBuilder(
-                builder: (sheetCtx, setSheetState) {
-                  final enabled = vm.notifyOnDone(
-                    it.peer.remoteEpk,
-                    it.room.roomId,
-                  );
-                  final mode = vm.keepAliveMode;
-                  final hint = switch (mode) {
-                    KeepAliveMode.off =>
-                      'Background connection is off — turn Keep-alive on in '
-                      'Settings to receive these.',
-                    KeepAliveMode.whenCharging =>
-                      'Fires while the app is backgrounded and connected '
-                      '(charging by default — see Settings).',
-                    KeepAliveMode.always =>
-                      'Fires while the app is backgrounded and connected.',
-                  };
-                  return SwitchListTile(
-                    secondary: Icon(
-                      enabled ? LucideIcons.bellRing : LucideIcons.bell,
-                      color: colors.accent,
-                    ),
+                // Plan/132 — per-session completion notification toggle.
+                // Lives at the top (the session's own setting) and keeps the
+                // sheet open so the user can see the state flip. Stateful so
+                // the switch repaints without closing the menu; the tile's
+                // bell badge updates via the HomeViewModel re-emit.
+                StatefulBuilder(
+                  builder: (sheetCtx, setSheetState) {
+                    final enabled = vm.notifyOnDone(
+                      it.peer.remoteEpk,
+                      it.room.roomId,
+                    );
+                    final mode = vm.keepAliveMode;
+                    final hint = switch (mode) {
+                      KeepAliveMode.off =>
+                        'Background connection is off — turn Keep-alive on in '
+                            'Settings to receive these.',
+                      KeepAliveMode.whenCharging =>
+                        'Fires while the app is backgrounded and connected '
+                            '(charging by default — see Settings).',
+                      KeepAliveMode.always =>
+                        'Fires while the app is backgrounded and connected.',
+                    };
+                    return SwitchListTile(
+                      secondary: Icon(
+                        enabled ? LucideIcons.bellRing : LucideIcons.bell,
+                        color: colors.accent,
+                      ),
+                      title: Text(
+                        'Notify when finished',
+                        style: TextStyle(color: colors.text),
+                      ),
+                      subtitle: Text(
+                        hint,
+                        style: TextStyle(color: colors.muted, fontSize: 11),
+                      ),
+                      value: enabled,
+                      onChanged: (value) async {
+                        final granted = await vm.setNotifyOnDone(
+                          it.peer.remoteEpk,
+                          it.room.roomId,
+                          value,
+                        );
+                        setSheetState(() {});
+                        if (!value || granted) return;
+                        if (!sheetCtx.mounted) return;
+                        ScaffoldMessenger.of(sheetCtx).showSnackBar(
+                          const SnackBar(
+                            duration: Duration(seconds: 4),
+                            content: Text(
+                              'Notification permission is off for Piper — '
+                              'enable it in system settings to get alerts.',
+                            ),
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+                // Plan/124 — bring this OFFLINE session back to life in its own
+                // cwd: resume the existing conversation (no new worktree, no
+                // pin). Only offered when the room is offline — an online
+                // session is already alive.
+                if (!isLive)
+                  ListTile(
+                    leading: Icon(LucideIcons.zap, color: colors.accent),
                     title: Text(
-                      'Notify when finished',
+                      'Start session',
                       style: TextStyle(color: colors.text),
                     ),
                     subtitle: Text(
-                      hint,
+                      'Resume this session on the computer.',
                       style: TextStyle(color: colors.muted, fontSize: 11),
                     ),
-                    value: enabled,
-                    onChanged: (value) async {
-                      final granted = await vm.setNotifyOnDone(
-                        it.peer.remoteEpk,
-                        it.room.roomId,
-                        value,
-                      );
-                      setSheetState(() {});
-                      if (!value || granted) return;
-                      if (!sheetCtx.mounted) return;
-                      ScaffoldMessenger.of(sheetCtx).showSnackBar(
-                        const SnackBar(
-                          duration: Duration(seconds: 4),
-                          content: Text(
-                            'Notification permission is off for Piper — '
-                            'enable it in system settings to get alerts.',
-                          ),
-                        ),
-                      );
+                    onTap: () {
+                      Navigator.of(sheetCtx).pop();
+                      _startSession(context, vm, it);
                     },
-                  );
-                },
-              ),
-              // Plan/124 — bring this OFFLINE session back to life in its own
-              // cwd: resume the existing conversation (no new worktree, no
-              // pin). Only offered when the room is offline — an online
-              // session is already alive.
-              if (!isLive)
+                  ),
+                // Plan/108 — open a terminal for THIS session straight from
+                // the list (same worktree+pi flow as the Quick Actions sheet).
                 ListTile(
-                  leading: Icon(LucideIcons.zap, color: colors.accent),
+                  leading: Icon(
+                    LucideIcons.terminalSquare,
+                    color: colors.accent,
+                  ),
                   title: Text(
-                    'Start session',
+                    'Open terminal',
                     style: TextStyle(color: colors.text),
                   ),
                   subtitle: Text(
-                    'Resume this session on the computer.',
+                    'New pi tab in a worktree off this folder.',
                     style: TextStyle(color: colors.muted, fontSize: 11),
                   ),
                   onTap: () {
                     Navigator.of(sheetCtx).pop();
-                    _startSession(context, vm, it);
+                    _openTerminal(context, vm, it);
                   },
                 ),
-              // Plan/108 — open a terminal for THIS session straight from
-              // the list (same worktree+pi flow as the Quick Actions sheet).
-              ListTile(
-                leading: Icon(
-                  LucideIcons.terminalSquare,
-                  color: colors.accent,
-                ),
-                title: Text(
-                  'Open terminal',
-                  style: TextStyle(color: colors.text),
-                ),
-                subtitle: Text(
-                  'New pi tab in a worktree off this folder.',
-                  style: TextStyle(color: colors.muted, fontSize: 11),
-                ),
-                onTap: () {
-                  Navigator.of(sheetCtx).pop();
-                  _openTerminal(context, vm, it);
-                },
-              ),
-              // Plan/149 — link (or clear) the session's GitHub ref. Works
-              // online (live session) AND offline (device daemon writes the
-              // rooms registry), so the entry is always offered.
-              ListTile(
-                leading: Icon(LucideIcons.link, color: colors.accent),
-                title: Text(
-                  'Link Issue / PR',
-                  style: TextStyle(color: colors.text),
-                ),
-                subtitle: Text(
-                  'Pin this session to a GitHub PR or issue.',
-                  style: TextStyle(color: colors.muted, fontSize: 11),
-                ),
-                onTap: () {
-                  Navigator.of(sheetCtx).pop();
-                  _linkRef(context, vm, it);
-                },
-              ),
-              // Plan/148 — one-tap cleanup of a dead session's worktree +
-              // branch, offered exactly where the clutter is visible. Shown on
-              // offline tiles (keeper mirrors count as offline); whether the
-              // folder is really a tracked worktree is validated at tap time —
-              // the menu itself never touches the shared connection (PR #70
-              // review).
-              if (!isLive && vm.mayOfferCleanup(it))
-                ListTile(
-                  leading: Icon(LucideIcons.folderX, color: colors.error),
-                  title: Text(
-                    'Delete worktree & branch',
-                    style: TextStyle(color: colors.text),
+                // Plan/148 — one-tap cleanup of a dead session's worktree +
+                // branch, offered exactly where the clutter is visible. Shown on
+                // offline tiles (keeper mirrors count as offline); whether the
+                // folder is really a tracked worktree is validated at tap time —
+                // the menu itself never touches the shared connection (PR #70
+                // review).
+                if (!isLive && vm.mayOfferCleanup(it))
+                  ListTile(
+                    leading: Icon(LucideIcons.folderX, color: colors.error),
+                    title: Text(
+                      'Delete worktree & branch',
+                      style: TextStyle(color: colors.text),
+                    ),
+                    subtitle: Text(
+                      'Removes this session\'s worktree folder on the computer.',
+                      style: TextStyle(color: colors.muted, fontSize: 11),
+                    ),
+                    onTap: () {
+                      Navigator.of(sheetCtx).pop();
+                      _deleteWorktree(context, vm, it);
+                    },
                   ),
-                  subtitle: Text(
-                    'Removes this session\'s worktree folder on the computer.',
-                    style: TextStyle(color: colors.muted, fontSize: 11),
+                ListTile(
+                  leading: Icon(LucideIcons.pencil, color: colors.accent),
+                  title: Text(
+                    'Rename session',
+                    style: TextStyle(color: colors.text),
                   ),
                   onTap: () {
                     Navigator.of(sheetCtx).pop();
-                    _deleteWorktree(context, vm, it);
+                    _promptRename(context, vm, it);
                   },
                 ),
-              ListTile(
-                leading: Icon(LucideIcons.pencil, color: colors.accent),
-                title: Text(
-                  'Rename session',
-                  style: TextStyle(color: colors.text),
+                ListTile(
+                  leading: Icon(
+                    LucideIcons.trash2,
+                    color: isLive ? colors.muted : colors.error,
+                  ),
+                  enabled: !isLive,
+                  title: Text(
+                    'Delete session (local only)',
+                    style: TextStyle(
+                      color: isLive ? colors.muted : colors.text,
+                    ),
+                  ),
+                  subtitle: isLive
+                      ? Text(
+                          'Only available when the room is offline',
+                          style: TextStyle(color: colors.muted, fontSize: 11),
+                        )
+                      : null,
+                  onTap: isLive
+                      ? null
+                      : () {
+                          Navigator.of(sheetCtx).pop();
+                          _confirmDelete(context, vm, it);
+                        },
                 ),
-                onTap: () {
-                  Navigator.of(sheetCtx).pop();
-                  _promptRename(context, vm, it);
-                },
-              ),
-              ListTile(
-                leading: Icon(
-                  LucideIcons.trash2,
-                  color: isLive ? colors.muted : colors.error,
-                ),
-                enabled: !isLive,
-                title: Text(
-                  'Delete session (local only)',
-                  style: TextStyle(color: isLive ? colors.muted : colors.text),
-                ),
-                subtitle: isLive
-                    ? Text(
-                        'Only available when the room is offline',
-                        style: TextStyle(color: colors.muted, fontSize: 11),
-                      )
-                    : null,
-                onTap: isLive
-                    ? null
-                    : () {
-                        Navigator.of(sheetCtx).pop();
-                        _confirmDelete(context, vm, it);
-                      },
-              ),
-            ],
+              ],
             ),
           ),
         );
-      },
-    );
-  }
-
-  /// Plan/149 — open the Link Issue / PR sheet for a session. The sheet
-  /// collects the ref (suggestion, manual paste, or remove) and dispatches
-  /// [HomeViewModel.setSessionRef]; the tile updates via the rooms push on
-  /// its own. `ok:false` (e.g. unknown room) is toasted, not thrown.
-  Future<void> _linkRef(
-    BuildContext context,
-    HomeViewModel vm,
-    HomeItem it,
-  ) async {
-    final messenger = ScaffoldMessenger.of(context);
-    await showLinkRefSheet(
-      context,
-      title: _titleFor(it.peer, it.room),
-      current: it.room.ghRef,
-      suggestion: it.room.ghSuggestion,
-      onApply: (ref) async {
-        try {
-          final res = await vm.setSessionRef(
-            epk: it.peer.remoteEpk,
-            roomId: it.room.roomId,
-            ghRef: ref,
-            cwd: it.room.cwd,
-          );
-          if (!res.ok && res.message.isNotEmpty) {
-            _toast(messenger, res.message, isError: true);
-          }
-        } on ActionFailure catch (e) {
-          _toast(messenger, e.message, isError: true);
-        }
       },
     );
   }

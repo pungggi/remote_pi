@@ -104,6 +104,7 @@ import { MeshNode } from "./session/mesh_node.js";
 import type { MeshDrainContext, MeshDeliveryController } from "./session/mesh_delivery.js";
 import {
   handleSessionCompact,
+  handleSessionShutdown,
   handleModelSet,
   handleThinkingSet,
   handleListModels,
@@ -369,6 +370,22 @@ function _publishWorking(working: boolean): void {
   }
 }
 
+/** Publish the latest provider failure as room state so Home can color the
+ *  session red even when no chat is attached. Transition-only: ordinary turns
+ *  must not pay for a redundant provider_error=false control frame. */
+function _publishProviderError(providerError: boolean): void {
+  const previous = ext.myRoomMeta?.provider_error ?? false;
+  if (previous === providerError) return;
+  if (ext.myRoomMeta) ext.myRoomMeta = { ...ext.myRoomMeta, provider_error: providerError };
+  if (ext.relay && ext.myRoomId) {
+    ext.relay.sendControl({
+      type: "room_meta_update",
+      room_id: ext.myRoomId,
+      meta: { provider_error: providerError },
+    });
+  }
+}
+
 /**
  * Plan/134: publish the `waiting_for_input` flag as room_meta — true while a
  * blocking user-facing `ctx.ui` prompt is open (pi 0.84.4 `ui_prompt_start`/
@@ -617,7 +634,11 @@ function _publishRunDone(turnId: string | null): void {
  */
 function _republishRoomMeta(): void {
   if (!ext.relay || !ext.myRoomId || !ext.myRoomMeta) return;
-  const meta: Record<string, unknown> = { working: ext.myRoomMeta.working ?? false, waiting_for_input: ext.myRoomMeta.waiting_for_input ?? false };
+  const meta: Record<string, unknown> = {
+    working: ext.myRoomMeta.working ?? false,
+    waiting_for_input: ext.myRoomMeta.waiting_for_input ?? false,
+    provider_error: ext.myRoomMeta.provider_error ?? false,
+  };
   if (ext.myRoomMeta.model) meta.model = ext.myRoomMeta.model;
   if (ext.myRoomMeta.thinking !== undefined) meta.thinking = ext.myRoomMeta.thinking;
   if (ext.myRoomMeta.git !== undefined) meta.git = ext.myRoomMeta.git;
@@ -2998,13 +3019,17 @@ export function onMessageEnd(event: MessageEndEvent): void {
   if (m.role === "user" || m.role === "assistant" || m.role === "toolResult") {
     ext.messageBuffer.push(m as unknown as BufferMsg);
   }
-  // Forward a failed turn to connected owners. Without this the app just
+  // A failed provider turn is also room state: Home colors the session red
+  // until a new turn starts. Unlike the chat error below, this is NOT gated
+  // on attached owners — the room list must update while no chat is open.
+  const providerFailed = m.role === "assistant" && m.stopReason === "error";
+  if (providerFailed) _publishProviderError(true);
+  // Forward the same failure to connected owners. Without this the app just
   // hangs with no response when the provider errors (e.g. the TUI's
   // "Provider finish_reason: error"): the SDK surfaces the failure as an
   // assistant message with stopReason "error" + an `errorMessage` (pi-ai).
-  // `error` is an existing ServerMessage the app already renders — no
-  // protocol/app change. `in_reply_to` ties it to the turn the app awaits.
-  if (m.role === "assistant" && m.stopReason === "error" && _anyPeerActive()) {
+  // `in_reply_to` ties it to the turn the app awaits.
+  if (providerFailed && _anyPeerActive()) {
     // Drain coalesced text before the error so no turn tail is lost.
     _flushAgentChunks();
     const message = typeof m.errorMessage === "string" && m.errorMessage
@@ -3105,6 +3130,10 @@ export function onTurnStart(ctx: ExtensionContext): void {
   if (ext.relay && ext.myRoomId) {
     ext.relay.sendControl({ type: "room_meta_update", room_id: ext.myRoomId, meta: { working: true } });
   }
+  // A new LLM request supersedes the previous failure. Publish working first:
+  // provider red has visual priority, so the retry goes straight red → blue
+  // instead of flashing idle green between the two full-state broadcasts.
+  _publishProviderError(false);
   _refreshContextUsage();
 }
 
@@ -3181,6 +3210,8 @@ export function onSessionStart(
   if (ext.myRoomMeta?.waiting_for_input === true) {
     _resetWaitingForInput();
   }
+  // A replacement session must not inherit the previous session's API failure.
+  if (ext.myRoomMeta?.provider_error === true) _publishProviderError(false);
   // session_shutdown disposes per-session pi-ask subscriptions. A host that
   // reuses this module instance does NOT re-run the factory, so rebind the
   // bridge here; fresh-module hosts already created theirs in the factory.
@@ -5091,6 +5122,30 @@ export function _routeClientMessageFrom(
           });
         }
       })();
+      break;
+    }
+    case "session_shutdown": {
+      // shutdown() is a base-context action, so prefer the always-fresh
+      // session_start context over a potentially stale captured command ctx.
+      const actionCtx = (ext.lastEventCtx ?? ext.lastCtx) as ActionCtx | null;
+      const accepted = handleSessionShutdown(actionCtx, sender, msg);
+      if (accepted) {
+        // The ack is already queued ahead of this frame: tell every attached
+        // app immediately that this room is going offline, then close relay.
+        _goIdle("shutdown");
+        if (process.env["REMOTE_PI_DAEMON"] === "1") {
+          // RPC only observes ctx.shutdown() after another RPC command or an
+          // agent-settled event. An idle daemon may have neither, so retain a
+          // clean-exit fallback. If SDK teardown starts first, ext.disposed
+          // stands the fallback down and RPC finishes runtimeHost.dispose()
+          // before exiting. A newly active turn likewise owns the wait via
+          // agent_settled; never kill either lifecycle after a fixed delay.
+          setTimeout(() => {
+            if (ext.disposed || ext.agentRunActive) return;
+            process.exit(0);
+          }, 1000);
+        }
+      }
       break;
     }
     case "model_set": {

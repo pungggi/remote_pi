@@ -26,6 +26,14 @@ User decision (2026-10-23): the slot becomes an information slot.
 The ref is also the best cleanup signal plan/148 has: an open PR means
 the worktree is alive, three turns with no ref means it is junk.
 
+## Follow-up: manual linking removed (2026-10-27)
+
+The current app no longer includes the **Link Issue / PR** menu item, bottom sheet, or manual URL parser. There is no replacement action. This supersedes the manual-ingest UI described below.
+
+- **Kept**: automatic `gh` ingest and stored ref display/open.
+- **Compatibility**: `set_session_ref` remains on the wire for older clients.
+- **Removed**: the current Home ViewModel's manual-link routing and its tests.
+
 ## Data source
 
 - **`room_meta.gh_ref`**: new opaque meta blob, same pipeline as

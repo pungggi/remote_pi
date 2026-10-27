@@ -33,6 +33,10 @@ pub struct RoomMeta {
     /// `waiting_for_input ? waiting : (working ? working : idle)`. Same
     /// always-serialized merge-patch semantics as `working`.
     pub waiting_for_input: bool,
+    /// Latest LLM turn failed at the provider. Stored room state (unlike the
+    /// chat error event), so Home can render the failure after reconnect.
+    /// Always serialized; merge-patch absence preserves it.
+    pub provider_error: bool,
     /// Plan/107b — git status snapshot of the session cwd, forwarded
     /// OPAQUELY (the relay never inspects the shape — it's an opaque JSON
     /// blob the Pi-extension produces and the app parses). `None` = not a
@@ -94,6 +98,8 @@ pub struct RoomMetaPatch {
     /// Plan/134 — same single-`Option` semantics as `working` for the
     /// blocking-prompt flag.
     pub waiting_for_input: Option<bool>,
+    /// Provider-failure flag; false clears it when a new turn/session starts.
+    pub provider_error: Option<bool>,
     /// Plan/107b — opaque git snapshot (JSON value passthrough). Same
     /// `Option<Option<_>>` semantics as `model`/`thinking`.
     pub git: Option<Option<serde_json::Value>>,
@@ -127,6 +133,7 @@ impl RoomMetaPatch {
             && self.thinking.is_none()
             && self.working.is_none()
             && self.waiting_for_input.is_none()
+            && self.provider_error.is_none()
             && self.git.is_none()
             && self.context_usage.is_none()
             && self.gh_ref.is_none()

@@ -141,6 +141,9 @@ export interface ExtensionState {
      *  extension's confirm/select/input/editor/custom) is open. Independent
      *  of `working`: the turn is still open while the prompt blocks. */
     waiting_for_input?: boolean;
+    /** Latest LLM turn failed at the provider (rate limit, API error, etc.).
+     *  Cleared when a new turn/session starts; surfaced red on Home. */
+    provider_error?: boolean;
     git?: WireGitStatus | null;
     context_usage?: WireContextUsage | null;
     /** Plan/149 — GitHub ref linked to this session (manual/gh-sourced).

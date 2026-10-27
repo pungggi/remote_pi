@@ -903,6 +903,7 @@ class ConnectionManager extends Service {
         :final thinking,
         :final working,
         :final waitingForInput,
+        :final providerError,
         :final git,
         :final contextUsage,
         :final keeper,
@@ -928,6 +929,7 @@ class ConnectionManager extends Service {
         var preservedWorking = false;
         // Plan/134 — same preserve convention for the blocking-prompt flag.
         var preservedWaitingForInput = false;
+        var preservedProviderError = false;
         GitStatus? preservedGit;
         ContextUsage? preservedContextUsage;
         final existingIdx = list.indexWhere((r) => r.roomId == roomId);
@@ -936,6 +938,7 @@ class ConnectionManager extends Service {
           preservedThinking = list[existingIdx].thinking;
           preservedWorking = list[existingIdx].working;
           preservedWaitingForInput = list[existingIdx].waitingForInput;
+          preservedProviderError = list[existingIdx].providerError;
           preservedGit = list[existingIdx].git;
           preservedContextUsage = list[existingIdx].contextUsage;
         }
@@ -948,6 +951,7 @@ class ConnectionManager extends Service {
           thinking: thinking ?? preservedThinking,
           working: working ?? preservedWorking,
           waitingForInput: waitingForInput ?? preservedWaitingForInput,
+          providerError: providerError ?? preservedProviderError,
           git: git ?? preservedGit,
           contextUsage: contextUsage ?? preservedContextUsage,
           // Plan/140 C — wire wins: a real session re-announcing the room
@@ -1032,6 +1036,7 @@ class ConnectionManager extends Service {
         :final thinking,
         :final working,
         :final waitingForInput,
+        :final providerError,
         :final git,
         :final hasModel,
         :final hasThinking,
@@ -1120,6 +1125,7 @@ class ConnectionManager extends Service {
         final nextWorking = working ?? current.working;
         // Plan/134 — blocking-prompt flag: nullable-as-absent like `working`.
         final nextWaitingFlag = waitingForInput ?? current.waitingForInput;
+        final nextProviderError = providerError ?? current.providerError;
         // Plan/107b — git snapshot patch: apply only when the meta
         // envelope carried a `git` key (hasGit), else preserve the cached
         // snapshot.
@@ -1147,6 +1153,7 @@ class ConnectionManager extends Service {
             current.thinking == nextThinking &&
             current.working == nextWorking &&
             current.waitingForInput == nextWaitingFlag &&
+            current.providerError == nextProviderError &&
             current.git == nextGit &&
             current.contextUsage == nextContextUsage &&
             current.ghRef == nextGhRef &&
@@ -1159,6 +1166,7 @@ class ConnectionManager extends Service {
           thinking: nextThinking,
           working: nextWorking,
           waitingForInput: nextWaitingFlag,
+          providerError: nextProviderError,
           git: nextGit,
           contextUsage: nextContextUsage,
           ghRef: nextGhRef,
@@ -1214,6 +1222,7 @@ class ConnectionManager extends Service {
             // Plan/134 — same authoritative read for the blocking-prompt
             // flag (never emits a transition event — app-open replay).
             waitingForInput: r.waitingForInput,
+            providerError: r.providerError,
             contextUsage: r.contextUsage ?? preservedUsage,
             // Plan/140 C — the snapshot is authoritative for the keeper
             // marker too (the relay's `rooms_of` carries the live meta).
