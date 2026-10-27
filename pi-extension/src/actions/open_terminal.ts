@@ -365,6 +365,7 @@ function envForSpawnedTerminal(): NodeJS.ProcessEnv {
 export function openTerminalTab(
   cwd: string,
   command: string | undefined,
+  options: { newWindow?: boolean } = {},
 ): Promise<OpenTerminalOutcome> {
   return new Promise((resolve) => {
     if (process.platform !== "win32") {
@@ -410,7 +411,9 @@ export function openTerminalTab(
     // desktop regardless of the caller's own window context. Only fall back to
     // Start-Process when WT isn't installed.
     if (resolveWt()) {
-      // ── Windows Terminal: open a real new tab in the MRU window ──
+      const newWindow = options.newWindow === true;
+      // ── Windows Terminal: new MRU tab by default; exact resume requests a
+      // new visible window because -w 0 can leave the existing window hidden.
       // Use the BARE shell name (e.g. `pwsh.exe`), not the resolved full path:
       // a path like `C:\Program Files (x86)\PowerShell\7\pwsh.exe` (spaces +
       // parens) mangles through `wt.exe … <shell> …` + `shell:true` and wt
@@ -418,8 +421,8 @@ export function openTerminalTab(
       // confirmed it via `where`), so wt resolves it cleanly. (Matches the
       // hidden-wscript proof, which used bare `pwsh` and reached the desktop.)
       const shellName = basename(shellExe);
-      const argsLine = `-w 0 new-tab -d ${cmdQuote(cwd)} ${cmdQuote(shellName)}${cmdSuffix}`;
-      const okMessage = `Opened terminal tab at: ${cwd}${withCmd}`;
+      const argsLine = `${newWindow ? "-w new" : "-w 0"} new-tab -d ${cmdQuote(cwd)} ${cmdQuote(shellName)}${cmdSuffix}`;
+      const okMessage = `Opened terminal ${newWindow ? "window" : "tab"} at: ${cwd}${withCmd}`;
       try {
         // `env` is inherited by wt.exe AND by the new-tab shell it launches
         // (WT copies the launcher's environment into the pane process).
@@ -427,7 +430,9 @@ export function openTerminalTab(
           detached: true,
           stdio: "ignore",
           shell: true,
-          windowsHide: true,
+          // A requested resume window must be visible on the interactive
+          // desktop. Keep the legacy background-tab spawn unchanged.
+          windowsHide: !newWindow,
           env: childEnv,
         }) as unknown as ChildHandle;
         child.on("error", (err) =>

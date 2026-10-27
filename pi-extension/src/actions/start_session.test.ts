@@ -87,7 +87,11 @@ describe("handleStartSession (plan/124)", () => {
     await flush();
 
     expect(roomIdFor).toHaveBeenCalledWith("/x", "worker");
-    expect(openTerminalTab).toHaveBeenCalledWith("/x", `pi --session '${sessionId}'`);
+    expect(openTerminalTab).toHaveBeenCalledWith(
+      "/x",
+      `pi --session '${sessionId}'`,
+      { newWindow: true },
+    );
     expect(callSupervisor).not.toHaveBeenCalled();
     expect(s.sent).toEqual([{
       type: "start_session_result",
