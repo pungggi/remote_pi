@@ -1404,6 +1404,9 @@ function _registerRoomForKeeper(cwd: string, roomId: string): void {
       cwd,
       roomId,
       lastSeenAt: Date.now(),
+      // Plan/152 — exact resume identity. Undefined on older/minimal ctxs
+      // preserves any previously recorded ID in upsertRoom.
+      ...(ext.piSessionId ? { sessionId: ext.piSessionId } : {}),
       // Plan/149 / PR #71 review — carry the slot fields the hello just
       // announced (or the reconnect replays): pre-connect turns exist only
       // in memory until the next agent_end; without this, stopping the
@@ -3200,6 +3203,16 @@ export function onSessionStart(
   ctx: ExtensionContext,
   autoStart: boolean,
 ): void {
+  // Plan/152 — capture the SDK identity on startup AND every replacement.
+  // If the room is already connected, persist immediately: waiting for the
+  // next relay reconnect would make Quit resume the pre-/new conversation.
+  try {
+    const sessionId = ctx.sessionManager.getSessionId().trim();
+    ext.piSessionId = sessionId || null;
+  } catch {
+    ext.piSessionId = null;
+  }
+  if (ext.myRoomId) _registerRoomForKeeper(ctx.cwd, ext.myRoomId);
   // Every session gets its own delivery controller. This does NOT activate it:
   // only _cmdJoin chooses which session receives mesh envelopes.
   ext.meshDelivery.for(pi).captureContext(ctx);

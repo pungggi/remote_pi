@@ -701,11 +701,10 @@ class HomePage extends StatelessWidget {
     _toast(messenger, r.message, isError: !r.ok);
   }
 
-  /// Plan/124 — bring an offline session back to life in its own cwd (resume
-  /// the existing conversation; no new worktree, no pin). Asks the supervisor
-  /// (via the device daemon) to spawn a transient `pi --mode rpc --continue`
-  /// at the session's cwd; the room re-announces and the tile flips live on
-  /// its own via the rooms push, so we just toast the spawn outcome.
+  /// Plan/124 + plan/152 — bring an offline session back to life in its own
+  /// cwd (no new worktree, no pin). The device daemon resumes a stored Pi
+  /// session ID in a terminal, or uses the supervisor's `--continue` fallback.
+  /// The room re-announces and the tile flips live via the rooms push.
   Future<void> _startSession(
     BuildContext context,
     HomeViewModel vm,
@@ -719,16 +718,21 @@ class HomePage extends StatelessWidget {
     }
     _toast(messenger, 'Starting session…', isError: false);
     try {
-      await vm.startSession(
+      final result = await vm.startSession(
         epk: it.peer.remoteEpk,
         cwd: cwd,
         name: it.room.name,
       );
       if (!context.mounted) return;
       // The spawned pi re-announces the same room; the tile flips live via
-      // the rooms push. Confirm the spawn so the user knows it worked even
-      // before the presence dot turns green.
-      _toast(messenger, 'Session started — coming online', isError: false);
+      // the rooms push. Prefer the PC's specific terminal-resume message.
+      _toast(
+        messenger,
+        result.message.isNotEmpty
+            ? result.message
+            : 'Session started — coming online',
+        isError: false,
+      );
     } on ActionFailure catch (e) {
       if (!context.mounted) return;
       _toast(messenger, e.message, isError: true);

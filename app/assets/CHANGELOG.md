@@ -11,6 +11,12 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Resume the exact session**: Start session opens a terminal in the
+  session's original folder and restores the same Pi conversation when its
+  session ID is known. Older sessions keep the existing resume fallback.
+
 ### Fixed
 
 - **Provider API failures are visible on Home**: the session rectangle turns

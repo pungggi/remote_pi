@@ -71,6 +71,44 @@ describe("rooms_registry (plan/140)", () => {
   });
 });
 
+describe("rooms_registry plan/152 exact session identity", () => {
+  it("round-trips sessionId, preserves it on metadata writes, and replaces it on a new session", () => {
+    const p = tempPath();
+    upsertRoom({
+      cwd: "C:\\proj",
+      roomId: "roomAAA",
+      lastSeenAt: 1000,
+      sessionId: "session-old",
+    }, p);
+    expect(readRoomsRegistry(p).get("roomAAA")?.sessionId).toBe("session-old");
+
+    upsertRoomMeta("roomAAA", { stats: { turns: 2, user_msgs: 3 } }, p);
+    upsertRoom({ cwd: "C:\\proj", roomId: "roomAAA", lastSeenAt: 2000 }, p);
+    expect(readRoomsRegistry(p).get("roomAAA")?.sessionId).toBe("session-old");
+
+    upsertRoom({
+      cwd: "C:\\proj",
+      roomId: "roomAAA",
+      lastSeenAt: 3000,
+      sessionId: "session-new",
+    }, p);
+    expect(readRoomsRegistry(p).get("roomAAA")?.sessionId).toBe("session-new");
+  });
+
+  it("ignores blank or non-string persisted IDs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rooms-session-id-corrupt-"));
+    const p = join(dir, "rooms.json");
+    writeFileSync(p, JSON.stringify({
+      blank: { cwd: "C:\\proj", roomId: "blank", lastSeenAt: 1, sessionId: "  " },
+      wrong: { cwd: "C:\\proj", roomId: "wrong", lastSeenAt: 1, sessionId: 42 },
+    }), "utf8");
+    const map = readRoomsRegistry(p);
+    expect(map.get("blank")?.sessionId).toBeUndefined();
+    expect(map.get("wrong")?.sessionId).toBeUndefined();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
 describe("rooms_registry plan/149 fields (gh_ref / stats)", () => {
   it("round-trips ghRef and stats through the file", () => {
     const p = tempPath();

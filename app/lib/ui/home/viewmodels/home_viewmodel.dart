@@ -738,15 +738,12 @@ class HomeViewModel extends ViewModel<HomeState> {
     return _actions.openTerminal(cwd: cwd, runPi: runPi, branch: branch);
   }
 
-  /// Plan/124 — bring an OFFLINE session back to life in its own cwd (no new
-  /// worktree, no pin). Routes to the tapped session's peer (switch + wait for
-  /// online, like [openTerminal]), then to the device daemon's room
-  /// ([kDeviceRoom]) — only the device daemon can ask the supervisor to spawn
-  /// a transient `pi --mode rpc --continue` at [cwd]. That child resumes the
-  /// existing conversation and re-announces the SAME room, so the tapped tile
-  /// flips live on its own via the rooms push (this method returns as soon as
-  /// the spawn is acknowledged; the app does not poll). [name] scopes the room
-  /// for custom-named sessions.
+  /// Plan/124 + plan/152 — bring an OFFLINE session back to life in its own
+  /// cwd (no new worktree, no pin). Routes through the device daemon. A stored
+  /// Pi session ID resumes exactly in a terminal; older rooms use the
+  /// supervisor's transient `--continue` fallback. Either path re-announces
+  /// the SAME room, so the tile flips live via the rooms push without polling.
+  /// [name] scopes custom-named sessions.
   ///
   /// Throws [ActionFailure] when the peer is unreachable, the supervisor's
   /// device daemon isn't live on that PC, or the spawn itself fails.
@@ -775,8 +772,8 @@ class HomeViewModel extends ViewModel<HomeState> {
       }
     }
     // Revive always rides the device daemon: the target session's own room is
-    // offline by definition, and only the device daemon handles
-    // start_session_request (it forwards to the supervisor's transient spawn).
+    // offline by definition. The daemon resumes the stored ID in a terminal
+    // or forwards the no-ID fallback to the supervisor's transient spawn.
     // If the device room isn't live, the supervisor isn't running there → fail
     // fast with an actionable message instead of waiting out the dispatch
     // timeout.

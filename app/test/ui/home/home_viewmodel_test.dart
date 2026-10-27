@@ -948,7 +948,7 @@ void main() {
         // The connection was routed to the device room for the dispatch
         // (revive always rides the device daemon, never the offline room).
         expect(conn.activeRoomId, kDeviceRoom);
-        // No terminal/worktree was spawned — this is a pure session revive.
+        // Uses start_session, not the separate worktree-opening action.
         expect(actions.openCalls, isEmpty);
 
         vm.dispose();

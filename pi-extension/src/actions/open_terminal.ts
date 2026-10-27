@@ -63,6 +63,12 @@ function psSingleQuote(s: string): string {
   return `'${String(s).replace(/'/g, "''")}'`;
 }
 
+/** Plan/152 — command that resumes one exact persisted Pi session. Keeping
+ *  quoting here ensures the ID cannot alter the PowerShell payload. */
+export function piSessionResumeCommand(sessionId: string): string {
+  return `pi --session ${psSingleQuote(sessionId)}`;
+}
+
 /**
  * PowerShell `-EncodedCommand` payload (UTF-16LE base64). Safe to pass through
  * wt.exe / cmd.exe / Start-Process ArgumentList without any further quoting —

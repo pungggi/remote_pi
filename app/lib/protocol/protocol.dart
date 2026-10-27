@@ -1368,13 +1368,12 @@ class ChangeLayoutRequest extends ClientMessage {
       {'type': 'change_layout_request', 'id': id, 'layout': layout};
 }
 
-/// Plan/124 — bring an OFFLINE session back to life in its own cwd (no new
-/// worktree, no pin). Routed to the device daemon (room [kDeviceRoom]) like
-/// [OpenTerminalRequest]; the device daemon asks the supervisor for a
-/// transient `pi --mode rpc --continue` at [cwd], which resumes the existing
-/// conversation and re-announces the same room — so the tile flips live and
-/// the history carries over. [name] scopes the room for custom-named sessions
-/// (omit/null → legacy cwd-only room).
+/// Plan/124 + plan/152 — bring an OFFLINE session back to life in its own
+/// cwd (no new worktree, no pin). Routed to the device daemon like
+/// [OpenTerminalRequest]. A stored Pi session ID resumes exactly in a visible
+/// terminal; older rooms fall back to transient `pi --mode rpc --continue`.
+/// Both re-announce the same room. [name] scopes custom-named sessions
+/// (omit/null → legacy cwd-only room). The request shape is unchanged.
 class StartSessionRequest extends ClientMessage {
   final String id;
   final String cwd;
