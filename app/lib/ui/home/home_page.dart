@@ -703,7 +703,7 @@ class HomePage extends StatelessWidget {
 
   /// Plan/124 + plan/152 — bring an offline session back to life in its own
   /// cwd (no new worktree, no pin). The device daemon resumes a stored Pi
-  /// session ID in a terminal, or uses the supervisor's `--continue` fallback.
+  /// session ID in a terminal, or uses visible `pi --continue` for older rooms.
   /// The room re-announces and the tile flips live via the rooms push.
   Future<void> _startSession(
     BuildContext context,

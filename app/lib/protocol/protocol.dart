@@ -1371,7 +1371,7 @@ class ChangeLayoutRequest extends ClientMessage {
 /// Plan/124 + plan/152 — bring an OFFLINE session back to life in its own
 /// cwd (no new worktree, no pin). Routed to the device daemon like
 /// [OpenTerminalRequest]. A stored Pi session ID resumes exactly in a visible
-/// terminal; older rooms fall back to transient `pi --mode rpc --continue`.
+/// terminal; older rooms use visible `pi --continue` instead of hidden RPC.
 /// Both re-announce the same room. [name] scopes custom-named sessions
 /// (omit/null → legacy cwd-only room). The request shape is unchanged.
 class StartSessionRequest extends ClientMessage {
