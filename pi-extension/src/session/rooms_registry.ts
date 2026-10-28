@@ -21,7 +21,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { WireGhRef, WireSessionStats } from "../protocol/types.js";
+import type { WireGhRef, WireGitStatus, WireSessionStats } from "../protocol/types.js";
 
 export interface RoomsRegistryEntry {
   /** Absolute cwd of the pi session that owns the room. */
@@ -33,6 +33,9 @@ export interface RoomsRegistryEntry {
   /** Plan/152 — exact Pi session ID used to resume this room after it goes
    *  offline. Kept PC-side; the phone only supplies the room's cwd + name. */
   sessionId?: string;
+  /** Last-known git snapshot, including repository identity for offline
+   *  repository grouping on the phone. */
+  git?: WireGitStatus | null;
   /** Plan/149 — GitHub ref linked to the session (manual/gh-sourced).
    *  Durable source of truth for offline + keeper tiles. */
   ghRef?: WireGhRef | null;
@@ -79,14 +82,42 @@ export function readRoomsRegistry(path: string = roomsRegistryPath()): Map<strin
       if (typeof e.sessionId === "string" && e.sessionId.trim()) {
         out2.sessionId = e.sessionId.trim();
       }
+      const git = sanitizeGitStatus(e.git);
       const ghRef = sanitizeGhRef(e.ghRef);
       const stats = sanitizeStats(e.stats);
+      if (git) out2.git = git;
       if (ghRef) out2.ghRef = ghRef;
       if (stats) out2.stats = stats;
       out.set(roomId, out2);
     }
   }
   return out;
+}
+
+/** Best-effort shape guard for a registry-loaded git snapshot. */
+function sanitizeGitStatus(v: unknown): WireGitStatus | null {
+  if (!v || typeof v !== "object") return null;
+  const s = v as Partial<WireGitStatus>;
+  if (typeof s.branch !== "string") return null;
+  const count = (value: unknown): number =>
+    typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return {
+    branch: s.branch,
+    repository: typeof s.repository === "string" ? s.repository : null,
+    upstream: typeof s.upstream === "string" ? s.upstream : null,
+    aheadBy: count(s.aheadBy),
+    behindBy: count(s.behindBy),
+    upstreamGone: s.upstreamGone === true,
+    indexAdded: count(s.indexAdded),
+    indexModified: count(s.indexModified),
+    indexDeleted: count(s.indexDeleted),
+    indexUnmerged: count(s.indexUnmerged),
+    workingAdded: count(s.workingAdded),
+    workingModified: count(s.workingModified),
+    workingDeleted: count(s.workingDeleted),
+    workingUnmerged: count(s.workingUnmerged),
+    stashCount: count(s.stashCount),
+  };
 }
 
 /** Best-effort shape guard for a registry-loaded ref (corrupt file → null). */
@@ -133,6 +164,7 @@ export function upsertRoom(
     ...entry,
     lastSeenAt: Math.max(entry.lastSeenAt, prev?.lastSeenAt ?? 0),
     sessionId: entry.sessionId !== undefined ? entry.sessionId : prev?.sessionId,
+    git: entry.git !== undefined ? entry.git : prev?.git ?? null,
     ghRef: entry.ghRef !== undefined ? entry.ghRef : prev?.ghRef ?? null,
     stats: entry.stats !== undefined ? entry.stats : prev?.stats ?? null,
   });
@@ -140,15 +172,19 @@ export function upsertRoom(
   return map.get(entry.roomId)!;
 }
 
-/** Plan/149 — merge ONLY the gh_ref / stats fields into an existing entry
+/** Merge metadata fields into an existing entry
  *  (creating a bare entry when `ensureCwd` is given and the room was never
  *  registered — e.g. a manual link from the device daemon for a room whose
  *  last connect predates the registry write). `lastSeenAt` and `cwd` of an
- *  existing entry are preserved: only the plan/149 fields move. Returns null
+ *  existing entry are preserved: only the patched metadata fields move. Returns null
  *  when the room is unknown and no `ensureCwd` was provided (caller decides). */
 export function upsertRoomMeta(
   roomId: string,
-  patch: { ghRef?: WireGhRef | null; stats?: WireSessionStats | null },
+  patch: {
+    ghRef?: WireGhRef | null;
+    stats?: WireSessionStats | null;
+    git?: WireGitStatus | null;
+  },
   path: string = roomsRegistryPath(),
   ensureCwd?: string,
 ): RoomsRegistryEntry | null {
@@ -163,6 +199,7 @@ export function upsertRoomMeta(
       // keeper-eligible (durable history + the ref while dark) instead of
       // being pruned as ancient on the next sweep.
       lastSeenAt: Date.now(),
+      git: patch.git !== undefined ? patch.git : null,
       ghRef: patch.ghRef !== undefined ? patch.ghRef : null,
       stats: patch.stats !== undefined ? patch.stats : null,
     };
@@ -172,6 +209,7 @@ export function upsertRoomMeta(
   }
   const next: RoomsRegistryEntry = {
     ...prev,
+    git: patch.git !== undefined ? patch.git : prev.git,
     ghRef: patch.ghRef !== undefined ? patch.ghRef : prev.ghRef,
     stats: patch.stats !== undefined ? patch.stats : prev.stats,
   };

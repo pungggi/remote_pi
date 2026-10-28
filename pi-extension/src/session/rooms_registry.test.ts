@@ -9,6 +9,25 @@ import {
   upsertRoom,
   upsertRoomMeta,
 } from "./rooms_registry.js";
+import type { WireGitStatus } from "../protocol/types.js";
+
+const TEST_GIT: WireGitStatus = {
+  branch: "main",
+  repository: "pungggi/pi-reflex",
+  upstream: "origin/main",
+  aheadBy: 0,
+  behindBy: 0,
+  upstreamGone: false,
+  indexAdded: 0,
+  indexModified: 0,
+  indexDeleted: 0,
+  indexUnmerged: 0,
+  workingAdded: 0,
+  workingModified: 0,
+  workingDeleted: 0,
+  workingUnmerged: 0,
+  stashCount: 0,
+};
 
 function tempPath(): string {
   return join(mkdtempSync(join(tmpdir(), "rooms-reg-")), "rooms.json");
@@ -106,6 +125,22 @@ describe("rooms_registry plan/152 exact session identity", () => {
     expect(map.get("blank")?.sessionId).toBeUndefined();
     expect(map.get("wrong")?.sessionId).toBeUndefined();
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("rooms_registry git metadata", () => {
+  it("round-trips git, preserves it across writes, and clears explicitly", () => {
+    const p = tempPath();
+    upsertRoom(
+      { cwd: "C:\\proj", roomId: "roomAAA", lastSeenAt: 1000, git: TEST_GIT },
+      p,
+    );
+    upsertRoomMeta("roomAAA", { stats: { turns: 2, user_msgs: 3 } }, p);
+    upsertRoom({ cwd: "C:\\proj", roomId: "roomAAA", lastSeenAt: 2000 }, p);
+    expect(readRoomsRegistry(p).get("roomAAA")?.git).toEqual(TEST_GIT);
+
+    upsertRoomMeta("roomAAA", { git: null }, p);
+    expect(readRoomsRegistry(p).get("roomAAA")?.git ?? null).toBeNull();
   });
 });
 

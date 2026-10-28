@@ -706,6 +706,44 @@ void main() {
       vm.dispose();
     });
 
+    test('cold-start cached rooms keep their repository group', () async {
+      final storage = _FakeStorage([_peerA]);
+      await storage.saveRooms('epk_A', const [
+        PersistedRoom(
+          roomId: 'cached',
+          startedAt: 1,
+          cwd: '/src/pi-reflex',
+          git: GitStatus(
+            branch: 'main',
+            repository: 'pungggi/pi-reflex',
+          ),
+        ),
+      ]);
+      final conn = ConnectionManager(
+        factory: (_, _) async => _channel(),
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      await conn.boot();
+      final prefs = Preferences(_FakeSecureStorage());
+      await prefs.setHomeGroupBy(HomeGroupBy.repository);
+      final vm = HomeViewModel(
+        storage,
+        prefs,
+        conn,
+        _fakeActions(),
+        _stubCompletion(),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(vm.visibleGroups.single.label, 'pungggi/pi-reflex');
+      expect(vm.visibleGroups.single.items.single.room.roomId, 'cached');
+
+      vm.dispose();
+      await conn.disconnect();
+      conn.dispose();
+    });
+
     test(
       'plan/120 — the device room is filtered from the combined list',
       () async {

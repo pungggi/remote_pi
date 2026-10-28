@@ -38,6 +38,11 @@ async function pushGitStatus(cwd: string): Promise<void> {
       meta: { git: status },
     });
   } catch { /* relay tearing down — next interval retries */ }
+  // Keep the same snapshot in the durable registry so cold starts and
+  // keeper-held offline rooms retain their repository grouping.
+  try {
+    upsertRoomMeta(ext.myRoomId, { git: status });
+  } catch { /* best-effort registry write */ }
 }
 
 /**

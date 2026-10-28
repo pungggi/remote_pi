@@ -7,6 +7,7 @@ import { encodeCwd } from "./file_index.js";
 import { upsertRoom, upsertRoomMeta } from "./rooms_registry.js";
 import { generateEd25519Keypair } from "../pairing/crypto.js";
 import { RoomAlreadyOpenError } from "../transport/relay_client.js";
+import type { WireGitStatus } from "../protocol/types.js";
 
 /**
  * Plan/140 A — room keeper. All relay/storage surfaces are faked; only the
@@ -15,6 +16,23 @@ import { RoomAlreadyOpenError } from "../transport/relay_client.js";
  */
 
 const PHONE_PEER = "phone-peer-id";
+const TEST_GIT: WireGitStatus = {
+  branch: "main",
+  repository: "pungggi/pi-reflex",
+  upstream: "origin/main",
+  aheadBy: 0,
+  behindBy: 0,
+  upstreamGone: false,
+  indexAdded: 0,
+  indexModified: 0,
+  indexDeleted: 0,
+  indexUnmerged: 0,
+  workingAdded: 0,
+  workingModified: 0,
+  workingDeleted: 0,
+  workingUnmerged: 0,
+  stashCount: 0,
+};
 
 class FakeRelay implements KeeperRelayClient {
   readonly messageListeners = new Set<(line: string) => void>();
@@ -225,13 +243,14 @@ describe("RoomKeeper (plan/140)", () => {
     await keeper.stop();
   });
 
-  it("plan/149: announces gh_ref / stats from the registry and pushes a meta refresh when they change", async () => {
+  it("announces git / gh_ref / stats and pushes refreshes when they change", async () => {
     const { keeper, fake, cwd, registryPath } = makeKeeper({ sweepIntervalMs: 30 });
     upsertRoom(
       {
         cwd,
         roomId: "keptRoom",
         lastSeenAt: Date.now(),
+        git: TEST_GIT,
         ghRef: { pr: { number: 45, url: "https://github.com/o/r/pull/45", state: null }, issue: null, source: "manual" },
         stats: { turns: 3, user_msgs: 7 },
       },
@@ -242,6 +261,7 @@ describe("RoomKeeper (plan/140)", () => {
     // The hello carries the registry's slot content…
     expect(fake.connectCalls[0]!.roomMeta).toMatchObject({
       keeper: true,
+      git: { repository: "pungggi/pi-reflex" },
       gh_ref: { pr: { number: 45 } },
       stats: { turns: 3, user_msgs: 7 },
     });
@@ -253,6 +273,7 @@ describe("RoomKeeper (plan/140)", () => {
     upsertRoomMeta(
       "keptRoom",
       {
+        git: { ...TEST_GIT, repository: "pungggi/other", aheadBy: 3 },
         ghRef: { pr: { number: 46, url: "https://github.com/o/r/pull/46", state: "OPEN" }, issue: null, source: "manual" },
         stats: { turns: 4, user_msgs: 8 },
       },
@@ -265,6 +286,10 @@ describe("RoomKeeper (plan/140)", () => {
     expect(frame.room_id).toBe("keptRoom");
     expect(frame.meta!["gh_ref"]).toMatchObject({ pr: { number: 46 } });
     expect(frame.meta!["stats"]).toEqual({ turns: 4, user_msgs: 8 });
+    expect(frame.meta!["git"]).toMatchObject({
+      repository: "pungggi/other",
+      aheadBy: 3,
+    });
 
     // No further pushes without another change.
     await new Promise((r) => setTimeout(r, 80));

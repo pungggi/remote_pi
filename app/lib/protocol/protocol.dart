@@ -256,7 +256,7 @@ Map<String, dynamic> roomsCheckFrame(List<String> peers) => {
 //   - rooms (snapshot): full list for a peer (sent after subscribe_rooms
 //     or rooms_check).
 // The app subscribes via `subscribe_rooms(peers)` and renders them as
-// tiles grouped by Mac.
+// tiles grouped by model or repository.
 // ---------------------------------------------------------------------------
 
 /// Plan/120 — the fixed relay room id for the supervisor's **device daemon**.
@@ -2307,6 +2307,10 @@ class SessionStats {
 
 class GitStatus {
   final String branch;
+
+  /// Remote owner/repository slug, or the local repository folder name.
+  /// Used to group sessions and their worktrees by repository on Home.
+  final String? repository;
   final String? upstream;
   final int aheadBy;
   final int behindBy;
@@ -2323,6 +2327,7 @@ class GitStatus {
 
   const GitStatus({
     required this.branch,
+    this.repository,
     this.upstream,
     this.aheadBy = 0,
     this.behindBy = 0,
@@ -2342,6 +2347,7 @@ class GitStatus {
     int n(Object? v) => v is num ? v.toInt() : 0;
     return GitStatus(
       branch: (j['branch'] as String?) ?? '',
+      repository: j['repository'] as String?,
       upstream: j['upstream'] as String?,
       aheadBy: n(j['aheadBy']),
       behindBy: n(j['behindBy']),
@@ -2362,6 +2368,7 @@ class GitStatus {
   /// (mirrors the wire keys `fromJson` reads).
   Map<String, dynamic> toJson() => {
     'branch': branch,
+    if (repository != null) 'repository': repository,
     if (upstream != null) 'upstream': upstream,
     'aheadBy': aheadBy,
     'behindBy': behindBy,

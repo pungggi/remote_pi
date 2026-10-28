@@ -22,8 +22,7 @@ import 'package:provider/provider.dart';
 /// Plan-18 follow-up — iOS-style large title that collapses into a
 /// compact bar when scrolled. Built with `SliverAppBar +
 /// FlexibleSpaceBar`. Subtitle shows the first paired Mac + relay
-/// status. Body is sectioned by pairing always (single peer also
-/// gets the pairing header, per the mock).
+/// status. Body is sectioned by the selected model/repository grouping.
 class HomePage extends StatelessWidget {
   const HomePage({super.key});
 
@@ -61,6 +60,13 @@ class HomePage extends StatelessWidget {
               // zero height when there's nothing to announce, so it's invisible
               // on iOS and when no newer version exists.
               const SliverToBoxAdapter(child: UpdateBanner()),
+              if (state is HomeList && vm.visibleItems.isNotEmpty)
+                SliverToBoxAdapter(
+                  child: HomeGroupingControl(
+                    value: vm.groupBy,
+                    onChanged: vm.setGroupBy,
+                  ),
+                ),
               // Plan 116 — sustained-offline (> 60 s) reliability nudge.
               if (state is HomeList && state.showReliabilityBanner)
                 SliverToBoxAdapter(child: _ReliabilityBanner(vm: vm)),
@@ -314,17 +320,27 @@ class HomePage extends StatelessWidget {
       );
     }
 
-    // One combined list, sectioned by pairing. Each group is
-    // [header, tile, tile, …]; peers without visible rooms contribute no
-    // header (the `lastEpk` cursor only advances on rendered rows).
+    // One combined list, sectioned by the selected model/repository mode.
+    // Each section is [header, tile, tile, …]. Cross-device sections keep a
+    // device label on every tile so identical room names stay unambiguous.
+    final showDeviceLabels =
+        visible.map((item) => item.peer.remoteEpk).toSet().length > 1;
     final children = <Widget>[];
-    String? lastEpk;
-    for (final it in visible) {
-      if (it.peer.remoteEpk != lastEpk) {
-        children.add(PeerSectionHeader(peer: it.peer));
-        lastEpk = it.peer.remoteEpk;
+    for (final group in vm.visibleGroups) {
+      children.add(
+        SessionGroupHeader(label: group.label, count: group.items.length),
+      );
+      for (final item in group.items) {
+        children.add(
+          _buildItemRowAt(
+            context,
+            vm,
+            state,
+            item,
+            showDeviceLabel: showDeviceLabels,
+          ),
+        );
       }
-      children.add(_buildItemRowAt(context, vm, state, it));
     }
     return SliverPadding(
       padding: const EdgeInsets.fromLTRB(0, 0, 0, 24),
@@ -341,8 +357,9 @@ class HomePage extends StatelessWidget {
     BuildContext context,
     HomeViewModel vm,
     HomeList state,
-    HomeItem it,
-  ) {
+    HomeItem it, {
+    required bool showDeviceLabel,
+  }) {
     final colors = context.colors;
     final isLive = vm.isRoomOnline(it);
     final isReconnecting = !vm.isRelayConnected;
@@ -380,6 +397,7 @@ class HomePage extends StatelessWidget {
             isSelected: isSelected,
             notifyOnDone: vm.notifyOnDone(it.peer.remoteEpk, it.room.roomId),
             room: it.room,
+            deviceLabel: showDeviceLabel ? _deviceFor(it.peer) : null,
             git:
                 it.room.git ??
                 state

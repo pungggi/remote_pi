@@ -20,6 +20,9 @@ enum KeepAliveMode {
   off,
 }
 
+/// How the Home session list groups its tiles.
+enum HomeGroupBy { model, repository }
+
 /// Plan 131 (upstream #114) — user font-size preference. Applied on top of
 /// the OS text scale by composing the ambient `TextScaler` (see
 /// `font_scale.dart`), so it multiplies — never replaces — the system
@@ -45,6 +48,7 @@ enum UiFontScale {
 class Preferences extends ChangeNotifier {
   final FlutterSecureStorage _store;
   bool _hideToolCalls = false;
+  HomeGroupBy _homeGroupBy = HomeGroupBy.model;
   String? _selectedPeerEpk;
   String? _relayUrl;
   // Plan 115 — LAN candidate URLs for the global relay, learned from the
@@ -77,6 +81,7 @@ class Preferences extends ChangeNotifier {
     : _store = store ?? const FlutterSecureStorage();
 
   static const _kHideToolCallsKey = 'prefs.hide_tool_calls';
+  static const _kHomeGroupByKey = 'prefs.home_group_by';
   static const _kSelectedPeerEpkKey = 'prefs.selected_peer_epk';
   static const _kRelayUrlKey = 'prefs.relay_url';
   static const _kLanEndpointsKey = 'prefs.lan_endpoints';
@@ -153,6 +158,16 @@ class Preferences extends ChangeNotifier {
     final next = raw == 'true';
     if (next != _hideToolCalls) {
       _hideToolCalls = next;
+      changed = true;
+    }
+
+    final groupByRaw = await _store.read(key: _kHomeGroupByKey);
+    final groupBy = HomeGroupBy.values.firstWhere(
+      (value) => value.name == groupByRaw,
+      orElse: () => HomeGroupBy.model,
+    );
+    if (groupBy != _homeGroupBy) {
+      _homeGroupBy = groupBy;
       changed = true;
     }
 
@@ -243,6 +258,17 @@ class Preferences extends ChangeNotifier {
     if (_hideToolCalls == value) return;
     _hideToolCalls = value;
     await _store.write(key: _kHideToolCallsKey, value: value.toString());
+    notifyListeners();
+  }
+
+  /// Selected Home grouping mode. Persisted so the list keeps the user's
+  /// preferred organization across launches.
+  HomeGroupBy get homeGroupBy => _homeGroupBy;
+
+  Future<void> setHomeGroupBy(HomeGroupBy value) async {
+    if (_homeGroupBy == value) return;
+    _homeGroupBy = value;
+    await _store.write(key: _kHomeGroupByKey, value: value.name);
     notifyListeners();
   }
 

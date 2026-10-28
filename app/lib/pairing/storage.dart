@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:app/protocol/protocol.dart'
-    show GhRef, PiHarness, SessionStats;
+    show GhRef, GitStatus, PiHarness, SessionStats;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -24,6 +24,9 @@ class PersistedRoom {
   /// Plan 18 — last-known model the Pi-extension is running with.
   /// Persisted so the subtitle survives cold starts.
   final String? model;
+  /// Last-known git snapshot, including repository identity for Home
+  /// grouping while the room is offline.
+  final GitStatus? git;
   /// Plan/149 — last-known GitHub ref (durable PC-side state; survives
   /// cold starts and powers the offline tile). Not the ephemeral
   /// suggestion — that is never cached.
@@ -38,6 +41,7 @@ class PersistedRoom {
     this.cwd,
     this.localName,
     this.model,
+    this.git,
     this.ghRef,
     this.stats,
   });
@@ -49,6 +53,7 @@ class PersistedRoom {
     'started_at': startedAt,
     'local_name': localName,
     'model': model,
+    if (git != null) 'git': git!.toJson(),
     if (ghRef != null) 'gh_ref': ghRef!.toJson(),
     if (stats != null) 'stats': stats!.toJson(),
   };
@@ -60,6 +65,9 @@ class PersistedRoom {
     startedAt: (j['started_at'] as num).toInt(),
     localName: j['local_name'] as String?,
     model: j['model'] as String?,
+    git: j['git'] is Map<String, dynamic>
+        ? GitStatus.fromJson(j['git'] as Map<String, dynamic>)
+        : null,
     ghRef: j['gh_ref'] is Map<String, dynamic>
         ? GhRef.fromJson(j['gh_ref'] as Map<String, dynamic>)
         : null,
@@ -74,6 +82,7 @@ class PersistedRoom {
     int? startedAt,
     Object? localName = _unset,
     Object? model = _unset,
+    Object? git = _unset,
     Object? ghRef = _unset,
     Object? stats = _unset,
   }) => PersistedRoom(
@@ -87,6 +96,7 @@ class PersistedRoom {
     model: identical(model, _unset)
         ? this.model
         : model as String?,
+    git: identical(git, _unset) ? this.git : git as GitStatus?,
     ghRef: identical(ghRef, _unset)
         ? this.ghRef
         : ghRef as GhRef?,

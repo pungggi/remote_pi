@@ -437,5 +437,32 @@ void main() {
         expect(UiFontScale.extraLarge.factor, 1.3);
       });
     });
+
+    group('homeGroupBy', () {
+      test('defaults to model and survives a cold start', () async {
+        final store = _FakeSecureStorage();
+        final prefs = Preferences(store);
+        await prefs.load();
+        expect(prefs.homeGroupBy, HomeGroupBy.model);
+
+        await prefs.setHomeGroupBy(HomeGroupBy.repository);
+        expect(
+          await store.read(key: 'prefs.home_group_by'),
+          'repository',
+        );
+
+        final reloaded = Preferences(store);
+        await reloaded.load();
+        expect(reloaded.homeGroupBy, HomeGroupBy.repository);
+      });
+
+      test('unknown persisted values fall back to model', () async {
+        final store = _FakeSecureStorage();
+        await store.write(key: 'prefs.home_group_by', value: 'colour');
+        final prefs = Preferences(store);
+        await prefs.load();
+        expect(prefs.homeGroupBy, HomeGroupBy.model);
+      });
+    });
   });
 }
