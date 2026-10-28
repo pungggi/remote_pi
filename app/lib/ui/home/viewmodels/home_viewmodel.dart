@@ -48,6 +48,7 @@ class HomeViewModel extends ViewModel<HomeState> {
   StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
   StreamSubscription<ConnectionStatus>? _statusSub;
   bool _relayConnected = false;
+  HomeGroupBy _homeGroupBy = HomeGroupBy.model;
 
   /// Security fix 2026-08 (H2) — Online over a non-confidential transport
   /// (`ws://` to a non-loopback host). Drives the persistent banner.
@@ -79,6 +80,7 @@ class HomeViewModel extends ViewModel<HomeState> {
     LocalBoxes? boxes,
   }) : _boxes = boxes ?? LocalBoxes(),
        super(const HomeLoading()) {
+    _homeGroupBy = _prefs.homeGroupBy;
     _relayConnected = _conn.status is StatusOnline;
     _load();
     _presenceSub = _conn.presenceStream.listen(_onPresence);
@@ -137,6 +139,9 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// no matter which path produced the HomeList (review #5). Also derives
   /// the insecure-transport banner (security fix 2026-08) here.
   void _emitHome(HomeList s) {
+    if (s.groupBy != _homeGroupBy) {
+      s = s.copyWith(groupBy: _homeGroupBy);
+    }
     final want = _reliabilityBannerWanted && !_reliabilityDismissed;
     if (s.showReliabilityBanner != want) {
       s = s.copyWith(showReliabilityBanner: want);
@@ -151,6 +156,17 @@ class HomeViewModel extends ViewModel<HomeState> {
   void _reemitHomeList() {
     final s = state;
     if (s is HomeList) _emitHome(s);
+  }
+
+  HomeGroupBy get groupBy => _homeGroupBy;
+
+  /// Change and persist the Home session-list grouping. The state updates
+  /// immediately; secure-storage persistence completes in the same call.
+  Future<void> setGroupBy(HomeGroupBy value) async {
+    if (_homeGroupBy == value) return;
+    _homeGroupBy = value;
+    _reemitHomeList();
+    await _prefs.setHomeGroupBy(value);
   }
 
   /// Plan 116 — user dismissed the banner; don't nag again until the
@@ -376,6 +392,21 @@ class HomeViewModel extends ViewModel<HomeState> {
       if (a.room.keeper == b.room.keeper) return 0;
       return a.room.keeper ? 1 : -1;
     });
+  }
+
+  /// The active grouped projection for the Home session list. Includes the
+  /// active session's on-demand git fallback, just like the tile subtitle.
+  List<HomeGroup> get visibleGroups {
+    final s = state;
+    return groupHomeItems(
+      visibleItems,
+      groupBy,
+      gitFor: (item) {
+        if (s is! HomeList) return item.room.git;
+        final key = '${toStandardB64(item.peer.remoteEpk)}|${item.room.roomId}';
+        return item.room.git ?? s.gitByKey[key];
+      },
+    );
   }
 
   /// Remember which (peer, room) the user picked. Falls back to

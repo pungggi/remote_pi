@@ -1,5 +1,6 @@
 // Plan 17 — HomeList.items() flattens peers × rooms into tile rows.
 
+import 'package:app/data/preferences/preferences.dart' show HomeGroupBy;
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/home/states/home_state.dart';
@@ -82,6 +83,123 @@ void main() {
         ),
       );
       expect(cwdRoom.displayName, 'app');
+    });
+  });
+
+  group('groupHomeItems()', () {
+    test('groups by model and puts unknown models last', () {
+      final list = HomeList(
+        peers: [_peer('A')],
+        roomsByPeer: {
+          'A': [
+            const RoomInfo(
+              roomId: 'a',
+              startedAt: 1,
+              name: 'Project A',
+              model: 'GLH-5.3',
+            ),
+            const RoomInfo(
+              roomId: 'b',
+              startedAt: 2,
+              name: 'Project B',
+              model: 'GLH-5.3',
+            ),
+            const RoomInfo(
+              roomId: 'z',
+              startedAt: 3,
+              name: 'Project Z',
+              model: 'Kimi K3.1 Pro',
+            ),
+            const RoomInfo(roomId: 'legacy', startedAt: 4, name: 'Legacy'),
+          ],
+        },
+      );
+
+      final groups = groupHomeItems(list.items(), HomeGroupBy.model);
+      expect(
+        groups.map((group) => group.label),
+        ['GLH-5.3', 'Kimi K3.1 Pro', 'Unknown model'],
+      );
+      expect(groups.first.items.map((item) => item.room.roomId), ['a', 'b']);
+      expect(groups.last.isFallback, isTrue);
+    });
+
+    test('groups worktrees by repository and non-git sessions separately', () {
+      const reflex = GitStatus(
+        branch: 'main',
+        repository: 'pungggi/pi-reflex',
+      );
+      const ps = GitStatus(branch: 'main', repository: 'pungggi/pi-ps');
+      final list = HomeList(
+        peers: [_peer('A')],
+        roomsByPeer: {
+          'A': [
+            const RoomInfo(
+              roomId: 'a',
+              startedAt: 1,
+              name: 'Project A',
+              git: reflex,
+            ),
+            const RoomInfo(
+              roomId: 'z',
+              startedAt: 2,
+              name: 'Project Z',
+              git: reflex,
+            ),
+            const RoomInfo(
+              roomId: 'b',
+              startedAt: 3,
+              name: 'Project B',
+              git: ps,
+            ),
+            const RoomInfo(roomId: 'scratch', startedAt: 4, name: 'Scratch'),
+          ],
+        },
+      );
+
+      final groups = groupHomeItems(list.items(), HomeGroupBy.repository);
+      expect(
+        groups.map((group) => group.label),
+        ['pungggi/pi-ps', 'pungggi/pi-reflex', 'No git repository'],
+      );
+      expect(groups[1].items.map((item) => item.room.roomId), ['a', 'z']);
+      expect(groups.last.isFallback, isTrue);
+    });
+
+    test('uses an on-demand git snapshot when the room has none', () {
+      final item = HomeItem(
+        peer: _peer('A'),
+        room: const RoomInfo(roomId: 'a', startedAt: 1),
+      );
+      final groups = groupHomeItems(
+        [item],
+        HomeGroupBy.repository,
+        gitFor: (_) => const GitStatus(
+          branch: 'main',
+          repository: 'pungggi/pi-reflex',
+        ),
+      );
+      expect(groups.single.label, 'pungggi/pi-reflex');
+    });
+
+    test('legacy git snapshots fall back to cwd instead of no-repository', () {
+      final list = HomeList(
+        peers: [_peer('A')],
+        roomsByPeer: {
+          'A': [
+            const RoomInfo(
+              roomId: 'a',
+              startedAt: 1,
+              cwd: r'C:\src\local-repo',
+              git: GitStatus(branch: 'main'),
+            ),
+          ],
+        },
+      );
+
+      final groups = groupHomeItems(list.items(), HomeGroupBy.repository);
+      expect(groups.single.label, 'local-repo');
+      expect(groups.single.isFallback, isFalse);
     });
   });
 }

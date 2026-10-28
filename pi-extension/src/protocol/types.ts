@@ -628,10 +628,13 @@ export interface WireModel {
 /**
  * Plan/107 — Git status snapshot of the session cwd (the same data
  * pi-posh-git renders in its footer). Computed on demand by the
- * pi-extension; the app shows it in the session-info dialog.
+ * pi-extension; the app shows it in session subtitles and uses its repository
+ * identity to group Home tiles.
  */
 export interface WireGitStatus {
   branch: string;
+  /** Remote owner/repository slug, or the local repository folder name. */
+  repository: string | null;
   upstream: string | null;
   aheadBy: number;
   behindBy: number;

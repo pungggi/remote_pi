@@ -227,6 +227,17 @@ void main() {
       );
     });
 
+    test('GitStatus round-trips repository identity', () {
+      const status = GitStatus(
+        branch: 'main',
+        repository: 'pungggi/pi-reflex',
+      );
+      final decoded = GitStatus.fromJson(status.toJson());
+      expect(decoded.repository, 'pungggi/pi-reflex');
+      expect(decoded.branch, 'main');
+      expect(GitStatus.fromJson(const {'branch': 'main'}).repository, isNull);
+    });
+
     test('outbound subscribe_rooms helper has correct shape', () {
       expect(subscribeRoomsFrame(['a', 'b']), {
         'type': 'subscribe_rooms',

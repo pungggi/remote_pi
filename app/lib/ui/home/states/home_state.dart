@@ -1,3 +1,4 @@
+import 'package:app/data/preferences/preferences.dart' show HomeGroupBy;
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:flutter/foundation.dart' show listEquals, mapEquals;
@@ -49,6 +50,84 @@ class HomeItem {
   int get hashCode => Object.hash(peer.remoteEpk, room);
 }
 
+/// One labelled section in the grouped Home session list.
+class HomeGroup {
+  final String label;
+  final List<HomeItem> items;
+  final bool isFallback;
+
+  const HomeGroup({
+    required this.label,
+    required this.items,
+    this.isFallback = false,
+  });
+}
+
+/// Groups sessions by model or repository while retaining their existing
+/// tiles and actions. Fallback sections sort last so known values stay
+/// prominent; keeper mirrors sort after live sessions within each section.
+List<HomeGroup> groupHomeItems(
+  Iterable<HomeItem> source,
+  HomeGroupBy groupBy, {
+  GitStatus? Function(HomeItem item)? gitFor,
+}) {
+  final groups = <String, HomeGroup>{};
+  for (final item in source) {
+    final git = gitFor?.call(item) ?? item.room.git;
+    final label = _groupLabel(item, groupBy, git);
+    final isFallback = _isFallbackGroup(item, groupBy, git);
+    final key = '${isFallback ? 'fallback' : 'value'}:${label.toLowerCase()}';
+    final group = groups.putIfAbsent(
+      key,
+      () =>
+          HomeGroup(label: label, items: <HomeItem>[], isFallback: isFallback),
+    );
+    group.items.add(item);
+  }
+
+  final result = groups.values.toList();
+  for (final group in result) {
+    group.items.sort((a, b) {
+      if (a.room.keeper != b.room.keeper) return a.room.keeper ? 1 : -1;
+      return a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase());
+    });
+  }
+  result.sort((a, b) {
+    if (a.isFallback != b.isFallback) return a.isFallback ? 1 : -1;
+    return a.label.toLowerCase().compareTo(b.label.toLowerCase());
+  });
+  return result;
+}
+
+String _groupLabel(HomeItem item, HomeGroupBy groupBy, GitStatus? git) {
+  switch (groupBy) {
+    case HomeGroupBy.model:
+      final model = item.room.model?.trim();
+      return model == null || model.isEmpty ? 'Unknown model' : model;
+    case HomeGroupBy.repository:
+      if (git == null) return 'No git repository';
+      final repository = git.repository?.trim();
+      if (repository != null && repository.isNotEmpty) return repository;
+      // Older extensions publish git status without repository identity.
+      // Their cwd basename is a better fallback than calling a repo non-git.
+      final cwd = item.room.cwd?.replaceAll('\\', '/').trim();
+      if (cwd != null && cwd.isNotEmpty) {
+        final segments = cwd.split('/').where((part) => part.isNotEmpty);
+        if (segments.isNotEmpty) return segments.last;
+      }
+      return 'Unknown repository';
+  }
+}
+
+bool _isFallbackGroup(HomeItem item, HomeGroupBy groupBy, GitStatus? git) {
+  switch (groupBy) {
+    case HomeGroupBy.model:
+      return item.room.model?.trim().isEmpty ?? true;
+    case HomeGroupBy.repository:
+      return git == null;
+  }
+}
+
 /// Paired peers + their live rooms + presence. Items are derived from
 /// `roomsByPeer`: a peer with no announced rooms yet still gets one
 /// synthetic item (`roomId='main'`) so the user can enter chat — that
@@ -57,6 +136,9 @@ class HomeList extends HomeState {
   final List<PeerRecord> peers;
   final Map<String, PresenceState> statusByEpk;
   final Map<String, List<RoomInfo>> roomsByPeer;
+
+  /// Selected organization for the session-list sections.
+  final HomeGroupBy groupBy;
 
   /// Plan/107b — on-demand git status snapshot per session, keyed
   /// `"${standardB64(epk)}|$roomId"`. Populated by [HomeViewModel] when
@@ -80,6 +162,7 @@ class HomeList extends HomeState {
     required this.peers,
     this.statusByEpk = const {},
     this.roomsByPeer = const {},
+    this.groupBy = HomeGroupBy.model,
     this.gitByKey = const {},
     this.showReliabilityBanner = false,
     this.showInsecureTransportBanner = false,
@@ -89,6 +172,7 @@ class HomeList extends HomeState {
     List<PeerRecord>? peers,
     Map<String, PresenceState>? statusByEpk,
     Map<String, List<RoomInfo>>? roomsByPeer,
+    HomeGroupBy? groupBy,
     Map<String, GitStatus?>? gitByKey,
     bool? showReliabilityBanner,
     bool? showInsecureTransportBanner,
@@ -96,6 +180,7 @@ class HomeList extends HomeState {
     peers: peers ?? this.peers,
     statusByEpk: statusByEpk ?? this.statusByEpk,
     roomsByPeer: roomsByPeer ?? this.roomsByPeer,
+    groupBy: groupBy ?? this.groupBy,
     gitByKey: gitByKey ?? this.gitByKey,
     showReliabilityBanner: showReliabilityBanner ?? this.showReliabilityBanner,
     showInsecureTransportBanner:
@@ -165,6 +250,7 @@ class HomeList extends HomeState {
       other is HomeList &&
       other.showReliabilityBanner == showReliabilityBanner &&
       other.showInsecureTransportBanner == showInsecureTransportBanner &&
+      other.groupBy == groupBy &&
       listEquals(other.peers, peers) &&
       mapEquals(other.statusByEpk, statusByEpk) &&
       mapEquals(other.roomsByPeer, roomsByPeer) &&
@@ -174,6 +260,7 @@ class HomeList extends HomeState {
   int get hashCode => Object.hash(
     showReliabilityBanner,
     showInsecureTransportBanner,
+    groupBy,
     Object.hashAll(peers),
     Object.hashAllUnordered(
       statusByEpk.entries.map((e) => '${e.key}:${e.value.runtimeType}'),

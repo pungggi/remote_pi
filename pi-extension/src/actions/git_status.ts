@@ -16,6 +16,7 @@
  * dialog shows exactly what the footer shows.
  */
 import { execFile } from "node:child_process";
+import { basename } from "node:path";
 import type { ClientMessage } from "../protocol/types.js";
 import type { WireGitStatus } from "../protocol/types.js";
 import type { ActionReplySender } from "./handlers.js";
@@ -38,11 +39,16 @@ function runGit(cwd: string, args: string[]): Promise<string | null> {
 }
 
 export async function getGitStatus(cwd: string): Promise<WireGitStatus | null> {
-  const statusResult = await runGit(cwd, [
-    "status", "--porcelain=2", "--branch", "--no-renames", "-unormal",
+  const [statusResult, repoRoot, remoteUrl] = await Promise.all([
+    runGit(cwd, [
+      "status", "--porcelain=2", "--branch", "--no-renames", "-unormal",
+    ]),
+    runGit(cwd, ["rev-parse", "--show-toplevel"]),
+    runGit(cwd, ["remote", "get-url", "origin"]),
   ]);
   if (!statusResult) return null;
 
+  const repository = repositoryLabel(remoteUrl, repoRoot);
   const lines = statusResult.split("\n");
 
   let branch = "";
@@ -112,11 +118,46 @@ export async function getGitStatus(cwd: string): Promise<WireGitStatus | null> {
   if (stashResult?.trim()) stashCount = stashResult.trim().split("\n").length;
 
   return {
-    branch, upstream, aheadBy, behindBy, upstreamGone,
+    branch, repository, upstream, aheadBy, behindBy, upstreamGone,
     indexAdded, indexModified, indexDeleted, indexUnmerged,
     workingAdded, workingModified, workingDeleted, workingUnmerged,
     stashCount,
   };
+}
+
+/**
+ * Stable display identity for repository grouping. Hosted remotes preserve
+ * their owner/group path (`pungggi/pi-ps`); local-only repositories fall back
+ * to the root folder name. Worktrees therefore join the same repository group.
+ */
+export function repositoryLabel(
+  remoteUrl: string | null,
+  repoRoot: string | null,
+): string | null {
+  const remote = remoteUrl?.trim().replaceAll("\\", "/") ?? "";
+  if (remote) {
+    const cleaned = remote.replace(/\/+$/, "").replace(/\.git$/i, "");
+    const isUrl = /^[a-z][a-z\d+.-]*:\/\//i.test(cleaned);
+    const isWindowsPath = /^[a-z]:\//i.test(cleaned);
+    // SCP-style SSH: git@github.com:owner/repo
+    const scp = isUrl || isWindowsPath
+      ? null
+      : cleaned.match(/^(?:[^@/]+@)?[^:/]+:(.+)$/);
+    // URL-style remotes: https://host/owner/repo, ssh://host/group/repo
+    const url = cleaned.match(
+      /^[a-z][a-z\d+.-]*:\/\/(?:[^@/]+@)?[^/]+(\/.*)$/i,
+    );
+    const remotePath = url?.[1] ?? scp?.[1];
+    if (remotePath) {
+      const segments = remotePath.split("/").filter(Boolean);
+      if (segments.length > 0) return segments.join("/");
+    }
+    // A local path used as a remote still identifies a repository, but has
+    // no owner slug to preserve.
+    if (!isUrl && !scp) return basename(cleaned) || null;
+  }
+  const root = repoRoot?.trim();
+  return root ? basename(root) || null : null;
 }
 
 /**
