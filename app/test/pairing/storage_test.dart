@@ -4,7 +4,7 @@
 
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart'
-    show GhRef, GhRefSlot, PiHarness, SessionStats;
+    show GhRef, GhRefSlot, GitStatus, PiHarness, SessionStats;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -336,12 +336,33 @@ void main() {
       expect(rooms[0].stats?.userMsgs, 7);
     });
 
+    test('git snapshot and repository identity survive offline caching', () async {
+      final storage = PairingStorage(_FakeSecureStorage());
+      await storage.saveRooms('epk-a', const [
+        PersistedRoom(
+          roomId: 'main',
+          startedAt: 1700000000000,
+          git: GitStatus(
+            branch: 'main',
+            repository: 'pungggi/pi-reflex',
+            aheadBy: 2,
+          ),
+        ),
+      ]);
+
+      final rooms = await storage.loadRooms('epk-a');
+      expect(rooms.single.git?.branch, 'main');
+      expect(rooms.single.git?.repository, 'pungggi/pi-reflex');
+      expect(rooms.single.git?.aheadBy, 2);
+    });
+
     test('old cache entries (no slot keys) still load', () async {
       final storage = PairingStorage(_FakeSecureStorage());
       await storage.saveRooms('epk-a', const [
         PersistedRoom(roomId: 'main', startedAt: 1700000000000),
       ]);
       final rooms = await storage.loadRooms('epk-a');
+      expect(rooms[0].git, isNull);
       expect(rooms[0].ghRef, isNull);
       expect(rooms[0].stats, isNull);
     });

@@ -321,14 +321,25 @@ class HomePage extends StatelessWidget {
     }
 
     // One combined list, sectioned by the selected model/repository mode.
-    // Each section is [header, tile, tile, …].
+    // Each section is [header, tile, tile, …]. Cross-device sections keep a
+    // device label on every tile so identical room names stay unambiguous.
+    final showDeviceLabels =
+        visible.map((item) => item.peer.remoteEpk).toSet().length > 1;
     final children = <Widget>[];
     for (final group in vm.visibleGroups) {
       children.add(
         SessionGroupHeader(label: group.label, count: group.items.length),
       );
       for (final item in group.items) {
-        children.add(_buildItemRowAt(context, vm, state, item));
+        children.add(
+          _buildItemRowAt(
+            context,
+            vm,
+            state,
+            item,
+            showDeviceLabel: showDeviceLabels,
+          ),
+        );
       }
     }
     return SliverPadding(
@@ -346,8 +357,9 @@ class HomePage extends StatelessWidget {
     BuildContext context,
     HomeViewModel vm,
     HomeList state,
-    HomeItem it,
-  ) {
+    HomeItem it, {
+    required bool showDeviceLabel,
+  }) {
     final colors = context.colors;
     final isLive = vm.isRoomOnline(it);
     final isReconnecting = !vm.isRelayConnected;
@@ -385,6 +397,7 @@ class HomePage extends StatelessWidget {
             isSelected: isSelected,
             notifyOnDone: vm.notifyOnDone(it.peer.remoteEpk, it.room.roomId),
             room: it.room,
+            deviceLabel: showDeviceLabel ? _deviceFor(it.peer) : null,
             git:
                 it.room.git ??
                 state

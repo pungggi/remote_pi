@@ -120,9 +120,13 @@ interface HeldRoom {
   channelSinks: Map<string, (line: string) => void>;
   /** Cached file index for the room's transcript. */
   index: FileIndex | null;
-  /** Plan/149 — the gh_ref / stats snapshot last announced (hello or meta
-   *  push) for this held room; a registry change past this pushes an update. */
-  announcedMeta: { ghRef: RoomsRegistryEntry["ghRef"]; stats: RoomsRegistryEntry["stats"] };
+  /** The git / gh_ref / stats snapshot last announced (hello or meta push)
+   *  for this held room; a registry change past this pushes an update. */
+  announcedMeta: {
+    ghRef: RoomsRegistryEntry["ghRef"];
+    stats: RoomsRegistryEntry["stats"];
+    git: RoomsRegistryEntry["git"];
+  };
 }
 
 const DEFAULT_MAX_AGE_MS = 14 * 24 * 3_600_000;
@@ -196,7 +200,7 @@ export class RoomKeeper {
     for (const roomId of [...this.held.keys()]) {
       if (!desired.has(roomId)) this._release(roomId, "stale");
     }
-    // Plan/149 — refresh gh_ref / stats on HELD rooms whose registry entry
+    // Refresh git / gh_ref / stats on HELD rooms whose registry entry
     // changed since we announced (e.g. a manual link the device daemon just
     // wrote, or the last turn's counters a dying session persisted). The
     // keeper stays read-only for MESSAGES; a room_meta_update control frame
@@ -206,9 +210,10 @@ export class RoomKeeper {
       if (!entry) continue;
       if (
         JSON.stringify(entry.ghRef ?? null) !== JSON.stringify(room.announcedMeta.ghRef ?? null) ||
-        JSON.stringify(entry.stats ?? null) !== JSON.stringify(room.announcedMeta.stats ?? null)
+        JSON.stringify(entry.stats ?? null) !== JSON.stringify(room.announcedMeta.stats ?? null) ||
+        JSON.stringify(entry.git ?? null) !== JSON.stringify(room.announcedMeta.git ?? null)
       ) {
-        this._pushMeta(room, entry.ghRef ?? null, entry.stats ?? null);
+        this._pushMeta(room, entry.ghRef ?? null, entry.stats ?? null, entry.git ?? null);
       }
     }
     for (const roomId of desired) {
@@ -243,6 +248,7 @@ export class RoomKeeper {
       cwd: entry.cwd,
       keeper: true,
     };
+    if (entry.git) roomMeta["git"] = entry.git;
     if (entry.ghRef) roomMeta["gh_ref"] = entry.ghRef;
     if (entry.stats) roomMeta["stats"] = entry.stats;
     try {
@@ -272,7 +278,11 @@ export class RoomKeeper {
       channels: new Map(),
       channelSinks: new Map(),
       index: null,
-      announcedMeta: { ghRef: entry.ghRef ?? null, stats: entry.stats ?? null },
+      announcedMeta: {
+        ghRef: entry.ghRef ?? null,
+        stats: entry.stats ?? null,
+        git: entry.git ?? null,
+      },
     };
     this.held.set(entry.roomId, room);
     relay.on("close", () => {
@@ -288,17 +298,18 @@ export class RoomKeeper {
     this.log(`room-keeper: holding ${entry.roomId} (${entry.cwd})`);
   }
 
-  /** Plan/149 — push a gh_ref / stats update for a held room and record it
-   *  as the announced baseline (so the next sweep only pushes on change). */
+  /** Push a git / gh_ref / stats update for a held room and record it as the
+   *  announced baseline (so the next sweep only pushes on change). */
   private _pushMeta(
     room: HeldRoom,
     ghRef: RoomsRegistryEntry["ghRef"],
     stats: RoomsRegistryEntry["stats"],
+    git: RoomsRegistryEntry["git"],
   ): void {
-    const meta: Record<string, unknown> = { gh_ref: ghRef, stats };
+    const meta: Record<string, unknown> = { gh_ref: ghRef, stats, git };
     try {
       room.relay.sendControl({ type: "room_meta_update", room_id: room.entry.roomId, meta });
-      room.announcedMeta = { ghRef, stats };
+      room.announcedMeta = { ghRef, stats, git };
       this.log(`room-keeper: meta refresh ${room.entry.roomId}`);
     } catch {
       // Socket tearing down — the next sweep retries after reconnect.

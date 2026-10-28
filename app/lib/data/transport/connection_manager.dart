@@ -1452,6 +1452,7 @@ class ConnectionManager extends Service {
               cwd: c.cwd,
               startedAt: c.startedAt,
               model: c.model,
+              git: c.git,
               // Plan/149 — durable session-slot state from the cache
               // (offline tiles keep their ref + counters). Suggestions
               // are ephemeral and never restored.
@@ -1497,6 +1498,7 @@ class ConnectionManager extends Service {
             startedAt: r.startedAt,
             localName: localById[r.roomId],
             model: r.model,
+            git: r.git,
             ghRef: r.ghRef,
             stats: r.stats,
           ),

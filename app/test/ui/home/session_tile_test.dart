@@ -27,6 +27,7 @@ Future<void> _pump(
   bool isWorking = false,
   bool isWaitingForInput = false,
   int unread = 0,
+  String? deviceLabel,
 }) {
   return tester.pumpWidget(
     MaterialApp(
@@ -39,6 +40,7 @@ Future<void> _pump(
           isWaitingForInput: isWaitingForInput,
           unread: unread,
           room: room,
+          deviceLabel: deviceLabel,
           onOpen: () {},
         ),
       ),
@@ -75,6 +77,26 @@ Color _textColor(WidgetTester tester, String text) =>
     tester.widget<Text>(find.text(text)).style!.color!;
 
 void main() {
+  group('device disambiguation', () {
+    testWidgets('shows a device label only when supplied', (tester) async {
+      await _pump(
+        tester,
+        room: const RoomInfo(roomId: 'r1', startedAt: 1, name: 'Project A'),
+        deviceLabel: 'MacBook Pro',
+      );
+      expect(find.byKey(const ValueKey('session-tile-device-label')),
+          findsOneWidget);
+      expect(find.text('MacBook Pro'), findsOneWidget);
+
+      await _pump(
+        tester,
+        room: const RoomInfo(roomId: 'r1', startedAt: 1, name: 'Project A'),
+      );
+      expect(find.byKey(const ValueKey('session-tile-device-label')),
+          findsNothing);
+    });
+  });
+
   group('context fill (plan/147)', () {
     testWidgets(
       'no contextUsage → NO fill wedge; tile degrades to the old look',

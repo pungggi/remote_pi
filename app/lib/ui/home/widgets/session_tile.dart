@@ -47,6 +47,10 @@ class SessionTile extends StatelessWidget {
   final bool isWaitingForInput;
   final RoomInfo? room;
 
+  /// Paired-device label shown when grouped sections contain sessions from
+  /// more than one computer. Null keeps the single-device tile compact.
+  final String? deviceLabel;
+
   /// Plan/107b — on-demand git snapshot for this session (when fetched).
   /// When both this and the room's model are available, the subtitle
   /// alternates every 3 seconds (branch summary ↔ selected model) in
@@ -84,6 +88,7 @@ class SessionTile extends StatelessWidget {
     required this.isLive,
     required this.onOpen,
     this.room,
+    this.deviceLabel,
     this.git,
     this.isReconnecting = false,
     this.isWorking = false,
@@ -155,7 +160,12 @@ class SessionTile extends StatelessWidget {
                       _Avatar(name: _avatarName(), statusColor: statusColor),
                     const SizedBox(width: 14),
                     Expanded(
-                      child: _TitleBlock(peer: peer, room: room, git: git),
+                      child: _TitleBlock(
+                        peer: peer,
+                        room: room,
+                        git: git,
+                        deviceLabel: deviceLabel,
+                      ),
                     ),
                     if (room?.keeper ?? false) ...[
                       // Plan/140 C — durable-history mirror: the room is served
@@ -346,7 +356,13 @@ class _TitleBlock extends StatefulWidget {
   final PeerRecord peer;
   final RoomInfo? room;
   final GitStatus? git;
-  const _TitleBlock({required this.peer, required this.room, this.git});
+  final String? deviceLabel;
+  const _TitleBlock({
+    required this.peer,
+    required this.room,
+    this.git,
+    this.deviceLabel,
+  });
 
   @override
   State<_TitleBlock> createState() => _TitleBlockState();
@@ -405,6 +421,21 @@ class _TitleBlockState extends State<_TitleBlock> {
             fontWeight: FontWeight.w500,
           ),
         ),
+        if (widget.deviceLabel != null) ...[
+          const SizedBox(height: 3),
+          Text(
+            widget.deviceLabel!,
+            key: const ValueKey('session-tile-device-label'),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: colors.muted2,
+              fontSize: 10,
+              fontFamily: kMonoFamily,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
         const SizedBox(height: 3),
         _buildSubtitle(context),
       ],
