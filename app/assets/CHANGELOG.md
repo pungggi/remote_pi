@@ -11,7 +11,14 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+## [1.4.4] — 2026-10-29
+
 ### Added
+
+- **Grouped Home sessions**: group sessions by model or repository, with the
+  choice remembered between launches. Worktrees of the same repository stay
+  together, non-git sessions have their own section, and multi-PC sessions
+  show a device label so matching names remain unambiguous.
 
 - **Resume the exact session**: Start session opens a terminal in the
   session's original folder and restores the same Pi conversation when its
