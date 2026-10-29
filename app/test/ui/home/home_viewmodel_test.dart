@@ -713,10 +713,7 @@ void main() {
           roomId: 'cached',
           startedAt: 1,
           cwd: '/src/pi-reflex',
-          git: GitStatus(
-            branch: 'main',
-            repository: 'pungggi/pi-reflex',
-          ),
+          git: GitStatus(branch: 'main', repository: 'pungggi/pi-reflex'),
         ),
       ]);
       final conn = ConnectionManager(
@@ -736,7 +733,7 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 10));
 
-      expect(vm.visibleGroups.single.label, 'pungggi/pi-reflex');
+      expect(vm.visibleGroups.single.label, 'pi-reflex');
       expect(vm.visibleGroups.single.items.single.room.roomId, 'cached');
 
       vm.dispose();

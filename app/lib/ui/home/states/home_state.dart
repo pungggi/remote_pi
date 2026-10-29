@@ -74,13 +74,14 @@ List<HomeGroup> groupHomeItems(
   final groups = <String, HomeGroup>{};
   for (final item in source) {
     final git = gitFor?.call(item) ?? item.room.git;
-    final label = _groupLabel(item, groupBy, git);
-    final isFallback = _isFallbackGroup(item, groupBy, git);
-    final key = '${isFallback ? 'fallback' : 'value'}:${label.toLowerCase()}';
+    final grouping = _grouping(item, groupBy, git);
     final group = groups.putIfAbsent(
-      key,
-      () =>
-          HomeGroup(label: label, items: <HomeItem>[], isFallback: isFallback),
+      grouping.key,
+      () => HomeGroup(
+        label: grouping.label,
+        items: <HomeItem>[],
+        isFallback: grouping.isFallback,
+      ),
     );
     group.items.add(item);
   }
@@ -99,32 +100,68 @@ List<HomeGroup> groupHomeItems(
   return result;
 }
 
-String _groupLabel(HomeItem item, HomeGroupBy groupBy, GitStatus? git) {
+/// Grouping identity for one item: the dedupe [key] (stable, full), the
+/// display [label], and whether the item lands in a fallback section.
+class _ItemGrouping {
+  final String key;
+  final String label;
+  final bool isFallback;
+  const _ItemGrouping({
+    required this.key,
+    required this.label,
+    required this.isFallback,
+  });
+}
+
+_ItemGrouping _grouping(HomeItem item, HomeGroupBy groupBy, GitStatus? git) {
   switch (groupBy) {
     case HomeGroupBy.model:
       final model = item.room.model?.trim();
-      return model == null || model.isEmpty ? 'Unknown model' : model;
+      final known = model != null && model.isNotEmpty;
+      final label = known ? model : 'Unknown model';
+      return _ItemGrouping(
+        key: '${known ? 'value' : 'fallback'}:${label.toLowerCase()}',
+        label: label,
+        isFallback: !known,
+      );
     case HomeGroupBy.repository:
-      if (git == null) return 'No git repository';
-      final repository = git.repository?.trim();
-      if (repository != null && repository.isNotEmpty) return repository;
-      // Older extensions publish git status without repository identity.
-      // Their cwd basename is a better fallback than calling a repo non-git.
-      final cwd = item.room.cwd?.replaceAll('\\', '/').trim();
-      if (cwd != null && cwd.isNotEmpty) {
-        final segments = cwd.split('/').where((part) => part.isNotEmpty);
-        if (segments.isNotEmpty) return segments.last;
+      if (git == null) {
+        return const _ItemGrouping(
+          key: 'fallback:no-git',
+          label: 'No git repository',
+          isFallback: true,
+        );
       }
-      return 'Unknown repository';
-  }
-}
-
-bool _isFallbackGroup(HomeItem item, HomeGroupBy groupBy, GitStatus? git) {
-  switch (groupBy) {
-    case HomeGroupBy.model:
-      return item.room.model?.trim().isEmpty ?? true;
-    case HomeGroupBy.repository:
-      return git == null;
+      var identity = git.repository?.trim();
+      if (identity == null || identity.isEmpty) {
+        // Older extensions publish git status without repository identity.
+        // Their cwd basename is a better fallback than calling a repo non-git.
+        final cwd = item.room.cwd?.replaceAll('\\', '/').trim();
+        final segments = cwd == null || cwd.isEmpty
+            ? const <String>[]
+            : cwd.split('/').where((part) => part.isNotEmpty).toList();
+        identity = segments.isEmpty ? null : segments.last;
+      }
+      if (identity == null || identity.isEmpty) {
+        return const _ItemGrouping(
+          key: 'value:unknown',
+          label: 'Unknown repository',
+          isFallback: false,
+        );
+      }
+      // The section header shows the REPO NAME only — never the owner slug,
+      // branch, or worktree. The full identity (`owner/repo`) still keys the
+      // group so same-named repositories from different owners never merge.
+      final repoName = identity
+          .replaceAll('\\', '/')
+          .split('/')
+          .where((part) => part.isNotEmpty)
+          .last;
+      return _ItemGrouping(
+        key: 'value:${identity.toLowerCase()}',
+        label: repoName,
+        isFallback: false,
+      );
   }
 }
 

@@ -5,6 +5,7 @@
 // Pure view widget; `context.colors` falls back to the dark palette
 // outside the themed tree, so a bare MaterialApp is enough.
 
+import 'package:app/data/preferences/preferences.dart' show HomeGroupBy;
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/themes/themes.dart';
@@ -13,11 +14,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 PeerRecord _peer() => PeerRecord(
-      remoteEpk: 'A',
-      sessionName: 'Pi',
-      relayUrl: 'ws://x',
-      pairedAt: '2026-01-01T00:00:00Z',
-    );
+  remoteEpk: 'A',
+  sessionName: 'Pi',
+  relayUrl: 'ws://x',
+  pairedAt: '2026-01-01T00:00:00Z',
+);
 
 Future<void> _pump(
   WidgetTester tester, {
@@ -28,6 +29,9 @@ Future<void> _pump(
   bool isWaitingForInput = false,
   int unread = 0,
   String? deviceLabel,
+  HomeGroupBy groupBy = HomeGroupBy.model,
+  GitStatus? git,
+  String? lastPrompt,
 }) {
   return tester.pumpWidget(
     MaterialApp(
@@ -41,6 +45,9 @@ Future<void> _pump(
           unread: unread,
           room: room,
           deviceLabel: deviceLabel,
+          git: git,
+          groupBy: groupBy,
+          lastPrompt: lastPrompt,
           onOpen: () {},
         ),
       ),
@@ -61,11 +68,16 @@ const _statusRoom = RoomInfo(
 AnimatedFractionallySizedBox _fill(WidgetTester tester) =>
     tester.widget<AnimatedFractionallySizedBox>(find.byKey(_fillKey));
 
-BoxDecoration _fillDecoration(WidgetTester tester) => tester
-    .widget<DecoratedBox>(
-      find.descendant(of: find.byKey(_fillKey), matching: find.byType(DecoratedBox)),
-    )
-    .decoration as BoxDecoration;
+BoxDecoration _fillDecoration(WidgetTester tester) =>
+    tester
+            .widget<DecoratedBox>(
+              find.descendant(
+                of: find.byKey(_fillKey),
+                matching: find.byType(DecoratedBox),
+              ),
+            )
+            .decoration
+        as BoxDecoration;
 
 BoxDecoration _containerDecoration(WidgetTester tester, Key key) =>
     tester.widget<Container>(find.byKey(key)).decoration! as BoxDecoration;
@@ -84,16 +96,20 @@ void main() {
         room: const RoomInfo(roomId: 'r1', startedAt: 1, name: 'Project A'),
         deviceLabel: 'MacBook Pro',
       );
-      expect(find.byKey(const ValueKey('session-tile-device-label')),
-          findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('session-tile-device-label')),
+        findsOneWidget,
+      );
       expect(find.text('MacBook Pro'), findsOneWidget);
 
       await _pump(
         tester,
         room: const RoomInfo(roomId: 'r1', startedAt: 1, name: 'Project A'),
       );
-      expect(find.byKey(const ValueKey('session-tile-device-label')),
-          findsNothing);
+      expect(
+        find.byKey(const ValueKey('session-tile-device-label')),
+        findsNothing,
+      );
     });
   });
 
@@ -109,7 +125,9 @@ void main() {
       },
     );
 
-    testWidgets('percent 80 → wedge width matches the fraction', (tester) async {
+    testWidgets('percent 80 → wedge width matches the fraction', (
+      tester,
+    ) async {
       await _pump(
         tester,
         room: const RoomInfo(
@@ -165,10 +183,16 @@ void main() {
         // Distinct at every step and monotonically more prominent:
         // hue escalates accent → warning → error, alpha only rises.
         for (var i = 1; i < decors.length; i++) {
-          expect(decors[i].color, isNot(decors[i - 1].color),
-              reason: 'band $i must differ from band ${i - 1}');
-          expect(decors[i].color!.a, greaterThan(decors[i - 1].color!.a),
-              reason: 'band $i must be MORE prominent than band ${i - 1}');
+          expect(
+            decors[i].color,
+            isNot(decors[i - 1].color),
+            reason: 'band $i must differ from band ${i - 1}',
+          );
+          expect(
+            decors[i].color!.a,
+            greaterThan(decors[i - 1].color!.a),
+            reason: 'band $i must be MORE prominent than band ${i - 1}',
+          );
         }
         // Still a background hint, never a solid slab (≤ 0.2).
         for (final d in decors) {
@@ -241,57 +265,60 @@ void main() {
     );
   });
 
+  // Grouped-by-model tiles hide the model (the group header owns it), so
+  // these pump in REPOSITORY mode, where the tile's model line still renders.
   group('model subtitle max-tokens suffix (plan/147)', () {
-    testWidgets(
-      'model + contextUsage → subtitle shows "name · Nk" statically '
-      '(git null → no alternation clock)',
-      (tester) async {
-        await _pump(
-          tester,
-          room: const RoomInfo(
-            roomId: 'r1',
-            startedAt: 1,
-            model: 'claude-sonnet-4-5',
-            contextUsage: ContextUsage(
-              tokens: 1,
-              contextWindow: 200000,
-              percent: 1,
-            ),
-          ),
-        );
-        expect(find.text('claude-sonnet-4-5 · 200k'), findsOneWidget);
-      },
-    );
-
-    testWidgets('model without contextUsage → plain truncated name', (tester) async {
+    testWidgets('model + contextUsage → subtitle shows "name · Nk" statically '
+        '(git null → no alternation clock)', (tester) async {
       await _pump(
         tester,
+        groupBy: HomeGroupBy.repository,
+        room: const RoomInfo(
+          roomId: 'r1',
+          startedAt: 1,
+          model: 'claude-sonnet-4-5',
+          contextUsage: ContextUsage(
+            tokens: 1,
+            contextWindow: 200000,
+            percent: 1,
+          ),
+        ),
+      );
+      expect(find.text('claude-sonnet-4-5 · 200k'), findsOneWidget);
+    });
+
+    testWidgets('model without contextUsage → plain truncated name', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        groupBy: HomeGroupBy.repository,
         room: const RoomInfo(roomId: 'r1', startedAt: 1, model: 'gpt-5.2'),
       );
       expect(find.text('gpt-5.2'), findsOneWidget);
       expect(find.textContaining('·'), findsNothing);
     });
 
-    testWidgets(
-      'sub-1k window (pathological) → no misleading "· 0k" suffix',
-      (tester) async {
-        await _pump(
-          tester,
-          room: const RoomInfo(
-            roomId: 'r1',
-            startedAt: 1,
-            model: 'tiny-model',
-            contextUsage: ContextUsage(
-              tokens: 10,
-              contextWindow: 400,
-              percent: 3,
-            ),
+    testWidgets('sub-1k window (pathological) → no misleading "· 0k" suffix', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        groupBy: HomeGroupBy.repository,
+        room: const RoomInfo(
+          roomId: 'r1',
+          startedAt: 1,
+          model: 'tiny-model',
+          contextUsage: ContextUsage(
+            tokens: 10,
+            contextWindow: 400,
+            percent: 3,
           ),
-        );
-        expect(find.text('tiny-model'), findsOneWidget);
-        expect(find.textContaining('·'), findsNothing);
-      },
-    );
+        ),
+      );
+      expect(find.text('tiny-model'), findsOneWidget);
+      expect(find.textContaining('·'), findsNothing);
+    });
   });
 
   group('session slot (plan/149)', () {
@@ -307,18 +334,16 @@ void main() {
       },
     );
 
-    testWidgets('ref + stats → three mono lines, PR wins the display',
-        (tester) async {
+    testWidgets('ref + stats → three mono lines, PR wins the display', (
+      tester,
+    ) async {
       await _pump(
         tester,
         room: const RoomInfo(
           roomId: 'r1',
           startedAt: 1,
           ghRef: GhRef(
-            pr: GhRefSlot(
-              number: 70,
-              url: 'https://github.com/o/r/pull/70',
-            ),
+            pr: GhRefSlot(number: 70, url: 'https://github.com/o/r/pull/70'),
           ),
           stats: SessionStats(turns: 3, userMsgs: 7),
         ),
@@ -328,8 +353,7 @@ void main() {
       expect(find.text('M7'), findsOneWidget);
     });
 
-    testWidgets('unread renders as its own line without a ref',
-        (tester) async {
+    testWidgets('unread renders as its own line without a ref', (tester) async {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
@@ -352,8 +376,9 @@ void main() {
       expect(find.text('2'), findsOneWidget);
     });
 
-    testWidgets('ref + stats + unread → msgs line carries the unread count',
-        (tester) async {
+    testWidgets('ref + stats + unread → msgs line carries the unread count', (
+      tester,
+    ) async {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
@@ -404,8 +429,9 @@ void main() {
       },
     );
 
-    testWidgets('no ref → turns/msgs/unread stack, zero unread renders ·',
-        (tester) async {
+    testWidgets('no ref → turns/msgs/unread stack, zero unread renders ·', (
+      tester,
+    ) async {
       await _pump(
         tester,
         room: const RoomInfo(
@@ -421,8 +447,7 @@ void main() {
   });
 
   group('session status color', () {
-    testWidgets('provider error turns the whole live slot red',
-        (tester) async {
+    testWidgets('provider error turns the whole live slot red', (tester) async {
       const colors = AppColors.dark;
       await _pump(
         tester,
@@ -439,8 +464,9 @@ void main() {
       }
     });
 
-    testWidgets('cached provider error keeps reconnecting amber',
-        (tester) async {
+    testWidgets('cached provider error keeps reconnecting amber', (
+      tester,
+    ) async {
       const colors = AppColors.dark;
       await _pump(
         tester,
@@ -457,8 +483,9 @@ void main() {
       }
     });
 
-    testWidgets('cached provider error keeps an offline slot grey',
-        (tester) async {
+    testWidgets('cached provider error keeps an offline slot grey', (
+      tester,
+    ) async {
       const colors = AppColors.dark;
       await _pump(
         tester,
@@ -474,94 +501,95 @@ void main() {
       }
     });
 
-    testWidgets('slot keeps waiting > working > reconnecting > live > offline',
-        (tester) async {
-      const colors = AppColors.dark;
-      final cases = <({
-        String name,
-        Color color,
-        bool isLive,
-        bool isReconnecting,
-        bool isWorking,
-        bool isWaitingForInput,
-      })>[
-        (
-          name: 'waiting',
-          color: colors.warning,
-          isLive: true,
-          isReconnecting: true,
-          isWorking: true,
-          isWaitingForInput: true,
-        ),
-        (
-          name: 'working',
-          color: colors.working,
-          isLive: true,
-          isReconnecting: true,
-          isWorking: true,
-          isWaitingForInput: false,
-        ),
-        (
-          name: 'reconnecting',
-          color: colors.warning,
-          isLive: true,
-          isReconnecting: true,
-          isWorking: false,
-          isWaitingForInput: false,
-        ),
-        (
-          name: 'live',
-          color: colors.success,
-          isLive: true,
-          isReconnecting: false,
-          isWorking: false,
-          isWaitingForInput: false,
-        ),
-        (
-          name: 'offline',
-          color: colors.muted,
-          isLive: false,
-          isReconnecting: false,
-          isWorking: false,
-          isWaitingForInput: false,
-        ),
-      ];
+    testWidgets(
+      'slot keeps waiting > working > reconnecting > live > offline',
+      (tester) async {
+        const colors = AppColors.dark;
+        final cases =
+            <
+              ({
+                String name,
+                Color color,
+                bool isLive,
+                bool isReconnecting,
+                bool isWorking,
+                bool isWaitingForInput,
+              })
+            >[
+              (
+                name: 'waiting',
+                color: colors.warning,
+                isLive: true,
+                isReconnecting: true,
+                isWorking: true,
+                isWaitingForInput: true,
+              ),
+              (
+                name: 'working',
+                color: colors.working,
+                isLive: true,
+                isReconnecting: true,
+                isWorking: true,
+                isWaitingForInput: false,
+              ),
+              (
+                name: 'reconnecting',
+                color: colors.warning,
+                isLive: true,
+                isReconnecting: true,
+                isWorking: false,
+                isWaitingForInput: false,
+              ),
+              (
+                name: 'live',
+                color: colors.success,
+                isLive: true,
+                isReconnecting: false,
+                isWorking: false,
+                isWaitingForInput: false,
+              ),
+              (
+                name: 'offline',
+                color: colors.muted,
+                isLive: false,
+                isReconnecting: false,
+                isWorking: false,
+                isWaitingForInput: false,
+              ),
+            ];
 
-      for (final c in cases) {
-        await _pump(
-          tester,
-          room: _statusRoom,
-          isLive: c.isLive,
-          isReconnecting: c.isReconnecting,
-          isWorking: c.isWorking,
-          isWaitingForInput: c.isWaitingForInput,
-        );
-        final decoration = _containerDecoration(tester, _slotKey);
-        expect(_borderColor(decoration), c.color, reason: c.name);
-        expect(
-          decoration.color,
-          c.color.withValues(alpha: 0.10),
-          reason: '${c.name} fill',
-        );
-        for (final label in ['T3', 'M7', '·']) {
-          expect(
-            _textColor(tester, label),
-            c.color,
-            reason: '${c.name} $label text',
+        for (final c in cases) {
+          await _pump(
+            tester,
+            room: _statusRoom,
+            isLive: c.isLive,
+            isReconnecting: c.isReconnecting,
+            isWorking: c.isWorking,
+            isWaitingForInput: c.isWaitingForInput,
           );
+          final decoration = _containerDecoration(tester, _slotKey);
+          expect(_borderColor(decoration), c.color, reason: c.name);
+          expect(
+            decoration.color,
+            c.color.withValues(alpha: 0.10),
+            reason: '${c.name} fill',
+          );
+          for (final label in ['T3', 'M7', '·']) {
+            expect(
+              _textColor(tester, label),
+              c.color,
+              reason: '${c.name} $label text',
+            );
+          }
         }
-      }
-    });
+      },
+    );
 
-    testWidgets('unread keeps count and emphasis in the same status color',
-        (tester) async {
+    testWidgets('unread keeps count and emphasis in the same status color', (
+      tester,
+    ) async {
       const colors = AppColors.dark;
-      await _pump(
-        tester,
-        room: _statusRoom,
-        isWorking: true,
-        unread: 2,
-      );
+      await _pump(tester, room: _statusRoom, isWorking: true, unread: 2);
 
       final decoration = _containerDecoration(tester, _slotKey);
       expect(_borderColor(decoration), colors.working);
@@ -579,8 +607,9 @@ void main() {
       );
     });
 
-    testWidgets('avatar fallback carries status instead of the removed dot',
-        (tester) async {
+    testWidgets('avatar fallback carries status instead of the removed dot', (
+      tester,
+    ) async {
       const colors = AppColors.dark;
       await _pump(
         tester,
@@ -594,5 +623,106 @@ void main() {
       expect(decoration.color, colors.working.withValues(alpha: 0.10));
       expect(_textColor(tester, 'A'), colors.working);
     });
+  });
+
+  group('grouped display (repo mode)', () {
+    testWidgets(
+      'by-repo: the title shows the BRANCH where the folder name was — '
+      'the group header already names the repository',
+      (tester) async {
+        await _pump(
+          tester,
+          groupBy: HomeGroupBy.repository,
+          git: const GitStatus(
+            branch: 'feat/plan-153-relay-unifiedpush',
+            repository: 'pungggi/remote_pi',
+          ),
+          room: const RoomInfo(
+            roomId: 'r1',
+            startedAt: 1,
+            cwd: '/src/pi/packages/remote_pi_off',
+          ),
+        );
+
+        expect(find.text('feat/plan-153-relay-unifiedpush'), findsOneWidget);
+        expect(find.text('remote_pi_off'), findsNothing);
+      },
+    );
+
+    testWidgets('by-repo: an explicit room name still beats the branch', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        groupBy: HomeGroupBy.repository,
+        git: const GitStatus(branch: 'main', repository: 'pungggi/pi'),
+        room: const RoomInfo(
+          roomId: 'r1',
+          startedAt: 1,
+          name: 'relay work',
+          cwd: '/src/pi/packages/pi_relay',
+        ),
+      );
+
+      expect(find.text('relay work'), findsOneWidget);
+      expect(find.text('main'), findsNothing);
+    });
+
+    testWidgets(
+      'by-repo: without a git snapshot the folder-name title survives',
+      (tester) async {
+        await _pump(
+          tester,
+          groupBy: HomeGroupBy.repository,
+          room: const RoomInfo(roomId: 'r1', startedAt: 1, cwd: '/src/scratch'),
+        );
+
+        expect(find.text('scratch'), findsOneWidget);
+      },
+    );
+
+    testWidgets('by-model: the model never renders on the tile — the last user '
+        'prompt takes the subtitle instead', (tester) async {
+      await _pump(
+        tester,
+        groupBy: HomeGroupBy.model,
+        lastPrompt: 'fix the auth timeout in the relay worker',
+        room: const RoomInfo(
+          roomId: 'r1',
+          startedAt: 1,
+          cwd: '/src/scratch',
+          model: 'GLH-5.3',
+          contextUsage: ContextUsage(tokens: 1000, contextWindow: 200000),
+        ),
+      );
+
+      expect(
+        find.byKey(const ValueKey('session-tile-last-prompt')),
+        findsOneWidget,
+      );
+      expect(
+        find.text('fix the auth timeout in the relay worker'),
+        findsOneWidget,
+      );
+      // No model line anywhere on the tile (group header owns it) — the
+      // `· 200k` suffix was model-only too.
+      expect(find.textContaining('GLH-5.3'), findsNothing);
+      expect(find.textContaining('200k'), findsNothing);
+    });
+
+    testWidgets(
+      'by-model without a known prompt: no model fallback, straight to '
+      'the paired subtitle',
+      (tester) async {
+        await _pump(
+          tester,
+          groupBy: HomeGroupBy.model,
+          room: const RoomInfo(roomId: 'r1', startedAt: 1, model: 'GLH-5.3'),
+        );
+
+        expect(find.textContaining('GLH-5.3'), findsNothing);
+        expect(find.textContaining('Last paired:'), findsOneWidget);
+      },
+    );
   });
 }

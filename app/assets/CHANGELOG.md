@@ -24,6 +24,19 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   endpoints are visible in Settings. Android service timeouts stop cleanly
   without retry loops.
 
+### Changed
+
+- **Repository groups show the repo name only**: the section header is the
+  repository's name without owner slug, branch, or worktree. Local-only
+  repositories resolve to the main checkout, so worktrees of a repo without
+  a remote stay in one group instead of one group per worktree folder.
+
+- **Grouped tiles trade redundant info for context**: when grouped by
+  repository, each session's title shows its git branch where the folder
+  name used to sit — the header already names the repo. When grouped by
+  model, the tile no longer repeats the model; the subtitle shows a
+  one-line preview of the session's last user prompt instead.
+
 ## [1.4.4] — 2026-10-29
 
 ### Added

@@ -224,6 +224,28 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// past the read marker). Never cached: the box rows are the SSOT.
   int unreadCount(String epk, String roomId) => _boxes.unreadCount(epk, roomId);
 
+  /// Grouped Home (by-model) — the session's last user prompt as a
+  /// single-line preview: whitespace collapsed, capped at 200 characters
+  /// (grapheme-safe, ellipsis when capped). `null` when nothing is known
+  /// yet; the tile falls back to its git/paired subtitle. Reads the same
+  /// msgs box rows the unread count uses, so the tile's existing unread
+  /// listenable refreshes this line too.
+  String? lastUserPrompt(String epk, String roomId) =>
+      previewPrompt(_boxes.lastUserPrompt(epk, roomId));
+
+  /// Collapses [raw] onto one line and caps it at 200 characters
+  /// (code-point-safe — never splits a surrogate pair; ellipsis when
+  /// capped). `null`/blank → `null`.
+  static String? previewPrompt(String? raw) {
+    if (raw == null) return null;
+    final flattened = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (flattened.isEmpty) return null;
+    const maxChars = 200;
+    if (flattened.runes.length <= maxChars) return flattened;
+    final kept = String.fromCharCodes(flattened.runes.take(maxChars));
+    return '${kept.trimRight()}…';
+  }
+
   /// Plan/149 — listenable that fires whenever the session's unread can
   /// change: the msgs box (row delivery) and the read-markers box (chat
   /// open). A not-yet-open msgs box is opened lazily and triggers a Home
