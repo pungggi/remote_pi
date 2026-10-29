@@ -501,6 +501,30 @@ de controle que ampliava o churn de reconexão do phone.
 
 ---
 
+## UnifiedPush registration and wake events — 2026-10-29 (plan 153)
+
+Balanced mode uses authenticated control frames for optional UnifiedPush wake. Older clients never send these frames and keep their existing behavior.
+
+### Control frames
+
+- `push_config_request` → `push_config` with `enabled` and, when available, `vapid_public_key`. Disabled responses carry a stable `error_code`.
+- `push_register` carries `registration_id`, `device_id`, `endpoint`, `p256dh`, `auth`, `temporary`, desired `peers`, and `completion_rooms` (`{peer, room}` entries). The relay answers `push_register_ok` with `state: pending|validated`.
+- `push_validate` carries `registration_id` and the short-lived validation `token`. Success returns `push_validate_ok` with `state: validated`.
+- `push_unregister` removes the registration and returns `push_unregister_ok`.
+- Failures use `push_error` with an optional `registration_id`, a stable `code`, and a non-secret human summary.
+
+Endpoint and key material may be uploaded only over an authenticated confidentiality-protected path: `wss`, loopback, or the recognized protected VPN transport. Endpoint or key changes require a new push-token validation round trip. Filter-only updates preserve an already validated endpoint.
+
+### Wake payloads
+
+Web Push carries small versioned JSON events: `run_started`, `run_finished`, `run_done`, `waiting_started`, `waiting_cleared`, and the separate `push_validate` validation message. Wake events identify only `event_id`, `peer`, `room`, and timestamps; `run_done` also carries `ended_at` when present.
+
+Payloads contain no session title, prompt, cwd, agent output, code, image, arbitrary notification text, or chat content. The app drops undecrypted, oversized, malformed, unknown, or unauthorized messages.
+
+Push is best-effort wake, never the stream or source of truth. Reconnect plus full synchronization repairs missed and duplicated events. Distributor `MESSAGE_ACK` confirms only distributor-to-connector reception, not relay delivery, Dart processing, or reconnection.
+
+The relay emits actual room-meta transitions before the empty-live-subscriber return. It revalidates desired peers before delivery, bounds queue/retry work, marks 404/410 endpoints stale, and applies HTTPS/DNS/IP SSRF restrictions. Private push servers require an explicit endpoint allowlist.
+
 ## Marcador de fim de run (`meta.run_done`) — 2026-08-27 (plano 132)
 
 Notificação local de conclusão de tarefa no app: o usuário liga um toggle

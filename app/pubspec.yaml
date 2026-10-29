@@ -52,6 +52,11 @@ dependencies:
   remote_pi_identity:
     path: packages/remote_pi_identity
 
+  # Plan 153 — registers the keep-alive channel on foreground and
+  # UnifiedPush background Flutter engines.
+  piper_keep_alive:
+    path: packages/piper_keep_alive
+
   # Plan 24 — HTTP client for the mesh_versions endpoint on the relay.
   dio: ^5.7.0
 
@@ -115,7 +120,8 @@ dependencies:
   # versionName) so the Android-only in-app update notice can compare it
   # against the release manifest's semver.
   package_info_plus: ^8.0.0
-
+  unifiedpush_android: 3.5.0
+  unifiedpush_platform_interface: 4.0.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

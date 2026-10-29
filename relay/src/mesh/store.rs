@@ -19,6 +19,7 @@ pub enum StoreError {
 }
 
 const SCHEMA: &str = include_str!("../../migrations/001_mesh_versions.sql");
+const PUSH_SCHEMA: &str = include_str!("../../migrations/002_push_registrations.sql");
 
 /// Mesh blob storage backed by SQLite. Single-table UPSERT keyed by
 /// `owner_pk_hash`. Thread-safe via `std::sync::Mutex<Connection>`.
@@ -35,7 +36,7 @@ impl std::fmt::Debug for MeshStore {
 }
 
 impl MeshStore {
-    fn connection(&self) -> MutexGuard<'_, Connection> {
+    pub(crate) fn connection(&self) -> MutexGuard<'_, Connection> {
         match self.conn.lock() {
             Ok(connection) => connection,
             Err(poisoned) => {
@@ -64,6 +65,7 @@ impl MeshStore {
         }
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(PUSH_SCHEMA)?;
         Ok(Self {
             conn: Mutex::new(conn),
             #[cfg(test)]
@@ -75,6 +77,7 @@ impl MeshStore {
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(PUSH_SCHEMA)?;
         Ok(Self {
             conn: Mutex::new(conn),
             #[cfg(test)]

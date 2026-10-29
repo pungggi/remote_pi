@@ -38,7 +38,8 @@ sealed class ControlInbound {
         final rawWorking =
             (j['working'] as bool?) ?? (metaJson?['working'] as bool?);
         // Plan/134 — same both-places read for the blocking-prompt flag.
-        final rawWaitingForInput = (j['waiting_for_input'] as bool?) ??
+        final rawWaitingForInput =
+            (j['waiting_for_input'] as bool?) ??
             (metaJson?['waiting_for_input'] as bool?);
         final rawProviderError =
             (j['provider_error'] as bool?) ??
@@ -53,8 +54,8 @@ sealed class ControlInbound {
             j['gh_suggestion'] ?? metaJson?['gh_suggestion'];
         final rawStats = j['stats'] ?? metaJson?['stats'];
         // Plan/140 C — keeper marker (durable-history mirror, no live agent).
-        final rawKeeper = (j['keeper'] as bool?) ??
-            (metaJson?['keeper'] as bool?) ?? false;
+        final rawKeeper =
+            (j['keeper'] as bool?) ?? (metaJson?['keeper'] as bool?) ?? false;
         return RoomAnnounced(
           peer: j['peer'] as String,
           roomId: j['room_id'] as String,
@@ -100,6 +101,27 @@ sealed class ControlInbound {
         peer: j['peer'] as String,
         room: (j['room'] as String?) ?? 'main',
       ),
+      'push_config' => PushConfig(
+        enabled: j['enabled'] as bool? ?? false,
+        vapidPublicKey: j['vapid_public_key'] as String?,
+        errorCode: j['error_code'] as String?,
+      ),
+      'push_register_ok' => PushRegisterOk(
+        registrationId: j['registration_id'] as String,
+        state: j['state'] as String,
+      ),
+      'push_validate_ok' => PushValidateOk(
+        registrationId: j['registration_id'] as String,
+        state: j['state'] as String,
+      ),
+      'push_unregister_ok' => PushUnregisterOk(
+        registrationId: j['registration_id'] as String,
+      ),
+      'push_error' => PushError(
+        registrationId: j['registration_id'] as String?,
+        code: j['code'] as String,
+        message: j['message'] as String? ?? 'Push registration failed.',
+      ),
       'rooms' => RoomsSnapshot(
         peer: j['peer'] as String,
         rooms: (j['rooms'] as List<dynamic>)
@@ -115,8 +137,7 @@ sealed class ControlInbound {
         // Plan/149 — has-flags for the session-slot keys (gh_ref and stats
         // can be explicitly null = cleared, so presence-of-key matters).
         final hasGhRef = meta?.containsKey('gh_ref') ?? false;
-        final hasGhSuggestion =
-            meta?.containsKey('gh_suggestion') ?? false;
+        final hasGhSuggestion = meta?.containsKey('gh_suggestion') ?? false;
         final hasStats = meta?.containsKey('stats') ?? false;
         final rawThinking = meta?['thinking'] as String?;
         final rawGit = meta?['git'];
@@ -144,7 +165,8 @@ sealed class ControlInbound {
           // Plan/132 — run-completion marker: nullable-as-absent like
           // `working` (an object key is either absent or present — there is
           // no "explicitly null" form on the wire).
-          runDone: rawRunDone is Map<String, dynamic> &&
+          runDone:
+              rawRunDone is Map<String, dynamic> &&
                   rawRunDone['ended_at'] is num
               ? RunDoneMarker(
                   turnId: rawRunDone['turn_id'] as String?,
@@ -166,8 +188,8 @@ sealed class ControlInbound {
               : null,
           ghSuggestion:
               hasGhSuggestion && rawGhSuggestion is Map<String, dynamic>
-                  ? GhRef.fromJson(rawGhSuggestion)
-                  : null,
+              ? GhRef.fromJson(rawGhSuggestion)
+              : null,
           stats: hasStats && rawStats is Map<String, dynamic>
               ? SessionStats.fromJson(rawStats)
               : null,
@@ -244,6 +266,89 @@ Map<String, dynamic> unsubscribeRoomsFrame(List<String> peers) => {
 Map<String, dynamic> roomsCheckFrame(List<String> peers) => {
   'type': 'rooms_check',
   'peers': peers,
+};
+
+// --- Plan 153 — authenticated UnifiedPush registration control frames ---
+
+class PushConfig extends ControlInbound {
+  final bool enabled;
+  final String? vapidPublicKey;
+  final String? errorCode;
+  const PushConfig({
+    required this.enabled,
+    this.vapidPublicKey,
+    this.errorCode,
+  });
+}
+
+class PushRegisterOk extends ControlInbound {
+  final String registrationId;
+  final String state;
+  const PushRegisterOk({required this.registrationId, required this.state});
+}
+
+class PushValidateOk extends ControlInbound {
+  final String registrationId;
+  final String state;
+  const PushValidateOk({required this.registrationId, required this.state});
+}
+
+class PushUnregisterOk extends ControlInbound {
+  final String registrationId;
+  const PushUnregisterOk({required this.registrationId});
+}
+
+class PushError extends ControlInbound {
+  final String? registrationId;
+  final String code;
+  final String message;
+  const PushError({
+    this.registrationId,
+    required this.code,
+    required this.message,
+  });
+}
+
+Map<String, dynamic> pushConfigRequestFrame() => {
+  'type': 'push_config_request',
+};
+
+Map<String, dynamic> pushRegisterFrame({
+  required String registrationId,
+  required String deviceId,
+  required String endpoint,
+  required String p256dh,
+  required String auth,
+  required bool temporary,
+  required List<String> peers,
+  required List<({String peer, String room})> completionRooms,
+}) => {
+  'type': 'push_register',
+  'registration_id': registrationId,
+  'device_id': deviceId,
+  'endpoint': endpoint,
+  'p256dh': p256dh,
+  'auth': auth,
+  'temporary': temporary,
+  'peers': peers,
+  'completion_rooms': [
+    for (final target in completionRooms)
+      {'peer': target.peer, 'room': target.room},
+  ],
+};
+
+Map<String, dynamic> pushValidateFrame({
+  required String registrationId,
+  required String token,
+}) => {
+  'type': 'push_validate',
+  'registration_id': registrationId,
+  'token': token,
+};
+
+Map<String, dynamic> pushUnregisterFrame(String registrationId) => {
+  'type': 'push_unregister',
+  'registration_id': registrationId,
 };
 
 // ---------------------------------------------------------------------------
@@ -1053,6 +1158,7 @@ class PairRequest extends ClientMessage {
 class SessionSync extends ClientMessage {
   final String id;
   final int? limit;
+
   /// Plan/128 — opaque backward-paging cursor. Thread the `next_before` the
   /// server returned; omit for the newest page (legacy shape).
   final String? before;
@@ -1364,8 +1470,11 @@ class ChangeLayoutRequest extends ClientMessage {
   ChangeLayoutRequest({required this.id, required this.layout});
 
   @override
-  Map<String, dynamic> toJson() =>
-      {'type': 'change_layout_request', 'id': id, 'layout': layout};
+  Map<String, dynamic> toJson() => {
+    'type': 'change_layout_request',
+    'id': id,
+    'layout': layout,
+  };
 }
 
 /// Plan/124 + plan/152 — bring an OFFLINE session back to life in its own
@@ -1928,6 +2037,7 @@ class SessionHistory extends ServerMessage {
   final List<SessionHistoryEvent> events;
   final bool eos;
   final bool truncated;
+
   /// Plan/128 — cursor to send back as `before` for the next OLDER page.
   /// Absent when nothing older remains. `truncated` mirrors `has_more`.
   final String? nextBefore;
@@ -1963,9 +2073,7 @@ class SessionHistory extends ServerMessage {
         .toList(),
     eos: j['eos'] as bool,
     // Tolerate absence during the protocol transition window.
-    truncated: (j['truncated'] as bool?) ??
-        (j['has_more'] as bool?) ??
-        false,
+    truncated: (j['truncated'] as bool?) ?? (j['has_more'] as bool?) ?? false,
     nextBefore: j['next_before'] as String?,
     currentSeq: (j['current_seq'] as num?)?.toInt(),
     offline: (j['offline'] as bool?) ?? false,
@@ -2205,6 +2313,7 @@ class ModelsList extends ServerMessage {
 class GhRefSlot {
   final int number;
   final String? url;
+
   /// `OPEN` / `MERGED` / `CLOSED` (PR) or `open` / `closed` (issue);
   /// `null` until gh reports it.
   final String? state;
@@ -2886,7 +2995,8 @@ class AskAnswerWire {
   Map<String, dynamic> toJson() {
     final m = <String, dynamic>{};
     if (values.isNotEmpty) m['values'] = values;
-    if (customText != null && customText!.isNotEmpty) m['customText'] = customText;
+    if (customText != null && customText!.isNotEmpty)
+      m['customText'] = customText;
     if (note != null && note!.isNotEmpty) m['note'] = note;
     if (optionNotes.isNotEmpty) m['optionNotes'] = optionNotes;
     return m;

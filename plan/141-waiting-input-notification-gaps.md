@@ -38,6 +38,10 @@ relay → app parse all work); all fixes are **app-only**.
 | 3 | **Proactive permission ask**: one durable ask at the first foreground waiting edge (no sheet open) + a Settings row for denied users. |
 | 4 | ~~Foreground behavior otherwise unchanged~~ **AMENDED 2026-10-11** (user, during on-device verification): **every rising edge notifies, foreground included** — the tile dot alone proved too easy to miss with the app open on the desk. Sheet-open suppression and the permission gate stay; the ask stays foreground-only (the OS dialog can't appear from the background); the snapshot still covers prompts that were already pending when the app connected (replays emit no rising edge). |
 
+## Plan 153 addendum — push transport
+
+UnifiedPush waiting events use the same stable ID and cancel path as live events. A clear never wakes the connection, and serialized message handling prevents a clear from overtaking its corresponding start.
+
 ## Expected structure
 
 ### A. `LocalNotifications` — add `cancel(int id)`

@@ -13,6 +13,18 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
+- **Balanced Active Sessions + UnifiedPush wake (plan/153)** — the new opt-in
+  keep-alive mode keeps active runs connected, then enters real idle sleep
+  after five minutes. Sleeping stops the foreground service, socket, pings,
+  rechecks, and retries while preserving pairing and cached rooms.
+- **Validated Web Push registrations** — Android uses the official UnifiedPush
+  connector and the relay stores VAPID/configuration plus validated endpoint
+  registrations. New runs and waiting events can wake the app without
+  Firebase; completion opt-ins, notification dedupe, and session tap routing
+  are preserved.
+- **Android `dataSync` timeout handling** — quota exhaustion and background
+  start refusal stop cleanly without a socket/retry leak or restart loop.
+
 - **Exact offline session resume (plan/152)** — Start session now opens a
   terminal in the original folder and runs `pi --session <id>` when the
   room registry has a stored Pi session ID. Session replacement refreshes

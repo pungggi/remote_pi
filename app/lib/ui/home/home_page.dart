@@ -236,9 +236,9 @@ class HomePage extends StatelessWidget {
   Widget _subtitleFor(BuildContext context, HomeViewModel vm, HomeState state) {
     final colors = context.colors;
     final connected = vm.isRelayConnected;
+    final sleeping = vm.isSleeping;
     final awaitingPairing = state is HomeNoPeer;
-    // Plan 114 (B) — the relay WS is down (retrying/offline) but a peer is
-    // paired: the status is tappable to force a reconnect now.
+    // Sleeping and Offline both support an explicit reconnect action.
     final canReconnect = !connected && !awaitingPairing;
     final Color dotColor;
     final String statusLabel;
@@ -250,6 +250,10 @@ class HomePage extends StatelessWidget {
     } else if (awaitingPairing) {
       dotColor = colors.muted;
       statusLabel = 'Awaiting pairing';
+      statusColor = colors.muted;
+    } else if (sleeping) {
+      dotColor = colors.muted;
+      statusLabel = 'Sleeping';
       statusColor = colors.muted;
     } else {
       dotColor = colors.warning;
@@ -472,6 +476,9 @@ class HomePage extends StatelessWidget {
                             '(charging by default — see Settings).',
                       KeepAliveMode.always =>
                         'Fires while the app is backgrounded and connected.',
+                      KeepAliveMode.balanced =>
+                        'Fires while connected, or by a validated '
+                            'UnifiedPush wake.',
                     };
                     return SwitchListTile(
                       secondary: Icon(

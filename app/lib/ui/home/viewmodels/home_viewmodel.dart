@@ -107,6 +107,9 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// no fresh signal on any room.
   bool get isRelayConnected => _relayConnected;
 
+  /// Deliberate Balanced idle sleep, not a relay failure.
+  bool get isSleeping => _conn.status is StatusSleeping;
+
   /// Plan 114 (B) — force a reconnect now (resets the backoff and redials
   /// immediately). Surfaced as the tap target on the Home "Offline" status.
   Future<void> reconnect() => _conn.forceReconnect();
@@ -118,6 +121,13 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// derives `showReliabilityBanner` from the wanted flag (review #5).
   void _reconcileReliability(bool online) {
     if (_disposed) return;
+    if (_conn.status is StatusSleeping) {
+      _sustainedOfflineTimer?.cancel();
+      _sustainedOfflineTimer = null;
+      _reliabilityBannerWanted = false;
+      _reemitHomeList();
+      return;
+    }
     if (online) {
       _sustainedOfflineTimer?.cancel();
       _sustainedOfflineTimer = null;

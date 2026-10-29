@@ -18,6 +18,8 @@ use crate::auth::challenge::{
 };
 use crate::lan::lan_candidate_urls;
 use crate::protocol::outer::{OuterEnvelope, parse_line};
+use crate::protocol::push::{PushRegisterRequest, PushUnregisterRequest, PushValidateRequest};
+use crate::push::PushServiceError;
 use crate::rooms::{RoomMeta, RoomMetaPatch};
 
 /// Hard ceiling on a single inbound WS message (text or binary). The outer
@@ -465,6 +467,107 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     }
                                 }
 
+                                // ── Plan 153: UnifiedPush registration/config ──
+                                "push_config_request" => {
+                                    let response = match &state.push {
+                                        Some(push) => serde_json::json!({
+                                            "type": "push_config",
+                                            "enabled": true,
+                                            "vapid_public_key": push.vapid_public_key(),
+                                        }),
+                                        None => serde_json::json!({
+                                            "type": "push_config",
+                                            "enabled": false,
+                                            "error_code": "push_disabled",
+                                        }),
+                                    };
+                                    if sink.send(Message::Text(response.to_string())).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                "push_register" => {
+                                    let registration_id = frame
+                                        .get("registration_id")
+                                        .and_then(|value| value.as_str())
+                                        .map(String::from);
+                                    let result = match &state.push {
+                                        None => Err(PushServiceError::InvalidRequest("push_disabled")),
+                                        Some(push) => match serde_json::from_value::<PushRegisterRequest>(frame.clone()) {
+                                            Err(_) => Err(PushServiceError::InvalidRequest("invalid_request")),
+                                            Ok(mut request) => {
+                                                let requested = request.peers.clone();
+                                                let allowed = authorize_targets(requested.clone()).await;
+                                                if allowed.len() != requested.len() {
+                                                    Err(PushServiceError::InvalidRequest("unauthorized_peer"))
+                                                } else {
+                                                    request.peers = allowed;
+                                                    push.register(&peer_id, request).await
+                                                }
+                                            }
+                                        },
+                                    };
+                                    let response = match result {
+                                        Ok(state) => serde_json::json!({
+                                            "type": "push_register_ok",
+                                            "registration_id": registration_id,
+                                            "state": state,
+                                        }),
+                                        Err(error) => push_error_frame(registration_id, &error),
+                                    };
+                                    if sink.send(Message::Text(response.to_string())).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                "push_validate" => {
+                                    let registration_id = frame
+                                        .get("registration_id")
+                                        .and_then(|value| value.as_str())
+                                        .map(String::from);
+                                    let result = match &state.push {
+                                        None => Err(PushServiceError::InvalidRequest("push_disabled")),
+                                        Some(push) => match serde_json::from_value::<PushValidateRequest>(frame.clone()) {
+                                            Err(_) => Err(PushServiceError::InvalidRequest("invalid_request")),
+                                            Ok(request) => push
+                                                .validate(&peer_id, &request.registration_id, &request.token)
+                                                .await,
+                                        },
+                                    };
+                                    let response = match result {
+                                        Ok(state) => serde_json::json!({
+                                            "type": "push_validate_ok",
+                                            "registration_id": registration_id,
+                                            "state": state,
+                                        }),
+                                        Err(error) => push_error_frame(registration_id, &error),
+                                    };
+                                    if sink.send(Message::Text(response.to_string())).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                "push_unregister" => {
+                                    let registration_id = frame
+                                        .get("registration_id")
+                                        .and_then(|value| value.as_str())
+                                        .map(String::from);
+                                    let result = match &state.push {
+                                        None => Err(PushServiceError::InvalidRequest("push_disabled")),
+                                        Some(push) => match serde_json::from_value::<PushUnregisterRequest>(frame.clone()) {
+                                            Err(_) => Err(PushServiceError::InvalidRequest("invalid_request")),
+                                            Ok(request) => push.unregister(&peer_id, &request.registration_id).await,
+                                        },
+                                    };
+                                    let response = match result {
+                                        Ok(()) => serde_json::json!({
+                                            "type": "push_unregister_ok",
+                                            "registration_id": registration_id,
+                                        }),
+                                        Err(error) => push_error_frame(registration_id, &error),
+                                    };
+                                    if sink.send(Message::Text(response.to_string())).await.is_err() {
+                                        break;
+                                    }
+                                }
+
                                 // ── room meta update (plano 18 + 28 + 32 + 134) ──
                                 // `meta.model`, `meta.thinking`,
                                 // `meta.working` and
@@ -735,4 +838,13 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
         close = close_reason.as_deref().unwrap_or("eof"),
         "disconnected"
     );
+}
+
+fn push_error_frame(registration_id: Option<String>, error: &PushServiceError) -> Value {
+    serde_json::json!({
+        "type": "push_error",
+        "registration_id": registration_id,
+        "code": error.code(),
+        "message": error.public_message(),
+    })
 }

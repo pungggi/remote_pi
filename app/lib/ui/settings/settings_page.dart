@@ -1,6 +1,7 @@
 import 'dart:io' show Platform;
 
 import 'package:app/data/preferences/preferences.dart';
+import 'package:app/data/push/unified_push_service.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:app/ui/settings/states/settings_state.dart';
@@ -54,6 +55,12 @@ class SettingsPage extends StatelessWidget {
           Divider(color: colors.border, height: 1),
           const _DisplaySection(),
           Divider(color: colors.border, height: 1),
+          if (context.select<Preferences, bool>(
+            (prefs) => prefs.keepAliveMode == KeepAliveMode.balanced,
+          )) ...[
+            const _UnifiedPushSection(),
+            Divider(color: colors.border, height: 1),
+          ],
           // Plan 116 — connection reliability (battery exemption + Tailscale
           // deep-links). Most relevant after a network switch drops Piper.
           const _ReliabilityEntry(),
@@ -86,6 +93,82 @@ class SettingsPage extends StatelessWidget {
           const _AboutSection(),
         ],
       ),
+    );
+  }
+}
+
+class _UnifiedPushSection extends StatelessWidget {
+  const _UnifiedPushSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final push = context.watch<UnifiedPushService>();
+    final colors = context.colors;
+    final distributors = <String>{
+      ...push.availableDistributors,
+      if (push.distributor != null) push.distributor!,
+    }.toList()..sort();
+    final label = switch (push.status) {
+      UnifiedPushStatus.disabled => 'Disabled',
+      UnifiedPushStatus.needsDistributor => 'Distributor required',
+      UnifiedPushStatus.registering => 'Registering…',
+      UnifiedPushStatus.pendingValidation => 'Validating endpoint…',
+      UnifiedPushStatus.validated => 'Wake registration validated',
+      UnifiedPushStatus.temporarilyUnavailable => 'Temporarily unavailable',
+      UnifiedPushStatus.unavailable => 'Unavailable',
+      UnifiedPushStatus.insecureTransport => 'Protected transport required',
+      UnifiedPushStatus.error => 'Registration error',
+    };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const _SectionHeader('UnifiedPush wake'),
+        ListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 18),
+          leading: Icon(LucideIcons.radio, size: 20, color: colors.text),
+          title: Text(
+            label,
+            style: context.typo.sansBody.copyWith(color: colors.text),
+          ),
+          subtitle: Text(
+            push.statusMessage ??
+                'Wakes new PC runs after Balanced enters deep idle. '
+                    'Reconnect and sync remain the source of truth.',
+            style: context.typo.sansBody.copyWith(
+              color: colors.muted,
+              fontSize: 12,
+            ),
+          ),
+          trailing: IconButton(
+            tooltip: 'Retry registration',
+            onPressed: () => push.retry(),
+            icon: Icon(LucideIcons.refreshCw, size: 18, color: colors.muted),
+          ),
+        ),
+        if (distributors.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 0, 18, 12),
+            child: DropdownButtonFormField<String>(
+              initialValue: distributors.contains(push.distributor)
+                  ? push.distributor
+                  : null,
+              decoration: const InputDecoration(
+                labelText: 'Distributor',
+                border: OutlineInputBorder(),
+              ),
+              items: [
+                for (final distributor in distributors)
+                  DropdownMenuItem(
+                    value: distributor,
+                    child: Text(distributor, overflow: TextOverflow.ellipsis),
+                  ),
+              ],
+              onChanged: (value) {
+                if (value != null) push.selectDistributor(value);
+              },
+            ),
+          ),
+      ],
     );
   }
 }
@@ -557,6 +640,18 @@ class _DisplaySection extends StatelessWidget {
   Widget build(BuildContext context) {
     final prefs = context.watch<Preferences>();
     final colors = context.colors;
+    final keepAliveHelp = switch (prefs.keepAliveMode) {
+      KeepAliveMode.whenCharging =>
+        'Stays connected on power and saves battery on the go.',
+      KeepAliveMode.always =>
+        'Uses a persistent notification and the most battery.',
+      KeepAliveMode.off =>
+        'Reconnects when you open Piper; no background keep-alive.',
+      KeepAliveMode.balanced =>
+        'Keeps active runs connected, then sleeps after 5 idle minutes. '
+            'Without a UnifiedPush distributor, new PC runs after deep idle '
+            'appear when you open Piper.',
+    };
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -640,9 +735,7 @@ class _DisplaySection extends StatelessWidget {
               style: context.typo.sansBody.copyWith(color: colors.text),
             ),
             subtitle: Text(
-              'Stays connected when you switch apps. "When charging" keeps you '
-              'online on power and saves battery on the go; "Always" uses a '
-              'persistent notification and more battery.',
+              keepAliveHelp,
               style: context.typo.sansBody.copyWith(
                 color: colors.muted,
                 fontSize: 12,
@@ -659,6 +752,10 @@ class _DisplaySection extends StatelessWidget {
                 DropdownMenuItem(
                   value: KeepAliveMode.always,
                   child: Text('Always'),
+                ),
+                DropdownMenuItem(
+                  value: KeepAliveMode.balanced,
+                  child: Text('Balanced / Active'),
                 ),
                 DropdownMenuItem(value: KeepAliveMode.off, child: Text('Off')),
               ],

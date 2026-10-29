@@ -166,11 +166,17 @@ Notes:
 
 ### Environment variables
 
+**Windows build prerequisite**: vendored OpenSSL requires Perl on `PATH` (for
+example Strawberry Perl). HTTP delivery uses reqwest/rustls; no system curl or
+system OpenSSL installation is required.
+
 | Variable | Default | Description |
 |---|---|---|
 | `REMOTEPI_RELAY_PORT` | `3000` | TCP port that serves the WebSocket upgrade, `/health`, and `/mesh/*` (all on the same port) |
 | `REMOTEPI_HEARTBEAT_SECS` | `60` | Seconds between WS keepalive Pings sent to each peer (plan 125 — was `25`). The relay is the heartbeat authority, so this is the floor on how often a mobile client's radio must wake. `60` beats every common NAT idle timeout with margin and halves inbound wakeups. Floor `30` (anything tighter forfeits the battery win and risks NAT drops); values below are clamped with a `warn` log |
 | `REMOTEPI_MESH_DB_PATH` | `/data/mesh.db` in Docker · `data/mesh.db` (cwd-relative) for bare-metal builds | Path to the SQLite database that stores signed membership versions. The parent directory is created automatically on first boot. The Docker image presets this to `/data/mesh.db` and declares `/data` as a volume — see the volume note above |
+| `REMOTEPI_PUSH_VAPID_PRIVATE_KEY_PATH` | `vapid-private.pem` beside the mesh DB | Long-lived Web Push VAPID identity for plan 153. Back it up with the mesh DB; replacing it can require new distributor registrations |
+| `REMOTEPI_PUSH_ENDPOINT_ALLOWLIST` | _(empty)_ | Comma-separated exact domains, IPs, or CIDR ranges for private UnifiedPush endpoints. Required for LAN/Tailscale push servers; public HTTPS endpoints need no exception |
 | `RUST_LOG` | _(none)_ | Log level filter — e.g. `info`, `debug`, `warn` |
 
 Example with a custom port and logging (volume mount is the same):
@@ -185,6 +191,19 @@ docker run -d \
   --restart unless-stopped \
   jacobmoura7/remote-pi-relay
 ```
+
+### UnifiedPush / Balanced wake
+
+The relay can act as a Web Push application server for Android Balanced mode. The user installs and selects a distributor; Piper does not embed one.
+
+- **Validation**: every new endpoint/key registration starts as pending. The relay sends a short-lived validation push and marks the registration validated only after the app returns its token over the authenticated socket.
+- **Content**: wake payloads carry event identifiers, peer/room IDs, and timestamps only. Prompt text, session titles, agent output, and chat content never enter push payloads.
+- **Recovery**: push is best effort. Reconnect and full sync remain authoritative.
+- **SSRF policy**: HTTPS endpoints with global addresses are allowed by default. Redirects are not followed. Private, loopback, and link-local destinations require an explicit allowlist exception.
+
+A private ntfy or other push server must be reachable from both the relay and the distributor while the phone sleeps. Allowlist its exact hostname, IP, or CIDR through `REMOTEPI_PUSH_ENDPOINT_ALLOWLIST`.
+
+Before migrating or replacing the relay, back up both `mesh.db` and `vapid-private.pem`. Registration secrets and the VAPID private key are never written to logs.
 
 ### Mesh membership endpoint
 

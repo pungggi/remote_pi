@@ -70,6 +70,14 @@ class StatusOffline extends ConnectionStatus {
   const StatusOffline({required this.reason, this.canRetry = true});
 }
 
+/// Balanced mode's real idle sleep. The selected peer, subscriptions and
+/// cached rooms remain intact, but no socket or reconnect-producing timer is
+/// active. A foreground transition, manual reconnect or accepted push wake
+/// resumes from this state.
+class StatusSleeping extends ConnectionStatus {
+  const StatusSleeping();
+}
+
 // ---------------------------------------------------------------------------
 // Backoff sequence (seconds)
 // ---------------------------------------------------------------------------
@@ -203,6 +211,8 @@ class ConnectionManager extends Service {
   /// not state: SyncService uses them to fail pending steers/sends
   /// immediately instead of an unbounded `steering…` spinner.
   final _routeErrorController = StreamController<RouteErrorEvent>.broadcast();
+  // Plan/153 — relay responses for UnifiedPush configuration/registration.
+  final _pushControlController = StreamController<ControlInbound>.broadcast();
   bool _roomsRestored = false;
   ConnectionStatus _status = const StatusNoPeer();
   PeerRecord? _activePeer;
@@ -292,7 +302,7 @@ class ConnectionManager extends Service {
       watchdogIntervalFor(_powerMode, _watchdogInterval),
       (_) {
         final peer = _activePeer;
-        if (peer == null) return;
+        if (peer == null || _status is StatusSleeping) return;
         if (_status is StatusOnline) {
           // Plan 114 (C) — inbound-liveness watchdog. The WS-layer ping
           // interval can take minutes to surface a half-open socket on a
@@ -383,10 +393,27 @@ class ConnectionManager extends Service {
 
   /// Plan/137 — route NACKs observed for any `(peer, room)` the app tried
   /// to reach. Fires as soon as the relay reports the destination gone.
-  Stream<RouteErrorEvent> get routeErrorStream =>
-      _routeErrorController.stream;
+  Stream<RouteErrorEvent> get routeErrorStream => _routeErrorController.stream;
+
+  /// Authenticated relay responses consumed by UnifiedPushService.
+  Stream<ControlInbound> get pushControlStream => _pushControlController.stream;
 
   Map<String, List<RoomInfo>> get roomsSnapshot => _roomsSnapshot();
+
+  /// Aggregated live work across every subscribed room. This deliberately
+  /// reuses the canonical room cache instead of maintaining a second view.
+  bool get hasActiveRuns {
+    if (_status is! StatusOnline) return false;
+    for (final entry in _roomsByPeer.entries) {
+      if (!_subscribedEpks.contains(entry.key)) continue;
+      final live = _liveRoomIds[entry.key];
+      if (live == null) continue;
+      for (final room in entry.value) {
+        if (live.contains(room.roomId) && room.working) return true;
+      }
+    }
+    return false;
+  }
 
   /// Rooms for a single peer (or empty list if none known yet). Accepts
   /// url-safe or standard base64.
@@ -483,12 +510,46 @@ class ConnectionManager extends Service {
     link.sendControl(presenceCheckFrame(list));
   }
 
+  /// Send a push control frame on the authenticated relay channel.
+  bool sendPushControl(Map<String, dynamic> frame) {
+    final link = _controlLink;
+    if (link == null) return false;
+    link.sendControl(frame);
+    return true;
+  }
+
   /// Current online channel cast to its control side, when supported.
   IControlLink? get _controlLink {
     final s = _status;
     if (s is! StatusOnline) return null;
     final ch = s.channel;
     return ch is IControlLink ? ch as IControlLink : null;
+  }
+
+  /// Restore pairing/subscriptions for a connector-only background launch.
+  /// No socket is opened: the first accepted wake can nevertheless resume the
+  /// correct peer and replay the normal subscription set.
+  Future<void> prepareForBackgroundSleep({String? preferredEpk}) async {
+    await _restoreCachedRooms();
+    if (_activePeer != null) {
+      if (_status is StatusNoPeer) _emit(const StatusSleeping());
+      return;
+    }
+    final peers = await _storage.listPeers();
+    if (peers.isEmpty) {
+      _emit(const StatusNoPeer());
+      return;
+    }
+    subscribeToPeers(peers.map((p) => p.remoteEpk).toList());
+    final target = preferredEpk == null
+        ? peers.first
+        : peers.firstWhere(
+            (p) => p.remoteEpk == preferredEpk,
+            orElse: () => peers.first,
+          );
+    _activePeer = target;
+    _activeRoomId = target.roomId ?? 'main';
+    _emit(const StatusSleeping());
   }
 
   /// Open the WS and start driving a peer. Accepts an optional
@@ -509,6 +570,9 @@ class ConnectionManager extends Service {
     if (_activePeer != null) {
       final peers = await _storage.listPeers();
       subscribeToPeers(peers.map((p) => p.remoteEpk).toList());
+      if (_status is StatusSleeping) {
+        await resumeFromBalancedSleep();
+      }
       return;
     }
     if (_status is StatusOnline) return;
@@ -621,6 +685,53 @@ class ConnectionManager extends Service {
     _connect(peer);
   }
 
+  /// Enter real Balanced idle sleep. Pairing, active peer, room selection,
+  /// subscriptions and caches survive; every reconnect-producing path stops.
+  Future<void> suspendForBalancedSleep() async {
+    final current = _status;
+    if (current is StatusSleeping) return;
+    _cancelRetry();
+    _cancelPing();
+    _connectCancel?.cancel();
+    _connectCancel = null;
+    _connectInFlight = false;
+    _retryAttempt = 0;
+    // Publish the guard BEFORE awaiting stream/socket teardown. No callback
+    // racing this cleanup can schedule a retry or open another channel.
+    _emit(const StatusSleeping());
+    Future<void>? closeChannel;
+    if (current is StatusOnline) {
+      try {
+        // Start closing immediately; do not wait for stream cancellation.
+        closeChannel = current.channel.close();
+      } catch (_) {
+        // The socket is already gone. Local sleep must still take effect.
+      }
+    }
+    await _channelSub?.cancel();
+    _channelSub = null;
+    await _controlSub?.cancel();
+    _controlSub = null;
+    if (closeChannel != null) {
+      try {
+        await closeChannel;
+      } catch (_) {
+        // Already closed remotely; sleeping remains the local source of truth.
+      }
+    }
+  }
+
+  /// Wake after an accepted push, explicit user action or foregrounding.
+  /// Backoff resets and the normal Online path replays subscriptions and
+  /// requests fresh presence/room snapshots.
+  Future<void> resumeFromBalancedSleep() async {
+    final peer = _activePeer;
+    if (peer == null || _status is StatusOnline || _connectInFlight) return;
+    _cancelRetry();
+    _retryAttempt = 0;
+    await _connect(peer);
+  }
+
   /// Plan 114 — reset the backoff and dial the active peer *now*. The single
   /// chokepoint for the three resilience triggers: network-change detection
   /// (A), the manual Reconnect button (B), and the inbound-liveness watchdog
@@ -657,7 +768,7 @@ class ConnectionManager extends Service {
   /// milliseconds; production uses [_kStaleProbeWindow].
   Future<bool> reconnectIfStale({Duration? probeWindow}) async {
     final peer = _activePeer;
-    if (peer == null) return false;
+    if (peer == null || _status is StatusSleeping) return false;
     final s = _status;
     if (s is! StatusOnline) {
       // Nothing to probe — recover now (plan 114's fast-recovery path).
@@ -752,6 +863,7 @@ class ConnectionManager extends Service {
     _runDoneController.close();
     _waitingForInputController.close();
     _routeErrorController.close();
+    _pushControlController.close();
   }
 
   // ---------------------------------------------------------------------------
@@ -1029,6 +1141,12 @@ class ConnectionManager extends Service {
           _presence[key] = next;
           presenceDirty = true;
         }
+      case PushConfig():
+      case PushRegisterOk():
+      case PushValidateOk():
+      case PushUnregisterOk():
+      case PushError():
+        if (!_pushControlController.isClosed) _pushControlController.add(c);
       case RoomMetaUpdated(
         :final peer,
         :final roomId,
@@ -1239,9 +1357,7 @@ class ConnectionManager extends Service {
         // supervisor restart) and has NO real session behind it — drop the
         // tile instead of keeping it as a ghost "offline session". Real
         // sessions (keeper=false) always keep their grey tile.
-        newList.removeWhere(
-          (r) => r.keeper && !newLive.contains(r.roomId),
-        );
+        newList.removeWhere((r) => r.keeper && !newLive.contains(r.roomId));
         final liveChanged = !_setEquals(
           newLive,
           _liveRoomIds[key] ?? const <String>{},
@@ -1271,6 +1387,10 @@ class ConnectionManager extends Service {
   /// looks like then (always the latest view).
   void _schedulePresenceEmit() {
     _presenceEmitTimer?.cancel();
+    if (_emitDebounce == Duration.zero && !_presenceController.isClosed) {
+      _presenceController.add(Map.unmodifiable(_presence));
+      return;
+    }
     _presenceEmitTimer = Timer(_emitDebounce, () {
       _presenceEmitTimer = null;
       if (_presenceController.isClosed) return;
@@ -1281,6 +1401,10 @@ class ConnectionManager extends Service {
   /// Same shape as [_schedulePresenceEmit] but for the rooms stream.
   void _scheduleRoomsEmit() {
     _roomsEmitTimer?.cancel();
+    if (_emitDebounce == Duration.zero && !_roomsController.isClosed) {
+      _roomsController.add(_roomsSnapshot());
+      return;
+    }
     _roomsEmitTimer = Timer(_emitDebounce, () {
       _roomsEmitTimer = null;
       if (_roomsController.isClosed) return;
@@ -1361,7 +1485,8 @@ class ConnectionManager extends Service {
   bool isRoomRealLive(String epk, String roomId) {
     if (!isRoomLive(epk, roomId)) return false;
     final key = toStandardB64(epk);
-    return !(_roomsByPeer[key]?.any((r) => r.roomId == roomId && r.keeper) ?? false);
+    return !(_roomsByPeer[key]?.any((r) => r.roomId == roomId && r.keeper) ??
+        false);
   }
 
   /// Plan/32 — `true` when the relay's last room-meta broadcast for
@@ -1643,6 +1768,7 @@ class ConnectionManager extends Service {
   }
 
   void _scheduleRetry(PeerRecord peer) {
+    if (_status is StatusSleeping) return;
     final delay = _backoffFor(_retryAttempt);
     _emit(StatusRetrying(nextRetry: delay, attempt: _retryAttempt));
     // Cancel any previous timer before scheduling — prevents the
@@ -1650,6 +1776,7 @@ class ConnectionManager extends Service {
     _retryTimer?.cancel();
     _retryTimer = Timer(delay, () {
       _retryTimer = null;
+      if (_status is StatusSleeping) return;
       _retryAttempt++;
       _connect(peer);
     });

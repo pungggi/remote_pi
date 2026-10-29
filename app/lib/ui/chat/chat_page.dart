@@ -172,6 +172,7 @@ class ChatPage extends StatelessWidget {
     // down or retrying), prefer a "reconectando" amber pill so the
     // user knows it's the relay, not the Pi cwd, that's gone.
     final isReconnecting = resolved && state is ChatReady && (state).isOffline;
+    final isSleeping = vm.isSleeping;
     // Plan-18 follow-up — when the agent is currently producing a
     // response, show "working…" instead of online/offline.
     final isWorking = vm.isWorking;
@@ -183,7 +184,8 @@ class ChatPage extends StatelessWidget {
     // While the agent is working, show the model running this turn next to
     // the "working…" pill. `room.model` is kept current via room_meta_updated.
     final rawModel = room?.model;
-    final modelLabel = (isWorking && !isWaiting && rawModel != null && rawModel.isNotEmpty)
+    final modelLabel =
+        (isWorking && !isWaiting && rawModel != null && rawModel.isNotEmpty)
         ? rawModel
         : null;
     // Plan/115 — live context-window fill (tokens/contextWindow/percent),
@@ -262,6 +264,8 @@ class ChatPage extends StatelessWidget {
                             ? colors.warning
                             : isWorking
                             ? colors.working
+                            : isSleeping
+                            ? colors.muted
                             : isReconnecting
                             ? colors.warning
                             : isOnline
@@ -271,6 +275,8 @@ class ChatPage extends StatelessWidget {
                             ? 'Waiting for your answer…'
                             : isWorking
                             ? 'working…'
+                            : isSleeping
+                            ? 'sleeping'
                             : isReconnecting
                             ? 'reconnecting…'
                             : isOnline
@@ -823,7 +829,8 @@ TranscriptGrow classifyTranscriptGrow(
     return streamChanged ? TranscriptGrow.bottom : TranscriptGrow.none;
   }
   if (oldMsgs.isEmpty) return TranscriptGrow.replace; // open / switch in
-  if (newMsgs.length < oldMsgs.length) return TranscriptGrow.replace; // compaction
+  if (newMsgs.length < oldMsgs.length)
+    return TranscriptGrow.replace; // compaction
   if (newMsgs.length == oldMsgs.length) {
     for (var i = 0; i < oldMsgs.length; i++) {
       if (oldMsgs[i].id != newMsgs[i].id) return TranscriptGrow.replace;
@@ -1190,8 +1197,10 @@ class _MessageListState extends State<MessageList> {
           // reverse:true → offset 0 is the NEWEST; older content lives at
           // HIGHER offsets, so "older" hops toward maxScrollExtent.
           final step = older ? p.viewportDimension : -p.viewportDimension;
-          final next = (p.pixels + step)
-              .clamp(p.minScrollExtent, p.maxScrollExtent);
+          final next = (p.pixels + step).clamp(
+            p.minScrollExtent,
+            p.maxScrollExtent,
+          );
           if ((next - p.pixels).abs() < 0.5) {
             // Clamped at the transcript bound with no mounted target —
             // unreachable (e.g. history swapped mid-hop). Give up quietly.
@@ -1277,8 +1286,9 @@ class _MessageListState extends State<MessageList> {
       if (dist >= 0.5) {
         // Scale the duration with the distance: a fixed 220ms across dozens
         // of screens reads as a teleport, but short hops must stay snappy.
-        final ms =
-            (dist / p.viewportDimension * 240).clamp(220.0, 600.0).round();
+        final ms = (dist / p.viewportDimension * 240)
+            .clamp(220.0, 600.0)
+            .round();
         await p.animateTo(
           target,
           duration: Duration(milliseconds: ms),
@@ -1373,8 +1383,7 @@ class _MessageListState extends State<MessageList> {
             // must not jumpTo while it runs (that cancels the gesture).
             // dragDetails != null separates a finger drag from ballistic /
             // programmatic scrolling.
-            if (notif is ScrollStartNotification &&
-                notif.dragDetails != null) {
+            if (notif is ScrollStartNotification && notif.dragDetails != null) {
               _userDragActive = true;
             } else if (notif is ScrollEndNotification) {
               _userDragActive = false;

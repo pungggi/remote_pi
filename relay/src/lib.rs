@@ -7,6 +7,7 @@ pub mod metrics;
 pub mod peers;
 pub mod presence;
 pub mod protocol;
+pub mod push;
 pub mod rooms;
 
 use std::sync::Arc;
@@ -23,6 +24,7 @@ pub use mesh::MeshStore;
 pub use metrics::FirehoseMetrics;
 pub use peers::registry::PeerRegistry;
 pub use presence::PresenceManager;
+pub use push::PushService;
 pub use rooms::{RoomManager, RoomMeta, RoomMetaPatch};
 
 /// Shared state injected into every axum handler.
@@ -42,6 +44,9 @@ pub struct AppState {
     /// In-process counters for emit/suppress accounting (firehose dedup).
     /// A background task drains and logs them every 10 s.
     pub metrics: Arc<FirehoseMetrics>,
+    /// Plan 153 — optional UnifiedPush application-server integration. Older
+    /// clients never reference it; tests and minimal embedders may disable it.
+    pub push: Option<Arc<PushService>>,
     /// Plan 115 — the TCP port the relay is bound to, used to build the
     /// `http://ip:port` LAN candidates advertised in the `challenge` frame.
     /// (The bind address itself is `0.0.0.0`; the port is what the phone

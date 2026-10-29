@@ -19,6 +19,12 @@ Why this is achievable without touching closed decisions:
   A local notification on that path gives us "app not open → still notified"
   within Android's honest limits.
 
+## Plan 153 addendum — push-assisted delivery
+
+Balanced mode may deliver `run_done` through a validated UnifiedPush registration while the relay socket sleeps. The existing per-session opt-in, generic payload, stable notification ID, and tap routing are unchanged.
+
+Live and push markers deduplicate by `(peer, room, ended_at)`. A completion alert does not open a new socket solely for the alert; the app reconciles on the next foreground or accepted wake.
+
 Facts on the ground (scout 2026-08-27):
 
 - The extension broadcasts `agent_done` on `agent_end`

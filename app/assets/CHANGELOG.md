@@ -11,6 +11,19 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Balanced / Active sessions**: active runs stay connected, then Piper
+  sleeps after five idle minutes. Foreground, manual reconnect, or a
+  UnifiedPush wake restores the socket and synchronizes current state.
+- **UnifiedPush wake**: choose a distributor in Settings to receive new-run
+  and waiting events while Balanced sleeps. Completion notification opt-ins,
+  duplicate suppression, and session tap routing remain unchanged.
+- **Honest push status and Android recovery**: registration validation,
+  protected-transport requirements, unavailable distributors, and stale
+  endpoints are visible in Settings. Android service timeouts stop cleanly
+  without retry loops.
+
 ## [1.4.4] — 2026-10-29
 
 ### Added

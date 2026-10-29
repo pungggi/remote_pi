@@ -2,7 +2,7 @@
 /// wiped on every boot, so it never reports stale online/presence across
 /// restarts. Reduced enums (not the rich sealed `ConnectionStatus`, which
 /// carries a live channel and can't be serialized).
-enum RuntimeConnection { connecting, online, offline, retrying }
+enum RuntimeConnection { connecting, online, offline, retrying, sleeping }
 
 enum RuntimePresence { alive, stale, unknown }
 

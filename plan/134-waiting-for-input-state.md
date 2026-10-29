@@ -16,6 +16,12 @@ Today the app's only agent state is `room_meta.working` (plan/32). When a tool b
 
 Goal: a third published state, `waiting_for_input`, visible on Home tiles, in the active chat, and as a push notification for backgrounded rooms — covering **every** blocking prompt, not just pi-ask.
 
+## Plan 153 addendum — UnifiedPush wake and clear
+
+A validated `waiting_started` push wakes Balanced for one five-minute grace window and reuses the existing stable per-room notification and tap payload. Waiting alerts remain independent of the completion opt-in.
+
+`waiting_cleared` cancels the same notification without opening a socket. Reconnect and room snapshots reconcile any missed or duplicated push event.
+
 ## Expected structure
 
 Three waves, mirroring plan/32's exact pattern (raw publish in the extension → typed field in the relay → debounced display + notification in the app), plus a cockpit-only shortcut that needs no relay change.

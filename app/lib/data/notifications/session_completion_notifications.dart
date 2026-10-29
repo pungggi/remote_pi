@@ -136,6 +136,20 @@ class SessionCompletionNotifications extends ICompletionNotifications {
     _backgrounded = backgrounded;
   }
 
+  /// Plan 153 — push-assisted delivery uses the exact live-event gate,
+  /// including the per-room opt-in and ended_at deduplication.
+  Future<void> showPush({
+    required String epk,
+    required String roomId,
+    required int endedAtMs,
+  }) => _onRunDone(
+    RunDoneEvent(
+      epk: epk,
+      roomId: roomId,
+      marker: RunDoneMarker(turnId: null, endedAtMs: endedAtMs),
+    ),
+  );
+
   Future<void> _onRunDone(RunDoneEvent e) async {
     if (_disposed) return;
     // Gate 1 — only worth a banner when the user is not looking at the app.

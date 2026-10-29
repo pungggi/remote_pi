@@ -31,6 +31,13 @@ Numeração `00-` é proposital: este arquivo carrega antes dos planos numerados
 | **Limites honestos aceitos** | `targetSdk=36` → Android 15/16 impõe o **teto de 6h** no tipo `dataSync` (depois o WS cai e reconecta no próximo foreground) + deep Doze limita rede. Isso é o **teto do Android**, não lacuna a fechar com outro plano: o backoff de retry + reconnect-on-resume recuperam sem perda de dados (relay resincroniza). Sobrevivência "infinita" em background não é perseguida |
 | **Toggle no Settings, default ON** | `Preferences.keepAliveInBackground` (default `true`). Usuário pode desligar pra economizar bateria (comportamento = hoje: cai ao trocar de app). Android-only; no-op nas demais plataformas |
 | **Notificação de conclusão = local, sobre o link vivo (fechado 2026-08-27, plano 132)** | Toggle por sessão (long-press no tile) + marcador `room_meta_update.meta.run_done` emitido no `agent_end` (uma vez por run), broadcast-only no relay (nunca persistido, nunca em `room_announced`). O app dispara notificação local quando backgrounded. Push/FCM (plano 36) permanece **diferido e não adotado** — sem Firebase; limites honestos (processo morto = sem banner; vê ao abrir o app) |
+### Plan 153 addendum — Balanced + UnifiedPush (2026-10-29)
+
+- **Balanced is opt-in**: active runs keep the FGS and relay socket connected. The app enters real connection sleep after five idle minutes. The default remains `whenCharging`, and legacy modes keep their behavior.
+- **UnifiedPush is the scoped wake path**: new PC-started runs and waiting events can wake a sleeping Android app. Reconnect and full sync remain canonical; push payloads contain no prompt, output, title, cwd, or chat content.
+- **Platform rules stay intact**: `dataSync` remains the service type, with a clean `onTimeout` stop and no FGS-type evasion or automatic restart loop.
+- **FCM/APNs remain unadopted**: this decision supersedes earlier deferred-push notes only for Balanced/UnifiedPush. It adds no Firebase project, embedded FCM distributor, distributor implementation, or iOS push architecture.
+
 ## Cockpit — motor de agente (fechado 2026-08-12 — plano 58)
 
 | Decisão | Razão / nota |

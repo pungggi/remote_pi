@@ -232,9 +232,10 @@ on how often the radio must wake.
 
 ## Next plans
 
-- **FCM-free push (if ever wanted)** — out of scope here; the fork is
-  Firebase-free by choice (plan 103). If "true push" is later needed, revisit
-  the whole keep-alive model rather than layering on top.
+- **Balanced Active Sessions + UnifiedPush** — implemented by
+  [plan 153](153-balanced-active-session-unifiedpush.md). It adds real
+  five-minute idle sleep and a Firebase-free wake path. FCM remains unadopted;
+  reconnect and sync remain authoritative.
 - **Per-network adaptive cadence** — if batterystats still shows high drain
   on cellular vs. Wi-Fi, add a transport-aware lean mode (Wi-Fi: can stay
   lean longer; cellular: even leaner). Data-driven, only if step 6 is

@@ -2180,6 +2180,7 @@ class SyncService extends Service {
       StatusConnecting() => RuntimeConnection.connecting,
       StatusRetrying() => RuntimeConnection.retrying,
       StatusOffline() => RuntimeConnection.offline,
+      StatusSleeping() => RuntimeConnection.sleeping,
       StatusNoPeer() => RuntimeConnection.connecting,
     };
     final presence = (s is StatusOnline && _conn.isRoomLive(epk, room))

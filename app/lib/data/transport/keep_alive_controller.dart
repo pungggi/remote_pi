@@ -51,6 +51,11 @@ class KeepAliveController extends Service {
   final bool enableChargingPoll;
   static const _channel = MethodChannel('ch.pungitore.piper/keepalive');
 
+  /// Plan 153 — invoked when Android stops the dataSync service or refuses a
+  /// background start. The Balanced coordinator suspends the socket as well.
+  Future<void> Function()? onServiceTimeout;
+  void Function()? onServiceStartRefused;
+
   StreamSubscription<ConnectionStatus>? _sub;
   bool _started = false;
   bool _permissionPrompted = false;
@@ -65,6 +70,10 @@ class KeepAliveController extends Service {
   bool _isCharging = false;
   // Plan 125 (Layer 4) — periodic refresh of [_isCharging] while backgrounded.
   Timer? _chargingTimer;
+  bool _balancedActive = false;
+  bool _startBlocked = false;
+  bool _timeoutBlocked = false;
+  bool get isStartBlocked => _startBlocked;
   ConnectionStatus _lastStatus = const StatusNoPeer();
   String? _lastPeerShort;
 
@@ -72,6 +81,7 @@ class KeepAliveController extends Service {
   /// the foreground service. Also reflects the current status once on attach so
   /// a connection already Online at attach time starts the notification.
   void attach(ConnectionManager cm) {
+    if (_isAndroid()) _channel.setMethodCallHandler(_handleNativeCall);
     _sub?.cancel();
     _sub = cm.statusStream.listen((s) {
       final peer = cm.activePeer;
@@ -125,11 +135,25 @@ class KeepAliveController extends Service {
     if (!_isAndroid()) return;
     if (_backgrounded == backgrounded) return;
     _backgrounded = backgrounded;
+    if (!backgrounded) {
+      _startBlocked = false;
+      _timeoutBlocked = false;
+    }
     if (backgrounded) {
       _startChargingPoll();
     } else {
       _stopChargingPoll();
     }
+    // ignore: unawaited_futures
+    reflect(_lastStatus, peerShort: _lastPeerShort);
+  }
+
+  /// Plan 153 — true during Balanced active work, grace and accepted wakes.
+  /// The coordinator owns the policy; this class remains the only FGS owner.
+  void setBalancedActive(bool active) {
+    if (_balancedActive == active) return;
+    _balancedActive = active;
+    if (!_isAndroid()) return;
     // ignore: unawaited_futures
     reflect(_lastStatus, peerShort: _lastPeerShort);
   }
@@ -183,11 +207,20 @@ class KeepAliveController extends Service {
       // Plan 125 (Layer 0) — only while backgrounded. (Layer 4) — three-way
       // mode, with the `whenCharging` mode additionally gated on [_isCharging].
       final mode = _prefs.keepAliveMode;
+      if (mode != KeepAliveMode.balanced) _startBlocked = false;
+      final modeAllows = switch (mode) {
+        KeepAliveMode.off => false,
+        KeepAliveMode.always => true,
+        KeepAliveMode.whenCharging => _isCharging,
+        KeepAliveMode.balanced => _balancedActive,
+      };
       final wantRunning =
-          mode != KeepAliveMode.off &&
+          modeAllows &&
           status is! StatusNoPeer &&
+          status is! StatusSleeping &&
           _backgrounded &&
-          (mode == KeepAliveMode.always || _isCharging);
+          !_startBlocked &&
+          !_timeoutBlocked;
       if (!wantRunning) {
         if (_started) {
           _started = false;
@@ -200,7 +233,13 @@ class KeepAliveController extends Service {
         await _ensurePermission();
         _started = true; // set before await to narrow the re-entrancy window
         final ok = await _invoke('start', <String, dynamic>{'text': text});
-        if (!ok) _started = false;
+        if (!ok) {
+          _started = false;
+          if (mode == KeepAliveMode.balanced) {
+            _startBlocked = true;
+            onServiceStartRefused?.call();
+          }
+        }
       } else {
         await _invoke('update', <String, dynamic>{'text': text});
       }
@@ -260,6 +299,18 @@ class KeepAliveController extends Service {
     return res ?? false;
   }
 
+  Future<void> _handleNativeCall(MethodCall call) async {
+    if (call.method != 'onTimeout' && call.method != 'onStartRefused') return;
+    _started = false;
+    if (call.method == 'onTimeout') {
+      _timeoutBlocked = true;
+      await onServiceTimeout?.call();
+    } else if (_prefs.keepAliveMode == KeepAliveMode.balanced) {
+      _startBlocked = true;
+      onServiceStartRefused?.call();
+    }
+  }
+
   /// Human-readable peer label — mirrors the UI resolution (nickname →
   /// sessionName → epk prefix) so the notification matches Home / Chat.
   static String _peerShort(PeerRecord peer) {
@@ -273,6 +324,7 @@ class KeepAliveController extends Service {
   /// dispose is synchronous).
   @override
   void dispose() {
+    if (_isAndroid()) _channel.setMethodCallHandler(null);
     _sub?.cancel();
     _sub = null;
     _chargingTimer?.cancel();
