@@ -39,16 +39,20 @@ function runGit(cwd: string, args: string[]): Promise<string | null> {
 }
 
 export async function getGitStatus(cwd: string): Promise<WireGitStatus | null> {
-  const [statusResult, repoRoot, remoteUrl] = await Promise.all([
+  const [statusResult, repoRoot, remoteUrl, commonDir] = await Promise.all([
     runGit(cwd, [
       "status", "--porcelain=2", "--branch", "--no-renames", "-unormal",
     ]),
     runGit(cwd, ["rev-parse", "--show-toplevel"]),
     runGit(cwd, ["remote", "get-url", "origin"]),
+    runGit(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
   ]);
   if (!statusResult) return null;
 
-  const repository = repositoryLabel(remoteUrl, repoRoot);
+  const repository = repositoryLabel(
+    remoteUrl,
+    mainRepositoryRoot(repoRoot, commonDir),
+  );
   const lines = statusResult.split("\n");
 
   let branch = "";
@@ -158,6 +162,24 @@ export function repositoryLabel(
   }
   const root = repoRoot?.trim();
   return root ? basename(root) || null : null;
+}
+
+/**
+ * The MAIN repository root, not the worktree root: `--show-toplevel` inside
+ * a linked worktree returns the worktree folder, so a local-only repository
+ * would otherwise group every worktree under its own folder name (a
+ * worktree/branch identity, not the repository). `--git-common-dir` points
+ * at `<main-root>/.git` from anywhere in the repository; its parent is the
+ * main checkout. Falls back to the toplevel for old gits (no
+ * `--path-format`), submodules (`…/.git/modules/<name>`), and bare repos.
+ */
+export function mainRepositoryRoot(
+  repoRoot: string | null,
+  commonDir: string | null,
+): string | null {
+  const common = commonDir?.trim().replaceAll("\\", "/") ?? "";
+  if (common.endsWith("/.git")) return common.slice(0, -"/.git".length);
+  return repoRoot?.trim() ?? null;
 }
 
 /**

@@ -406,6 +406,8 @@ class HomePage extends StatelessWidget {
                 it.room.git ??
                 state
                     .gitByKey['${toStandardB64(it.peer.remoteEpk)}|${it.room.roomId}'],
+            groupBy: vm.groupBy,
+            lastPrompt: vm.lastUserPrompt(it.peer.remoteEpk, it.room.roomId),
             unread: vm.unreadCount(it.peer.remoteEpk, it.room.roomId),
             onOpenRef: _openRefUrl(context, it.room),
             onOpen: () => _open(context, vm, it.peer, it.room),

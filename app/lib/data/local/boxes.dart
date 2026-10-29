@@ -90,7 +90,8 @@ class LocalBoxes {
   int unreadCount(String epk, String roomId) {
     if (!isMsgsBoxOpen(epk, roomId)) return 0;
     final box = openMsgsBox(epk, roomId);
-    final lastRead = (readMarkersBox().get(sessionKey(epk, roomId)) as int?) ?? -1;
+    final lastRead =
+        (readMarkersBox().get(sessionKey(epk, roomId)) as int?) ?? -1;
     var n = 0;
     for (final k in box.keys) {
       if (k is int && k > lastRead) n++;
@@ -126,6 +127,35 @@ class LocalBoxes {
 
   bool isMsgsBoxOpen(String epk, String roomId) =>
       Hive.isBoxOpen(msgsBoxName(epk, roomId));
+
+  /// Grouped-Home (by-model) preview — the text of the session's most
+  /// recent user prompt, or `null` when unknown (box not open yet, no
+  /// user row, or only image-only sends). Picks the user row with the
+  /// highest `ts` (seq is storage order, not chronology, once backward
+  /// history paging appends older pages with fresh seqs). Whitespace is
+  /// collapsed by the caller for a single-line subtitle.
+  String? lastUserPrompt(String epk, String roomId) {
+    if (!isMsgsBoxOpen(epk, roomId)) return null;
+    final box = openMsgsBox(epk, roomId);
+    String? bestText;
+    var bestTs = -1;
+    var bestSeq = -1;
+    for (final entry in box.toMap().entries) {
+      final value = entry.value;
+      if (value is! Map) continue;
+      if (value['role'] != 'user') continue;
+      final text = (value['text'] as String?)?.trim();
+      if (text == null || text.isEmpty) continue; // image-only send
+      final ts = (value['ts'] as num?)?.toInt() ?? 0;
+      final seq = entry.key is int ? entry.key as int : -1;
+      if (ts > bestTs || (ts == bestTs && seq > bestSeq)) {
+        bestTs = ts;
+        bestSeq = seq;
+        bestText = text;
+      }
+    }
+    return bestText;
+  }
 
   /// `:` and the epk's `/`+`=` would break the on-disk filename — sanitise to
   /// the url-safe, unpadded epk form (same approach as the v1 store).

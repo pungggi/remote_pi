@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:app/data/preferences/preferences.dart' show HomeGroupBy;
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/ui/core/git_status_span.dart';
@@ -57,6 +58,20 @@ class SessionTile extends StatelessWidget {
   /// lock-step across ALL tiles; with only one of the two, that one
   /// wins statically (git → model → "Last paired").
   final GitStatus? git;
+
+  /// Grouped-Home display mode. **By repository**: the tile title shows
+  /// the git BRANCH where the folder/repo name used to sit — the group
+  /// header already carries the repository, so the branch is what tells
+  /// worktree sessions apart (an explicit room name still wins). **By
+  /// model**: the model never renders on the tile (the group header owns
+  /// it); the subtitle shows the last user prompt preview instead.
+  final HomeGroupBy groupBy;
+
+  /// Grouped Home (by-model) — single-line preview of the session's last
+  /// user prompt (already collapsed + capped by the view model). `null`
+  /// when unknown; the subtitle then falls back to git / "Last paired".
+  final String? lastPrompt;
+
   final VoidCallback onOpen;
 
   /// Plan/tablet — `true` when this is the session shown in the tablet's
@@ -90,6 +105,8 @@ class SessionTile extends StatelessWidget {
     this.room,
     this.deviceLabel,
     this.git,
+    this.groupBy = HomeGroupBy.model,
+    this.lastPrompt,
     this.isReconnecting = false,
     this.isWorking = false,
     this.isWaitingForInput = false,
@@ -140,7 +157,10 @@ class SessionTile extends StatelessWidget {
                 // Trim the left inset by the selection bar so content
                 // stays aligned whether selected or not.
                 padding: EdgeInsets.fromLTRB(
-                  isSelected ? 18 - _leftBarWidth : 18, 14, 18, 14,
+                  isSelected ? 18 - _leftBarWidth : 18,
+                  14,
+                  18,
+                  14,
                 ),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
@@ -165,6 +185,8 @@ class SessionTile extends StatelessWidget {
                         room: room,
                         git: git,
                         deviceLabel: deviceLabel,
+                        groupBy: groupBy,
+                        lastPrompt: lastPrompt,
                       ),
                     ),
                     if (room?.keeper ?? false) ...[
@@ -275,7 +297,9 @@ class _SessionSlot extends StatelessWidget {
       // No URL → the slot is display-only; the row tap still opens the
       // chat (never swallow the tap).
       onTap: onOpen,
-      behavior: onOpen != null ? HitTestBehavior.opaque : HitTestBehavior.deferToChild,
+      behavior: onOpen != null
+          ? HitTestBehavior.opaque
+          : HitTestBehavior.deferToChild,
       child: Container(
         key: const ValueKey('session-tile-session-slot'),
         width: 44,
@@ -301,11 +325,7 @@ class _SessionSlot extends StatelessWidget {
     );
   }
 
-  Widget _slotLine(
-    String text,
-    Color statusColor, {
-    bool emphasis = false,
-  }) {
+  Widget _slotLine(String text, Color statusColor, {bool emphasis = false}) {
     return Text(
       text,
       maxLines: 1,
@@ -357,11 +377,15 @@ class _TitleBlock extends StatefulWidget {
   final RoomInfo? room;
   final GitStatus? git;
   final String? deviceLabel;
+  final HomeGroupBy groupBy;
+  final String? lastPrompt;
   const _TitleBlock({
     required this.peer,
     required this.room,
     this.git,
     this.deviceLabel,
+    this.groupBy = HomeGroupBy.model,
+    this.lastPrompt,
   });
 
   @override
@@ -386,20 +410,27 @@ class _TitleBlockState extends State<_TitleBlock> {
     final colors = context.colors;
     final peer = widget.peer;
     final r = widget.room;
-    // Title preference: explicit room.name → cwd basename → peer
-    // nickname → session name. The cwd path line was dropped on purpose
-    // — the tile now shows just title + subtitle (model / paired date).
+    // Title preference: a name the user actually chose → (by-repo: git
+    // branch) → cwd basename → peer nickname → session name. The cwd path
+    // line was dropped on purpose — the tile now shows just title +
+    // subtitle (model / paired date).
     final String title;
     if (r != null) {
-      if (r.name != null && r.name!.isNotEmpty) {
-        title = r.name!;
-      } else if (r.cwd != null && r.cwd!.isNotEmpty) {
-        final segs = r.cwd!.split('/').where((s) => s.isNotEmpty).toList();
-        title = segs.isNotEmpty ? segs.last : r.cwd!;
-      } else if (peer.nickname?.isNotEmpty == true) {
-        title = peer.nickname!;
+      final name = r.name?.trim();
+      if (name != null && name.isNotEmpty && !_isAutoDerivedName(r)) {
+        title = name;
+      } else if (widget.groupBy == HomeGroupBy.repository) {
+        // By-repo: the group header already names the repository, so the
+        // title slot carries the BRANCH — the piece that actually tells
+        // worktree sessions of the same repo apart.
+        final branch = widget.git?.branch.trim();
+        if (branch != null && branch.isNotEmpty) {
+          title = branch;
+        } else {
+          title = _fallbackTitle(r, peer);
+        }
       } else {
-        title = peer.sessionName;
+        title = _fallbackTitle(r, peer);
       }
     } else {
       title = peer.nickname?.isNotEmpty == true
@@ -442,6 +473,38 @@ class _TitleBlockState extends State<_TitleBlock> {
     );
   }
 
+  static String _fallbackTitle(RoomInfo r, PeerRecord peer) {
+    if (r.cwd != null && r.cwd!.isNotEmpty) {
+      final segs = r.cwd!.split('/').where((s) => s.isNotEmpty).toList();
+      if (segs.isNotEmpty) return segs.last;
+    }
+    if (peer.nickname?.isNotEmpty == true) return peer.nickname!;
+    return peer.sessionName;
+  }
+
+  /// PR #81 review — the Pi always publishes a room name: `_displayName(cwd)`
+  /// (mesh broker name, configured `agent_name`, or `basename(cwd)`), so an
+  /// unrenamed room arrives with a NONEMPTY `name` that is just the folder
+  /// name restated. This returns whether [r]'s name is such an auto-derived
+  /// identity (cwd basename, the legacy `parent/folder` shape, or either
+  /// with the broker's runtime `#N` collision suffix) — those must not beat
+  /// the by-repo branch title. A name the user chose (anything else) wins.
+  static bool _isAutoDerivedName(RoomInfo r) {
+    final cwd = r.cwd?.replaceAll('\\', '/').trim();
+    if (cwd == null || cwd.isEmpty) return false;
+    final segments = cwd
+        .split('/')
+        .where((s) => s.isNotEmpty)
+        .toList(growable: false);
+    if (segments.isEmpty) return false;
+    final base = segments.last;
+    final parent = segments.length >= 2 ? segments[segments.length - 2] : null;
+    final name = r.name?.trim();
+    if (name == null || name.isEmpty) return true;
+    final clean = name.replaceFirst(RegExp(r'#\d+$'), '');
+    return clean == base || (parent != null && clean == '$parent/$base');
+  }
+
   /// Plan/107b + model alternation: with BOTH a git snapshot and a
   /// published model, the line flips every 3 seconds between the
   /// posh-git summary (branch / ahead / behind / dirty / stash) and
@@ -449,29 +512,56 @@ class _TitleBlockState extends State<_TitleBlock> {
   /// With only one of the two it renders statically (git beats model,
   /// as before); with neither it falls back to "Last paired" so the
   /// row keeps a stable height.
+  ///
+  /// Grouped by model: the model never renders here (the group header
+  /// owns it) — the last user prompt preview takes its phase instead,
+  /// alternating with the git summary exactly like the model did.
   Widget _buildSubtitle(BuildContext context) {
     final colors = context.colors;
     final git = widget.git;
     final model = widget.room?.model;
     final hasModel = model != null && model.isNotEmpty;
+    final prompt = widget.lastPrompt?.trim();
+    final hasPrompt = prompt != null && prompt.isNotEmpty;
 
     Widget gitLine() => Text.rich(
-          TextSpan(children: gitStatusSpans(git!, colors)),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        );
+      TextSpan(children: gitStatusSpans(git!, colors)),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    );
     Widget modelLine() => Text(
-          _modelLabel(model!, widget.room?.contextUsage?.contextWindow),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            color: colors.accent,
-            fontSize: 12,
-            fontFamily: kMonoFamily,
-          ),
-        );
+      _modelLabel(model!, widget.room?.contextUsage?.contextWindow),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        color: colors.accent,
+        fontSize: 12,
+        fontFamily: kMonoFamily,
+      ),
+    );
+    Widget promptLine() => Text(
+      prompt!,
+      key: const ValueKey('session-tile-last-prompt'),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        color: colors.muted,
+        fontSize: 12,
+        fontFamily: kMonoFamily,
+      ),
+    );
 
-    if (git != null && hasModel) {
+    Widget? secondaryLine() {
+      // By-model: the prompt replaces the model phase entirely — the group
+      // header already names the model. By-repo keeps the model line.
+      if (widget.groupBy == HomeGroupBy.model) {
+        return hasPrompt ? promptLine() : null;
+      }
+      return hasModel ? modelLine() : null;
+    }
+
+    final secondary = secondaryLine();
+    if (git != null && secondary != null) {
       return ValueListenableBuilder<bool>(
         valueListenable: _SubtitleClock.showGitPhase,
         builder: (context, showGit, _) => AnimatedSwitcher(
@@ -479,12 +569,14 @@ class _TitleBlockState extends State<_TitleBlock> {
           child: showGit
               ? KeyedSubtree(key: const ValueKey('git'), child: gitLine())
               : KeyedSubtree(
-                  key: const ValueKey('model'), child: modelLine()),
+                  key: const ValueKey('session-tile-subtitle-secondary'),
+                  child: secondary,
+                ),
         ),
       );
     }
     if (git != null) return gitLine();
-    if (hasModel) return modelLine();
+    if (secondary != null) return secondary;
     return Text(
       'Last paired: ${_relativeTime(widget.peer.pairedAt)}',
       maxLines: 1,
@@ -522,8 +614,8 @@ double? _contextFraction(ContextUsage? usage) {
   final double? raw = usage.percent != null
       ? usage.percent! / 100
       : usage.tokens != null
-          ? usage.tokens! / usage.contextWindow
-          : null;
+      ? usage.tokens! / usage.contextWindow
+      : null;
   if (raw == null) return null;
   return raw.clamp(0.0, 1.0);
 }
@@ -573,8 +665,9 @@ class _ContextFill extends StatelessWidget {
             color: tint,
             // Soft right edge: reads as a gauge, not a stuck overlay;
             // flush on the left where it meets the tile border.
-            borderRadius:
-                const BorderRadius.horizontal(right: Radius.circular(6)),
+            borderRadius: const BorderRadius.horizontal(
+              right: Radius.circular(6),
+            ),
           ),
         ),
       ),
