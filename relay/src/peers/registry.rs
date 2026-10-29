@@ -10,6 +10,11 @@ use tokio::sync::mpsc;
 
 use crate::metrics::FirehoseMetrics;
 use crate::presence::PresenceManager;
+use crate::push::{
+    PushEventSink,
+    events::{RoomTransitionState, transition_events},
+    now_ms,
+};
 use crate::rooms::{RoomManager, RoomMeta, RoomMetaPatch};
 
 type RoomKey = (String, String); // (peer_id, room_id)
@@ -68,6 +73,8 @@ pub struct PeerRegistry {
     mailboxes: Mutex<HashMap<RoomKey, std::collections::VecDeque<MailboxEntry>>>,
     mailbox_max: usize,
     mailbox_ttl: std::time::Duration,
+    /// Plan 153 — best-effort wake events, independent of live room subscribers.
+    push_events: Mutex<Option<PushEventSink>>,
 }
 
 impl PeerRegistry {
@@ -102,6 +109,37 @@ impl PeerRegistry {
             mailboxes: Mutex::new(HashMap::new()),
             mailbox_max,
             mailbox_ttl,
+            push_events: Mutex::new(None),
+        }
+    }
+
+    pub fn set_push_event_sink(&self, sink: PushEventSink) {
+        match self.push_events.lock() {
+            Ok(mut slot) => *slot = Some(sink),
+            Err(poisoned) => {
+                self.push_events.clear_poison();
+                *poisoned.into_inner() = Some(sink);
+            }
+        }
+    }
+
+    fn enqueue_push_events(&self, events: Vec<crate::push::events::PushEvent>) {
+        if events.is_empty() {
+            return;
+        }
+        let sink = match self.push_events.lock() {
+            Ok(slot) => slot.clone(),
+            Err(poisoned) => {
+                self.push_events.clear_poison();
+                poisoned.into_inner().clone()
+            }
+        };
+        if let Some(sink) = sink {
+            for event in events {
+                if !sink.try_send(event) {
+                    tracing::warn!("push event queue full; wake event dropped");
+                }
+            }
         }
     }
 
@@ -462,6 +500,8 @@ impl PeerRegistry {
         patch: RoomMetaPatch,
     ) -> bool {
         let (
+            previous_working,
+            previous_waiting_for_input,
             current_model,
             current_thinking,
             current_working,
@@ -478,6 +518,11 @@ impl PeerRegistry {
             let key = (peer_id.to_string(), room_id.to_string());
             match lock.get_mut(&key) {
                 Some(v) if !v.is_empty() => {
+                    let previous_working = v.first().map(|entry| entry.1.working).unwrap_or(false);
+                    let previous_waiting_for_input = v
+                        .first()
+                        .map(|entry| entry.1.waiting_for_input)
+                        .unwrap_or(false);
                     // Suppression fix (2026-08-22; PR #51 review, medium):
                     // detect the change PER ENTRY, not against a single
                     // "canonical" conn. Conns at one (peer, room) may carry
@@ -558,6 +603,8 @@ impl PeerRegistry {
                     // guards `rooms_of`'s last-entry view against staleness).
                     let head = v.first().expect("v is non-empty");
                     (
+                        previous_working,
+                        previous_waiting_for_input,
                         head.1.model.clone(),
                         head.1.thinking.clone(),
                         head.1.working,
@@ -590,6 +637,22 @@ impl PeerRegistry {
             }
             return true;
         }
+
+        // Plan 153 — wake sleeping registrations before the empty-live-room
+        // subscriber return. Only real state edges and unique markers produce
+        // events; repeated metadata patches do not keep generating pushes.
+        self.enqueue_push_events(transition_events(
+            peer_id,
+            room_id,
+            RoomTransitionState {
+                previous_working,
+                current_working,
+                previous_waiting: previous_waiting_for_input,
+                current_waiting: current_waiting_for_input,
+            },
+            marker.as_ref(),
+            now_ms(),
+        ));
 
         let room_subs = self.rooms.subscribers_of(peer_id).await;
         // Metric semantics (PR #51 review, low): `rooms_emitted` counts

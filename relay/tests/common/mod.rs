@@ -27,6 +27,18 @@ pub async fn start_relay() -> u16 {
 /// that need to inspect/drive server-side managers directly (subscription
 /// re-validation sweep).
 pub async fn start_relay_with_state() -> (u16, relay::AppState) {
+    start_relay_with_optional_push(None).await
+}
+
+/// Starts a relay with the Plan 153 push service wired into both control
+/// handlers and room-meta transition events.
+pub async fn start_relay_with_push_state(push: Arc<relay::PushService>) -> (u16, relay::AppState) {
+    start_relay_with_optional_push(Some(push)).await
+}
+
+async fn start_relay_with_optional_push(
+    push: Option<Arc<relay::PushService>>,
+) -> (u16, relay::AppState) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let mesh = Arc::new(MeshStore::open_in_memory().unwrap());
@@ -46,6 +58,7 @@ pub async fn start_relay_with_state() -> (u16, relay::AppState) {
         mesh,
         mesh_auth,
         metrics,
+        push,
         port,
         heartbeat_interval: std::time::Duration::from_secs(60),
         // Plan/140 D — far above any test duration; the reap behavior has
@@ -57,6 +70,11 @@ pub async fn start_relay_with_state() -> (u16, relay::AppState) {
         // still suppress — their follow-ups land well inside the window.
         control_reply_dedup_ttl: std::time::Duration::from_secs(1),
     };
+    if let Some(push_service) = &state.push {
+        state
+            .registry
+            .set_push_event_sink(push_service.event_sink());
+    }
     let app = build_router(state.clone());
     tokio::spawn(async move {
         let _ = axum::serve(
@@ -92,6 +110,7 @@ pub async fn start_relay_with_timings(heartbeat_secs: u64, reap_silence_secs: u6
         mesh,
         mesh_auth,
         metrics,
+        push: None,
         port,
         heartbeat_interval: std::time::Duration::from_secs(heartbeat_secs),
         reap_silence: std::time::Duration::from_secs(reap_silence_secs),

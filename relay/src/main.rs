@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -69,15 +70,46 @@ async fn main() -> anyhow::Result<()> {
     ));
     let mesh_auth = Arc::new(relay::MeshAuthCache::new());
 
+    // Plan 153 — stable VAPID identity and explicit private-endpoint policy.
+    let vapid_path = std::env::var_os("REMOTEPI_PUSH_VAPID_PRIVATE_KEY_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(&db_path)
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."))
+                .join("vapid-private.pem")
+        });
+    let vapid = Arc::new(
+        relay::push::config::VapidKeyMaterial::load_or_create(&vapid_path).with_context(|| {
+            format!("failed to load VAPID identity at {}", vapid_path.display())
+        })?,
+    );
+    let endpoint_policy = relay::push::config::EndpointPolicy::parse(
+        std::env::var("REMOTEPI_PUSH_ENDPOINT_ALLOWLIST")
+            .ok()
+            .as_deref(),
+    )
+    .context("invalid REMOTEPI_PUSH_ENDPOINT_ALLOWLIST")?;
+    let push = Arc::new(relay::PushService::new(
+        mesh.clone(),
+        mesh_auth.clone(),
+        vapid,
+        endpoint_policy,
+    ));
+    registry.set_push_event_sink(push.event_sink());
+
     // Background reporter: drain firehose counters every 10 s and emit a
     // single structured log line. Quiet windows are silent.
     let metrics_for_reporter = metrics.clone();
+    let push_metrics_for_reporter = push.metrics();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
         interval.tick().await; // first tick is immediate; skip it
         loop {
             interval.tick().await;
             metrics_for_reporter.report_and_reset();
+            push_metrics_for_reporter.report_and_reset();
         }
     });
 
@@ -92,6 +124,7 @@ async fn main() -> anyhow::Result<()> {
         mesh: mesh.clone(),
         mesh_auth: mesh_auth.clone(),
         metrics: metrics.clone(),
+        push: Some(push.clone()),
         port,
         heartbeat_interval: std::time::Duration::from_secs(heartbeat_secs),
         reap_silence: std::time::Duration::from_secs(reap_silence_secs),
@@ -108,6 +141,18 @@ async fn main() -> anyhow::Result<()> {
             if pruned > 0 {
                 info!(pruned, "subscription re-validation sweep pruned pairs");
             }
+            if let Some(push) = sweeper_state.push.as_ref() {
+                match push.prune_revoked().await {
+                    Ok(pruned) if pruned > 0 => {
+                        info!(
+                            pruned,
+                            "push registration revocation sweep changed registrations"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(error = %error, "push revocation sweep failed"),
+                }
+            }
             // Plan/141 — age out expired mailbox backlogs on the same
             // cadence (lazy TTL eviction covers active rooms; this bounds
             // rooms that never see traffic again).
@@ -122,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
         mesh,
         mesh_auth,
         metrics,
+        push: Some(push),
         port,
         heartbeat_interval: std::time::Duration::from_secs(heartbeat_secs),
         reap_silence: std::time::Duration::from_secs(reap_silence_secs),
