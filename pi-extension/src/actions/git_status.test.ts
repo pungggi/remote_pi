@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { mainRepositoryRoot, repositoryLabel } from "./git_status.js";
+import {
+  getGitStatusSnapshot,
+  mainRepositoryRoot,
+  repositoryLabel,
+} from "./git_status.js";
+import type { GitRunner } from "./git_status.js";
 
 describe("repositoryLabel", () => {
   test("uses owner/repo from HTTPS remotes", () => {
@@ -36,6 +41,70 @@ describe("repositoryLabel", () => {
   test("returns null when neither identity is available", () => {
     expect(repositoryLabel(null, null)).toBeNull();
     expect(repositoryLabel(" ", " ")).toBeNull();
+  });
+});
+
+describe("getGitStatusSnapshot", () => {
+  const statusOutput = [
+    "# branch.head main",
+    "# branch.upstream origin/main",
+    "# branch.ab +0 -0",
+    "",
+  ].join("\n");
+
+  test("reads repository identity when no cache is available", async () => {
+    const run: GitRunner = async (_cwd, args) => {
+      if (args[0] === "status") return statusOutput;
+      if (args[0] === "remote") return "git@github.com:owner/repo.git\n";
+      if (args[0] === "stash") return "";
+      if (args[0] === "rev-parse" && args[1] === "--show-toplevel") {
+        return "/src/repo\n";
+      }
+      if (args[0] === "rev-parse" && args.includes("--git-common-dir")) {
+        return "/src/repo/.git\n";
+      }
+      if (args[0] === "rev-parse" && args[1] === "--verify") return "abc\n";
+      throw new Error(`unexpected git command: ${args.join(" ")}`);
+    };
+
+    const snapshot = await getGitStatusSnapshot("/src/repo", undefined, run);
+
+    expect(snapshot.status?.repository).toBe("owner/repo");
+    expect(snapshot.repositoryInfo).toEqual({
+      repoRoot: "/src/repo\n",
+      remoteUrl: "git@github.com:owner/repo.git\n",
+      commonDir: "/src/repo/.git\n",
+    });
+  });
+
+  test("cached repository identity avoids three Git subprocesses", async () => {
+    const calls: string[][] = [];
+    const run: GitRunner = async (_cwd, args) => {
+      calls.push(args);
+      if (args[0] === "status") return statusOutput;
+      if (args[0] === "stash") return "";
+      if (args[0] === "rev-parse" && args[1] === "--verify") return "abc\n";
+      throw new Error(`unexpected git command: ${args.join(" ")}`);
+    };
+    const repositoryInfo = {
+      repoRoot: "/src/repo",
+      remoteUrl: "git@github.com:owner/repo.git",
+      commonDir: "/src/repo/.git",
+    };
+
+    const snapshot = await getGitStatusSnapshot(
+      "/src/repo",
+      repositoryInfo,
+      run,
+    );
+
+    expect(calls).toEqual([
+      ["status", "--porcelain=2", "--branch", "--no-renames", "-unormal"],
+      ["rev-parse", "--verify", "origin/main"],
+      ["stash", "list"],
+    ]);
+    expect(snapshot.repositoryInfo).toBe(repositoryInfo);
+    expect(snapshot.status?.repository).toBe("owner/repo");
   });
 });
 

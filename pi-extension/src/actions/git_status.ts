@@ -23,6 +23,24 @@ import type { ActionReplySender } from "./handlers.js";
 
 type GitStatusRequestMsg = Extract<ClientMessage, { type: "git_status_request" }>;
 
+/** Repository identity changes rarely, unlike working-tree status. The
+ * periodic publisher caches it briefly to avoid three extra Git processes
+ * on every refresh. */
+export interface GitRepositoryInfo {
+  repoRoot: string | null;
+  remoteUrl: string | null;
+  commonDir: string | null;
+}
+
+export interface GitStatusSnapshot {
+  status: WireGitStatus | null;
+  /** Null when status could not be read; callers must not cache this as a
+   * negative repository result. */
+  repositoryInfo: GitRepositoryInfo | null;
+}
+
+export type GitRunner = (cwd: string, args: string[]) => Promise<string | null>;
+
 function runGit(cwd: string, args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
     execFile(
@@ -39,19 +57,32 @@ function runGit(cwd: string, args: string[]): Promise<string | null> {
 }
 
 export async function getGitStatus(cwd: string): Promise<WireGitStatus | null> {
-  const [statusResult, repoRoot, remoteUrl, commonDir] = await Promise.all([
-    runGit(cwd, [
+  return (await getGitStatusSnapshot(cwd)).status;
+}
+
+/** Reads volatile status while optionally reusing stable repository identity.
+ * The runner seam keeps the process-count behavior directly testable. */
+export async function getGitStatusSnapshot(
+  cwd: string,
+  repositoryInfo?: GitRepositoryInfo,
+  run: GitRunner = runGit,
+): Promise<GitStatusSnapshot> {
+  const [statusResult, resolvedRepositoryInfo] = await Promise.all([
+    run(cwd, [
       "status", "--porcelain=2", "--branch", "--no-renames", "-unormal",
     ]),
-    runGit(cwd, ["rev-parse", "--show-toplevel"]),
-    runGit(cwd, ["remote", "get-url", "origin"]),
-    runGit(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+    repositoryInfo
+      ? Promise.resolve(repositoryInfo)
+      : readGitRepositoryInfo(cwd, run),
   ]);
-  if (!statusResult) return null;
+  if (!statusResult) return { status: null, repositoryInfo: null };
 
   const repository = repositoryLabel(
-    remoteUrl,
-    mainRepositoryRoot(repoRoot, commonDir),
+    resolvedRepositoryInfo.remoteUrl,
+    mainRepositoryRoot(
+      resolvedRepositoryInfo.repoRoot,
+      resolvedRepositoryInfo.commonDir,
+    ),
   );
   const lines = statusResult.split("\n");
 
@@ -73,7 +104,7 @@ export async function getGitStatus(cwd: string): Promise<WireGitStatus | null> {
     if (line.startsWith("# branch.head ")) {
       branch = line.slice("# branch.head ".length);
       if (branch === "(detached)") {
-        const sha = await runGit(cwd, ["rev-parse", "--short", "HEAD"]);
+        const sha = await run(cwd, ["rev-parse", "--short", "HEAD"]);
         branch = sha ? `(${sha.trim()})` : "(detached)";
       }
     } else if (line.startsWith("# branch.upstream ")) {
@@ -112,21 +143,36 @@ export async function getGitStatus(cwd: string): Promise<WireGitStatus | null> {
 
   // Detect upstream gone: upstream recorded but the ref no longer resolves.
   if (upstream) {
-    const rev = await runGit(cwd, ["rev-parse", "--verify", upstream]);
+    const rev = await run(cwd, ["rev-parse", "--verify", upstream]);
     if (!rev) upstreamGone = true;
   }
 
   // Stash count (only bother querying once we know it's a repo).
   let stashCount = 0;
-  const stashResult = await runGit(cwd, ["stash", "list"]);
+  const stashResult = await run(cwd, ["stash", "list"]);
   if (stashResult?.trim()) stashCount = stashResult.trim().split("\n").length;
 
   return {
-    branch, repository, upstream, aheadBy, behindBy, upstreamGone,
-    indexAdded, indexModified, indexDeleted, indexUnmerged,
-    workingAdded, workingModified, workingDeleted, workingUnmerged,
-    stashCount,
+    status: {
+      branch, repository, upstream, aheadBy, behindBy, upstreamGone,
+      indexAdded, indexModified, indexDeleted, indexUnmerged,
+      workingAdded, workingModified, workingDeleted, workingUnmerged,
+      stashCount,
+    },
+    repositoryInfo: resolvedRepositoryInfo,
   };
+}
+
+async function readGitRepositoryInfo(
+  cwd: string,
+  run: GitRunner,
+): Promise<GitRepositoryInfo> {
+  const [repoRoot, remoteUrl, commonDir] = await Promise.all([
+    run(cwd, ["rev-parse", "--show-toplevel"]),
+    run(cwd, ["remote", "get-url", "origin"]),
+    run(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+  ]);
+  return { repoRoot, remoteUrl, commonDir };
 }
 
 /**
