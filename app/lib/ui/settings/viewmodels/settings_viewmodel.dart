@@ -1,6 +1,7 @@
 import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/notifications/local_notifications.dart';
 import 'package:app/data/preferences/preferences.dart';
+import 'package:app/data/push/unified_push_service.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/relay_config.dart';
 import 'package:app/pairing/storage.dart';
@@ -27,6 +28,7 @@ class SettingsViewModel extends ViewModel<SettingsState> {
   /// ("Session alerts"). Optional for the same reason as [_meshSync]:
   /// view-model tests run without the plugin seam.
   final LocalNotifications? _notifications;
+  final UnifiedPushService? _push;
   bool _disposed = false;
 
   SettingsViewModel(
@@ -35,6 +37,7 @@ class SettingsViewModel extends ViewModel<SettingsState> {
     this._conn, [
     this._meshSync,
     this._notifications,
+    this._push,
   ]) : super(const SettingsLoading()) {
     _load();
   }
@@ -179,6 +182,8 @@ class SettingsViewModel extends ViewModel<SettingsState> {
       _meshSync.publish(allowEmpty: remaining.isEmpty);
     }
     _conn.subscribeToPeers(remaining.map((p) => p.remoteEpk).toList());
+    // Plan 153 — immediately narrow or remove the relay's push peer filter.
+    await _push?.updateRegistration();
     // If the revoked peer was the one currently driving the connection,
     // tear it down so we don't keep talking to a peer the user just
     // removed. If others remain, fall back to one of them; otherwise

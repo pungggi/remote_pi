@@ -121,6 +121,10 @@ class ChatViewModel extends ViewModel<ChatState> {
     return _conn.isRoomLive(epk, _activeRoomId);
   }
 
+  bool get isSleeping =>
+      _runtime.connection == RuntimeConnection.sleeping ||
+      _conn.status is StatusSleeping;
+
   /// Whole-turn working signal for the room THIS chat is viewing — the
   /// same mechanism as the Home dot. The relay broadcasts `meta.working`
   /// per-room (turn_start/turn_end), so switching to another chat never

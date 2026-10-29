@@ -9,10 +9,12 @@ import 'package:app/data/notifications/local_notifications.dart';
 import 'package:app/data/notifications/session_completion_notifications.dart';
 import 'package:app/data/notifications/waiting_input_notifications.dart';
 import 'package:app/data/preferences/preferences.dart';
+import 'package:app/data/push/unified_push_service.dart';
 import 'package:app/data/share/shared_image_inbox.dart';
 import 'package:app/data/share/shared_text_inbox.dart';
 import 'package:app/data/share/composer_draft.dart';
 import 'package:app/data/sync/sync_service.dart';
+import 'package:app/data/transport/balanced_connection_controller.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/data/transport/keep_alive_controller.dart';
@@ -25,8 +27,9 @@ import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-void main() async {
+Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  final backgroundLaunch = args.contains('--unifiedpush-bg');
   // Plan 31 — open the v2 SSOT boxes + WIPE the volatile runtime box BEFORE
   // anything subscribes (#3 / Risk 2).
   await LocalBoxes.init();
@@ -37,7 +40,20 @@ void main() async {
   // Plan 103 — mirror connection status into the Android foreground service so
   // the relay WS survives backgrounding. attach() also reflects the current
   // status (Online at boot → starts the notification).
-  injector.get<KeepAliveController>().attach(injector.get<ConnectionManager>());
+  final keepAlive = injector.get<KeepAliveController>();
+  final balanced = injector.get<BalancedConnectionController>();
+  keepAlive.attach(injector.get<ConnectionManager>());
+  balanced.attach();
+  keepAlive.onServiceTimeout = () async {
+    await balanced.handleForegroundServiceTimeout();
+    await injector.get<UnifiedPushService>().handleStartRefused();
+  };
+  keepAlive.onServiceStartRefused = () {
+    // ignore: unawaited_futures
+    balanced.handleForegroundServiceTimeout();
+    // ignore: unawaited_futures
+    injector.get<UnifiedPushService>().handleStartRefused();
+  };
   // Plan 114 — react to network changes (Wi-Fi ↔ cellular) and force an
   // immediate reconnect so recovery starts within ~1s instead of the 30s
   // backoff ceiling. attach() subscribes to connectivity events.
@@ -48,8 +64,8 @@ void main() async {
   // attaching the gate so no marker can fire through a titleless window.
   final completion = injector.get<SessionCompletionNotifications>();
   await injector.get<LocalNotifications>().initialize();
-  completion.roomTitle =
-      (epk, roomId) => SessionCompletionNotifications.roomTitleFor(
+  completion.roomTitle = (epk, roomId) =>
+      SessionCompletionNotifications.roomTitleFor(
         injector.get<ConnectionManager>(),
         epk,
         roomId,
@@ -87,6 +103,17 @@ void main() async {
             (epk: entry.key, roomId: room.roomId),
     ];
   };
+  // Plan 153 — initialize the connector in both engines. A background launch
+  // ends here: no shares, router, widgets or runApp are constructed.
+  if (backgroundLaunch) {
+    await injector.get<ConnectionManager>().prepareForBackgroundSleep(
+      preferredEpk: injector.get<Preferences>().selectedPeerEpk,
+    );
+  }
+  await injector.get<UnifiedPushService>().attach(
+    backgrounded: backgroundLaunch,
+  );
+  if (backgroundLaunch) return;
   // Plan/104 — if launched via a Share (ACTION_SEND image), pull it now so it
   // waits in the inbox; the router listener routes to the chat once booted.
   final shared = await injector.get<IImagePickerService>().consumeSharedImage();
@@ -137,13 +164,12 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
     // Warm taps arrive on this stream; a notification that LAUNCHED the
     // terminated app never fires the callback — its payload is consumed
     // once below.
-    _completionTapSub = injector
-        .get<LocalNotifications>()
-        .taps
-        .listen((payload) {
-          debugPrint('[notif-tap] warm payload=$payload');
-          _openFromCompletionTap(payload);
-        });
+    _completionTapSub = injector.get<LocalNotifications>().taps.listen((
+      payload,
+    ) {
+      debugPrint('[notif-tap] warm payload=$payload');
+      _openFromCompletionTap(payload);
+    });
     // ignore: unawaited_futures
     injector.get<LocalNotifications>().consumeLaunchTap().then((payload) {
       debugPrint('[notif-tap] cold payload=$payload');
@@ -170,18 +196,21 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
     // Plan 125 — the foreground service only earns its keep while backgrounded.
     // Foregrounded, the process is already foreground-priority, so running it
     // would waste the Android-15 `dataSync` 6 h budget for nothing.
+    injector.get<BalancedConnectionController>().setBackgrounded(
+      state != AppLifecycleState.resumed,
+    );
     injector.get<KeepAliveController>().setBackgrounded(
       state != AppLifecycleState.resumed,
     );
     // Plan 132 — completion notifications only fire while the app is NOT
     // resumed (foreground, the Home tiles already show working→idle).
-    injector
-        .get<SessionCompletionNotifications>()
-        .setBackgrounded(state != AppLifecycleState.resumed);
+    injector.get<SessionCompletionNotifications>().setBackgrounded(
+      state != AppLifecycleState.resumed,
+    );
     // Plan/134 — same lifecycle gate for the waiting-for-input banner.
-    injector
-        .get<WaitingInputNotifications>()
-        .setBackgrounded(state != AppLifecycleState.resumed);
+    injector.get<WaitingInputNotifications>().setBackgrounded(
+      state != AppLifecycleState.resumed,
+    );
     // Plan 125 (Layer 2) — lean keep-alive cadence while backgrounded, active
     // on resume. Slows the protocol Ping (25 → 90 s) and the watchdog (30 → 60 s)
     // while the app is in the background, halving outbound + CPU wakeups.
@@ -376,6 +405,9 @@ class _PiperAppState extends State<PiperApp> with WidgetsBindingObserver {
         ),
         ChangeNotifierProvider<SessionSelection>.value(
           value: injector.get<SessionSelection>(),
+        ),
+        ChangeNotifierProvider<UnifiedPushService>.value(
+          value: injector.get<UnifiedPushService>(),
         ),
         // Shell layout state — lets the adaptive shell collapse the split
         // into a single centered pane on zero-state Home (no Pi / empty).

@@ -29,7 +29,9 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+        val keepAliveChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+        KeepAliveService.dartChannel = keepAliveChannel
+        keepAliveChannel
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "start", "update" -> {
@@ -42,10 +44,9 @@ class MainActivity : FlutterActivity() {
                             ContextCompat.startForegroundService(this, intent)
                             result.success(true)
                         } catch (e: Exception) {
-                            // Android 12+ throws ForegroundServiceStartNotAllowedException
-                            // when the app isn't in a foreground-allowed state. Report
-                            // failure so Dart doesn't mark the service as started; it
-                            // retries on the next (foreground) status change.
+                            // Do not retry in a loop while Android refuses the
+                            // background start. Dart suspends until foreground.
+                            keepAliveChannel.invokeMethod("onStartRefused", null)
                             result.success(false)
                         }
                     }

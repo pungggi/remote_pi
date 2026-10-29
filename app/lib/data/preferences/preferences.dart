@@ -18,6 +18,10 @@ enum KeepAliveMode {
   /// Never run the service; the OS freezes the process on background and the
   /// WS drops on focus change (the pre-plan-103 behaviour).
   off,
+
+  /// Keep active sessions connected, then sleep after a five-minute grace
+  /// period. UnifiedPush can wake the connection for new relevant events.
+  balanced,
 }
 
 /// How the Home session list groups its tiles.

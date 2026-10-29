@@ -115,7 +115,8 @@ dependencies:
   # versionName) so the Android-only in-app update notice can compare it
   # against the release manifest's semver.
   package_info_plus: ^8.0.0
-
+  unifiedpush_android: 3.5.0
+  unifiedpush_platform_interface: 4.0.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

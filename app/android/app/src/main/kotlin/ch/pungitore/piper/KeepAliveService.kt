@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import io.flutter.plugin.common.MethodChannel
 
 /**
  * Plan 103 — foreground "priority anchor".
@@ -31,6 +32,7 @@ class KeepAliveService : Service() {
         const val EXTRA_TEXT = "text"
         private const val CHANNEL_ID = "piper_connection"
         private const val NOTIF_ID = 10301
+        var dartChannel: MethodChannel? = null
     }
 
     override fun onCreate() {
@@ -85,6 +87,14 @@ class KeepAliveService : Service() {
         // next launch and KeepAliveController re-attaches + re-starts. A sticky
         // restart cannot call startForeground while the app isn't foreground.
         return START_NOT_STICKY
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        // Android 15+ dataSync quota exhausted. Stop within the platform's
+        // required window and tell Dart to suspend its socket and retry loop.
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelfResult(startId)
+        dartChannel?.invokeMethod("onTimeout", null)
     }
 
     override fun onDestroy() {

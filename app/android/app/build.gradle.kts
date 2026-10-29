@@ -8,6 +8,18 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// UnifiedPush Android depends on tink-android while another plugin pulls the
+// Java tink artifact. Select one Android variant to avoid duplicate classes.
+configurations.all {
+    val tink = "com.google.crypto.tink:tink-android:1.17.0"
+    resolutionStrategy {
+        force(tink)
+        dependencySubstitution {
+            substitute(module("com.google.crypto.tink:tink")).using(module(tink))
+        }
+    }
+}
+
 // Release signing — loaded from android/key.properties when present.
 // If the file is missing (CI without secrets, fresh clone for debug-only
 // work), release builds fall back to the debug keys so `flutter run

@@ -10,6 +10,7 @@ import 'package:app/data/notifications/local_notifications.dart';
 import 'package:app/data/notifications/session_completion_notifications.dart';
 import 'package:app/data/notifications/waiting_input_notifications.dart';
 import 'package:app/data/preferences/preferences.dart';
+import 'package:app/data/push/unified_push_service.dart';
 import 'package:app/data/repositories/home_read_repository.dart';
 import 'package:app/data/repositories/session_read_repository.dart';
 import 'package:app/data/share/shared_image_inbox.dart';
@@ -17,6 +18,7 @@ import 'package:app/data/share/shared_text_inbox.dart';
 import 'package:app/data/share/composer_draft.dart';
 import 'package:app/data/sync/sync_service.dart';
 import 'package:app/data/transport/channel.dart'; // IChannel
+import 'package:app/data/transport/balanced_connection_controller.dart';
 import 'package:app/data/transport/connection_manager.dart';
 import 'package:app/data/transport/keep_alive_controller.dart';
 import 'package:app/data/device/reliability_service.dart';
@@ -135,6 +137,15 @@ Future<void> setupDependencies() async {
     () => KeepAliveController(_injector.get<Preferences>()),
   );
 
+  // Plan 153 — active/grace/sleep coordination for Balanced mode.
+  _injector.addService<BalancedConnectionController>(
+    () => BalancedConnectionController(
+      _injector.get<Preferences>(),
+      _injector.get<ConnectionManager>(),
+      _injector.get<KeepAliveController>(),
+    ),
+  );
+
   // Plan 114 — network-change detection. Attached to ConnectionManager in
   // main() (mirrors KeepAliveController); addService so its dispose() cancels
   // the connectivity subscription at app teardown.
@@ -161,6 +172,20 @@ Future<void> setupDependencies() async {
     () => WaitingInputNotifications(
       boxes: _injector.get<LocalBoxes>(),
       local: _injector.get<LocalNotifications>(),
+    ),
+  );
+
+  // Plan 153 — official UnifiedPush connector and relay registration.
+  _injector.addService<UnifiedPushService>(
+    () => UnifiedPushService(
+      _injector.get<Preferences>(),
+      _injector.get<ConnectionManager>(),
+      _injector.get<PairingStorage>(),
+      _injector.get<BalancedConnectionController>(),
+      _injector.get<KeepAliveController>(),
+      _injector.get<SessionCompletionNotifications>(),
+      _injector.get<WaitingInputNotifications>(),
+      localNotifications: _injector.get<LocalNotifications>(),
     ),
   );
 
@@ -238,6 +263,7 @@ Future<void> setupDependencies() async {
       _injector.get<ConnectionManager>(),
       _injector.get<MeshSyncService>(),
       _injector.get<LocalNotifications>(),
+      _injector.get<UnifiedPushService>(),
     ),
   );
   _injector.addViewModel<PairingViewModel>(
@@ -365,21 +391,22 @@ Future<IChannel> _productionConnectionFactory(
         ? _kLanConnectTimeout
         : _kPrimaryConnectTimeout;
     try {
-      final transport = await WsTransport.connect(
-        relayUrl: ep.url,
-        peerPubkey: peer.remoteEpk,
-        ed25519Key: ownerKey,
-        // Security fix 2026-08 — seed the inbound-signature ratchet from
-        // the persisted record and persist the flip when it fires.
-        peerSigningRequired: peer.signing,
-        onPeerRatcheted: () => _markPeerSigning(peer.remoteEpk),
-      ).timeout(
-        timeout,
-        onTimeout: () => throw TimeoutException(
-          'WS connect to ${ep.url} timed out '
-          'after ${timeout.inMilliseconds}ms',
-        ),
-      );
+      final transport =
+          await WsTransport.connect(
+            relayUrl: ep.url,
+            peerPubkey: peer.remoteEpk,
+            ed25519Key: ownerKey,
+            // Security fix 2026-08 — seed the inbound-signature ratchet from
+            // the persisted record and persist the flip when it fires.
+            peerSigningRequired: peer.signing,
+            onPeerRatcheted: () => _markPeerSigning(peer.remoteEpk),
+          ).timeout(
+            timeout,
+            onTimeout: () => throw TimeoutException(
+              'WS connect to ${ep.url} timed out '
+              'after ${timeout.inMilliseconds}ms',
+            ),
+          );
       if (cancel.isCancelled) {
         await transport.close();
         throw _CancelledError();
@@ -409,10 +436,15 @@ Future<IChannel> _productionConnectionFactory(
 void _markPeerSigning(String remoteEpk) {
   try {
     final storage = _injector.get<PairingStorage>();
-    storage.loadPeer(remoteEpk).then<void>((record) {
-      if (record == null || record.signing) return;
-      storage.savePeer(record.copyWith(signing: true));
-    }).catchError((_) {/* best-effort — retried on next verified frame */});
+    storage
+        .loadPeer(remoteEpk)
+        .then<void>((record) {
+          if (record == null || record.signing) return;
+          storage.savePeer(record.copyWith(signing: true));
+        })
+        .catchError((_) {
+          /* best-effort — retried on next verified frame */
+        });
   } catch (_) {
     // Storage unavailable during teardown — harmless.
   }
@@ -425,15 +457,13 @@ Future<bool> _shouldSkipLanEndpoints() async {
   try {
     final results = await Connectivity().checkConnectivity();
     final hasNonCellular = results.any(
-      (r) => r == ConnectivityResult.wifi ||
-          r == ConnectivityResult.ethernet,
+      (r) => r == ConnectivityResult.wifi || r == ConnectivityResult.ethernet,
     );
     return !hasNonCellular;
   } catch (_) {
     return false;
   }
 }
-
 
 // ---------------------------------------------------------------------------
 // Production PairingTransportFactory — used by PairingViewModel for first pair.

@@ -119,6 +119,16 @@ class WaitingInputNotifications implements Service {
     }
   }
 
+  /// Plan 153 — UnifiedPush uses the same stable ID, payload, sheet gate and
+  /// clear path as a live WebSocket transition.
+  Future<void> handlePush({
+    required String epk,
+    required String roomId,
+    required bool waiting,
+  }) => _onWaiting(
+    WaitingForInputEvent(epk: epk, roomId: roomId, waiting: waiting),
+  );
+
   Future<void> _onWaiting(WaitingForInputEvent e) async {
     if (_disposed) return;
     // Plan/141 — falling edge clears the room's banner from the tray,
