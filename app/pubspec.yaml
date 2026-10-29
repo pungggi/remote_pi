@@ -52,6 +52,11 @@ dependencies:
   remote_pi_identity:
     path: packages/remote_pi_identity
 
+  # Plan 153 — registers the keep-alive channel on foreground and
+  # UnifiedPush background Flutter engines.
+  piper_keep_alive:
+    path: packages/piper_keep_alive
+
   # Plan 24 — HTTP client for the mesh_versions endpoint on the relay.
   dio: ^5.7.0
 

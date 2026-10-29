@@ -44,10 +44,7 @@ Future<void> main(List<String> args) async {
   final balanced = injector.get<BalancedConnectionController>();
   keepAlive.attach(injector.get<ConnectionManager>());
   balanced.attach();
-  keepAlive.onServiceTimeout = () async {
-    await balanced.handleForegroundServiceTimeout();
-    await injector.get<UnifiedPushService>().handleStartRefused();
-  };
+  keepAlive.onServiceTimeout = balanced.handleForegroundServiceTimeout;
   keepAlive.onServiceStartRefused = () {
     // ignore: unawaited_futures
     balanced.handleForegroundServiceTimeout();

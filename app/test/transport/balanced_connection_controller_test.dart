@@ -103,6 +103,11 @@ void main() {
         controller.setBackgrounded(true);
         expect(controller.phase, BalancedPhase.grace);
         final initialDeadline = controller.graceEndsAt;
+        prefs.notifyListeners();
+        async.flushMicrotasks();
+        expect(controller.phase, BalancedPhase.grace);
+        expect(controller.graceEndsAt, initialDeadline);
+        expect(channels, hasLength(1));
 
         channels.single.control.add(_room('a', true));
         async.flushMicrotasks();
@@ -242,6 +247,58 @@ void main() {
       async.flushMicrotasks();
       expect(calls, 2);
       expect(cm.status, isA<StatusOnline>());
+      controller.dispose();
+      keepAlive.dispose();
+      cm.dispose();
+    });
+  });
+
+  test('active run does not enter grace or sleep during a long reconnect', () {
+    fakeAsync((async) {
+      var now = DateTime.utc(2026, 1, 1);
+      final prefs = _Prefs(KeepAliveMode.balanced);
+      final keepAlive = _KeepAlive(prefs);
+      var failReconnect = false;
+      final channels = <_Channel>[];
+      final cm = ConnectionManager(
+        factory: (_, _) async {
+          if (failReconnect) throw StateError('tunnel down');
+          final channel = _Channel();
+          channels.add(channel);
+          return channel;
+        },
+        storage: _Storage(),
+        emitDebounce: Duration.zero,
+      );
+      cm.boot();
+      async.flushMicrotasks();
+      final controller = BalancedConnectionController(
+        prefs,
+        cm,
+        keepAlive,
+        now: () => now,
+      )..attach();
+      controller.setBackgrounded(true);
+      channels.single.control.add(_room('a', true));
+      async.flushMicrotasks();
+      expect(controller.phase, BalancedPhase.active);
+
+      failReconnect = true;
+      channels.single.close();
+      async.flushMicrotasks();
+      expect(cm.status, isA<StatusRetrying>());
+      now = now.add(const Duration(minutes: 10));
+      async.elapse(const Duration(minutes: 10));
+      async.flushMicrotasks();
+      expect(controller.phase, BalancedPhase.active);
+      expect(cm.status, isA<StatusRetrying>());
+      expect(keepAlive.balancedValues.last, isTrue);
+
+      failReconnect = false;
+      cm.onForeground();
+      async.flushMicrotasks();
+      expect(cm.status, isA<StatusOnline>());
+      expect(controller.phase, BalancedPhase.active);
       controller.dispose();
       keepAlive.dispose();
       cm.dispose();

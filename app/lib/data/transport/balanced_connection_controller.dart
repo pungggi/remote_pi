@@ -37,6 +37,7 @@ class BalancedConnectionController extends Service {
   bool _backgrounded = false;
   bool _attached = false;
   bool _disposed = false;
+  KeepAliveMode? _lastKeepAliveMode;
 
   BalancedPhase get phase => _phase;
   bool get isBackgrounded => _backgrounded;
@@ -45,6 +46,7 @@ class BalancedConnectionController extends Service {
   void attach() {
     if (_attached || _disposed) return;
     _attached = true;
+    _lastKeepAliveMode = _prefs.keepAliveMode;
     _prefs.addListener(_onModeChanged);
     _roomsSub = _conn.roomsStream.listen((_) => _reconcileRooms());
     _runDoneSub = _conn.runDoneStream.listen((_) => noteRunFinished());
@@ -107,7 +109,10 @@ class BalancedConnectionController extends Service {
 
   void _onModeChanged() {
     if (_disposed) return;
-    if (_prefs.keepAliveMode != KeepAliveMode.balanced) {
+    final mode = _prefs.keepAliveMode;
+    if (mode == _lastKeepAliveMode) return;
+    _lastKeepAliveMode = mode;
+    if (mode != KeepAliveMode.balanced) {
       _graceTimer?.cancel();
       _graceTimer = null;
       _graceEndsAt = null;
@@ -135,6 +140,13 @@ class BalancedConnectionController extends Service {
       _graceTimer = null;
       _graceEndsAt = null;
       _phase = BalancedPhase.active;
+      _keepAlive.setBalancedActive(true);
+      return;
+    }
+    if (_phase == BalancedPhase.active &&
+        (_conn.status is StatusRetrying || _conn.status is StatusConnecting)) {
+      // A lost socket does not prove the PC run ended. Keep retrying until a
+      // fresh snapshot can reconcile it instead of sleeping mid-run.
       _keepAlive.setBalancedActive(true);
       return;
     }

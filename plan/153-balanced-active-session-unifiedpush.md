@@ -525,6 +525,8 @@ restores the selected legacy mode without changing its semantics.
   - `onTimeout`, clean stop, Dart notification
 - `android/.../MainActivity.kt`
   - guarded timeout and wake platform-channel methods
+- `packages/piper_keep_alive/`
+  - registers the keep-alive channel on normal and UnifiedPush background engines
 - `pubspec.yaml` / lockfile
   - official UnifiedPush connector
 

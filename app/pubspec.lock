@@ -808,6 +808,13 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.15.0"
+  piper_keep_alive:
+    dependency: "direct main"
+    description:
+      path: "packages/piper_keep_alive"
+      relative: true
+    source: path
+    version: "0.1.0"
   platform:
     dependency: transitive
     description:

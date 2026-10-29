@@ -1,0 +1,19 @@
+name: piper_keep_alive
+description: Android foreground-service channel registered on every Flutter engine.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.11.0 <4.0.0"
+  flutter: ">=3.41.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: ch.pungitore.piper.keepalive
+        pluginClass: PiperKeepAlivePlugin

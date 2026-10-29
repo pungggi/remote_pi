@@ -299,6 +299,19 @@ void main() {
       await _flush();
       expect(connector.registerCalls, greaterThanOrEqualTo(1));
       expect(connector.vapid, 'vapid-public');
+      final registrationsBefore = connector.registerCalls;
+      final unregisterBefore = channels.single.controls
+          .where((frame) => frame['type'] == 'push_unregister')
+          .length;
+      prefs.notifyListeners();
+      await _flush();
+      expect(connector.registerCalls, registrationsBefore);
+      expect(
+        channels.single.controls.where(
+          (frame) => frame['type'] == 'push_unregister',
+        ),
+        hasLength(unregisterBefore),
+      );
 
       connector.endpoint(temporary: true);
       await _flush();
@@ -361,6 +374,10 @@ void main() {
       connector.push(_event('waiting_cleared', 'wait-clear-1'));
       await _flush();
       expect(waiting.pushed.map((e) => e.waiting), [true, false]);
+      connector.push(_event('run_finished', 'finish-1'));
+      await _flush();
+      await service.handleStartRefused();
+      expect(local.shown, hasLength(1), reason: 'finished wake must be stale');
 
       connector.push(_event('run_started', 'undecrypted'), decrypted: false);
       await _flush();

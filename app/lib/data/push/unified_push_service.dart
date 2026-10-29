@@ -140,6 +140,7 @@ class UnifiedPushService extends ChangeNotifier implements Service {
   bool _configInFlight = false;
   bool _attached = false;
   bool _disposed = false;
+  KeepAliveMode? _lastKeepAliveMode;
   UnifiedPushStatus _status = UnifiedPushStatus.disabled;
   String? _statusMessage;
   String? _distributor;
@@ -171,6 +172,7 @@ class UnifiedPushService extends ChangeNotifier implements Service {
     }
     _registrationId = await _store.getOrCreateRegistrationId();
     _vapidPublicKey = await _store.readVapidPublicKey();
+    _lastKeepAliveMode = _prefs.keepAliveMode;
     _prefs.addListener(_onModeChanged);
     _storage.addListener(_onPeersChanged);
     _completion.addListener(updateRegistration);
@@ -488,8 +490,10 @@ class UnifiedPushService extends ChangeNotifier implements Service {
         await _balanced.wakeForRunStarted();
         if (_keepAlive.isStartBlocked) await handleStartRefused();
       case PushEventType.runFinished:
+        _lastRunWake = null;
         _balanced.noteRunFinished();
       case PushEventType.runDone:
+        _lastRunWake = null;
         await _completion.showPush(
           epk: epk,
           roomId: roomId,
@@ -579,10 +583,14 @@ class UnifiedPushService extends ChangeNotifier implements Service {
 
   void _onModeChanged() {
     if (_disposed) return;
-    if (_prefs.keepAliveMode == KeepAliveMode.balanced) {
+    final mode = _prefs.keepAliveMode;
+    if (mode == _lastKeepAliveMode) return;
+    _lastKeepAliveMode = mode;
+    if (mode == KeepAliveMode.balanced) {
       unawaited(_registerWithDistributor());
       unawaited(updateRegistration());
     } else {
+      _lastRunWake = null;
       unawaited(unregister());
     }
   }

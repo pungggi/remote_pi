@@ -72,6 +72,7 @@ class KeepAliveController extends Service {
   Timer? _chargingTimer;
   bool _balancedActive = false;
   bool _startBlocked = false;
+  bool _timeoutBlocked = false;
   bool get isStartBlocked => _startBlocked;
   ConnectionStatus _lastStatus = const StatusNoPeer();
   String? _lastPeerShort;
@@ -134,7 +135,10 @@ class KeepAliveController extends Service {
     if (!_isAndroid()) return;
     if (_backgrounded == backgrounded) return;
     _backgrounded = backgrounded;
-    if (!backgrounded) _startBlocked = false;
+    if (!backgrounded) {
+      _startBlocked = false;
+      _timeoutBlocked = false;
+    }
     if (backgrounded) {
       _startChargingPoll();
     } else {
@@ -203,6 +207,7 @@ class KeepAliveController extends Service {
       // Plan 125 (Layer 0) — only while backgrounded. (Layer 4) — three-way
       // mode, with the `whenCharging` mode additionally gated on [_isCharging].
       final mode = _prefs.keepAliveMode;
+      if (mode != KeepAliveMode.balanced) _startBlocked = false;
       final modeAllows = switch (mode) {
         KeepAliveMode.off => false,
         KeepAliveMode.always => true,
@@ -214,7 +219,8 @@ class KeepAliveController extends Service {
           status is! StatusNoPeer &&
           status is! StatusSleeping &&
           _backgrounded &&
-          !_startBlocked;
+          !_startBlocked &&
+          !_timeoutBlocked;
       if (!wantRunning) {
         if (_started) {
           _started = false;
@@ -229,8 +235,10 @@ class KeepAliveController extends Service {
         final ok = await _invoke('start', <String, dynamic>{'text': text});
         if (!ok) {
           _started = false;
-          _startBlocked = true;
-          onServiceStartRefused?.call();
+          if (mode == KeepAliveMode.balanced) {
+            _startBlocked = true;
+            onServiceStartRefused?.call();
+          }
         }
       } else {
         await _invoke('update', <String, dynamic>{'text': text});
@@ -294,10 +302,11 @@ class KeepAliveController extends Service {
   Future<void> _handleNativeCall(MethodCall call) async {
     if (call.method != 'onTimeout' && call.method != 'onStartRefused') return;
     _started = false;
-    _startBlocked = true;
     if (call.method == 'onTimeout') {
+      _timeoutBlocked = true;
       await onServiceTimeout?.call();
-    } else {
+    } else if (_prefs.keepAliveMode == KeepAliveMode.balanced) {
+      _startBlocked = true;
       onServiceStartRefused?.call();
     }
   }

@@ -11,6 +11,11 @@ class _Prefs extends Preferences {
   KeepAliveMode get keepAliveMode => KeepAliveMode.balanced;
 }
 
+class _AlwaysPrefs extends Preferences {
+  @override
+  KeepAliveMode get keepAliveMode => KeepAliveMode.always;
+}
+
 void main() {
   testWidgets('Balanced starts only for active/grace and stops for Sleeping', (
     tester,
@@ -96,5 +101,45 @@ void main() {
     controller.setBackgrounded(true);
     await tester.pump();
     expect(starts, hasLength(2));
+  });
+
+  testWidgets('legacy start refusal keeps retrying without Balanced sleep', (
+    tester,
+  ) async {
+    final starts = <String>[];
+    var refused = 0;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(_channel, (
+      call,
+    ) async {
+      if (call.method == 'hasNotificationPermission') return true;
+      if (call.method == 'isCharging') return false;
+      if (call.method == 'start') {
+        starts.add(call.method);
+        return false;
+      }
+      return true;
+    });
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        _channel,
+        null,
+      ),
+    );
+    final controller = KeepAliveController(
+      _AlwaysPrefs(),
+      isAndroid: () => true,
+      enableChargingPoll: false,
+    )..onServiceStartRefused = (() => refused++);
+    addTearDown(controller.dispose);
+
+    controller.setBackgrounded(true);
+    await controller.reflect(const StatusConnecting());
+    await controller.reflect(
+      const StatusRetrying(nextRetry: Duration.zero, attempt: 0),
+    );
+    await tester.pump();
+    expect(starts, hasLength(2));
+    expect(refused, 0);
+    expect(controller.isStartBlocked, isFalse);
   });
 }
