@@ -11,6 +11,8 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+## [1.4.5] — 2026-10-29
+
 ### Added
 
 - **Balanced / Active sessions**: active runs stay connected, then Piper
