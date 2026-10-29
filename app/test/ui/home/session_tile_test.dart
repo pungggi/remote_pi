@@ -628,8 +628,12 @@ void main() {
   group('grouped display (repo mode)', () {
     testWidgets(
       'by-repo: the title shows the BRANCH where the folder name was — '
-      'the group header already names the repository',
+      'including when the Pi announced the auto-derived folder name as '
+      'room.name (PR #81 review)',
       (tester) async {
+        // Real unrenamed rooms are announced with name = _displayName(cwd)
+        // (mesh name / agent_name default / basename) — i.e. exactly the
+        // folder name restated. That must not beat the branch title.
         await _pump(
           tester,
           groupBy: HomeGroupBy.repository,
@@ -640,6 +644,7 @@ void main() {
           room: const RoomInfo(
             roomId: 'r1',
             startedAt: 1,
+            name: 'remote_pi_off',
             cwd: '/src/pi/packages/remote_pi_off',
           ),
         );
@@ -649,7 +654,41 @@ void main() {
       },
     );
 
-    testWidgets('by-repo: an explicit room name still beats the branch', (
+    testWidgets(
+      'by-repo: broker #N collision suffix and the legacy parent/folder '
+      'name shape are still auto-derived → branch wins',
+      (tester) async {
+        await _pump(
+          tester,
+          groupBy: HomeGroupBy.repository,
+          git: const GitStatus(branch: 'main', repository: 'pungggi/pi'),
+          room: const RoomInfo(
+            roomId: 'r1',
+            startedAt: 1,
+            name: 'remote_pi_off#2',
+            cwd: '/src/pi/packages/remote_pi_off',
+          ),
+        );
+        expect(find.text('main'), findsOneWidget);
+        expect(find.text('remote_pi_off#2'), findsNothing);
+
+        await _pump(
+          tester,
+          groupBy: HomeGroupBy.repository,
+          git: const GitStatus(branch: 'main', repository: 'pungggi/pi'),
+          room: const RoomInfo(
+            roomId: 'r1',
+            startedAt: 1,
+            name: 'packages/remote_pi_off', // legacy defaultAgentName shape
+            cwd: '/src/pi/packages/remote_pi_off',
+          ),
+        );
+        expect(find.text('main'), findsOneWidget);
+        expect(find.text('packages/remote_pi_off'), findsNothing);
+      },
+    );
+
+    testWidgets('by-repo: a name the user chose still beats the branch', (
       tester,
     ) async {
       await _pump(

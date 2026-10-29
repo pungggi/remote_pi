@@ -410,14 +410,15 @@ class _TitleBlockState extends State<_TitleBlock> {
     final colors = context.colors;
     final peer = widget.peer;
     final r = widget.room;
-    // Title preference: explicit room.name → (by-repo: git branch) → cwd
-    // basename → peer nickname → session name. The cwd path line was
-    // dropped on purpose — the tile now shows just title + subtitle
-    // (model / paired date).
+    // Title preference: a name the user actually chose → (by-repo: git
+    // branch) → cwd basename → peer nickname → session name. The cwd path
+    // line was dropped on purpose — the tile now shows just title +
+    // subtitle (model / paired date).
     final String title;
     if (r != null) {
-      if (r.name != null && r.name!.isNotEmpty) {
-        title = r.name!;
+      final name = r.name?.trim();
+      if (name != null && name.isNotEmpty && !_isAutoDerivedName(r)) {
+        title = name;
       } else if (widget.groupBy == HomeGroupBy.repository) {
         // By-repo: the group header already names the repository, so the
         // title slot carries the BRANCH — the piece that actually tells
@@ -479,6 +480,29 @@ class _TitleBlockState extends State<_TitleBlock> {
     }
     if (peer.nickname?.isNotEmpty == true) return peer.nickname!;
     return peer.sessionName;
+  }
+
+  /// PR #81 review — the Pi always publishes a room name: `_displayName(cwd)`
+  /// (mesh broker name, configured `agent_name`, or `basename(cwd)`), so an
+  /// unrenamed room arrives with a NONEMPTY `name` that is just the folder
+  /// name restated. This returns whether [r]'s name is such an auto-derived
+  /// identity (cwd basename, the legacy `parent/folder` shape, or either
+  /// with the broker's runtime `#N` collision suffix) — those must not beat
+  /// the by-repo branch title. A name the user chose (anything else) wins.
+  static bool _isAutoDerivedName(RoomInfo r) {
+    final cwd = r.cwd?.replaceAll('\\', '/').trim();
+    if (cwd == null || cwd.isEmpty) return false;
+    final segments = cwd
+        .split('/')
+        .where((s) => s.isNotEmpty)
+        .toList(growable: false);
+    if (segments.isEmpty) return false;
+    final base = segments.last;
+    final parent = segments.length >= 2 ? segments[segments.length - 2] : null;
+    final name = r.name?.trim();
+    if (name == null || name.isEmpty) return true;
+    final clean = name.replaceFirst(RegExp(r'#\d+$'), '');
+    return clean == base || (parent != null && clean == '$parent/$base');
   }
 
   /// Plan/107b + model alternation: with BOTH a git snapshot and a
