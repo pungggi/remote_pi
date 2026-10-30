@@ -9,301 +9,265 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
 
-## [Unreleased]
-
-## [1.4.5] — 2026-10-29
+## [1.5.0] - 2026-10-30
 
 ### Added
 
-- **Balanced / Active sessions**: active runs stay connected, then Piper
-  sleeps after five idle minutes. Foreground, manual reconnect, or a
-  UnifiedPush wake restores the socket and synchronizes current state.
-- **UnifiedPush wake**: choose a distributor in Settings to receive new-run
-  and waiting events while Balanced sleeps. Completion notification opt-ins,
-  duplicate suppression, and session tap routing remain unchanged.
-- **Honest push status and Android recovery**: registration validation,
-  protected-transport requirements, unavailable distributors, and stale
-  endpoints are visible in Settings. Android service timeouts stop cleanly
-  without retry loops.
+- **Balanced Active Sessions + UnifiedPush wake (plan/153)** — the new opt-in
+  keep-alive mode keeps active runs connected, then enters real idle sleep
+  after five minutes. Sleeping stops the foreground service, socket, pings,
+  rechecks, and retries while preserving pairing and cached rooms.
+- **Validated Web Push registrations** — Android uses the official UnifiedPush
+  connector and the relay stores VAPID/configuration plus validated endpoint
+  registrations. New runs and waiting events can wake the app without
+  Firebase; completion opt-ins, notification dedupe, and session tap routing
+  are preserved.
+- **Android `dataSync` timeout handling** — quota exhaustion and background
+  start refusal stop cleanly without a socket/retry leak or restart loop.
 
-### Changed
+- **Exact offline session resume (plan/152)** — Start session now opens a
+  terminal in the original folder and runs `pi --session <id>` when the
+  room registry has a stored Pi session ID. Session replacement refreshes
+  the ID immediately. Older rooms open the same visible terminal with
+  `pi --continue`, and the app/relay request shape is unchanged.
 
-- **Repository groups show the repo name only**: the section header is the
-  repository's name without owner slug, branch, or worktree. Local-only
-  repositories resolve to the main checkout, so worktrees of a repo without
-  a remote stay in one group instead of one group per worktree folder.
-
-- **Grouped tiles trade redundant info for context**: when grouped by
-  repository, each session's title shows its git branch where the folder
-  name used to sit — the header already names the repo. When grouped by
-  model, the tile no longer repeats the model; the subtitle shows a
-  one-line preview of the session's last user prompt instead.
-
-## [1.4.4] — 2026-10-29
-
-### Added
-
-- **Grouped Home sessions**: group sessions by model or repository, with the
-  choice remembered between launches. Worktrees of the same repository stay
-  together, non-git sessions have their own section, and multi-PC sessions
-  show a device label so matching names remain unambiguous.
-
-- **Resume the exact session**: Start session opens a terminal in the
-  session's original folder and restores the same Pi conversation when its
-  session ID is known. Older sessions open the same visible terminal with
-  `pi --continue` instead of running in the background.
-
-### Fixed
-
-- **Provider API failures are visible on Home**: the session rectangle turns
-  red after an LLM API error, including rate limits. It returns to the normal
-  activity color when a new turn starts. Offline and reconnecting sessions
-  keep their existing colors.
-
-## [1.4.3] — 2026-10-24
-
-### Added
-
-- **Session info slot (plan/149)**: the round letter avatar becomes a small
-  44px rounded square with three mono lines: the linked GitHub PR or issue
-  (tap it to open the link), the turn count, and message + unread counts.
-  Works online and for offline/archived sessions alike; sessions without
-  any data keep the familiar initial letter.
-- **Link a session to a PR or issue**: long-press a session and choose
-  "Link Issue / PR" — paste a GitHub URL, accept the suggestion detected
-  from the chat, or remove an existing link. Links work while the session
-  is offline, too. Deleting a worktree (plan/148) now shows the linked ref
-  and warns when its PR is still open.
-- **Unread counts per session**: the third slot line shows how many new
-  messages arrived since you last opened that session, kept entirely on
-  this phone so it stays right even while the computer is off.
-
-### Fixed
-
-- **Review fixes for the session slot**: linking an offline session now
-  reaches the computer's device daemon instead of the offline mirror (the
-  link used to time out). Unread is smarter: the very first message of a
-  session counts, a fresh conversation no longer inherits an old read
-  marker, sessions with a link but no stats still show their unread, and
-  the Home list loads its message boxes up front so offline tiles show
-  their cached unread immediately. Messages that arrive while your phone
-  is locked stay unread until you open the chat again.
-
-- **"Offline" tab snapped back to "Online"**: every session metadata change
-  re-persists the rooms cache, which reloaded the Home list and silently reset
-  the selected filter tab to its default. The selected tab now survives
-  reloads; only a fresh app start starts on "Online".
-
-### Added
-
-- **Clean up dead sessions (plan/148)**: long-press an offline tile and pick
-  "Delete worktree & branch" to remove the worktree folder and its branch on
-  the computer in one tap, without opening the session. The confirmation names
-  the branch, base repo and folder before anything is deleted. A dirty
-  worktree is refused by git: nothing is removed and the message is shown, so
-  uncommitted work cannot be lost silently. Archive (keeper) sessions are
-  included; only a session that is still running blocks the entry. The tile
-  disappears as soon as the computer confirms.
-
-## [1.4.2] — 2026-10-23
-
-### Added
-
-- **Context pressure at a glance (plan/147)** — every online session tile
-  carries a subtle full-height background bar whose width mirrors how
-  much of the model's context window is used. The tint escalates in
-  steps at 17%, 24%, 35% and 50% of the window (accent → warning →
-  error, more prominent at each step): sessions are compacted long
-  before the raw window fills, so half-full already means act now.
-  The alternating model line now also shows the window size behind the
-  model name (`claude-sonnet-4-5 · 200k`). Sessions without usage data
-  yet render exactly as before.
-
-### Fixed
-
-- **Changelog text garbled** — the in-app changelog showed `â€”`-style
-  mojibake wherever an em dash or symbol belonged (double-encoded file
-  written in the 1.4.1 backfill). All 58 broken runs repaired; the
-  symbols (— ⚠ ❚❚ ▶ ▲ ▼ ·) render properly again.
-- **Model switch keeps its own context window** — switching a session to
-  a different model no longer briefly labels the new model with the
-  previous model's window size and stale fill bar; usage resets until
-  the first response on the new model.
-
-## [1.4.1] — 2026-10-23
-
-### Added
-
-- **Session list alternates branch and model** — each session's second line
-  now flips between the git branch summary and the selected model every
-  3 seconds, in lock-step across all sessions: one glance covers what every
-  agent is working on and which model it runs. Sessions that publish only
-  one of the two keep showing that one.
-
-- **Mermaid diagram previews** — when the agent shows you a diagram source
-  (`.mmd` file), tapping the bubble now opens the rendered diagram instead
-  of raw text: pan and pinch-zoom, dark/light to match the app, and it works
-  fully offline (the renderer ships inside the app). Broken diagram syntax
-  shows a readable error rather than hanging.
-
-- **Completion notifications** — long-press a session and flip "Notify when
-  finished": when that session's agent run ends while the app is
-  backgrounded (and the background connection is alive), you get a system
-  notification naming the session; tapping it opens that chat. Tasks started
-  from the computer's terminal count too. No message content ever travels in
-  the notification. Requires the relay + Pi extension shipped with this
-  release (older relays silently drop the marker — everything else keeps
-  working).
-
-- **"Pi is waiting for you" notifications** — whenever an agent blocks on a
-  question or confirmation at the terminal, you get a system notification
-  (foreground and background alike); tapping it opens that chat. The banner
-  clears itself when the prompt is answered. Covers any extension's prompt,
-  not just pi-ask's.
-
-- **Chat archive for offline sessions** — sessions served from the PC's
-  transcript archive keep their history readable even when no live agent is
-  attached; archived rooms carry a badge and never mix with live ones.
-
-- **Text size setting** — adjust the app's text size in Settings.
-
-### Fixed
-
-- **No more lost replies while the phone is offline** — commands and replies
-  that crossed while the phone had no connection are held in a per-room
-  mailbox on the relay and delivered on reconnect; a delivery ledger with
-  journal replay recovers anything a flaky link would have dropped.
-
-- **Insecure-connection banner trusts Tailscale overlay dials** — pointing
-  the app at the relay over the tailnet (`http://100.x.y.z:3000`, a
-  `*.ts.net` name, or a `fd7a:115c:a1e0::` address) no longer shows the
-  warning: that traffic is WireGuard-encrypted regardless of the plain
-  `http://` scheme. The banner previously stayed up even when you followed
-  its own advice ("use an overlay (Tailscale) relay").
-
-- **Background crash shortly after leaving the app fixed (Android 15)** —
-  the keep-alive foreground service now reaches the foreground state before
-  its timeout window closes, so background connectivity no longer dies with
-  a crash.
-
-## [1.4.0] — 2026-08-24
-
-### Added
-
-- **Pause button in the chat navigation pill** — tap ❚❚ to freeze the view
-  wherever it is while the agent keeps working: streamed replies, new
-  messages and tool calls no longer move what you're reading. Tap ▶ (or
-  jump-to-newest) to catch up and follow the live reply again like before.
-
-## [1.3.6] — 2026-08-21
-
-### Fixed
-
-- **Everything missed while offline now loads automatically** — messages
-  generated while the phone was away (any gap length) are backfilled: sync
-  replies lost to a flaky connection are re-requested, history keeps paging
-  older until it reaches what you already have, and every app resume triggers
-  a catch-up sync.
-
-## [1.3.5] — 2026-08-21
-
-### Fixed
-
-- **Reading older messages while a reply is streaming finally works** — the
-  view used to snap back to the newest message every time the reply grew,
-  making it impossible to scroll up during generation. The viewport now stays
-  exactly where you left it (your scroll gesture is no longer interrupted),
-  and follows the live reply again once you scroll back to the bottom.
-
-## [1.3.4] — 2026-08-21
-
-### Fixed
-
-- **Responses no longer stay invisible until you re-enter the chat** — if the
-  app connected while a reply was already being generated (chat opened
-  mid-turn, phone reconnected after the screen turned off), the stream and
-  its "done" signal were never delivered. The PC now replays the in-flight
-  text the moment the app attaches and resumes streaming live from there.
-- **"Jump to message" works again for far-away messages** — tapping a user
-  message in the session navigator now scrolls there even when the target is
-  beyond the lazily-built list window, hopping one screen at a time.
+- **Home session slot: GitHub ref + activity stats (plan/149)** — the 40px
+  letter avatar becomes a 44px rounded-square info slot with three mono
+  lines. With a linked ref: `PR #70` / `#12` (PR slot wins the display,
+  both slots kept), tap opens the URL. Without: turns / user-msgs / unread.
+  Unknown values render `·`; a session with neither ref nor stats nor
+  unread keeps the legacy initial avatar. New opaque `room_meta` keys
+  `gh_ref` {pr, issue, source}, `gh_suggestion` (source `chat`, ephemeral,
+  never persisted PC-side) and `stats` {turns, user_msgs}; relay passes
+  them through with `git`-style absent-preserve / null-clear patch
+  semantics, and the room keeper re-announces the registry's durable copy
+  for offline tiles. **Ingest precedence manual > gh > chat**: manual via
+  the new `set_session_ref_request`/`_result` pair (live room applies +
+  pushes, any other room writes the plan/140 rooms registry directly —
+  works offline, optional `cwd` creates the entry for pre-140 sessions);
+  `gh pr view --json number,url,state` runs on the git-refresh cadence
+  (missing binary/auth/repo changes nothing, errors nothing); the chat
+  scan (user+assistant rows) only ever *suggests* from full GitHub URLs
+  and `owner/repo#123` — a bare `#123` is rejected as ambiguous.
+  Counters: turns on `agent_end`, user messages on `message_end`
+  (role=user), pushed **only at turn boundaries**, seeded from the
+  registry on reconnect (`max(registry, current)`). Unread is
+  phone-local: a durable `read_markers` Hive box stores the last-read seq
+  per `(epk, roomId)` (written on chat open, forward-only); unread = msgs
+  box rows past the marker — never a stored counter (plan/111's 30-event
+  sync would make phone-side totals systematically low). The plan/148
+  cleanup dialog names the linked ref and warns when the PR's state is
+  open/unknown. New public widgets: `_SessionSlot` (in `session_tile.dart`),
+  `showLinkRefSheet` (in `link_ref_sheet.dart`).
 
 ### Performance
 
-- **Smoother streaming on long replies** — text deltas are coalesced into
-  short frames on the PC side, cutting per-frame signature work on the phone
-  by 3-6x with no visible change in granularity.
-
-## [1.3.3] — 2026-08-21
-
-### Fixed
-
-- **Fresh pairings complete reliably again** — the phone's first-contact
-  envelope was addressed to a key hash the PC rejected, making pairing
-  time out for good measure.
-- **No more freezes or battery drain while the agent replies** — Ed25519
-  signature verification moved to a background isolate (previously it ran
-  on the UI thread; a long reply could peg the CPU and stall the app).
-- **Projects screen and quick actions no longer time out** — replies that
-  carry no message id (project list, worktrees, layout changes) were being
-  silently swallowed by replay dedup.
-
-## [1.3.2] — 2026-08-16
+- **Streaming Markdown rendering** — upgraded `gpt_markdown` to 1.4.0 for
+  incremental rendering, kept its theme stable across token updates, and
+  adopted its built-in GFM link handling. Long responses now coalesce at
+  50–100 ms instead of 16 ms while short replies remain responsive and final
+  completion flushes immediately. This reduces CPU and allocation churn during
+  long streams without removing live formatting.
 
 ### Fixed
 
-- **Fresh installs no longer time out** — a failed first mesh-blob publish
-  is now retried on every poll tick and app resume instead of never
-  (the relay's mesh gate needs the blob to authorize presence/rooms).
-- **UI freeze during agent replies fixed** — inbound frames are processed
-  in parallel again; per-frame debug logging removed.
+- **Exact-resume terminal visibility** — Start session now opens a NEW visible
+  Windows Terminal window (`-w new`, not a background MRU tab), so the resumed
+  Pi process is visible on the PC as well as online in the app.
 
-## [1.3.1] — 2026-08-14
+- **Home provider-error status**: failed LLM API turns now publish
+  `room_meta.provider_error`, turning the live session slot/avatar red even
+  when no chat is attached. A new turn or session clears the failure;
+  reconnect and offline status colors retain their existing behavior.
 
-### Security
+- **PR #71 review fixes (plan/149 hardening)**:
+  - **Relay**: a `gh_ref`/`gh_suggestion`/`stats` key explicitly cleared
+    by a patch is now broadcast as an explicit `null` instead of being
+    omitted — downstream treats absent as preserve, so a removed link or
+    consumed suggestion never reached the phones before.
+  - **Extension**: `gh pr view` refreshes a manual PR only when the
+    repository identity (URL `owner/repo` prefix) matches — an unrelated
+    cwd PR with the same number no longer overwrites a manually linked
+    foreign-repo PR. Manual links and accepted suggestions now MERGE with
+    the stored ref (linking a PR after an issue keeps both slots).
+    Reconnects re-seed `gh_ref`/`stats` from the rooms registry before
+    replaying the cached hello, so a ref applied through the device
+    daemon while the session was offline survives the re-announce; and
+    the keeper registration now persists the announced slot, so
+    pre-connect turns are not lost when the process stops before the
+    next `agent_end`.
+  - **App**: linking an offline (keeper-held) session routes to the
+    device daemon instead of the keeper (which only serves session_sync —
+    the link used to time out). Unread fixes: a missing read marker no
+    longer hides seq-0 rows; the marker is cleared when a room's history
+    resets (new conversation); a ref-linked legacy tile still shows its
+    unread; Home opens all rooms' msgs boxes before the first list so
+    offline tiles show cached unread immediately; and the chat only
+    advances the read marker while the app is foregrounded — keep-alive
+    deliveries while the phone is locked stay unread.
 
-- **Hardened message signatures (plan 130 follow-up)** — signatures now
-  also bind the recipient Pi (a relay can no longer redirect a signed
-  command to another of your machines) and carry a timestamp so captured
-  messages can't be replayed. Older apps and Pis keep working during the
-  upgrade; a relay attempting to strip or downgrade signatures is detected
-  and the frames are rejected.
-- **Replay protection survives reconnects** — duplicate message IDs are
-  remembered across connection drops on both sides.
-- **Subscription re-validation on the relay** — revoked mesh members stop
-  receiving presence/room updates within ~2 minutes instead of keeping
-  them indefinitely.
-- **Symlink-proof remote working-directory policy** — remote terminal and
-  session starts can no longer escape the configured project roots via
-  symlinked paths.
-
-## [1.3.0] — 2026-08-14
-
-### Security
-
-- **Signed messages (plan 130)** — every message between the app and the
-  Pi is now cryptographically signed by the sender's device key. A
-  compromised or malicious relay can no longer impersonate your paired
-  Pi (or the app): after the first verified signed message, unsigned
-  frames from that peer are rejected automatically. Transition-safe —
-  pairs with an older Pi keep working until both sides upgrade.
-- **Insecure-connection warning** — while connected over a plaintext
-  `ws://` relay (the default home-LAN dial), a persistent banner on Home
-  warns that traffic is readable on this network. Use an `https://` or
-  overlay (Tailscale) relay to clear it.
-- **Hardened relay** — message-size limits, an auth-handshake timeout,
-  and mesh-membership gating for presence/room metadata (other relay
-  clients can no longer see your PC's sessions without being paired into
-  your mesh). Requires relay 0.3.x deployed alongside.
+- **Home: "Offline" filter tab reset to "Online" on every rooms persist** —
+  `HomeViewModel._load()` (triggered via `PairingStorage.notifyListeners` from
+  each non-identical `room_announced` persist in `ConnectionManager`) rebuilt
+  the `HomeList` without the current `filter`, so any working-flag flip or
+  keeper re-announce snapped the tab back to its default while the user read
+  the offline list. `_load()` now carries the selected tab across reloads;
+  only the first load (still `HomeLoading`) uses the `online` default.
+  Regression test: `storage reloads preserve the selected tab`.
 
 ### Added
 
+- **Offline session cleanup from the Home list (plan/148)**: long-press an
+  offline tile, pick "Delete worktree & branch", confirm: the PC's device
+  daemon runs `git worktree remove` + `git branch -D` + registry prune for
+  that session's worktree, and the phone drops its cached room record in the
+  same frame. Gating: the room's cwd must match a tracked worktree, the
+  session must not be running, and no other LIVE session may own the folder;
+  keeper-held (archive) rooms are eligible because transcripts live in
+  `~/.pi/agent/sessions/<cwd>`, not in the worktree. Dirty worktrees are
+  refused by git (nothing removed, message surfaced), and a session that
+  comes back online between opening the menu and confirming aborts the
+  action. Path matching normalizes separators (Windows `\` vs Pi `/`) and
+  compares drive-letter paths case-insensitively. New public widget
+  `CleanupWorktreeDialog` in `app/lib/ui/home/widgets/`.
+- **Home tiles: context-window gauge (plan/147)** — a subtle full-height
+  background wedge per tile (width = used fraction of the model's context
+  window; user-tuned 17/24/35/50 pressure ladder, accent → warning →
+  error with rising prominence at each step) plus the max context window
+  behind the model name in the subtitle (`claude-sonnet-4-5 · 200k`).
+  View-layer change on the existing `room_meta.context_usage` feed; the
+  fraction falls back to `tokens/contextWindow` when `percent` is null
+  right after compaction, and rooms without usage keep the old look.
+  Review fix: usage never survives a model switch anymore — the
+  extension tombstones `context_usage: null` alongside the new model, and
+  both app merge paths (live update + rooms snapshot) drop cached usage
+  that belongs to a different model, so a fresh model is never labeled
+  with the previous model's window.
+- **Home session tiles alternate git branch and model (shipped in app 1.4.1)**
+  — the tile subtitle flips every 3 s between the posh-git summary
+  (branch / ahead / behind / dirty / stash) and the selected model when a
+  session publishes both, driven by a single ref-counted `_SubtitleClock`
+  so every tile switches in lock-step (one coordinated alternation, not
+  per-tile flicker). 300 ms crossfade; static precedence
+  (git → model → "Last paired") when only one signal exists. The git
+  snapshot used to fully replace the model subtitle, so the selected LLM
+  was never visible in the session list while a git status was known.
+- **Mermaid diagram previews via `show_file` (plan/144)** — the agent can now
+  push a Mermaid source file (`.mmd`/`.mermaid`, or any file with
+  `kind: "mermaid"`) to the phone, where it renders as an actual diagram
+  instead of raw text. Rendering happens in a sandboxed WebView from a
+  **bundled** mermaid.js copy: fully offline, `connect-src 'none'`, no CDN
+  round-trip, `securityLevel: "strict"` labels. The diagram theme follows the
+  app (dark/light), supports drag-pan / pinch-zoom / double-tap-reset, and
+  parse errors surface as a readable in-page message instead of a spinner.
+  Why bundled instead of CDN: the preview must work without network and must
+  not break the HTML viewer's sandbox discipline.
+- **Mermaid viewer gesture rework (plan/144 fix)** — on-device testing
+  (Android/TLHC) showed the in-page touch handlers never see motion events:
+  an ancestor gesture detector wins the arena and finger 2 never reaches the
+  WebView at all. All motion gestures now run on the Flutter side via a raw
+  `Listener` around the WebView and drive the page through `runJavaScript`
+  (`mmdPan`, `mmdZoom` with a focal point); the page keeps only double-tap
+  (zoom-in around the tap / back to fit) and desktop wheel zoom. ＋/－/fit
+  buttons cover the no-gesture path, the initial view is centered (not
+  top-left), and the swipe-down-to-dismiss detector is disabled for the
+  Mermaid viewer (it starved the WebView's gesture arena).
+
+### Changed
+
+- **Waiting-for-you banners now also fire while the app is open** —
+  on-device testing showed the orange tile dot alone is too easy to miss
+  when the phone sits unlocked on the desk. Every rising edge notifies now
+  (foreground and background); the only suppression left is the room whose
+  answer sheet you already have open. The permission ask stays
+  foreground-only (the OS dialog can't appear from the background), and the
+  background snapshot still covers prompts that were already pending when
+  the app connected.
+
+### Added
+
+- **Waiting-for-you notifications that actually fire (plan/141)** — the
+  "Pi is waiting for input" banner now covers the flow where the orange dot
+  appeared *before* you pocketed the phone: backgrounding the app snapshots
+  every live waiting session and posts a banner for each (except the one
+  whose answer sheet you already have open). Answering the prompt anywhere
+  now also **clears** that banner from the tray. Because nothing ever asked
+  for notification permission outside the keep-alive path, Android 13+
+  installs could silently drop every banner — the app now asks once at the
+  first waiting edge, and Settings gained a **Session alerts** row (state +
+  re-request) as the recovery path after a denial.
+- **Adjustable font size (plan 131, upstream #114)** — Settings → Display
+  now has a **Font size** row with four presets (Small / Default / Large /
+  XL). The preset composes onto the system text scale — it multiplies the
+  OS accessibility setting instead of replacing it — and applies live to
+  every piece of app text (chat, settings, dialogs), no restart needed.
+  The 12.5 pt monospace chat text was hard to read on phones, and iOS
+  offers no per-app text size for Flutter apps.
+- **Blocker diagnosis for `register_ack` timeouts** — when the local
+  broker has a listener that cannot answer (a suspended or
+  event-loop-blocked leader), the join failure now names the process
+  holding it instead of leaving you to hunt for it. On Linux it walks
+  `/proc` within a 250 ms budget and reads the cmdline (Node reports
+  "MainThread" in `comm`, which identifies nothing in `ps`); on Windows —
+  this fork's named-pipe addition — it asks the kernel for the server pid
+  of the pipe (`GetNamedPipeServerProcessId`, via a short-lived
+  PowerShell probe, ~0.5 s) and classifies suspended / exited / running
+  from the thread states. The advice is evidence-based: `kill -CONT`
+  (Process Explorer Resume / `pssuspend -r` on Windows) only for a
+  provably suspended owner; a busy one is described and left alone.
+- **Adaptive keep-alive (battery & heat, plan 125)** — the phone ran hot
+  and drained fast because five overlapping keep-alive mechanisms kept the
+  cellular radio permanently awake. The relay heartbeat dropped 25 s → 60 s
+  (`REMOTEPI_HEARTBEAT_SECS`, floor 30), the foreground service now runs
+  only while the app is backgrounded, and "Keep connected in background"
+  became a three-way toggle — Always / When charging (default) / Off — with
+  a native charging probe + 60 s poll. Roughly halves inbound radio wakeups
+  with no change to message delivery.
 - **Steer vs Follow-up choice while working (plan 127)** — while the agent
   is working, a segmented **[Steer | Follow-up]** toggle above the composer
   lets you queue a message as the **next** turn (clock icon, "queued · next
   turn") instead of injecting into the running one (route icon; steer stays
-  the default). Follow-ups drain in order when the current turn ends and
-  render consistently across paired devices.
+  the default). Follow-ups drain in FIFO order when the current turn ends,
+  attributed to their own bubble, and render consistently across paired
+  devices. Image attachments on follow-ups are deferred to a later slice.
+- **Notes on `ask_user` answers (plan 128)** — the clarification sheet now
+  lets you attach a note to a question (pi-ask `Shift+N`) and to a selected
+  option (pi-ask `n`), as an inline expandable "Add note" field with a chip
+  when filled. A question note alone is a valid answer; an option note rides
+  only its selected option (custom text on a single-select question still
+  overrides the selection and drops it, matching pi-ask). The wire already
+  carried `note` / `optionNotes` end-to-end — this fills the missing UI.
+
+### Fixed
+
+- **Failed mesh joins no longer leak or strand the broker (upstream PR
+  #124 port)** — an unanswered registration leaked the client socket
+  forever; a leader whose self-registration failed kept the broker path
+  bound, so an idle session went on brokering the machine's mesh while
+  reporting "join failed" to the user; and `/remote-pi`'s join closed
+  its candidate only when superseded by a newer join. Every failure path
+  now closes and releases — election only ever proved the endpoint was
+  connectable, never that its owner was servicing anything (a suspended
+  leader's listening instance completes the kernel-level handshake on
+  POSIX and Windows alike).
+- **`ask_user` sheet not appearing when backgrounded / on relaunch (plan 129)**
+  — a clarification fired while the app was backgrounded or just relaunched was
+  silently dropped (and never recovered): the request was delivered to a
+  broadcast stream whose only listener was the per-route `ChatViewModel`, so
+  with no chat open there was nothing to receive it — and even the plan/100
+  reconnect replay landed on Home, with no listener. The current request is now
+  a durable value in `SyncService` (mirroring `streaming`/`working`), so a
+  missed request surfaces when the chat next opens; a flow that already resolved
+  is correctly not re-surfaced.
+
+### Fixed
+
+- **app/assets/CHANGELOG.md was double-encoded** — the 1.4.1 backfill
+  (e4ae5690) wrote the asset through a PS redirect, turning every non-ASCII
+  char into mojibake (`â€”` for `—`, etc.); the in-app changelog viewer
+  displayed the garbage. A one-shot cp1252→UTF-8 round-trip repaired all
+  58 runs; shipped 1.4.1 APKs were unaffected (the release tag predates
+  the backfill).
 
 ---
 
