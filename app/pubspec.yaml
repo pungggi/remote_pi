@@ -108,7 +108,7 @@ dependencies:
   # Plan 32b — render the agent's Markdown replies (GFM + code blocks),
   # optimized for LLM output. `url_launcher` opens links tapped in the
   # rendered markdown in the system browser.
-  gpt_markdown: ^1.1.7
+  gpt_markdown: ^1.4.0
   url_launcher: ^6.3.0
 
   # Theme — brand wordmark font (Inter, the wireframe's RP_SANS). Served at

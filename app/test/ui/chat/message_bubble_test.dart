@@ -11,6 +11,8 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gpt_markdown/gpt_markdown.dart';
+import 'package:gpt_markdown/custom_widgets/bidi_rich_text.dart';
 
 void main() {
   testWidgets('AssistantBubble wraps at the full available width (>340)', (
@@ -273,6 +275,38 @@ void main() {
     }
   }
 
+  /// All links produced by the current Markdown renderer. Version 1.4 uses
+  /// range-resolved LinkTextSpans instead of per-link Text widgets.
+  Iterable<LinkTextSpan> markdownLinkSpans(WidgetTester tester) sync* {
+    Iterable<LinkTextSpan> visit(InlineSpan span) sync* {
+      if (span is LinkTextSpan) yield span;
+      if (span is TextSpan) {
+        for (final child in span.children ?? const <InlineSpan>[]) {
+          yield* visit(child);
+        }
+      }
+    }
+
+    final richTexts = tester.widgetList<RichText>(
+      find.descendant(
+        of: find.byType(AgentMarkdown),
+        matching: find.byType(RichText),
+      ),
+    );
+    for (final rich in richTexts) {
+      yield* visit(rich.text);
+    }
+    final bidiTexts = tester.widgetList<BidiRichText>(
+      find.descendant(
+        of: find.byType(AgentMarkdown),
+        matching: find.byType(BidiRichText),
+      ),
+    );
+    for (final rich in bidiTexts) {
+      yield* visit(rich.text);
+    }
+  }
+
   /// Stubs url_launcher's method channel, recording every call. Returns the
   /// list so a test can assert that a tap actually reached `launch` (the only
   /// reliable way to verify a link's tap gesture fired, since the platform
@@ -353,20 +387,15 @@ void main() {
       );
       await tester.pump();
 
-      // The bare URL is rendered as its own tappable text widget.
-      expect(find.text('https://example.com/now'), findsOneWidget);
+      final links = markdownLinkSpans(tester)
+          .where((s) => s.toPlainText() == 'https://example.com/now')
+          .toList();
+      expect(links, hasLength(1));
+      expect(links.first.onTap, isNotNull);
       expect(
-        find.ancestor(
-          of: find.text('https://example.com/now'),
-          matching: find.byType(GestureDetector),
-        ),
-        findsWidgets,
-        reason: 'the autolinked URL is wrapped in a tappable GestureDetector',
+        links.first.style?.decoration?.contains(TextDecoration.underline),
+        true,
       );
-      final style = tester.widget<Text>(
-        find.text('https://example.com/now'),
-      ).style;
-      expect(style?.decoration?.contains(TextDecoration.underline), true);
     },
   );
 
@@ -387,15 +416,11 @@ void main() {
       );
       await tester.pump();
 
-      // The AutoLink component must not break explicit Markdown links.
-      expect(find.text('docs'), findsOneWidget);
-      expect(
-        find.ancestor(
-          of: find.text('docs'),
-          matching: find.byType(GestureDetector),
-        ),
-        findsWidgets,
-      );
+      final links = markdownLinkSpans(tester)
+          .where((s) => s.toPlainText() == 'docs')
+          .toList();
+      expect(links, hasLength(1));
+      expect(links.first.onTap, isNotNull);
     },
   );
 
@@ -418,10 +443,13 @@ void main() {
 
       // The trailing '.' and the prose ')' stay as normal text — they are
       // NOT part of the link target/label.
-      expect(find.text('https://example.com/x'), findsOneWidget);
-      expect(find.text('https://example.com/x.'), findsNothing);
-      expect(find.text('https://example.com/y'), findsOneWidget);
-      expect(find.text('https://example.com/y)'), findsNothing);
+      final labels = markdownLinkSpans(tester)
+          .map((s) => s.toPlainText())
+          .toList();
+      expect(labels, contains('https://example.com/x'));
+      expect(labels, isNot(contains('https://example.com/x.')));
+      expect(labels, contains('https://example.com/y'));
+      expect(labels, isNot(contains('https://example.com/y)')));
     },
   );
 
@@ -477,7 +505,12 @@ void main() {
       );
       await tester.pump();
 
-      await tester.tap(find.text('https://example.com/now'));
+      final markdown = find.descendant(
+        of: find.byType(AgentMarkdown),
+        matching: find.byType(BidiRichText),
+      );
+      expect(markdownLinkSpans(tester), isNotEmpty);
+      await tester.tap(markdown.first);
       await tester.pumpAndSettle();
 
       expect(launched(calls, 'https://example.com/now'), true);
@@ -532,8 +565,11 @@ void main() {
 
       // The trailing 'h' is NOT a ')', so nothing is peeled — the URL is kept
       // intact rather than wrongly truncated to 'https://x.com/)pat'.
-      expect(find.text('https://x.com/)path'), findsOneWidget);
-      expect(find.text('https://x.com/)pat'), findsNothing);
+      final labels = markdownLinkSpans(tester)
+          .map((s) => s.toPlainText())
+          .toList();
+      expect(labels, contains('https://x.com/)path'));
+      expect(labels, isNot(contains('https://x.com/)pat')));
     },
   );
 }

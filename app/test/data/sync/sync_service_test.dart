@@ -568,6 +568,29 @@ void main() {
     s.sync.dispose();
   });
 
+  test('long streams coalesce longer, but agent_done drains immediately', () async {
+    final s = await setup();
+    final longText = List.filled(100000, 'x').join();
+    s.ch.push(AgentChunk(inReplyTo: 'r1', delta: longText));
+
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    expect(s.sync.streaming, isNull);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(s.sync.streaming?.buffer, longText);
+
+    s.ch.push(AgentChunk(inReplyTo: 'r1', delta: 'tail'));
+    s.ch.push(AgentDone(inReplyTo: 'r1'));
+    await _settle();
+
+    final assistant = messages(
+      s.epk,
+    ).where((m) => m.role == MsgRole.assistant).single;
+    expect(assistant.text, '$longText' 'tail');
+    expect(s.sync.streaming, isNull);
+    s.conn.dispose();
+    s.sync.dispose();
+  });
+
   test('agent_done finalizes the streamed message + flips to idle', () async {
     final s = await setup();
     s.ch.push(AgentChunk(inReplyTo: 'r1', delta: 'done text'));

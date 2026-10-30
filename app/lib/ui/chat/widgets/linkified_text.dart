@@ -9,7 +9,7 @@ import 'linkify.dart';
 /// When [selectable] (the default) the text is wrapped in a [SelectionArea] so
 /// it can still be copied, matching the old plain `SelectableText` behaviour.
 /// Used for the user's own chat bubble — the agent reply uses Markdown, whose
-/// links are handled by `AgentMarkdown` + the `AutoLinkMd` component.
+/// links are handled by `AgentMarkdown` and its built-in GFM autolink path.
 class LinkifiedText extends StatefulWidget {
   const LinkifiedText(
     this.text, {

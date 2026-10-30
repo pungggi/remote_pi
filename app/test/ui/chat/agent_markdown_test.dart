@@ -97,36 +97,38 @@ void main() {
       }
     });
 
-    test('both app themes register the markdown heading extension', () {
+    testWidgets('AgentMarkdown supplies the heading theme in both app themes', (
+      tester,
+    ) async {
       for (final theme in [buildDarkTheme(), buildLightTheme()]) {
-        final md = theme.extension<GptMarkdownThemeData>();
-        expect(md, isNotNull, reason: 'theme carries GptMarkdownThemeData');
-        expect(md!.h2!.fontFamily, kMonoFamily);
-        expect(md.h2!.fontSize, 15.5);
+        await tester.pumpWidget(
+          MaterialApp(theme: theme, home: AgentMarkdown('## Heading')),
+        );
+        final context = tester.element(find.byType(GptMarkdown));
+        final resolved = GptMarkdownTheme.of(context);
+
+        // Version 1.4 uses material_ui's theme type, so the package-owned
+        // inherited wrapper replaces Flutter's ThemeData.extension path.
+        expect(resolved.h2!.fontFamily, kMonoFamily);
+        expect(resolved.h2!.fontSize, 15.5);
       }
     });
 
-    testWidgets('gpt_markdown resolves the heading styles from the theme', (
+    testWidgets('heading theme identity is stable across token updates', (
       tester,
     ) async {
-      late GptMarkdownThemeData resolved;
-      await tester.pumpWidget(
-        MaterialApp(
-          theme: buildDarkTheme(),
-          home: Builder(
-            builder: (context) {
-              resolved = GptMarkdownTheme.of(context);
-              return const SizedBox.shrink();
-            },
-          ),
-        ),
+      Widget app(String text) => MaterialApp(
+        theme: buildDarkTheme(),
+        home: AgentMarkdown(text),
       );
+      await tester.pumpWidget(app('first'));
+      final context = tester.element(find.byType(GptMarkdown));
+      final first = GptMarkdownTheme.of(context);
 
-      // GptMarkdownTheme.of() falls back to the Material TextTheme when the
-      // host registers no extension — which was the bug — so resolving the
-      // styles here proves they actually reach gpt_markdown.
-      expect(resolved.h2!.fontFamily, kMonoFamily);
-      expect(resolved.h2!.fontSize, 15.5);
+      await tester.pumpWidget(app('first plus a token'));
+      final second = GptMarkdownTheme.of(context);
+
+      expect(identical(first, second), isTrue);
     });
   });
 }
