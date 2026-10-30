@@ -60,6 +60,15 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   open/unknown. New public widgets: `_SessionSlot` (in `session_tile.dart`),
   `showLinkRefSheet` (in `link_ref_sheet.dart`).
 
+### Performance
+
+- **Streaming Markdown rendering** — upgraded `gpt_markdown` to 1.4.0 for
+  incremental rendering, kept its theme stable across token updates, and
+  adopted its built-in GFM link handling. Long responses now coalesce at
+  50–100 ms instead of 16 ms while short replies remain responsive and final
+  completion flushes immediately. This reduces CPU and allocation churn during
+  long streams without removing live formatting.
+
 ### Fixed
 
 - **Exact-resume terminal visibility** — Start session now opens a NEW visible

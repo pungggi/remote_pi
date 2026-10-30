@@ -4,7 +4,8 @@ import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 
 // StreamingBubble — shows the assistant's growing response + blinking cursor.
-// The buffer is already batched with 16ms debounce in SessionRepository.
+// The buffer is coalesced adaptively in SyncService: 16ms for short replies,
+// slower beyond 50k / 100k characters to bound Markdown rendering cost.
 
 class StreamingBubble extends StatefulWidget {
   final StreamingMessage streaming;

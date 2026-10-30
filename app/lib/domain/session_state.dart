@@ -274,6 +274,16 @@ class CompactionMsg extends ChatMessage {
 // StreamingMessage — accumulated deltas while the assistant is typing
 // ---------------------------------------------------------------------------
 
+/// UI coalescing cadence for a growing Markdown response. Short replies stay
+/// frame-responsive; long replies trade update frequency for less parsing,
+/// layout, and string-copy churn. Finalization bypasses this policy
+/// and flushes immediately.
+int streamingFlushIntervalMs(int bufferedChars) {
+  if (bufferedChars >= 100000) return 100;
+  if (bufferedChars >= 50000) return 50;
+  return 16;
+}
+
 class StreamingMessage {
   final String inReplyTo; // id of the UserMsg being answered
   final String buffer;

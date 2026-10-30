@@ -1172,10 +1172,17 @@ class SyncService extends Service {
         _chunkReplyTo = inReplyTo;
         // Keep the first timer running: restarting it for every chunk would
         // starve UI updates for as long as the producer stays busy (#136).
-        _flushTimer ??= Timer(const Duration(milliseconds: 16), () {
-          _flushTimer = null;
-          _flushChunks();
-        });
+        // Long Markdown responses use a slower cadence to limit tail parsing,
+        // layout, and full-buffer string copies; short replies stay at 16ms.
+        final bufferedChars =
+            (_streaming?.buffer.length ?? 0) + _chunkBuffer.length;
+        _flushTimer ??= Timer(
+          Duration(milliseconds: streamingFlushIntervalMs(bufferedChars)),
+          () {
+            _flushTimer = null;
+            _flushChunks();
+          },
+        );
         _setWorking(true, replyTo: inReplyTo);
 
       case AgentDone(:final inReplyTo, :final text):
