@@ -9,7 +9,7 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
 
-## [Unreleased]
+## [1.5.0] - 2026-10-30
 
 ### Added
 
