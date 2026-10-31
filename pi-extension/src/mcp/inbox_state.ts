@@ -185,14 +185,11 @@ function matchesWorkspace(recordCwd: string, roots: readonly string[]): boolean 
   const normRecord = normalizeWorkspacePath(recordCwd);
   for (const root of roots) {
     if (!root) continue;
-    const normRoot = normalizeWorkspacePath(root);
-    if (
-      normRecord === normRoot ||
-      normRecord.startsWith(`${normRoot}/`) ||
-      normRoot.startsWith(`${normRecord}/`)
-    ) {
-      return true;
-    }
+    // Exact canonical equality only: parent and child folders are DISTINCT
+    // agents (roomIdFor(cwd, name) hashes the exact cwd), so prefix matching
+    // here would let a child workspace's hook fire on a parent workspace's
+    // inbox and vice versa.
+    if (normRecord === normalizeWorkspacePath(root)) return true;
   }
   return false;
 }
@@ -330,7 +327,9 @@ export class MeshInbox {
       if (waiter.matches(msg)) {
         clearTimeout(waiter.timer);
         this.waiters.delete(waiter);
-        this.notifyStateChange();
+        // No notifyStateChange here: the message went straight to the waiter,
+        // so `this.messages` (the sidecar's source) is unchanged — rewriting
+        // the identical sidecar would be a redundant synchronous disk write.
         waiter.resolve({ status: "received", messages: [msg] });
         return;
       }

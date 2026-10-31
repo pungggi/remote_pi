@@ -90,12 +90,12 @@ describe("ensureAgyMeshPluginInstalled + mesh_hook.mjs", () => {
     // ("x,}" → "x}"), silently corrupting existing server arguments when the
     // parsed config was written back to disk.
     const raw = `{
-      "args": ["a,b", "x,}"],
+      "args": ["a,b", "x,}", "y,]"],
       "cmd": "echo a,b",
       "enabled": true,
     }`;
     expect(JSON.parse(stripJsonComments(raw))).toEqual({
-      args: ["a,b", "x,}"],
+      args: ["a,b", "x,}", "y,]"],
       cmd: "echo a,b",
       enabled: true,
     });
@@ -245,5 +245,40 @@ describe("ensureAgyMeshPluginInstalled + mesh_hook.mjs", () => {
     } finally {
       sibling.kill();
     }
+  });
+
+  test("mesh_hook does not fire for a parent workspace's inbox", () => {
+    const configDir = join(tempDir, ".gemini", "config");
+    const paths = ensureAgyMeshPluginInstalled({ configDir });
+    const parent = join(tempDir, "parent-repo");
+    const child = join(parent, "pkg");
+
+    writeInboxState({
+      cwd: parent,
+      name: "pi",
+      address: `${parent}@pi`,
+      ppid: process.pid,
+      messages: [
+        {
+          id: "parent-only",
+          from: `${parent}@claude`,
+          body: "for the parent agent",
+          re: null,
+          at: "2026-10-31T18:00:00.000Z",
+        },
+      ],
+    });
+
+    const r = spawnSync(process.execPath, [paths.hookScriptPath], {
+      input: JSON.stringify({
+        hook_event_name: "Stop",
+        cwd: child,
+        terminationReason: "NO_TOOL_CALL",
+      }),
+      encoding: "utf8",
+      env: { ...process.env, REMOTE_PI_HOME: tempDir },
+    });
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout.trim())).toEqual({});
   });
 });

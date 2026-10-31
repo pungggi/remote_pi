@@ -54,14 +54,9 @@ function matchesWorkspace(recordCwd, roots) {
   const normRecord = normalizePath(recordCwd);
   for (const root of roots) {
     if (!root) continue;
-    const normRoot = normalizePath(root);
-    if (
-      normRecord === normRoot ||
-      normRecord.startsWith(`${normRoot}/`) ||
-      normRoot.startsWith(`${normRecord}/`)
-    ) {
-      return true;
-    }
+    // Exact canonical equality only — parent and child folders are distinct
+    // agents, so prefix matching would fire this hook across workspaces.
+    if (normRecord === normalizePath(root)) return true;
   }
   return false;
 }

@@ -82,6 +82,30 @@ describe("inbox_state", () => {
     expect(existsSync(statePath)).toBe(false);
   });
 
+  test("parent and child workspaces do not match each other", () => {
+    // Parent and child folders are distinct agents — a prefix match would leak
+    // a child workspace's inbox into the parent's view (and vice versa).
+    const parent = join(tempHome, "parent-ws");
+    const child = join(parent, "child");
+    writeInboxState({
+      cwd: parent,
+      name: "agy",
+      address: `${parent}@agy`,
+      messages: [sampleMsg({ id: "parent-msg" })],
+    });
+    writeInboxState({
+      cwd: child,
+      name: "agy",
+      address: `${child}@agy`,
+      messages: [sampleMsg({ id: "child-msg" })],
+    });
+
+    expect(readUnreadInboxStates([parent]).map((s) => s.cwd)).toEqual([parent]);
+    expect(readUnreadInboxStates([child]).map((s) => s.cwd)).toEqual([child]);
+    expect(readUnreadInboxStates([parent]).map((s) => s.unreadCount)).toEqual([1]);
+    expect(readUnreadInboxStates([child]).map((s) => s.unreadCount)).toEqual([1]);
+  });
+
   test("unlinks stale state files from dead PIDs", () => {
     const cwd = join(tempHome, "workspace-stale");
     const statePath = writeInboxState({
