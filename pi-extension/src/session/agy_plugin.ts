@@ -306,13 +306,13 @@ function copyIfPresent(srcPath: string, destPath: string): void {
  */
 function writePluginHooksConfig(
   hooksConfigPath: string,
-  nodeExec: string,
-  hookScriptPath: string,
+  _nodeExec: string,
+  _hookScriptPath: string,
 ): void {
   const makeHandler = (eventName: string) => [
     {
       type: "command",
-      command: `"${nodeExec}" "${hookScriptPath}" --event=${eventName}`,
+      command: `node scripts/mesh_hook.mjs --event=${eventName}`,
       timeout: HOOK_TIMEOUT_SECONDS,
     },
   ];

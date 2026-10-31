@@ -124,7 +124,7 @@ describe("ensureAgyMeshPluginInstalled + mesh_hook.mjs + watcher.mjs", () => {
       };
     };
     expect(hooksJson["remote-pi-mesh"].SessionStart).toHaveLength(1);
-    expect(hooksJson["remote-pi-mesh"].SessionStart[0]?.command).toContain("--event=SessionStart");
+    expect(hooksJson["remote-pi-mesh"].SessionStart[0]?.command).toBe("node scripts/mesh_hook.mjs --event=SessionStart");
     expect(hooksJson["remote-pi-mesh"].PreInvocation).toHaveLength(1);
     expect(hooksJson["remote-pi-mesh"].PreInvocation[0]?.command).toContain(
       "--event=PreInvocation",
