@@ -141,3 +141,38 @@ function _acquired(server: Server, _lockPath: string): AcquiredLock {
     },
   };
 }
+
+
+export interface NamedAcquiredLock extends AcquiredLock {
+  /** The resolved agent name that won the lock (e.g. `agy` or `agy#2`). */
+  lockedName: string;
+}
+
+export type NamedCwdLockResult = NamedAcquiredLock | RefusedLock;
+
+const DEFAULT_MAX_LOCK_CANDIDATES = 1000;
+
+/**
+ * Acquires a per-(cwd, name) lock, automatically suffixing `#2..#maxAttempts`
+ * when `requestedName` is already held by another live agent in `cwd`.
+ */
+export async function acquireNamedCwdLock(
+  cwd: string,
+  requestedName: string,
+  maxAttempts = DEFAULT_MAX_LOCK_CANDIDATES,
+): Promise<NamedCwdLockResult> {
+  let lastLockPath = lockPathFor(cwd, requestedName);
+  for (let n = 1; n <= maxAttempts; n++) {
+    const candidate = n === 1 ? requestedName : `${requestedName}#${n}`;
+    const res = await acquireCwdLock(cwd, candidate);
+    if (res.ok) {
+      return {
+        ok: true,
+        lockedName: candidate,
+        release: res.release,
+      };
+    }
+    lastLockPath = res.lockPath;
+  }
+  return { ok: false, lockPath: lastLockPath };
+}

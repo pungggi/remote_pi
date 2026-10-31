@@ -50,6 +50,7 @@
   },
   "files": [
     "dist",
+    "agy-plugin",
     "skills",
     "service-templates",
     "docs",

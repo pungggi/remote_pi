@@ -1,0 +1,5 @@
+{
+  "name": "remote-pi-mesh",
+  "version": "0.8.0",
+  "description": "First-class remote-pi agent mesh integration for Google Antigravity (agy) — local UDS/Named Pipe & cross-PC relay messaging, hooks, and skills."
+}

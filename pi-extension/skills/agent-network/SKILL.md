@@ -1,21 +1,21 @@
 ---
 name: agent-network
-description: Use when the remote-pi mesh tools (`list_peers`, `agent_send`, and — on Claude — `get_messages`) are available. You are an agent (a Claude session or a Pi coding agent) connected to the remote-pi agent mesh over a local broker. This skill teaches how to discover who's online (`list_peers`), how to send messages with a delivery ACK (`agent_send`), how incoming messages reach you (via `get_messages` on Claude, or delivered into your turn on Pi), how to reply (echo `re`), and how to treat every peer address as an opaque routing key that must be echoed verbatim.
+description: Use when the remote-pi mesh tools (`list_peers`, `agent_send`, and — on Claude / Antigravity `agy` — `get_messages`, `wait_for_message`, `mesh_status`) are available. You are an agent (a Pi coding agent, a Claude Code session, or a Google Antigravity `agy` session) connected to the remote-pi agent mesh over a local broker. This skill teaches how to discover who's online (`list_peers`), how to inspect your own address (`mesh_status`), how to send messages with a delivery ACK (`agent_send`), how incoming messages reach you (via `get_messages` / `wait_for_message` and lifecycle hooks on Agy/Claude, or delivered into your turn on Pi), how to reply (echo `re`), and how to treat every peer address as an opaque routing key that must be echoed verbatim.
 ---
 
 # Agent Network (remote-pi mesh)
 
-You are connected to the **remote-pi agent mesh**. Other agents — other Claude
-sessions, Pi coding agents on this machine, and agents on the Owner's other PCs
-(reached through the relay) — can send you messages, and you can send messages
-to them.
+You are connected to the **remote-pi agent mesh**. Other agents — Google
+Antigravity (`agy`) sessions, Claude Code sessions, Pi coding agents on this
+machine, and agents on the Owner's other PCs (reached through the relay) — can
+send you messages, and you can send messages to them.
 
 Read this to the end before acting. The protocol is **event-driven**, not
 request/reply. Getting the receive model wrong leaves coordination broken.
 
-**Your tools:** `list_peers` and `agent_send` always. On Claude you also have
-`get_messages` (a Pi agent receives messages directly into its turn instead —
-see below).
+**Your tools:** `list_peers` and `agent_send` always. On Antigravity (`agy`) and
+Claude (MCP), you also have `get_messages`, `wait_for_message`, and `mesh_status`
+(a Pi agent receives messages directly into its turn instead — see below).
 
 ---
 
@@ -24,6 +24,19 @@ see below).
 You only ever receive messages addressed to you — the broker filters before
 delivery. **If a message arrived, someone wanted your attention. Don't ignore
 it.** How a message reaches you depends on your runtime:
+
+- **Antigravity (`agy` — MCP + Lifecycle Hooks):** incoming messages are buffered
+  in the `remote-pi-mesh` MCP server and tracked in a local inbox state file.
+  - When unread messages are waiting at the start of a turn, the `PreInvocation`
+    hook injects a `📨 [remote-pi mesh]` notification reminding you to call
+    `get_messages()`.
+  - If a message arrives while you are finishing a turn, the `Stop` hook
+    automatically continues your turn (`decision: "continue"`) so you can call
+    `get_messages()` and handle it immediately.
+  - When you send a request with `agent_send` and want to await the peer's reply
+    within the current turn (or inside a background subagent), call
+    `wait_for_message({ timeout_ms: 30000, from, re })` to block until the reply
+    arrives without busy-polling.
 
 - **Claude (MCP):** incoming messages are buffered. **At the start of every
   turn, call `get_messages`** to drain and read them:
@@ -44,18 +57,19 @@ it.** How a message reaches you depends on your runtime:
   input the moment it arrives — no polling, no `get_messages`. You'll see it
   prefixed `[agent-network] message from "<peer>" (id=…, re=…)`.
 
-Either way: no wait/sleep/poll-loop. Replies to your own sends arrive on a
-**later turn**, never inline.
+Either way: no busy sleep/poll-loop. Replies to your own sends arrive on a
+**later turn** (or via `wait_for_message` on MCP runtimes).
 
 ---
 
-## First thing in a new session: `list_peers`
+## First thing in a new session: `list_peers` (and `mesh_status`)
 
 Before sending anything, find out who's actually online:
 
 ```
 list_peers()
 → /Users/jo/acme/backend@backend
+  /Users/jo/acme/backend@agy
   /Users/jo/acme/backend@reviewer
   /Users/jo/acme/web@web
   casa:/Users/jo/acme/api@api
@@ -66,6 +80,10 @@ Synchronous (resolves in milliseconds — not another agent's turn). Use it:
 - At the start of a session, to see what mesh you're in
 - Before any `agent_send` whose target is uncertain
 - To refresh — peers join and leave over time
+
+On MCP runtimes (`agy` and `claude`), you can also call `mesh_status()` at any
+time to inspect your own canonical address (`<cwd>@<name>`), role (`leader` or
+`follower`), relay bridge status, and unread inbox count.
 
 **Presence is passive (pull, not push).** A peer joining or leaving does **not**
 wake your turn. When your view feels stale, just call `list_peers` again — it's
@@ -118,7 +136,7 @@ inspect the status — it dictates what to do next.**
 
 | Status | Means | What you do |
 |---|---|---|
-| `received` | Broker delivered the envelope. Delivery is reliable — even if the peer is mid-turn, its harness enqueues the message for the next turn. | Move on. Any reply arrives later. |
+| `received` | Broker delivered the envelope. Delivery is reliable — even if the peer is mid-turn, its harness enqueues the message for the next turn. | Move on (or call `wait_for_message` on MCP if synchronous coordination is needed). |
 | `denied` | Peer explicitly refused (or no such peer). | Do NOT retry. Report to the user. |
 | `timeout` | No ACK (~5s). Transport error — broker down, or peer vanished. | Treat a reasonless timeout as transient. Retry once after ~10s, then escalate. |
 
@@ -146,15 +164,16 @@ answer to a question; it carries no special delivery semantics.
 
 ---
 
-## Receiving: replies arrive on a later turn
+## Receiving: replies arrive on a later turn (or via `wait_for_message`)
 
-You **do not block** waiting for a reply. The model is event-driven:
+The mesh is event-driven:
 
 1. You call `agent_send` → status `received`.
-2. Your turn continues / ends.
-3. **Later** the peer finishes its own work and sends a reply.
-4. The reply reaches your inbox (via `get_messages` on Claude, or as a new turn
-   input on Pi), with `re` set to the `id` you originally sent.
+2. Either your turn continues/ends (and the reply wakes you via Pi turn delivery,
+   `agy` `Stop`/`PreInvocation` hooks, or Claude channel), **or** on MCP runtimes
+   (`agy` / `claude`) you call `wait_for_message({ timeout_ms: 30000, from })`
+   to await the reply inline.
+3. The reply carries `re` set to the `id` you originally sent.
 
 ### Walk-through
 
@@ -163,7 +182,7 @@ agent_send({ to: "/Users/jo/acme/backend@backend", body: { q: "what's the JWT sh
 → Delivered to backend        # status received; remember the message id
 ```
 
-Your turn continues. A turn or two later you receive:
+Your turn continues. A turn or two later (or via `wait_for_message`) you receive:
 
 ```
 from=backend re=<your-id>  id=<new-id>
@@ -260,14 +279,15 @@ On Pi you may see a tool called `agent_request` that takes a target + body and
 works but emits a deprecation warning. It blocks your turn (costs tokens and
 wall time), gives no ACK signal, and pairs badly with parallel multi-peer
 questions. **Migrate every `agent_request` to `agent_send`** + reading your
-inbox on a later turn. (Claude has no `agent_request` — use `agent_send`.)
+inbox on a later turn. (Claude and Agy have no `agent_request` — use `agent_send`
+and optionally `wait_for_message`.)
 
 ---
 
 ## Single-page summary
 
-1. **Every turn**: read your inbox first — `get_messages()` on Claude; on Pi
-   messages arrive as turn input automatically.
+1. **Every turn**: read your inbox first — `get_messages()` on Claude / Agy; on
+   Pi messages arrive as turn input automatically.
 2. **Discover**: `list_peers()` returns opaque, receiver-local addresses.
    Echo them verbatim; never parse, decode, normalize, or compose them.
    Presence is pull-based.
