@@ -141,6 +141,8 @@ import {
 } from "./session/local_config.js";
 import { runSetupWizard, type WizardUI } from "./session/setup_wizard.js";
 import { isPiSubagentChildProcess } from "./session/pi_subagent.js";
+import { quoteWindowsShellArgs } from "./session/shell_quote.js";
+import type { InstalledAgyPluginPaths } from "./session/agy_plugin.js";
 import { updateFooter, type FooterState } from "./ui/footer.js";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -5984,6 +5986,8 @@ export async function runCli(argv: string[]): Promise<void> {
     }
   } else if (subcmd === "claude") {
     await _cmdClaudeCli(cliArgs);
+  } else if (subcmd === "agy") {
+    await _cmdAgyCli(cliArgs);
   } else if (subcmd === "install") {
     // CLI mode = user installed via `npm install -g remote-pi`, so the
     // `remote-pi` / `pi-supervisord` bins are already on $PATH via npm's
@@ -6040,6 +6044,7 @@ export async function runCli(argv: string[]): Promise<void> {
       "Agent mesh:",
       "  peers                           List agents on the local + cross-PC mesh",
       "  claude [cwd]                    Start Claude Code connected to the agent mesh",
+      "  agy [cwd]                       Start Antigravity (agy) connected to the agent mesh",
     ].join("\n"));
   }
 }
@@ -6060,6 +6065,23 @@ function _agentNetworkSkillPath(): string | null {
   return existsSync(skill) ? skill : null;
 }
 
+async function _ensureCliLocalConfig(targetCwd: string, requireTty = false): Promise<void> {
+  if (localConfigExists(targetCwd)) return;
+  if (requireTty && !process.stdin.isTTY) return;
+
+  const suggested = defaultAgentName(targetCwd);
+  process.stdout.write(`\n[remote-pi] No config found for ${targetCwd}\n`);
+  process.stdout.write("Let's set up this agent.\n\n");
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const agentName: string = await new Promise((res) =>
+    rl.question(`Agent name [${suggested}]: `, (ans) => { rl.close(); res(ans.trim() || suggested); }),
+  );
+
+  saveLocalConfig(targetCwd, { agent_name: agentName, auto_start_relay: true });
+  process.stdout.write(`[remote-pi] Config saved: agent="${agentName}"\n\n`);
+}
+
 async function _cmdClaudeCli(args: string[]): Promise<void> {
   // Contract: `remote-pi claude [cwd] [claude-flags...]`. The optional cwd is
   // ONLY the leading positional (first token, not a flag); everything after it
@@ -6071,19 +6093,7 @@ async function _cmdClaudeCli(args: string[]): Promise<void> {
   const passthroughArgs = hasCwdArg ? args.slice(1) : args;
 
   // Wizard when no local config exists
-  if (!localConfigExists(targetCwd)) {
-    const suggested = defaultAgentName(targetCwd);
-    process.stdout.write(`\n[remote-pi] No config found for ${targetCwd}\n`);
-    process.stdout.write("Let's set up this agent.\n\n");
-
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const agentName: string = await new Promise((res) =>
-      rl.question(`Agent name [${suggested}]: `, (ans) => { rl.close(); res(ans.trim() || suggested); }),
-    );
-
-    saveLocalConfig(targetCwd, { agent_name: agentName, auto_start_relay: true });
-    process.stdout.write(`[remote-pi] Config saved: agent="${agentName}"\n\n`);
-  }
+  await _ensureCliLocalConfig(targetCwd);
 
   // Resolve mesh server script path (dist/mcp/mesh_server.js)
   const here = fileURLToPath(import.meta.url);
@@ -6166,24 +6176,117 @@ async function _cmdClaudeCli(args: string[]): Promise<void> {
   // and we don't risk a parser that may not accept `=`.)
   // Any extra args the user passed (e.g. `--resume`, `-c`) are appended last so
   // they reach the claude binary; ours come first as sensible defaults.
-  try {
-    spawnSync("claude", [
-      "--mcp-config", mcpConfigPath,
-      "--dangerously-load-development-channels", `server:${SERVER_NAME}`,
-      "--dangerously-skip-permissions",
-      ...(skillPath ? [`--append-system-prompt-file=${skillPath}`] : []),
-      ...passthroughArgs,
-    ], {
-      cwd: absCwd,
-      stdio: "inherit",
-      shell: false,
-    });
-  } finally {
-    // Session over — drop the ephemeral config so it never lingers as a stray
-    // file. spawnSync blocks until claude exits, so claude has long since read
-    // it. Best-effort: ignore if already gone.
-    try { unlinkSync(mcpConfigPath); } catch { /* already removed */ }
+  const claudeRes = (() => {
+    try {
+      return spawnSync("claude", [
+        "--mcp-config", mcpConfigPath,
+        "--dangerously-load-development-channels", `server:${SERVER_NAME}`,
+        "--dangerously-skip-permissions",
+        ...(skillPath ? [`--append-system-prompt-file=${skillPath}`] : []),
+        ...passthroughArgs,
+      ], {
+        cwd: absCwd,
+        stdio: "inherit",
+        shell: false,
+      });
+    } finally {
+      // Session over — drop the ephemeral config so it never lingers as a stray
+      // file. spawnSync blocks until claude exits, so claude has long since read
+      // it. Best-effort: ignore if already gone.
+      try { unlinkSync(mcpConfigPath); } catch { /* already removed */ }
+    }
+  })();
+  // spawnSync reports launch failures on its RESULT (ENOENT does not throw) —
+  // discarding it silently reported success for a session that never started.
+  _exitOnCliSpawnFailure("claude", claudeRes);
+}
+
+/**
+ * Shared post-`spawnSync` validation for the `remote-pi claude` / `remote-pi
+ * agy` launchers: surfaces launch errors (e.g. binary missing → ENOENT),
+ * signals, and nonzero child exits instead of reporting a clean run.
+ */
+function _exitOnCliSpawnFailure(
+  cmd: string,
+  res: ReturnType<typeof spawnSync>,
+): void {
+  if (res.error) {
+    console.error(`[remote-pi] failed to launch ${cmd}: ${res.error.message}`);
+    process.exit(1);
   }
+  if (res.signal) {
+    console.error(`[remote-pi] ${cmd} terminated by signal ${res.signal}`);
+    process.exit(1);
+  }
+  if (typeof res.status === "number" && res.status !== 0) {
+    process.exit(res.status);
+  }
+}
+
+// ── `remote-pi agy` — launch Google Antigravity (agy) connected to the mesh ──
+
+export async function _cmdAgyCli(args: string[]): Promise<void> {
+  const installOnly = args.includes("--install-plugin");
+  const filteredArgs = args.filter((a) => a !== "--install-plugin");
+  const hasCwdArg = filteredArgs.length > 0 && !filteredArgs[0]!.startsWith("-");
+  const targetCwd = hasCwdArg ? filteredArgs[0]! : process.cwd();
+  const passthroughArgs = hasCwdArg ? filteredArgs.slice(1) : filteredArgs;
+
+  const here = fileURLToPath(import.meta.url);
+  const distRoot = dirname(here);
+  const pkgRoot = dirname(distRoot);
+  const meshServerPath = resolve(pkgRoot, "dist", "mcp", "mesh_server.js");
+
+  if (!existsSync(meshServerPath)) {
+    console.log(`[remote-pi] mesh server not found at ${meshServerPath}. Run pnpm build first.`);
+    process.exit(1);
+  }
+
+  const { ensureAgyMeshPluginInstalled } = await import("./session/agy_plugin.js");
+  let installed: InstalledAgyPluginPaths;
+  try {
+    installed = ensureAgyMeshPluginInstalled({
+      packageRoot: pkgRoot,
+      meshServerPath,
+    });
+  } catch (err) {
+    // ensureAgyMeshPluginInstalled refuses to overwrite an MCP config it could
+    // not read; surface that instead of crashing with a bare stack trace.
+    console.error(`[remote-pi] ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+
+  if (installOnly) {
+    console.log(`[remote-pi] Antigravity mesh plugin installed at ${installed.pluginDir}`);
+    return;
+  }
+
+  await _ensureCliLocalConfig(targetCwd, true);
+
+  const absCwd = resolve(targetCwd);
+  const agyCmd = process.platform === "win32" ? "agy.cmd" : "agy";
+
+  // `agy.cmd` needs shell:true on Windows, but Node joins shell arguments with
+  // bare spaces before handing them to cmd.exe — re-quote each already-tokenized
+  // argument so a prompt like `explain A & B` reaches agy whole instead of being
+  // re-split at `&` (the remainder would run as a separate shell command).
+  const needsCmdShell = process.platform === "win32";
+  const agyArgs = needsCmdShell ? quoteWindowsShellArgs(passthroughArgs) : passthroughArgs;
+
+  const res = spawnSync(agyCmd, agyArgs, {
+    cwd: absCwd,
+    stdio: "inherit",
+    shell: needsCmdShell,
+    env: {
+      ...process.env,
+      REMOTE_PI_MCP_CWD: absCwd,
+      REMOTE_PI_MCP_NAME: process.env["REMOTE_PI_MCP_NAME"] ?? "agy",
+      REMOTE_PI_MCP_AUTO_JOIN: "1",
+    },
+  });
+  // Discarding this result made `remote-pi agy` report success even when agy
+  // was missing (ENOENT is returned, not thrown) or exited nonzero.
+  _exitOnCliSpawnFailure(agyCmd, res);
 }
 
 // Plan/143 — the thin entry no longer seeds the global-pairings cache at
