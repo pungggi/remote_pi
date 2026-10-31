@@ -124,13 +124,56 @@ describe("ensureAgyMeshPluginInstalled + mesh_hook.mjs + watcher.mjs", () => {
       };
     };
     expect(hooksJson["remote-pi-mesh"].SessionStart).toHaveLength(1);
-    expect(hooksJson["remote-pi-mesh"].SessionStart[0]?.command).toBe("node scripts/mesh_hook.mjs --event=SessionStart");
+    if (process.platform === "win32") {
+      expect(hooksJson["remote-pi-mesh"].SessionStart[0]?.command).toBe(
+        "scripts\\mesh_hook.cmd --event=SessionStart",
+      );
+      expect(existsSync(paths.hookCmdPath)).toBe(true);
+      const cmdBody = readFileSync(paths.hookCmdPath, "utf8");
+      expect(cmdBody).toContain(process.execPath);
+      expect(cmdBody).toContain("%~dp0mesh_hook.mjs");
+    } else {
+      expect(hooksJson["remote-pi-mesh"].SessionStart[0]?.command).toBe(
+        `"${process.execPath}" scripts/mesh_hook.mjs --event=SessionStart`,
+      );
+    }
     expect(hooksJson["remote-pi-mesh"].PreInvocation).toHaveLength(1);
     expect(hooksJson["remote-pi-mesh"].PreInvocation[0]?.command).toContain(
       "--event=PreInvocation",
     );
     expect(hooksJson["remote-pi-mesh"].Stop).toHaveLength(1);
     expect(hooksJson["remote-pi-mesh"].Stop[0]?.command).toContain("--event=Stop");
+  });
+
+
+  test("writePluginHooksConfig honors custom nodeExecPath and creates mesh_hook.cmd on Windows", () => {
+    const configDir = join(tempDir, ".gemini", "config");
+    const customNode =
+      process.platform === "win32"
+        ? "C:\\Custom Path\\Node.exe"
+        : "/custom/path/bin/node";
+    const paths = ensureAgyMeshPluginInstalled({
+      configDir,
+      nodeExecPath: customNode,
+    });
+
+    const hooksJson = JSON.parse(readFileSync(paths.hooksConfigPath, "utf8")) as {
+      "remote-pi-mesh": {
+        SessionStart: Array<{ command: string }>;
+      };
+    };
+    if (process.platform === "win32") {
+      expect(hooksJson["remote-pi-mesh"].SessionStart[0]?.command).toBe(
+        "scripts\\mesh_hook.cmd --event=SessionStart",
+      );
+      expect(existsSync(paths.hookCmdPath)).toBe(true);
+      const cmdBody = readFileSync(paths.hookCmdPath, "utf8");
+      expect(cmdBody).toContain(customNode);
+    } else {
+      expect(hooksJson["remote-pi-mesh"].SessionStart[0]?.command).toBe(
+        `"${customNode}" scripts/mesh_hook.mjs --event=SessionStart`,
+      );
+    }
   });
 
   test("stripJsonComments preserves URLs inside strings while stripping //, /* */, and trailing commas", () => {
