@@ -9,7 +9,7 @@ import {
   ensureAgyMeshPluginInstalled,
   stripJsonComments,
 } from "./agy_plugin.js";
-import { readConversationRecord } from "./conversation_registry.js";
+import { conversationFilePath, readConversationRecord } from "./conversation_registry.js";
 import { writeInboxState } from "../mcp/inbox_state.js";
 
 describe("ensureAgyMeshPluginInstalled + mesh_hook.mjs + watcher.mjs", () => {
@@ -281,26 +281,53 @@ describe("ensureAgyMeshPluginInstalled + mesh_hook.mjs + watcher.mjs", () => {
     expect(readConversationRecord(convId)?.state).toBe("idle");
   });
 
-  test("watcher.mjs wakes idle conversations via ANTIGRAVITY_AGENTAPI_EXE, skips busy ones, and deduplicates across >5 unread messages", () => {
+  test("shell-wrapped mesh_hook.mjs records session host PID (not transient shell PID) even before MCP inbox exists", () => {
+    const configDir = join(tempDir, ".gemini", "config");
+    const paths = ensureAgyMeshPluginInstalled({ configDir });
+    const workspace = join(tempDir, "shell-wrapped-repo");
+    const convId = "conv-shell-wrapped";
+
+    // Invoke mesh_hook.mjs through a shell (`cmd.exe /c` on Windows, `sh -c` on POSIX)
+    // BEFORE any workspace inbox state file has been written.
+    const cmd = `"${process.execPath}" "${paths.hookScriptPath}" --event=Stop`;
+    const r = spawnSync(cmd, {
+      shell: true,
+      input: JSON.stringify({
+        conversationId: convId,
+        workspacePaths: [workspace],
+        terminationReason: "NO_TOOL_CALL",
+      }),
+      encoding: "utf8",
+      env: { ...process.env, REMOTE_PI_HOME: tempDir },
+    });
+    expect(r.status).toBe(0);
+
+    // Even after the shell process has exited, the conversation record is alive
+    // and its hostPid equals THIS test process (`process.pid`), not the dead shell!
+    const rec = readConversationRecord(convId);
+    expect(rec).not.toBeNull();
+    expect(rec?.hostPid).toBe(process.pid);
+    expect(rec?.state).toBe("idle");
+  });
+
+  test("watcher.mjs wakes idle conversations via ANTIGRAVITY_AGENTAPI_EXE, preserves concurrent PreInvocation busy state, skips busy ones, and deduplicates across >5 unread messages", () => {
     const configDir = join(tempDir, ".gemini", "config");
     const paths = ensureAgyMeshPluginInstalled({ configDir });
     const workspace = join(tempDir, "watcher-repo");
     const convId = "conv-watcher-1";
+    const convPath = conversationFilePath(convId);
 
-    // Create a mock agentapi executable script (on Windows use a .cmd or node wrapper;
-    // wait: execFileSync without shell requires an executable binary! Wait: we can set
-    // ANTIGRAVITY_AGENTAPI_EXE to process.execPath if we test, or on Windows copy node.exe /
-    // or test via a small node script or check how watcher.mjs invokes ANTIGRAVITY_AGENTAPI_EXE).
-    // Even simpler: let's check how watcher.mjs invokes ANTIGRAVITY_AGENTAPI_EXE!
-    // Wait: on POSIX a `chmod +x` node script works with execFileSync, whereas on Windows
-    // execFileSync requires a `.exe` binary!
-    // Let's make sure watcher.mjs supports `ANTIGRAVITY_AGENTAPI_SCRIPT` (or if `ANTIGRAVITY_AGENTAPI_EXE` ends with `.mjs`/`.js`, invokes `process.execPath` with `[exe, ...args]`)!
     const callsLogPath = join(tempDir, "agentapi-calls.jsonl");
-    const mockAgentApiScript = join(tempDir, "mock-agentapi.mjs");
+    const mockAgentApiScript = join(tempDir, "language_server_mock.mjs");
     writeFileSync(
       mockAgentApiScript,
-      `import { appendFileSync } from "node:fs";
+      `import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 appendFileSync(${JSON.stringify(callsLogPath)}, JSON.stringify(process.argv.slice(2)) + "\\n", "utf8");
+if (process.env.SIMULATE_PREINVOCATION_BUSY === "1") {
+  const rec = JSON.parse(readFileSync(${JSON.stringify(convPath)}, "utf8"));
+  rec.state = "busy";
+  writeFileSync(${JSON.stringify(convPath)}, JSON.stringify(rec, null, 2), "utf8");
+}
 `,
       "utf8",
     );
@@ -314,13 +341,14 @@ appendFileSync(${JSON.stringify(callsLogPath)}, JSON.stringify(process.argv.slic
       expect(r.status).toBe(0);
     };
 
-    const runWatcherOnce = () => {
+    const runWatcherOnce = (extraEnv: Record<string, string> = {}) => {
       const r = spawnSync(process.execPath, [paths.sidecarScriptPath, "--once"], {
         encoding: "utf8",
         env: {
           ...process.env,
           REMOTE_PI_HOME: tempDir,
           ANTIGRAVITY_AGENTAPI_EXE: mockAgentApiScript,
+          ...extraEnv,
         },
       });
       expect(r.status).toBe(0);
@@ -356,9 +384,13 @@ appendFileSync(${JSON.stringify(callsLogPath)}, JSON.stringify(process.argv.slic
     );
     expect(readConversationRecord(convId)?.state).toBe("idle");
 
-    // 4. Watcher runs -> wakes conversation once!
-    runWatcherOnce();
+    // 4. Watcher runs -> wakes conversation once using ["agentapi", "send-message", ...]!
+    // Also simulate PreInvocation flipping state to "busy" while agentapi runs;
+    // watcher must NOT overwrite "busy" back to "idle" after execFileSync returns.
+    runWatcherOnce({ SIMULATE_PREINVOCATION_BUSY: "1" });
     expect(existsSync(callsLogPath)).toBe(true);
+    expect(readConversationRecord(convId)?.state).toBe("busy");
+
     const readCalls = (): string[][] =>
       readFileSync(callsLogPath, "utf8")
         .trim()
@@ -367,11 +399,16 @@ appendFileSync(${JSON.stringify(callsLogPath)}, JSON.stringify(process.argv.slic
         .map((line) => JSON.parse(line) as string[]);
 
     expect(readCalls()).toHaveLength(1);
-    expect(readCalls()[0]?.[0]).toBe("send-message");
-    expect(readCalls()[0]?.[1]).toBe(convId);
-    expect(readCalls()[0]?.[2]).toContain("1 unread mesh message(s) arrived");
+    expect(readCalls()[0]?.[0]).toBe("agentapi");
+    expect(readCalls()[0]?.[1]).toBe("send-message");
+    expect(readCalls()[0]?.[2]).toBe(convId);
+    expect(readCalls()[0]?.[3]).toContain("1 unread mesh message(s) arrived");
 
-    // 5. Running watcher again with unchanged inbox is deduplicated (still 1 call)
+    // Transition back to idle; running watcher again with unchanged inbox is deduplicated (still 1 call)
+    runHook(
+      { conversationId: convId, workspacePaths: [workspace], terminationReason: "USER_CANCELLED" },
+      "Stop",
+    );
     runWatcherOnce();
     expect(readCalls()).toHaveLength(1);
 
@@ -391,7 +428,7 @@ appendFileSync(${JSON.stringify(callsLogPath)}, JSON.stringify(process.argv.slic
     });
     runWatcherOnce();
     expect(readCalls()).toHaveLength(2);
-    expect(readCalls()[1]?.[2]).toContain("6 unread mesh message(s) arrived");
+    expect(readCalls()[1]?.[3]).toContain("6 unread mesh message(s) arrived");
   });
 
   test("mesh_hook ignores other sessions' inboxes in the same workspace", () => {

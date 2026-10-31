@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -10,10 +10,12 @@ import {
   findConversationForInbox,
   listLiveConversations,
   markConversationWoken,
+  maybeWakeIdleConversationForInbox,
   readConversationRecord,
   resolveAgentApiInvocation,
   writeConversationRecord,
 } from "./conversation_registry.js";
+import { readUnreadInboxStates, writeInboxState } from "../mcp/inbox_state.js";
 
 describe("conversation_registry", () => {
   let tempHome = "";
@@ -133,7 +135,7 @@ describe("conversation_registry", () => {
     }
   });
 
-  test("resolveAgentApiInvocation uses agy.exe agentapi subcommand on Windows and respects ANTIGRAVITY_AGENTAPI_EXE", () => {
+  test("resolveAgentApiInvocation uses agentapi subcommand for agy.exe and language_server binaries in ANTIGRAVITY_AGENTAPI_EXE", () => {
     const winDefault = resolveAgentApiInvocation("conv-1", "hello & calc.exe", {}, "win32");
     expect(winDefault.file).toBe("agy.exe");
     expect(winDefault.args).toEqual(["agentapi", "send-message", "conv-1", "hello & calc.exe"]);
@@ -151,6 +153,15 @@ describe("conversation_registry", () => {
     expect(customAgyExe.file).toBe("C:\\Program Files\\Antigravity\\agy.exe");
     expect(customAgyExe.args).toEqual(["agentapi", "send-message", "conv-1", "hello"]);
 
+    const customLanguageServerExe = resolveAgentApiInvocation(
+      "conv-1",
+      "hello",
+      { ANTIGRAVITY_AGENTAPI_EXE: "/opt/antigravity/language_server_linux_x64" },
+      "linux",
+    );
+    expect(customLanguageServerExe.file).toBe("/opt/antigravity/language_server_linux_x64");
+    expect(customLanguageServerExe.args).toEqual(["agentapi", "send-message", "conv-1", "hello"]);
+
     const customStandalone = resolveAgentApiInvocation(
       "conv-1",
       "hello",
@@ -159,6 +170,66 @@ describe("conversation_registry", () => {
     );
     expect(customStandalone.file).toBe("/usr/local/bin/agentapi-mock");
     expect(customStandalone.args).toEqual(["send-message", "conv-1", "hello"]);
+  });
+
+  test("maybeWakeIdleConversationForInbox claims lastWokenKey before agentapi finishes and preserves concurrent state changes", () => {
+    const workspace = join(tempHome, "claim-workspace");
+    const convId = "conv-claim-1";
+    const convPath = writeConversationRecord({
+      conversationId: convId,
+      workspacePath: workspace,
+      hostPid: process.pid,
+      state: "idle",
+    });
+
+    writeInboxState({
+      cwd: workspace,
+      name: "agy",
+      address: `${workspace}@agy`,
+      ppid: process.pid,
+      messages: [
+        {
+          id: "m-claim",
+          from: `${workspace}@pi`,
+          body: "hello",
+          re: null,
+          at: "2026-10-31T18:00:00.000Z",
+        },
+      ],
+    });
+    const inboxRec = readUnreadInboxStates([workspace])[0]!;
+
+    // Mock script that verifies lastWokenKey is ALREADY claimed on disk while
+    // agentapi is running AND simulates PreInvocation transitioning state to "busy".
+    const verifyLogPath = join(tempHome, "in-flight-check.json");
+    const mockScript = join(tempHome, "agentapi-inflight.mjs");
+    writeFileSync(
+      mockScript,
+      `import { readFileSync, writeFileSync } from "node:fs";
+const current = JSON.parse(readFileSync(${JSON.stringify(convPath)}, "utf8"));
+writeFileSync(${JSON.stringify(verifyLogPath)}, JSON.stringify(current), "utf8");
+current.state = "busy";
+writeFileSync(${JSON.stringify(convPath)}, JSON.stringify(current, null, 2), "utf8");
+`,
+      "utf8",
+    );
+
+    const woken = maybeWakeIdleConversationForInbox(inboxRec, {
+      ...process.env,
+      REMOTE_PI_HOME: tempHome,
+      ANTIGRAVITY_AGENTAPI_EXE: mockScript,
+    });
+    expect(woken).toBe(true);
+
+    // 1. While mockScript was running, lastWokenKey was already persisted on disk
+    const inFlightRecord = JSON.parse(readFileSync(verifyLogPath, "utf8")) as {
+      lastWokenKey: string;
+    };
+    expect(inFlightRecord.lastWokenKey).toBe(buildWakeDedupKey(convId, "m-claim", 1));
+
+    // 2. After maybeWakeIdleConversationForInbox returned, the "busy" state written
+    // during agentapi execution was NOT overwritten with stale "idle"
+    expect(readConversationRecord(convId)?.state).toBe("busy");
   });
 
   test("buildWakeNotificationMessage formats sender and preview details", () => {

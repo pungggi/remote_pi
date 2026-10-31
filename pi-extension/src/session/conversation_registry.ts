@@ -271,6 +271,11 @@ export function buildWakeNotificationMessage(
  * Resolves the executable and argument list for `agentapi send-message` without
  * using `shell: true` (preventing command injection on Windows when message
  * previews contain shell metacharacters).
+ *
+ * When `ANTIGRAVITY_AGENTAPI_EXE` is provided by Antigravity's `SidecarManager`,
+ * it points to the language server / `agy` executable where `agentapi` is a
+ * subcommand (`["agentapi", "send-message", ...]`), unless the binary itself is
+ * a standalone `agentapi` shim.
  */
 export function resolveAgentApiInvocation(
   conversationId: string,
@@ -281,17 +286,24 @@ export function resolveAgentApiInvocation(
   const exe = env["ANTIGRAVITY_AGENTAPI_EXE"]?.trim();
   const file = exe || (platform === "win32" ? "agy.exe" : "agentapi");
   const base = basename(file).toLowerCase();
+  const isStandaloneAgentApi =
+    base === "agentapi" ||
+    base === "agentapi.exe" ||
+    base.startsWith("agentapi-") ||
+    base.startsWith("agentapi_");
+  const usesSubcommand =
+    !isStandaloneAgentApi &&
+    (Boolean(exe) || base === "agy.exe" || base === "agy" || base.startsWith("language_server"));
+  const subArgs = usesSubcommand
+    ? ["agentapi", "send-message", conversationId, notification]
+    : ["send-message", conversationId, notification];
   if (base.endsWith(".mjs") || base.endsWith(".cjs") || base.endsWith(".js")) {
     return {
       file: process.execPath,
-      args: [file, "send-message", conversationId, notification],
+      args: [file, ...subArgs],
     };
   }
-  const usesSubcommand = base === "agy.exe" || base === "agy";
-  const args = usesSubcommand
-    ? ["agentapi", "send-message", conversationId, notification]
-    : ["send-message", conversationId, notification];
-  return { file, args };
+  return { file, args: subArgs };
 }
 
 /**
@@ -313,7 +325,8 @@ export function invokeAgentApiSendMessage(
 
 /**
  * Checks whether `inbox` belongs to an `idle` Antigravity conversation that has
- * not yet been woken for its latest unread state, and if so invokes `agentapi`.
+ * not yet been woken for its latest unread state, and if so claims the wake key
+ * on disk before invoking `agentapi` (rolling back the claim if `agentapi` fails).
  */
 export function maybeWakeIdleConversationForInbox(
   inbox: InboxStateRecord,
@@ -329,8 +342,30 @@ export function maybeWakeIdleConversationForInbox(
   const dedupKey = buildWakeDedupKey(conv.conversationId, lastMsgId, inbox.unreadCount);
   if (conv.lastWokenKey === dedupKey) return false;
 
-  const notification = buildWakeNotificationMessage(inbox);
-  invokeAgentApiSendMessage(conv.conversationId, notification, env);
+  // Claim the wake key BEFORE invoking agentapi so a concurrent sidecar or
+  // fallback timer sees `lastWokenKey === dedupKey` while agentapi is running.
+  const prevWokenId = conv.lastWokenMessageId;
+  const prevWokenKey = conv.lastWokenKey;
   markConversationWoken(conv.conversationId, lastMsgId, inbox.unreadCount);
-  return true;
+
+  const notification = buildWakeNotificationMessage(inbox);
+  try {
+    invokeAgentApiSendMessage(conv.conversationId, notification, env);
+    return true;
+  } catch (err) {
+    // Roll back the woken claim on failure while preserving any `state` update
+    // (e.g. `PreInvocation` setting `state: "busy"`) that occurred in the meantime.
+    const current = readConversationRecord(conv.conversationId);
+    if (current && current.lastWokenKey === dedupKey) {
+      writeConversationRecordSafe({
+        conversationId: current.conversationId,
+        workspacePath: current.workspacePath,
+        hostPid: current.hostPid,
+        state: current.state,
+        lastWokenMessageId: prevWokenId,
+        lastWokenKey: prevWokenKey,
+      });
+    }
+    throw err;
+  }
 }

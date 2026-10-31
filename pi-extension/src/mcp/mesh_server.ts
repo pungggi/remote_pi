@@ -33,7 +33,10 @@ import {
   writeInboxStateSafe,
   type InboxMessageLike,
 } from "./inbox_state.js";
-import { maybeWakeIdleConversationForInbox } from "../session/conversation_registry.js";
+import {
+  findConversationForInbox,
+  maybeWakeIdleConversationForInbox,
+} from "../session/conversation_registry.js";
 import { sessionSockPath, sessionAuditPath, LOCAL_SESSION_NAME } from "../session/global_config.js";
 import { resolveRelayUrl } from "../config.js";
 import { acquireNamedCwdLock, type NamedAcquiredLock } from "../session/cwd_lock.js";
@@ -45,6 +48,7 @@ const MCP_INIT_TIMEOUT_MS = 2_000;
 const JOIN_RETRY_MS = 2_000;
 const MAX_JOIN_ATTEMPTS = 4;
 const DIRECT_WAKE_FALLBACK_DELAY_MS = 300;
+const DIRECT_WAKE_BUSY_RETRY_MS = 1_000;
 
 // ── Args / config ─────────────────────────────────────────────────────────────
 
@@ -100,23 +104,41 @@ let _mesh: MeshNode | null = null;
 let _inboxStatePath: string | null = null;
 let _fallbackWakeTimer: ReturnType<typeof setTimeout> | null = null;
 
-function scheduleFallbackAgentApiWake(): void {
+function clearFallbackWakeTimer(): void {
+  if (_fallbackWakeTimer) {
+    clearTimeout(_fallbackWakeTimer);
+    _fallbackWakeTimer = null;
+  }
+}
+
+function scheduleFallbackAgentApiWake(delayMs = DIRECT_WAKE_FALLBACK_DELAY_MS): void {
+  if (_shuttingDown) return;
   if (!process.env["ANTIGRAVITY_LS_ADDRESS"] && !process.env["ANTIGRAVITY_AGENTAPI_EXE"]) {
     return;
   }
-  if (_fallbackWakeTimer) clearTimeout(_fallbackWakeTimer);
+  clearFallbackWakeTimer();
   _fallbackWakeTimer = setTimeout(() => {
     _fallbackWakeTimer = null;
+    if (_shuttingDown || inbox.count() === 0) return;
     try {
       const states = readUnreadInboxStates([_canonCwd]);
       const mine = states.find((s) => s.pid === process.pid);
-      if (mine) {
-        maybeWakeIdleConversationForInbox(mine);
+      if (!mine || mine.unreadCount <= 0) return;
+
+      const woken = maybeWakeIdleConversationForInbox(mine);
+      if (woken) return;
+
+      // If the conversation is currently busy (e.g. a message arrived mid-turn)
+      // and that turn later ends without draining (such as `USER_CANCELLED`),
+      // re-check after the turn transitions back to `idle`.
+      const conv = findConversationForInbox(mine);
+      if (conv && conv.state === "busy" && inbox.count() > 0 && !_shuttingDown) {
+        scheduleFallbackAgentApiWake(DIRECT_WAKE_BUSY_RETRY_MS);
       }
     } catch {
       // Best-effort fallback when SidecarManager is inactive (e.g. standalone agy CLI).
     }
-  }, DIRECT_WAKE_FALLBACK_DELAY_MS);
+  }, delayMs);
   _fallbackWakeTimer.unref?.();
 }
 
@@ -138,6 +160,8 @@ function syncInboxState(messages: readonly InboxMessageLike[]): void {
   _inboxStatePath = path;
   if (messages.length > 0) {
     scheduleFallbackAgentApiWake();
+  } else {
+    clearFallbackWakeTimer();
   }
 }
 
@@ -465,7 +489,7 @@ function shutdown(): void {
   if (_shuttingDown) return;
   _shuttingDown = true;
   if (_lockRetryTimer) { clearTimeout(_lockRetryTimer); _lockRetryTimer = null; }
-  if (_fallbackWakeTimer) { clearTimeout(_fallbackWakeTimer); _fallbackWakeTimer = null; }
+  clearFallbackWakeTimer();
   inbox.close();
   removeInboxState(_inboxStatePath);
   try { _lock?.release(); } catch { /* OS frees the UDS lock on exit anyway */ }

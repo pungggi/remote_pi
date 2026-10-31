@@ -90,7 +90,7 @@ function savePersistedWokenMap(map) {
   const filePath = sidecarDataFilePath();
   if (!filePath) return;
   try {
-    mkdirSync( resolve(filePath, ".."), { recursive: true });
+    mkdirSync(resolve(filePath, ".."), { recursive: true });
     const obj = Object.fromEntries(map.entries());
     const payload = JSON.stringify(obj, null, 2);
     const tmpPath = `${filePath}.${process.pid}.tmp`;
@@ -98,6 +98,37 @@ function savePersistedWokenMap(map) {
     renameSync(tmpPath, filePath);
   } catch {
     // Ignore persistence errors
+  }
+}
+
+function readSingleConversation(fullPath) {
+  try {
+    const parsed = JSON.parse(readFileSync(fullPath, "utf8"));
+    if (
+      typeof parsed.conversationId !== "string" ||
+      !parsed.conversationId.trim() ||
+      typeof parsed.workspacePath !== "string" ||
+      typeof parsed.hostPid !== "number"
+    ) {
+      return null;
+    }
+    if (!isProcessAlive(parsed.hostPid)) {
+      safeUnlink(fullPath);
+      return null;
+    }
+    return {
+      filePath: fullPath,
+      conversationId: parsed.conversationId.trim(),
+      workspacePath: normalizePath(parsed.workspacePath),
+      hostPid: parsed.hostPid,
+      state: parsed.state === "busy" ? "busy" : "idle",
+      lastWokenMessageId:
+        typeof parsed.lastWokenMessageId === "string" ? parsed.lastWokenMessageId : null,
+      lastWokenKey: typeof parsed.lastWokenKey === "string" ? parsed.lastWokenKey : null,
+      updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : 0,
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -114,35 +145,8 @@ function readLiveConversations() {
   const results = [];
   for (const entry of entries) {
     if (!entry.endsWith(".json")) continue;
-    const fullPath = join(dir, entry);
-    try {
-      const parsed = JSON.parse(readFileSync(fullPath, "utf8"));
-      if (
-        typeof parsed.conversationId !== "string" ||
-        !parsed.conversationId.trim() ||
-        typeof parsed.workspacePath !== "string" ||
-        typeof parsed.hostPid !== "number"
-      ) {
-        continue;
-      }
-      if (!isProcessAlive(parsed.hostPid)) {
-        safeUnlink(fullPath);
-        continue;
-      }
-      results.push({
-        filePath: fullPath,
-        conversationId: parsed.conversationId.trim(),
-        workspacePath: normalizePath(parsed.workspacePath),
-        hostPid: parsed.hostPid,
-        state: parsed.state === "busy" ? "busy" : "idle",
-        lastWokenMessageId:
-          typeof parsed.lastWokenMessageId === "string" ? parsed.lastWokenMessageId : null,
-        lastWokenKey: typeof parsed.lastWokenKey === "string" ? parsed.lastWokenKey : null,
-        updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : 0,
-      });
-    } catch {
-      // Ignore transient/malformed files
-    }
+    const conv = readSingleConversation(join(dir, entry));
+    if (conv) results.push(conv);
   }
   results.sort((a, b) => b.updatedAt - a.updatedAt);
   return results;
@@ -219,37 +223,50 @@ function resolveAgentApiInvocation(conversationId, notification) {
   const exe = (process.env["ANTIGRAVITY_AGENTAPI_EXE"] || "").trim();
   const file = exe || (process.platform === "win32" ? "agy.exe" : "agentapi");
   const base = basename(file).toLowerCase();
+  const isStandaloneAgentApi =
+    base === "agentapi" ||
+    base === "agentapi.exe" ||
+    base.startsWith("agentapi-") ||
+    base.startsWith("agentapi_");
+  const usesSubcommand =
+    !isStandaloneAgentApi &&
+    (Boolean(exe) || base === "agy.exe" || base === "agy" || base.startsWith("language_server"));
+  const subArgs = usesSubcommand
+    ? ["agentapi", "send-message", conversationId, notification]
+    : ["send-message", conversationId, notification];
   if (base.endsWith(".mjs") || base.endsWith(".cjs") || base.endsWith(".js")) {
     return {
       file: process.execPath,
-      args: [file, "send-message", conversationId, notification],
+      args: [file, ...subArgs],
     };
   }
-  const usesSubcommand = base === "agy.exe" || base === "agy";
-  const args = usesSubcommand
-    ? ["agentapi", "send-message", conversationId, notification]
-    : ["send-message", conversationId, notification];
-  return { file, args };
+  return { file, args: subArgs };
 }
 
-function persistConversationWoken(conv, lastMsgId, dedupKey) {
+/**
+ * Re-reads `filePath` from disk before writing `lastWokenMessageId` / `lastWokenKey`
+ * so any concurrent `state: "busy"` transition written by `PreInvocation` is preserved.
+ */
+function persistConversationWoken(filePath, fallbackConv, lastMsgId, dedupKey) {
   try {
+    const current = readSingleConversation(filePath) || fallbackConv;
+    if (!current) return;
     const updated = {
-      conversationId: conv.conversationId,
-      workspacePath: conv.workspacePath,
-      hostPid: conv.hostPid,
-      state: conv.state,
+      conversationId: current.conversationId,
+      workspacePath: current.workspacePath,
+      hostPid: current.hostPid,
+      state: current.state,
       lastWokenMessageId: lastMsgId,
       lastWokenKey: dedupKey,
       updatedAt: Date.now(),
     };
     const payload = JSON.stringify(updated, null, 2);
-    const tmpPath = `${conv.filePath}.${process.pid}.tmp`;
+    const tmpPath = `${filePath}.${process.pid}.tmp`;
     try {
       writeFileSync(tmpPath, payload, "utf8");
-      renameSync(tmpPath, conv.filePath);
+      renameSync(tmpPath, filePath);
     } catch {
-      writeFileSync(conv.filePath, payload, "utf8");
+      writeFileSync(filePath, payload, "utf8");
       safeUnlink(tmpPath);
     }
   } catch {
@@ -267,12 +284,13 @@ function checkAndWakeAll() {
   if (conversations.length === 0) return;
 
   for (const inbox of inboxes) {
-    const conv = matchConversation(inbox, conversations);
-    if (!conv) continue;
+    const matched = matchConversation(inbox, conversations);
+    if (!matched) continue;
 
-    // If the conversation is currently mid-turn ("busy"), let the Stop hook
-    // continue the turn instead of queuing a duplicate turn via agentapi.
-    if (conv.state !== "idle") continue;
+    // Re-read the conversation record right before claiming to observe the
+    // freshest `state` and `lastWokenKey` on disk.
+    const conv = readSingleConversation(matched.filePath);
+    if (!conv || conv.state !== "idle") continue;
 
     const previewArr = Array.isArray(inbox.preview) ? inbox.preview : [];
     const fallbackId = previewArr.length > 0 ? previewArr[previewArr.length - 1]?.id : null;
@@ -286,6 +304,17 @@ function checkAndWakeAll() {
       continue;
     }
 
+    // Claim the wake key BEFORE calling execFileSync so the 300ms MCP fallback
+    // or a subsequent watcher tick does not double-send while agentapi runs,
+    // and so we do not overwrite a concurrent PreInvocation `state: "busy"`
+    // after execFileSync returns.
+    const prevWokenId = conv.lastWokenMessageId;
+    const prevWokenKey = conv.lastWokenKey;
+    const prevInMemKey = wokenMap.get(conv.conversationId);
+    wokenMap.set(conv.conversationId, dedupKey);
+    savePersistedWokenMap(wokenMap);
+    persistConversationWoken(conv.filePath, conv, lastMsgId || null, dedupKey);
+
     const notification = buildWakeNotification(inbox);
     const { file, args } = resolveAgentApiInvocation(conv.conversationId, notification);
     try {
@@ -295,10 +324,16 @@ function checkAndWakeAll() {
         timeout: AGENTAPI_TIMEOUT_MS,
         stdio: ["ignore", "pipe", "pipe"],
       });
-      wokenMap.set(conv.conversationId, dedupKey);
-      savePersistedWokenMap(wokenMap);
-      persistConversationWoken(conv, lastMsgId || null, dedupKey);
     } catch (err) {
+      // Roll back the woken claim on failure while preserving any `state`
+      // transition that occurred on disk while agentapi was running.
+      if (prevInMemKey === undefined) wokenMap.delete(conv.conversationId);
+      else wokenMap.set(conv.conversationId, prevInMemKey);
+      savePersistedWokenMap(wokenMap);
+      const afterErr = readSingleConversation(conv.filePath);
+      if (afterErr && afterErr.lastWokenKey === dedupKey) {
+        persistConversationWoken(conv.filePath, afterErr, prevWokenId, prevWokenKey);
+      }
       process.stderr.write(
         `[remote-pi-mesh watcher] agentapi send-message failed for ${conv.conversationId}: ${err instanceof Error ? err.message : String(err)}\n`,
       );

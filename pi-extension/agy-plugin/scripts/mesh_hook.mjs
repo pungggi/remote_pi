@@ -34,7 +34,22 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
+
+const SHELL_PROCESS_NAMES = new Set([
+  "sh",
+  "bash",
+  "dash",
+  "zsh",
+  "ksh",
+  "fish",
+  "cmd",
+  "cmd.exe",
+  "powershell",
+  "powershell.exe",
+  "pwsh",
+  "pwsh.exe",
+]);
 
 function inboxStateDir() {
   const root = process.env["REMOTE_PI_HOME"] || homedir();
@@ -84,14 +99,14 @@ function matchesWorkspace(recordCwd, roots) {
 }
 
 /**
- * Parent PID of this hook's own parent (the session host, one level above the
- * hook's immediate parent). Needed only when the hook itself was spawned
- * through a shell — resolved lazily so the common direct-spawn case costs nothing.
+ * Inspects `process.ppid` (the hook's immediate parent) to obtain both its
+ * parent PID (`ppid`, the hook's grandparent) and its executable name (`name`).
+ * Resolved lazily and cached for the lifetime of this hook invocation.
  */
-let _hostParent;
-function hostParentPid() {
-  if (_hostParent !== undefined) return _hostParent;
-  _hostParent = null;
+let _parentInfo;
+function getParentProcessInfo() {
+  if (_parentInfo !== undefined) return _parentInfo;
+  _parentInfo = { ppid: null, name: "" };
   const pid = process.ppid;
   try {
     if (process.platform === "win32") {
@@ -101,28 +116,44 @@ function hostParentPid() {
           "-NoProfile",
           "-NonInteractive",
           "-Command",
-          `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").ParentProcessId`,
+          `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { "$($p.ParentProcessId)|$($p.Name)" }`,
         ],
         { encoding: "utf8", timeout: 2_000 },
       );
-      const parsed = Number.parseInt((res.stdout || "").trim(), 10);
+      const raw = (res.stdout || "").trim();
+      const [ppidStr, nameStr] = raw.split("|");
+      const parsed = Number.parseInt((ppidStr || "").trim(), 10);
       if (res.error === undefined && Number.isInteger(parsed) && parsed > 0) {
-        _hostParent = parsed;
+        _parentInfo = {
+          ppid: parsed,
+          name: basename((nameStr || "").trim()).toLowerCase(),
+        };
       }
     } else {
-      const res = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], {
+      const res = spawnSync("ps", ["-o", "ppid=,comm=", "-p", String(pid)], {
         encoding: "utf8",
         timeout: 2_000,
       });
-      const parsed = Number.parseInt((res.stdout || "").trim(), 10);
-      if (res.error === undefined && Number.isInteger(parsed) && parsed > 0) {
-        _hostParent = parsed;
+      const raw = (res.stdout || "").trim();
+      const match = /^(\d+)\s+(.+)$/.exec(raw);
+      if (res.error === undefined && match) {
+        const parsed = Number.parseInt(match[1], 10);
+        if (Number.isInteger(parsed) && parsed > 0) {
+          _parentInfo = {
+            ppid: parsed,
+            name: basename(match[2].trim()).toLowerCase(),
+          };
+        }
       }
     }
   } catch {
-    _hostParent = null;
+    _parentInfo = { ppid: null, name: "" };
   }
-  return _hostParent;
+  return _parentInfo;
+}
+
+function hostParentPid() {
+  return getParentProcessInfo().ppid;
 }
 
 function readExistingConversation(conversationId) {
@@ -142,20 +173,45 @@ function readExistingConversation(conversationId) {
 
 /**
  * Resolves the session host PID (`agy` process) that owns this conversation.
- * Fast-paths when an existing live conversation record is already on disk so we
- * never pay `powershell.exe` startup cost on empty-inbox turns.
+ *
+ * Fast-paths when:
+ *   1. an inbox record in this workspace already has `ppid === process.ppid`, or
+ *   2. an existing live conversation record is on disk and matches the workspace.
+ *
+ * When creating a new conversation record (even before MCP has written its
+ * inbox file), inspects `process.ppid` so that a shell-wrapped hook (`cmd.exe /c`
+ * or `sh -c`) records the parent session host PID rather than the transient shell.
  */
 function resolveSessionHostPid(existingConv, workspaceInboxes) {
-  if (existingConv && typeof existingConv.hostPid === "number" && isProcessAlive(existingConv.hostPid)) {
+  if (workspaceInboxes.some((r) => r.ppid === process.ppid)) {
+    return process.ppid;
+  }
+  if (
+    existingConv &&
+    typeof existingConv.hostPid === "number" &&
+    isProcessAlive(existingConv.hostPid) &&
+    (workspaceInboxes.length === 0 ||
+      workspaceInboxes.some((r) => r.ppid === existingConv.hostPid))
+  ) {
     return existingConv.hostPid;
   }
-  const direct = workspaceInboxes.find((r) => r.ppid === process.ppid);
-  if (direct) return process.ppid;
-  if (workspaceInboxes.length > 0) {
-    const parent = hostParentPid();
-    if (parent !== null && workspaceInboxes.some((r) => r.ppid === parent)) {
-      return parent;
+
+  const info = getParentProcessInfo();
+  if (info.ppid !== null) {
+    if (workspaceInboxes.some((r) => r.ppid === info.ppid)) {
+      return info.ppid;
     }
+    if (SHELL_PROCESS_NAMES.has(info.name)) {
+      return info.ppid;
+    }
+  }
+
+  if (
+    existingConv &&
+    typeof existingConv.hostPid === "number" &&
+    isProcessAlive(existingConv.hostPid)
+  ) {
+    return existingConv.hostPid;
   }
   return process.ppid;
 }
@@ -334,10 +390,13 @@ async function main() {
 
   const existingConv = readExistingConversation(conversationId);
   const workspaceInboxes = readWorkspaceInboxes(roots);
-  const hostPid = resolveSessionHostPid(existingConv, workspaceInboxes);
   const unreadCandidates = workspaceInboxes.filter(
     (r) => typeof r.unreadCount === "number" && r.unreadCount > 0,
   );
+  const hostPid =
+    conversationId || unreadCandidates.length > 0
+      ? resolveSessionHostPid(existingConv, workspaceInboxes)
+      : process.ppid;
   const unreadRecords = filterOwnedByThisSession(unreadCandidates, hostPid);
 
   if (unreadRecords.length === 0) {
