@@ -11,6 +11,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const AGY_MESH_PLUGIN_NAME = "remote-pi-mesh";
+export const AGY_MESH_SIDECAR_ID = "mesh-watcher";
+export const AGY_MESH_SIDECAR_KEY = `${AGY_MESH_PLUGIN_NAME}/${AGY_MESH_SIDECAR_ID}`;
+
 const DEFAULT_PLUGIN_VERSION = "0.8.0";
 const DEFAULT_AGY_AGENT_NAME = "agy";
 const HOOK_TIMEOUT_SECONDS = 5;
@@ -30,8 +33,11 @@ export interface InstalledAgyPluginPaths {
   readonly pluginDir: string;
   readonly pluginManifestPath: string;
   readonly mcpConfigPath: string;
+  readonly agyConfigPath: string;
   readonly hooksConfigPath: string;
   readonly hookScriptPath: string;
+  readonly sidecarManifestPath: string;
+  readonly sidecarScriptPath: string;
   readonly rulesPath: string;
   readonly skillPath: string;
 }
@@ -126,38 +132,39 @@ function skipWhitespaceAndComments(input: string, start: number): number {
   return j;
 }
 
+function parseExistingJsonObjectFile(filePath: string): Record<string, unknown> {
+  if (!existsSync(filePath)) return {};
+  const raw = readFileSync(filePath, "utf8").replace(/^\uFEFF/, "");
+  if (raw.trim() === "") return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripJsonComments(raw));
+  } catch (err) {
+    throw new Error(
+      `${filePath} exists but is not valid JSON (${err instanceof Error ? err.message : String(err)}); ` +
+        `refusing to overwrite it. Fix or remove the file, then re-run "remote-pi agy --install-plugin".`,
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(
+      `${filePath} does not contain a JSON object; refusing to overwrite it. ` +
+        `Fix or remove the file, then re-run "remote-pi agy --install-plugin".`,
+    );
+  }
+  return parsed as Record<string, unknown>;
+}
+
 function upsertGlobalMcpConfig(
   mcpConfigPath: string,
   nodeExec: string,
   meshServer: string,
 ): void {
-  let existing: { mcpServers?: Record<string, unknown>; [k: string]: unknown } = {};
-  if (existsSync(mcpConfigPath)) {
-    const raw = readFileSync(mcpConfigPath, "utf8").replace(/^\uFEFF/, "");
-    if (raw.trim() !== "") {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(stripJsonComments(raw));
-      } catch (err) {
-        // Never overwrite a config we could not read: doing so would silently
-        // erase every unrelated server entry (args, templates, credentials).
-        throw new Error(
-          `${mcpConfigPath} exists but is not valid JSON (${err instanceof Error ? err.message : String(err)}); ` +
-            `refusing to overwrite it. Fix or remove the file, then re-run "remote-pi agy --install-plugin".`,
-        );
-      }
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error(
-          `${mcpConfigPath} does not contain a JSON object; refusing to overwrite it. ` +
-            `Fix or remove the file, then re-run "remote-pi agy --install-plugin".`,
-        );
-      }
-      existing = parsed as { mcpServers?: Record<string, unknown> };
-    }
-  }
+  const existing = parseExistingJsonObjectFile(mcpConfigPath);
   const mcpServers: Record<string, unknown> =
-    existing.mcpServers && typeof existing.mcpServers === "object"
-      ? { ...existing.mcpServers }
+    existing["mcpServers"] &&
+    typeof existing["mcpServers"] === "object" &&
+    !Array.isArray(existing["mcpServers"])
+      ? { ...(existing["mcpServers"] as Record<string, unknown>) }
       : {};
 
   mcpServers[AGY_MESH_PLUGIN_NAME] = {
@@ -173,6 +180,63 @@ function upsertGlobalMcpConfig(
   writeFileSync(
     mcpConfigPath,
     JSON.stringify({ ...existing, mcpServers }, null, 2) + "\n",
+    "utf8",
+  );
+}
+
+/**
+ * Enables the `remote-pi-mesh` plugin and the `remote-pi-mesh/mesh-watcher`
+ * sidecar in `<configDir>/config.json` (Antigravity disables sidecars by
+ * default until explicitly enabled in `config.json`).
+ */
+function upsertAgyGlobalConfig(agyConfigPath: string): void {
+  const existing = parseExistingJsonObjectFile(agyConfigPath);
+  const existingPlugins =
+    existing["plugins"] &&
+    typeof existing["plugins"] === "object" &&
+    !Array.isArray(existing["plugins"])
+      ? { ...(existing["plugins"] as Record<string, unknown>) }
+      : {};
+  const existingSidecars =
+    existing["sidecars"] &&
+    typeof existing["sidecars"] === "object" &&
+    !Array.isArray(existing["sidecars"])
+      ? { ...(existing["sidecars"] as Record<string, unknown>) }
+      : {};
+
+  const prevPluginEntry =
+    existingPlugins[AGY_MESH_PLUGIN_NAME] &&
+    typeof existingPlugins[AGY_MESH_PLUGIN_NAME] === "object" &&
+    !Array.isArray(existingPlugins[AGY_MESH_PLUGIN_NAME])
+      ? (existingPlugins[AGY_MESH_PLUGIN_NAME] as Record<string, unknown>)
+      : {};
+  existingPlugins[AGY_MESH_PLUGIN_NAME] = {
+    ...prevPluginEntry,
+    enabled: true,
+  };
+
+  const prevSidecarEntry =
+    existingSidecars[AGY_MESH_SIDECAR_KEY] &&
+    typeof existingSidecars[AGY_MESH_SIDECAR_KEY] === "object" &&
+    !Array.isArray(existingSidecars[AGY_MESH_SIDECAR_KEY])
+      ? (existingSidecars[AGY_MESH_SIDECAR_KEY] as Record<string, unknown>)
+      : {};
+  existingSidecars[AGY_MESH_SIDECAR_KEY] = {
+    ...prevSidecarEntry,
+    enabled: true,
+  };
+
+  writeFileSync(
+    agyConfigPath,
+    JSON.stringify(
+      {
+        ...existing,
+        plugins: existingPlugins,
+        sidecars: existingSidecars,
+      },
+      null,
+      2,
+    ) + "\n",
     "utf8",
   );
 }
@@ -198,28 +262,65 @@ function copyOrWritePluginManifest(pkgRoot: string, pluginManifestPath: string):
   );
 }
 
+function copyOrWriteSidecarManifest(pkgRoot: string, sidecarManifestPath: string): void {
+  const srcSidecar = join(
+    pkgRoot,
+    "agy-plugin",
+    "sidecars",
+    AGY_MESH_SIDECAR_ID,
+    "sidecar.json",
+  );
+  if (existsSync(srcSidecar)) {
+    copyFileSync(srcSidecar, sidecarManifestPath);
+    return;
+  }
+  writeFileSync(
+    sidecarManifestPath,
+    JSON.stringify(
+      {
+        command: "node",
+        args: ["watcher.mjs"],
+        restart_policy: "always",
+        display_name: "remote-pi Mesh Watcher",
+        description:
+          "Monitors the remote-pi agent mesh and wakes idle Antigravity conversations via agentapi when messages arrive.",
+      },
+      null,
+      2,
+    ) + "\n",
+    "utf8",
+  );
+}
+
 function copyIfPresent(srcPath: string, destPath: string): void {
   if (existsSync(srcPath)) copyFileSync(srcPath, destPath);
 }
 
+/**
+ * Writes Antigravity-compliant `hooks.json`.
+ *
+ * In Antigravity's native `hooks.json` specification, only `PreToolUse` and
+ * `PostToolUse` use `{ "matcher": "...", "hooks": [...] }`. `SessionStart`,
+ * `PreInvocation`, `PostInvocation`, and `Stop` MUST be flat arrays of handler
+ * objects under a named hook group.
+ */
 function writePluginHooksConfig(
   hooksConfigPath: string,
   nodeExec: string,
   hookScriptPath: string,
 ): void {
-  const hookEntry = {
-    hooks: [
-      {
-        type: "command",
-        command: `"${nodeExec}" "${hookScriptPath}"`,
-        timeout: HOOK_TIMEOUT_SECONDS,
-      },
-    ],
-  };
+  const makeHandler = (eventName: string) => [
+    {
+      type: "command",
+      command: `"${nodeExec}" "${hookScriptPath}" --event=${eventName}`,
+      timeout: HOOK_TIMEOUT_SECONDS,
+    },
+  ];
   const hooksConfig = {
-    hooks: {
-      PreInvocation: [hookEntry],
-      Stop: [hookEntry],
+    [AGY_MESH_PLUGIN_NAME]: {
+      SessionStart: makeHandler("SessionStart"),
+      PreInvocation: makeHandler("PreInvocation"),
+      Stop: makeHandler("Stop"),
     },
   };
   writeFileSync(hooksConfigPath, JSON.stringify(hooksConfig, null, 2) + "\n", "utf8");
@@ -239,9 +340,12 @@ function removeLegacyPluginMcpConfig(pluginDir: string): void {
  *   - `<configDir>/mcp_config.json`: registers `remote-pi-mesh` at the global
  *     config root so Antigravity spawns `mesh_server.js` with `process.cwd()`
  *     set to the active workspace directory (not the plugin directory).
+ *   - `<configDir>/config.json`: enables `plugins["remote-pi-mesh"]` and
+ *     `sidecars["remote-pi-mesh/mesh-watcher"]`.
  *   - `<configDir>/plugins/remote-pi-mesh/`:
  *       - `plugin.json`
- *       - `hooks.json` + `scripts/mesh_hook.mjs` (`PreInvocation` + `Stop`)
+ *       - `hooks.json` + `scripts/mesh_hook.mjs` (`SessionStart`, `PreInvocation`, `Stop`)
+ *       - `sidecars/mesh-watcher/sidecar.json` + `watcher.mjs`
  *       - `rules/AGENTS.md`
  *       - `skills/agent-network/SKILL.md`
  */
@@ -256,10 +360,12 @@ export function ensureAgyMeshPluginInstalled(
   const configDir = resolveAgyConfigDir(options.configDir);
   const pluginDir = join(configDir, "plugins", AGY_MESH_PLUGIN_NAME);
   const scriptsDir = join(pluginDir, "scripts");
+  const sidecarDir = join(pluginDir, "sidecars", AGY_MESH_SIDECAR_ID);
   const rulesDir = join(pluginDir, "rules");
   const skillDir = join(pluginDir, "skills", "agent-network");
 
   mkdirSync(scriptsDir, { recursive: true });
+  mkdirSync(sidecarDir, { recursive: true });
   mkdirSync(rulesDir, { recursive: true });
   mkdirSync(skillDir, { recursive: true });
 
@@ -267,8 +373,11 @@ export function ensureAgyMeshPluginInstalled(
     pluginDir,
     pluginManifestPath: join(pluginDir, "plugin.json"),
     mcpConfigPath: join(configDir, "mcp_config.json"),
+    agyConfigPath: join(configDir, "config.json"),
     hooksConfigPath: join(pluginDir, "hooks.json"),
     hookScriptPath: join(scriptsDir, "mesh_hook.mjs"),
+    sidecarManifestPath: join(sidecarDir, "sidecar.json"),
+    sidecarScriptPath: join(sidecarDir, "watcher.mjs"),
     rulesPath: join(rulesDir, "AGENTS.md"),
     skillPath: join(skillDir, "SKILL.md"),
   };
@@ -276,9 +385,15 @@ export function ensureAgyMeshPluginInstalled(
   removeLegacyPluginMcpConfig(pluginDir);
   copyOrWritePluginManifest(pkgRoot, paths.pluginManifestPath);
   copyIfPresent(join(pkgRoot, "agy-plugin", "scripts", "mesh_hook.mjs"), paths.hookScriptPath);
+  copyOrWriteSidecarManifest(pkgRoot, paths.sidecarManifestPath);
+  copyIfPresent(
+    join(pkgRoot, "agy-plugin", "sidecars", AGY_MESH_SIDECAR_ID, "watcher.mjs"),
+    paths.sidecarScriptPath,
+  );
   copyIfPresent(join(pkgRoot, "agy-plugin", "rules", "AGENTS.md"), paths.rulesPath);
   copyIfPresent(join(pkgRoot, "skills", "agent-network", "SKILL.md"), paths.skillPath);
   upsertGlobalMcpConfig(paths.mcpConfigPath, nodeExec, meshServer);
+  upsertAgyGlobalConfig(paths.agyConfigPath);
   writePluginHooksConfig(paths.hooksConfigPath, nodeExec, paths.hookScriptPath);
 
   return paths;

@@ -41,7 +41,7 @@ describe("inbox_state", () => {
     }
   });
 
-  test("writes unread state, matches workspace, and clears when drained", () => {
+  test("writes unread state, matches workspace, tracks lastMessageId beyond 5 preview items, and clears when drained", () => {
     const cwd = join(tempHome, "workspace-a");
     const statePath = writeInboxState({
       cwd,
@@ -63,13 +63,25 @@ describe("inbox_state", () => {
     const matching = readUnreadInboxStates([cwd]);
     expect(matching).toHaveLength(1);
     expect(matching[0]?.unreadCount).toBe(1);
+    expect(matching[0]?.lastMessageId).toBe("msg-1");
     expect(matching[0]?.address).toBe(`${cwd}@agy`);
     expect(matching[0]?.preview[0]?.from).toBe(`${cwd}@pi`);
+
+    // 6 messages: preview is capped at 5, but lastMessageId reflects the 6th message ("msg-6")
+    writeInboxState({
+      cwd,
+      name: "agy",
+      address: `${cwd}@agy`,
+      messages: [1, 2, 3, 4, 5, 6].map((n) => sampleMsg({ id: `msg-${n}` })),
+    });
+    const sixStates = readUnreadInboxStates([cwd]);
+    expect(sixStates[0]?.preview).toHaveLength(5);
+    expect(sixStates[0]?.lastMessageId).toBe("msg-6");
 
     const nonMatching = readUnreadInboxStates([join(tempHome, "other-workspace")]);
     expect(nonMatching).toHaveLength(0);
 
-    // Draining inbox (empty messages) hides it from unread states
+    // Draining inbox (empty messages) hides it from unread states and sets lastMessageId to null
     writeInboxState({
       cwd,
       name: "agy",
@@ -77,6 +89,10 @@ describe("inbox_state", () => {
       messages: [],
     });
     expect(readUnreadInboxStates([cwd])).toHaveLength(0);
+    const drainedRaw = JSON.parse(readFileSync(statePath, "utf8")) as {
+      lastMessageId: string | null;
+    };
+    expect(drainedRaw.lastMessageId).toBeNull();
 
     removeInboxState(statePath);
     expect(existsSync(statePath)).toBe(false);

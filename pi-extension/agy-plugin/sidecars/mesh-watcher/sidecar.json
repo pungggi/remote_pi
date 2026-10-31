@@ -1,0 +1,7 @@
+{
+  "command": "node",
+  "args": ["watcher.mjs"],
+  "restart_policy": "always",
+  "display_name": "remote-pi Mesh Watcher",
+  "description": "Monitors the remote-pi agent mesh and wakes idle Antigravity conversations via agentapi when messages arrive."
+}

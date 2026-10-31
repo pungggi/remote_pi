@@ -48,6 +48,13 @@ export interface InboxStateRecord {
   readonly name: string;
   readonly address: string;
   readonly unreadCount: number;
+  /**
+   * ID of the most recently queued message (`messages[messages.length - 1].id`),
+   * or `null` when the inbox is empty. Tracked separately from `preview` (which
+   * is capped at 5 items) so sidecars and hooks can detect the 6th+ arriving
+   * message without missing wakeups.
+   */
+  readonly lastMessageId: string | null;
   readonly updatedAt: number;
   readonly preview: readonly InboxPreviewItem[];
 }
@@ -118,6 +125,7 @@ export function normalizeWorkspacePath(p: string): string {
 }
 
 function buildInboxRecord(params: WriteInboxStateParams): InboxStateRecord {
+  const lastMsg = params.messages[params.messages.length - 1];
   return {
     pid: params.pid ?? process.pid,
     ppid: params.ppid ?? process.ppid,
@@ -125,6 +133,7 @@ function buildInboxRecord(params: WriteInboxStateParams): InboxStateRecord {
     name: params.name,
     address: params.address,
     unreadCount: params.messages.length,
+    lastMessageId: lastMsg?.id ?? null,
     updatedAt: Date.now(),
     preview: params.messages.slice(0, MAX_PREVIEW_ITEMS).map((m) => ({
       id: m.id,
@@ -214,6 +223,8 @@ function parseUnreadInboxFile(
     ) {
       return null;
     }
+    const preview = Array.isArray(parsed.preview) ? parsed.preview : [];
+    const fallbackLastId = preview.length > 0 ? (preview[preview.length - 1]?.id ?? null) : null;
     return {
       pid: parsed.pid,
       ...(typeof parsed.ppid === "number" ? { ppid: parsed.ppid } : {}),
@@ -221,8 +232,10 @@ function parseUnreadInboxFile(
       name: parsed.name,
       address: parsed.address,
       unreadCount: parsed.unreadCount,
+      lastMessageId:
+        typeof parsed.lastMessageId === "string" ? parsed.lastMessageId : fallbackLastId,
       updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : 0,
-      preview: Array.isArray(parsed.preview) ? parsed.preview : [],
+      preview,
     };
   } catch {
     return null;

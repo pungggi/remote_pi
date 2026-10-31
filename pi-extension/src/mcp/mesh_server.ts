@@ -28,10 +28,12 @@ import {
   MIN_WAIT_TIMEOUT_MS,
   MeshInbox,
   formatIncomingMessages,
+  readUnreadInboxStates,
   removeInboxState,
   writeInboxStateSafe,
   type InboxMessageLike,
 } from "./inbox_state.js";
+import { maybeWakeIdleConversationForInbox } from "../session/conversation_registry.js";
 import { sessionSockPath, sessionAuditPath, LOCAL_SESSION_NAME } from "../session/global_config.js";
 import { resolveRelayUrl } from "../config.js";
 import { acquireNamedCwdLock, type NamedAcquiredLock } from "../session/cwd_lock.js";
@@ -42,6 +44,7 @@ const MCP_ROOTS_TIMEOUT_MS = 1_000;
 const MCP_INIT_TIMEOUT_MS = 2_000;
 const JOIN_RETRY_MS = 2_000;
 const MAX_JOIN_ATTEMPTS = 4;
+const DIRECT_WAKE_FALLBACK_DELAY_MS = 300;
 
 // ── Args / config ─────────────────────────────────────────────────────────────
 
@@ -95,6 +98,27 @@ process.on("uncaughtException", (err) => {
 
 let _mesh: MeshNode | null = null;
 let _inboxStatePath: string | null = null;
+let _fallbackWakeTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleFallbackAgentApiWake(): void {
+  if (!process.env["ANTIGRAVITY_LS_ADDRESS"] && !process.env["ANTIGRAVITY_AGENTAPI_EXE"]) {
+    return;
+  }
+  if (_fallbackWakeTimer) clearTimeout(_fallbackWakeTimer);
+  _fallbackWakeTimer = setTimeout(() => {
+    _fallbackWakeTimer = null;
+    try {
+      const states = readUnreadInboxStates([_canonCwd]);
+      const mine = states.find((s) => s.pid === process.pid);
+      if (mine) {
+        maybeWakeIdleConversationForInbox(mine);
+      }
+    } catch {
+      // Best-effort fallback when SidecarManager is inactive (e.g. standalone agy CLI).
+    }
+  }, DIRECT_WAKE_FALLBACK_DELAY_MS);
+  _fallbackWakeTimer.unref?.();
+}
 
 function syncInboxState(messages: readonly InboxMessageLike[]): void {
   const address = _mesh?.address() ?? `${_canonCwd}@${_lockedAgentName}`;
@@ -112,6 +136,9 @@ function syncInboxState(messages: readonly InboxMessageLike[]): void {
     return;
   }
   _inboxStatePath = path;
+  if (messages.length > 0) {
+    scheduleFallbackAgentApiWake();
+  }
 }
 
 const inbox = new MeshInbox((messages) => {
@@ -438,6 +465,7 @@ function shutdown(): void {
   if (_shuttingDown) return;
   _shuttingDown = true;
   if (_lockRetryTimer) { clearTimeout(_lockRetryTimer); _lockRetryTimer = null; }
+  if (_fallbackWakeTimer) { clearTimeout(_fallbackWakeTimer); _fallbackWakeTimer = null; }
   inbox.close();
   removeInboxState(_inboxStatePath);
   try { _lock?.release(); } catch { /* OS frees the UDS lock on exit anyway */ }
