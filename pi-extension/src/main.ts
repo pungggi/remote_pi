@@ -141,6 +141,8 @@ import {
 } from "./session/local_config.js";
 import { runSetupWizard, type WizardUI } from "./session/setup_wizard.js";
 import { isPiSubagentChildProcess } from "./session/pi_subagent.js";
+import { quoteWindowsShellArgs } from "./session/shell_quote.js";
+import type { InstalledAgyPluginPaths } from "./session/agy_plugin.js";
 import { updateFooter, type FooterState } from "./ui/footer.js";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6174,23 +6176,50 @@ async function _cmdClaudeCli(args: string[]): Promise<void> {
   // and we don't risk a parser that may not accept `=`.)
   // Any extra args the user passed (e.g. `--resume`, `-c`) are appended last so
   // they reach the claude binary; ours come first as sensible defaults.
-  try {
-    spawnSync("claude", [
-      "--mcp-config", mcpConfigPath,
-      "--dangerously-load-development-channels", `server:${SERVER_NAME}`,
-      "--dangerously-skip-permissions",
-      ...(skillPath ? [`--append-system-prompt-file=${skillPath}`] : []),
-      ...passthroughArgs,
-    ], {
-      cwd: absCwd,
-      stdio: "inherit",
-      shell: false,
-    });
-  } finally {
-    // Session over — drop the ephemeral config so it never lingers as a stray
-    // file. spawnSync blocks until claude exits, so claude has long since read
-    // it. Best-effort: ignore if already gone.
-    try { unlinkSync(mcpConfigPath); } catch { /* already removed */ }
+  const claudeRes = (() => {
+    try {
+      return spawnSync("claude", [
+        "--mcp-config", mcpConfigPath,
+        "--dangerously-load-development-channels", `server:${SERVER_NAME}`,
+        "--dangerously-skip-permissions",
+        ...(skillPath ? [`--append-system-prompt-file=${skillPath}`] : []),
+        ...passthroughArgs,
+      ], {
+        cwd: absCwd,
+        stdio: "inherit",
+        shell: false,
+      });
+    } finally {
+      // Session over — drop the ephemeral config so it never lingers as a stray
+      // file. spawnSync blocks until claude exits, so claude has long since read
+      // it. Best-effort: ignore if already gone.
+      try { unlinkSync(mcpConfigPath); } catch { /* already removed */ }
+    }
+  })();
+  // spawnSync reports launch failures on its RESULT (ENOENT does not throw) —
+  // discarding it silently reported success for a session that never started.
+  _exitOnCliSpawnFailure("claude", claudeRes);
+}
+
+/**
+ * Shared post-`spawnSync` validation for the `remote-pi claude` / `remote-pi
+ * agy` launchers: surfaces launch errors (e.g. binary missing → ENOENT),
+ * signals, and nonzero child exits instead of reporting a clean run.
+ */
+function _exitOnCliSpawnFailure(
+  cmd: string,
+  res: ReturnType<typeof spawnSync>,
+): void {
+  if (res.error) {
+    console.error(`[remote-pi] failed to launch ${cmd}: ${res.error.message}`);
+    process.exit(1);
+  }
+  if (res.signal) {
+    console.error(`[remote-pi] ${cmd} terminated by signal ${res.signal}`);
+    process.exit(1);
+  }
+  if (typeof res.status === "number" && res.status !== 0) {
+    process.exit(res.status);
   }
 }
 
@@ -6214,10 +6243,18 @@ export async function _cmdAgyCli(args: string[]): Promise<void> {
   }
 
   const { ensureAgyMeshPluginInstalled } = await import("./session/agy_plugin.js");
-  const installed = ensureAgyMeshPluginInstalled({
-    packageRoot: pkgRoot,
-    meshServerPath,
-  });
+  let installed: InstalledAgyPluginPaths;
+  try {
+    installed = ensureAgyMeshPluginInstalled({
+      packageRoot: pkgRoot,
+      meshServerPath,
+    });
+  } catch (err) {
+    // ensureAgyMeshPluginInstalled refuses to overwrite an MCP config it could
+    // not read; surface that instead of crashing with a bare stack trace.
+    console.error(`[remote-pi] ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
 
   if (installOnly) {
     console.log(`[remote-pi] Antigravity mesh plugin installed at ${installed.pluginDir}`);
@@ -6229,10 +6266,17 @@ export async function _cmdAgyCli(args: string[]): Promise<void> {
   const absCwd = resolve(targetCwd);
   const agyCmd = process.platform === "win32" ? "agy.cmd" : "agy";
 
-  spawnSync(agyCmd, passthroughArgs, {
+  // `agy.cmd` needs shell:true on Windows, but Node joins shell arguments with
+  // bare spaces before handing them to cmd.exe — re-quote each already-tokenized
+  // argument so a prompt like `explain A & B` reaches agy whole instead of being
+  // re-split at `&` (the remainder would run as a separate shell command).
+  const needsCmdShell = process.platform === "win32";
+  const agyArgs = needsCmdShell ? quoteWindowsShellArgs(passthroughArgs) : passthroughArgs;
+
+  const res = spawnSync(agyCmd, agyArgs, {
     cwd: absCwd,
     stdio: "inherit",
-    shell: process.platform === "win32",
+    shell: needsCmdShell,
     env: {
       ...process.env,
       REMOTE_PI_MCP_CWD: absCwd,
@@ -6240,6 +6284,9 @@ export async function _cmdAgyCli(args: string[]): Promise<void> {
       REMOTE_PI_MCP_AUTO_JOIN: "1",
     },
   });
+  // Discarding this result made `remote-pi agy` report success even when agy
+  // was missing (ENOENT is returned, not thrown) or exited nonzero.
+  _exitOnCliSpawnFailure(agyCmd, res);
 }
 
 // Plan/143 — the thin entry no longer seeds the global-pairings cache at

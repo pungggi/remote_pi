@@ -53,7 +53,11 @@ function defaultPackageRoot(): string {
 
 /**
  * Strips `//` and `/* ... * /` comments and trailing commas outside string
- * literals so JSONC config files (`~/.gemini/config/mcp_config.json`) parse cleanly.
+ * literals so JSONC config files (`~/.gemini/config/mcp_config.json`) parse
+ * cleanly. Trailing commas are removed during the character scan — a global
+ * regex would also rewrite commas that legitimately live inside string
+ * literals (e.g. `"abc,}"`), silently corrupting existing server arguments,
+ * templates, or credentials when the parsed object is written back.
  */
 export function stripJsonComments(input: string): string {
   let out = "";
@@ -85,9 +89,41 @@ export function stripJsonComments(input: string): string {
       i++;
       continue;
     }
+    if (ch === ",") {
+      // Lookahead skips whitespace AND comments, so `"a": 1, // note\n}` drops
+      // the comma exactly like the old regex did — but only here, outside a
+      // string literal.
+      const j = skipWhitespaceAndComments(input, i + 1);
+      const following = input[j];
+      if (following === "}" || following === "]") continue; // trailing comma
+    }
     out += ch;
   }
-  return out.replace(/,(\s*[}\]])/g, "$1");
+  return out;
+}
+
+function skipWhitespaceAndComments(input: string, start: number): number {
+  let j = start;
+  while (j < input.length) {
+    const ch = input[j];
+    if (ch === undefined) break;
+    if (/\s/.test(ch)) {
+      j++;
+      continue;
+    }
+    if (ch === "/" && input[j + 1] === "/") {
+      while (j < input.length && input[j] !== "\n") j++;
+      continue;
+    }
+    if (ch === "/" && input[j + 1] === "*") {
+      j += 2;
+      while (j < input.length && !(input[j] === "*" && input[j + 1] === "/")) j++;
+      j += 2;
+      continue;
+    }
+    break;
+  }
+  return j;
 }
 
 function upsertGlobalMcpConfig(
@@ -97,14 +133,26 @@ function upsertGlobalMcpConfig(
 ): void {
   let existing: { mcpServers?: Record<string, unknown>; [k: string]: unknown } = {};
   if (existsSync(mcpConfigPath)) {
-    try {
-      const raw = readFileSync(mcpConfigPath, "utf8");
-      const parsed = JSON.parse(stripJsonComments(raw)) as unknown;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        existing = parsed as { mcpServers?: Record<string, unknown> };
+    const raw = readFileSync(mcpConfigPath, "utf8").replace(/^\uFEFF/, "");
+    if (raw.trim() !== "") {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(stripJsonComments(raw));
+      } catch (err) {
+        // Never overwrite a config we could not read: doing so would silently
+        // erase every unrelated server entry (args, templates, credentials).
+        throw new Error(
+          `${mcpConfigPath} exists but is not valid JSON (${err instanceof Error ? err.message : String(err)}); ` +
+            `refusing to overwrite it. Fix or remove the file, then re-run "remote-pi agy --install-plugin".`,
+        );
       }
-    } catch {
-      // Keep existing object fallback if unreadable.
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error(
+          `${mcpConfigPath} does not contain a JSON object; refusing to overwrite it. ` +
+            `Fix or remove the file, then re-run "remote-pi agy --install-plugin".`,
+        );
+      }
+      existing = parsed as { mcpServers?: Record<string, unknown> };
     }
   }
   const mcpServers: Record<string, unknown> =

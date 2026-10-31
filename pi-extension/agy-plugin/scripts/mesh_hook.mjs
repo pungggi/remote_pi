@@ -9,9 +9,17 @@
  *   - Stop: when agy is about to finish a turn (NO_TOOL_CALL) and unread mesh
  *     messages arrived during the turn, outputs `{ decision: "continue", reason }`
  *     so agy automatically continues its turn to handle the incoming message.
+ *
+ * Session ownership: inbox state files are per-`(cwd, name)` and one workspace
+ * can hold several live sessions (pi, Claude, `agy`, `agy#2`, …). Only an
+ * inbox whose writer shares this hook's session host (its `ppid`) is ours;
+ * without that filter a message addressed to a sibling session would keep
+ * returning `decision: "continue"` forever, because this session's
+ * `get_messages` can never drain that inbox.
  */
 
 import { existsSync, readdirSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -58,6 +66,66 @@ function matchesWorkspace(recordCwd, roots) {
   return false;
 }
 
+/**
+ * Parent PID of this hook's own parent (the session host, one level above the
+ * hook's immediate parent). Needed only when the hook itself was spawned
+ * through a shell — resolved lazily so the common sibling case costs nothing.
+ * Returns null when the lookup fails; fail closed (no match) rather than risk
+ * an endless Stop-continue loop.
+ */
+let _hostParent;
+function hostParentPid() {
+  if (_hostParent !== undefined) return _hostParent;
+  _hostParent = null;
+  const pid = process.ppid;
+  try {
+    if (process.platform === "win32") {
+      const res = spawnSync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").ParentProcessId`,
+        ],
+        { encoding: "utf8", timeout: 2_000 },
+      );
+      const parsed = Number.parseInt((res.stdout || "").trim(), 10);
+      if (res.error === undefined && Number.isInteger(parsed) && parsed > 0) {
+        _hostParent = parsed;
+      }
+    } else {
+      const res = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], {
+        encoding: "utf8",
+        timeout: 2_000,
+      });
+      const parsed = Number.parseInt((res.stdout || "").trim(), 10);
+      if (res.error === undefined && Number.isInteger(parsed) && parsed > 0) {
+        _hostParent = parsed;
+      }
+    }
+  } catch {
+    _hostParent = null;
+  }
+  return _hostParent;
+}
+
+/**
+ * Keeps only inbox records written by THIS session's mesh server:
+ *   1. fast path — same parent as this hook (both spawned by the session host);
+ *   2. lazy path — same parent as the hook's grandparent (shell-wrapped hooks).
+ * Records without a recorded `ppid` (legacy) are treated as not ours.
+ */
+function filterOwnedByThisSession(candidates) {
+  if (candidates.length === 0) return [];
+  const host = process.ppid;
+  const direct = candidates.filter((r) => r.ppid === host);
+  if (direct.length > 0) return direct;
+  const hostParent = hostParentPid();
+  if (hostParent === null) return [];
+  return candidates.filter((r) => r.ppid === hostParent);
+}
+
 function findUnreadForWorkspace(roots) {
   const dir = inboxStateDir();
   if (!existsSync(dir)) return [];
@@ -68,7 +136,7 @@ function findUnreadForWorkspace(roots) {
     return [];
   }
 
-  const unread = [];
+  const candidates = [];
   for (const entry of entries) {
     if (!entry.endsWith(".json")) continue;
     const fullPath = join(dir, entry);
@@ -84,12 +152,12 @@ function findUnreadForWorkspace(roots) {
       if (typeof parsed.cwd !== "string" || !matchesWorkspace(parsed.cwd, roots)) {
         continue;
       }
-      unread.push(parsed);
+      candidates.push(parsed);
     } catch {
       // Ignore malformed/transient files
     }
   }
-  return unread;
+  return filterOwnedByThisSession(candidates);
 }
 
 function extractWorkspaceRoots(input) {

@@ -37,6 +37,13 @@ export interface InboxPreviewItem {
 
 export interface InboxStateRecord {
   readonly pid: number;
+  /**
+   * Parent PID of the process that wrote this record (the session host, e.g.
+   * the `agy` process that spawned both the mesh server and the lifecycle
+   * hook). Lifecycle hooks use it to tell "my session's inbox" apart from
+   * sibling sessions in the same workspace. Optional only for legacy records.
+   */
+  readonly ppid?: number;
   readonly cwd: string;
   readonly name: string;
   readonly address: string;
@@ -51,6 +58,8 @@ export interface WriteInboxStateParams {
   readonly address: string;
   readonly messages: readonly InboxMessageLike[];
   readonly pid?: number;
+  /** Override the recorded parent PID (defaults to `process.ppid`). */
+  readonly ppid?: number;
 }
 
 /**
@@ -111,6 +120,7 @@ export function normalizeWorkspacePath(p: string): string {
 function buildInboxRecord(params: WriteInboxStateParams): InboxStateRecord {
   return {
     pid: params.pid ?? process.pid,
+    ppid: params.ppid ?? process.ppid,
     cwd: params.cwd,
     name: params.name,
     address: params.address,
@@ -143,6 +153,19 @@ export function writeInboxState(params: WriteInboxStateParams): string {
     removeInboxState(tmpPath);
   }
   return filePath;
+}
+
+/**
+ * Non-throwing variant of {@link writeInboxState} for callers whose mesh
+ * usability must not depend on disk state (e.g. the MCP mesh server's join
+ * path). Returns `null` when the sidecar could not be written.
+ */
+export function writeInboxStateSafe(params: WriteInboxStateParams): string | null {
+  try {
+    return writeInboxState(params);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -196,6 +219,7 @@ function parseUnreadInboxFile(
     }
     return {
       pid: parsed.pid,
+      ...(typeof parsed.ppid === "number" ? { ppid: parsed.ppid } : {}),
       cwd: parsed.cwd,
       name: parsed.name,
       address: parsed.address,
@@ -236,10 +260,17 @@ export interface WaitForMessageOptions {
   readonly timeoutMs?: number;
   readonly from?: string;
   readonly re?: string;
+  /**
+   * MCP request abort signal. On cancellation a pending waiter is removed, and
+   * a message already handed to the waiter is requeued — the SDK discards the
+   * response of an aborted request, so without requeue the message would vanish
+   * from `get_messages` and every later wait.
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface WaitForMessageResult {
-  readonly status: "received" | "timeout";
+  readonly status: "received" | "timeout" | "aborted";
   readonly messages: InboxMessageLike[];
 }
 
@@ -280,6 +311,7 @@ export class MeshInbox {
   private readonly messages: InboxMessageLike[] = [];
   private readonly waiters = new Set<PendingWaiter>();
   private readonly onStateChange?: (messages: readonly InboxMessageLike[]) => void;
+  private closed = false;
 
   constructor(onStateChange?: (messages: readonly InboxMessageLike[]) => void) {
     this.onStateChange = onStateChange;
@@ -329,6 +361,11 @@ export class MeshInbox {
   }
 
   waitForMessage(options: WaitForMessageOptions = {}): Promise<WaitForMessageResult> {
+    const signal = options.signal;
+    if (signal?.aborted) {
+      return Promise.resolve({ status: "aborted", messages: [] });
+    }
+
     const matched = this.drainMatching(options);
     if (matched.length > 0) {
       this.notifyStateChange();
@@ -339,20 +376,49 @@ export class MeshInbox {
     const timeoutMs = Math.max(MIN_WAIT_TIMEOUT_MS, Math.min(MAX_WAIT_TIMEOUT_MS, rawTimeout));
 
     return new Promise<WaitForMessageResult>((resolve) => {
+      let consumed: InboxMessageLike[] | null = null;
+
+      const onAbort = () => {
+        if (this.closed) return;
+        if (consumed) {
+          // The waiter already took a message but the client cancelled: the
+          // SDK will suppress our response, so put the message back where
+          // get_messages / later waits can still see it.
+          this.messages.unshift(...consumed);
+          this.notifyStateChange();
+          return;
+        }
+        clearTimeout(waiter.timer);
+        this.waiters.delete(waiter);
+        resolve({ status: "aborted", messages: [] });
+      };
+
       const waiter: PendingWaiter = {
         matches: (msg) => matchesFilter(msg, options),
-        resolve,
+        resolve: (res) => {
+          consumed = res.messages;
+          // Deliberately keep the abort listener: if the client cancels in the
+          // window between our resolution and the SDK sending the response,
+          // onAbort must still requeue `consumed`.
+          resolve(res);
+        },
         timer: setTimeout(() => {
           this.waiters.delete(waiter);
+          signal?.removeEventListener("abort", onAbort);
           resolve({ status: "timeout", messages: [] });
         }, timeoutMs),
       };
       waiter.timer.unref?.();
+      signal?.addEventListener("abort", onAbort);
       this.waiters.add(waiter);
+      // Cover the race where the signal aborted between the pre-check above
+      // and addEventListener — an already-aborted signal never fires listeners.
+      if (signal?.aborted) onAbort();
     });
   }
 
   close(): void {
+    this.closed = true;
     for (const waiter of this.waiters) {
       clearTimeout(waiter.timer);
       waiter.resolve({ status: "timeout", messages: [] });

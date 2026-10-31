@@ -29,7 +29,7 @@ import {
   MeshInbox,
   formatIncomingMessages,
   removeInboxState,
-  writeInboxState,
+  writeInboxStateSafe,
   type InboxMessageLike,
 } from "./inbox_state.js";
 import { sessionSockPath, sessionAuditPath, LOCAL_SESSION_NAME } from "../session/global_config.js";
@@ -39,6 +39,7 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const MCP_ROOTS_TIMEOUT_MS = 1_000;
+const MCP_INIT_TIMEOUT_MS = 2_000;
 const JOIN_RETRY_MS = 2_000;
 const MAX_JOIN_ATTEMPTS = 4;
 
@@ -97,12 +98,20 @@ let _inboxStatePath: string | null = null;
 
 function syncInboxState(messages: readonly InboxMessageLike[]): void {
   const address = _mesh?.address() ?? `${_canonCwd}@${_lockedAgentName}`;
-  _inboxStatePath = writeInboxState({
+  const path = writeInboxStateSafe({
     cwd: _canonCwd,
     name: _lockedAgentName,
     address,
     messages,
   });
+  if (path === null) {
+    // The sidecar only feeds Antigravity lifecycle hooks — it must never take
+    // the connected mesh down (a throw here previously landed in the join
+    // catch AFTER _joined was set, permanently disabling every mesh tool).
+    logErr("inbox sidecar write failed — hooks cannot see unread messages until it succeeds");
+    return;
+  }
+  _inboxStatePath = path;
 }
 
 const inbox = new MeshInbox((messages) => {
@@ -219,13 +228,21 @@ mcp.registerTool("wait_for_message", {
       .optional()
       .describe("Optional: only wake for replies matching this message id"),
   },
-}, async ({ timeout_ms, from, re }) => {
+}, async ({ timeout_ms, from, re }, extra) => {
   if (!meshReady || !_mesh) return notReady();
   const res = await inbox.waitForMessage({
     timeoutMs: timeout_ms,
     from,
     re,
+    // Honour client cancellation: without it an abandoned waiter would eat the
+    // next matching message and the SDK would discard it with our response.
+    signal: extra.signal,
   });
+  if (res.status === "aborted") {
+    return {
+      content: [{ type: "text" as const, text: "(wait cancelled — no message consumed)" }],
+    };
+  }
   if (res.status === "timeout") {
     return {
       content: [
@@ -309,12 +326,38 @@ async function maybeResolveCwdFromMcpRoots(): Promise<void> {
   }
 }
 
+async function waitForClientInitialized(timeoutMs: number): Promise<void> {
+  // `mcp.connect()` only starts the transport; the client's initialize/
+  // initialized handshake arrives afterwards. Sending roots/list before it
+  // violates the MCP init sequence and makes strict hosts reject the request,
+  // which permanently falls back to process.cwd() for bare `agy` sessions.
+  if (
+    mcp.server.getClientVersion() !== undefined ||
+    mcp.server.getClientCapabilities() !== undefined
+  ) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      mcp.server.oninitialized = undefined;
+      resolve();
+    }, timeoutMs);
+    timer.unref?.();
+    mcp.server.oninitialized = () => {
+      clearTimeout(timer);
+      mcp.server.oninitialized = undefined;
+      resolve();
+    };
+  });
+}
+
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   transport.onclose = shutdown;
   process.stdin.on("end", shutdown);
   process.stdin.on("close", shutdown);
   await mcp.connect(transport);
+  await waitForClientInitialized(MCP_INIT_TIMEOUT_MS);
   await maybeResolveCwdFromMcpRoots();
 
   if (localConfigExists(_cwd) || _nameOverride !== undefined || _autoJoin) {
@@ -351,15 +394,20 @@ async function tryJoinMesh(): Promise<void> {
 
   try {
     await node.connect();
+    // Sidecar sync is last-but-non-throwing; only flip the "up" flags once
+    // everything that the join contract needs has succeeded — otherwise the
+    // catch below would release the lock while _joined=true suppresses retries.
+    syncInboxState(inbox.peekAll());
     meshReady = true;
     _joined = true;
     _lockAttempt = 0;
-    syncInboxState(inbox.peekAll());
   } catch (e) {
     _lockAttempt++;
+    meshReady = false;
     try { _lock.release(); } catch { /* best-effort */ }
     _lock = null;
     _mesh = null;
+    void Promise.resolve(node.close()).catch(() => { /* best-effort */ });
     if (_lockAttempt >= MAX_JOIN_ATTEMPTS) {
       _failLoud(`mesh join failed: ${String(e)}`);
     }

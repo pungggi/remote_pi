@@ -1,13 +1,26 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  MeshInbox,
   formatBodyPreview,
   readUnreadInboxStates,
   removeInboxState,
   writeInboxState,
+  writeInboxStateSafe,
+  type InboxMessageLike,
 } from "./inbox_state.js";
+
+function sampleMsg(overrides: Partial<InboxMessageLike> = {}): InboxMessageLike {
+  return {
+    id: overrides.id ?? "msg-1",
+    from: overrides.from ?? "/repo@pi",
+    body: overrides.body ?? "hello",
+    re: overrides.re ?? null,
+    at: overrides.at ?? "2026-10-31T18:00:00.000Z",
+  };
+}
 
 describe("inbox_state", () => {
   let tempHome = "";
@@ -99,5 +112,86 @@ describe("inbox_state", () => {
     const preview = formatBodyPreview(long);
     expect(preview.length).toBe(120);
     expect(preview.endsWith("…")).toBe(true);
+  });
+
+  test("writeInboxState records the writer's parent PID for session ownership", () => {
+    const cwd = join(tempHome, "workspace-ppid");
+    const statePath = writeInboxState({
+      cwd,
+      name: "agy",
+      address: `${cwd}@agy`,
+      messages: [sampleMsg()],
+    });
+    const record = JSON.parse(readFileSync(statePath, "utf8")) as {
+      ppid?: number;
+    };
+    expect(record.ppid).toBe(process.ppid);
+  });
+
+  test("writeInboxStateSafe returns null instead of throwing when the state dir is unwritable", () => {
+    // Make `$REMOTE_PI_HOME/.pi` a plain file so mkdirSync cannot create it.
+    writeFileSync(join(tempHome, ".pi"), "not a directory", "utf8");
+    const res = writeInboxStateSafe({
+      cwd: join(tempHome, "ws"),
+      name: "agy",
+      address: "ws@agy",
+      messages: [],
+    });
+    expect(res).toBeNull();
+  });
+
+  describe("waitForMessage abort signal", () => {
+    test("abort while pending removes the waiter so later messages reach get_messages", async () => {
+      const inbox = new MeshInbox();
+      const controller = new AbortController();
+
+      const wait = inbox.waitForMessage({
+        re: "req-1",
+        timeoutMs: 5_000,
+        signal: controller.signal,
+      });
+      controller.abort();
+
+      const res = await wait;
+      expect(res.status).toBe("aborted");
+
+      // A message arriving after cancellation must NOT be eaten by the dead
+      // waiter — it has to stay visible to get_messages and future waits.
+      inbox.push(sampleMsg({ id: "late", re: "req-1" }));
+      expect(inbox.count()).toBe(1);
+      expect(inbox.drainAll().map((m) => m.id)).toEqual(["late"]);
+    });
+
+    test("abort after the waiter consumed a message requeues it", async () => {
+      const inbox = new MeshInbox();
+      const controller = new AbortController();
+
+      const wait = inbox.waitForMessage({
+        re: "req-2",
+        timeoutMs: 5_000,
+        signal: controller.signal,
+      });
+      inbox.push(sampleMsg({ id: "early", re: "req-2" }));
+
+      const res = await wait;
+      expect(res.status).toBe("received");
+
+      // Client cancels between our resolution and the SDK sending the
+      // response: the SDK discards the response, so the message must go back.
+      controller.abort();
+      expect(inbox.count()).toBe(1);
+      expect(inbox.drainAll().map((m) => m.id)).toEqual(["early"]);
+    });
+
+    test("an already-aborted signal returns aborted without draining buffered messages", async () => {
+      const inbox = new MeshInbox();
+      const controller = new AbortController();
+      inbox.push(sampleMsg({ id: "buffered", re: "req-3" }));
+      controller.abort();
+
+      const res = await inbox.waitForMessage({ re: "req-3", signal: controller.signal });
+      expect(res.status).toBe("aborted");
+      expect(inbox.count()).toBe(1);
+    });
   });
 });
