@@ -34,6 +34,7 @@ import {
   type InboxMessageLike,
 } from "./inbox_state.js";
 import {
+  buildWakeDedupKey,
   findConversationForInbox,
   maybeWakeIdleConversationForInbox,
 } from "../session/conversation_registry.js";
@@ -49,6 +50,7 @@ const JOIN_RETRY_MS = 2_000;
 const MAX_JOIN_ATTEMPTS = 4;
 const DIRECT_WAKE_FALLBACK_DELAY_MS = 300;
 const DIRECT_WAKE_BUSY_RETRY_MS = 1_000;
+const MAX_FALLBACK_WAKE_ERROR_RETRIES = 5;
 
 // ── Args / config ─────────────────────────────────────────────────────────────
 
@@ -103,6 +105,7 @@ process.on("uncaughtException", (err) => {
 let _mesh: MeshNode | null = null;
 let _inboxStatePath: string | null = null;
 let _fallbackWakeTimer: ReturnType<typeof setTimeout> | null = null;
+let _fallbackWakeErrorCount = 0;
 
 function clearFallbackWakeTimer(): void {
   if (_fallbackWakeTimer) {
@@ -126,17 +129,32 @@ function scheduleFallbackAgentApiWake(delayMs = DIRECT_WAKE_FALLBACK_DELAY_MS): 
       if (!mine || mine.unreadCount <= 0) return;
 
       const woken = maybeWakeIdleConversationForInbox(mine);
+      _fallbackWakeErrorCount = 0;
       if (woken) return;
 
-      // If the conversation is currently busy (e.g. a message arrived mid-turn)
-      // and that turn later ends without draining (such as `USER_CANCELLED`),
-      // re-check after the turn transitions back to `idle`.
+      // Reschedule while the conversation still has un-woken unread messages
+      // (e.g. currently `busy`, or a sidecar's `pendingWake` is in flight) so
+      // we recover if the turn ends in `USER_CANCELLED` or the sidecar fails.
       const conv = findConversationForInbox(mine);
-      if (conv && conv.state === "busy" && inbox.count() > 0 && !_shuttingDown) {
+      if (!conv) return;
+      const lastMsgId =
+        mine.lastMessageId ??
+        (mine.preview.length > 0 ? (mine.preview[mine.preview.length - 1]?.id ?? null) : null);
+      const dedupKey = buildWakeDedupKey(conv.conversationId, lastMsgId, mine.unreadCount);
+      if (conv.lastWokenKey !== dedupKey && inbox.count() > 0 && !_shuttingDown) {
         scheduleFallbackAgentApiWake(DIRECT_WAKE_BUSY_RETRY_MS);
       }
     } catch {
-      // Best-effort fallback when SidecarManager is inactive (e.g. standalone agy CLI).
+      // Transient agentapi failure / language server restart: retry up to
+      // MAX_FALLBACK_WAKE_ERROR_RETRIES while messages remain unread.
+      _fallbackWakeErrorCount++;
+      if (
+        _fallbackWakeErrorCount <= MAX_FALLBACK_WAKE_ERROR_RETRIES &&
+        inbox.count() > 0 &&
+        !_shuttingDown
+      ) {
+        scheduleFallbackAgentApiWake(DIRECT_WAKE_BUSY_RETRY_MS);
+      }
     }
   }, delayMs);
   _fallbackWakeTimer.unref?.();
@@ -159,8 +177,10 @@ function syncInboxState(messages: readonly InboxMessageLike[]): void {
   }
   _inboxStatePath = path;
   if (messages.length > 0) {
+    _fallbackWakeErrorCount = 0;
     scheduleFallbackAgentApiWake();
   } else {
+    _fallbackWakeErrorCount = 0;
     clearFallbackWakeTimer();
   }
 }

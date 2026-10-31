@@ -26,6 +26,7 @@ import { basename, join, resolve } from "node:path";
 const DEBOUNCE_MS = 100;
 const FALLBACK_POLL_MS = 2_000;
 const AGENTAPI_TIMEOUT_MS = 10_000;
+const PENDING_WAKE_TTL_MS = AGENTAPI_TIMEOUT_MS + 5_000;
 
 function inboxStateDir() {
   const root = process.env["REMOTE_PI_HOME"] || homedir();
@@ -101,6 +102,29 @@ function savePersistedWokenMap(map) {
   }
 }
 
+function parsePendingWake(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  if (
+    typeof raw.key !== "string" ||
+    !raw.key ||
+    typeof raw.pid !== "number" ||
+    typeof raw.claimedAt !== "number"
+  ) {
+    return null;
+  }
+  return {
+    key: raw.key,
+    pid: raw.pid,
+    claimedAt: raw.claimedAt,
+  };
+}
+
+function isPendingWakeActive(claim, dedupKey) {
+  if (!claim || claim.key !== dedupKey) return false;
+  if (Date.now() - claim.claimedAt > PENDING_WAKE_TTL_MS) return false;
+  return isProcessAlive(claim.pid);
+}
+
 function readSingleConversation(fullPath) {
   try {
     const parsed = JSON.parse(readFileSync(fullPath, "utf8"));
@@ -125,6 +149,7 @@ function readSingleConversation(fullPath) {
       lastWokenMessageId:
         typeof parsed.lastWokenMessageId === "string" ? parsed.lastWokenMessageId : null,
       lastWokenKey: typeof parsed.lastWokenKey === "string" ? parsed.lastWokenKey : null,
+      pendingWake: parsePendingWake(parsed.pendingWake),
       updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : 0,
     };
   } catch {
@@ -152,6 +177,25 @@ function readLiveConversations() {
   return results;
 }
 
+function readSingleUnreadInbox(fullPath) {
+  try {
+    const parsed = JSON.parse(readFileSync(fullPath, "utf8"));
+    if (typeof parsed.pid !== "number" || !isProcessAlive(parsed.pid)) {
+      safeUnlink(fullPath);
+      return null;
+    }
+    if (typeof parsed.unreadCount !== "number" || parsed.unreadCount <= 0) {
+      return null;
+    }
+    if (typeof parsed.cwd !== "string" || typeof parsed.name !== "string") {
+      return null;
+    }
+    return { ...parsed, filePath: fullPath };
+  } catch {
+    return null;
+  }
+}
+
 function readUnreadInboxes() {
   const dir = inboxStateDir();
   if (!existsSync(dir)) return [];
@@ -165,23 +209,8 @@ function readUnreadInboxes() {
   const results = [];
   for (const entry of entries) {
     if (!entry.endsWith(".json")) continue;
-    const fullPath = join(dir, entry);
-    try {
-      const parsed = JSON.parse(readFileSync(fullPath, "utf8"));
-      if (typeof parsed.pid !== "number" || !isProcessAlive(parsed.pid)) {
-        safeUnlink(fullPath);
-        continue;
-      }
-      if (typeof parsed.unreadCount !== "number" || parsed.unreadCount <= 0) {
-        continue;
-      }
-      if (typeof parsed.cwd !== "string" || typeof parsed.name !== "string") {
-        continue;
-      }
-      results.push(parsed);
-    } catch {
-      // Ignore transient/malformed files
-    }
+    const inbox = readSingleUnreadInbox(join(dir, entry));
+    if (inbox) results.push(inbox);
   }
   return results;
 }
@@ -244,10 +273,10 @@ function resolveAgentApiInvocation(conversationId, notification) {
 }
 
 /**
- * Re-reads `filePath` from disk before writing `lastWokenMessageId` / `lastWokenKey`
- * so any concurrent `state: "busy"` transition written by `PreInvocation` is preserved.
+ * Re-reads `filePath` from disk before writing updates so any concurrent
+ * `state: "busy"` transition written by `PreInvocation` is preserved.
  */
-function persistConversationWoken(filePath, fallbackConv, lastMsgId, dedupKey) {
+function updateConversationFile(filePath, fallbackConv, patch) {
   try {
     const current = readSingleConversation(filePath) || fallbackConv;
     if (!current) return;
@@ -255,9 +284,15 @@ function persistConversationWoken(filePath, fallbackConv, lastMsgId, dedupKey) {
       conversationId: current.conversationId,
       workspacePath: current.workspacePath,
       hostPid: current.hostPid,
-      state: current.state,
-      lastWokenMessageId: lastMsgId,
-      lastWokenKey: dedupKey,
+      state: patch.state !== undefined ? patch.state : current.state,
+      lastWokenMessageId:
+        patch.lastWokenMessageId !== undefined
+          ? patch.lastWokenMessageId
+          : current.lastWokenMessageId,
+      lastWokenKey:
+        patch.lastWokenKey !== undefined ? patch.lastWokenKey : current.lastWokenKey,
+      pendingWake:
+        patch.pendingWake !== undefined ? patch.pendingWake : current.pendingWake,
       updatedAt: Date.now(),
     };
     const payload = JSON.stringify(updated, null, 2);
@@ -283,12 +318,17 @@ function checkAndWakeAll() {
   const conversations = readLiveConversations();
   if (conversations.length === 0) return;
 
-  for (const inbox of inboxes) {
+  for (const rawInbox of inboxes) {
+    // Re-read the inbox file on each iteration in case an earlier iteration's
+    // blocking execFileSync gave this session time to drain its inbox.
+    const inbox = readSingleUnreadInbox(rawInbox.filePath);
+    if (!inbox) continue;
+
     const matched = matchConversation(inbox, conversations);
     if (!matched) continue;
 
     // Re-read the conversation record right before claiming to observe the
-    // freshest `state` and `lastWokenKey` on disk.
+    // freshest `state`, `lastWokenKey`, and `pendingWake` on disk.
     const conv = readSingleConversation(matched.filePath);
     if (!conv || conv.state !== "idle") continue;
 
@@ -300,20 +340,25 @@ function checkAndWakeAll() {
         : (fallbackId || "");
     const dedupKey = `${conv.conversationId}:${lastMsgId}:${inbox.unreadCount}`;
 
-    if (conv.lastWokenKey === dedupKey || wokenMap.get(conv.conversationId) === dedupKey) {
+    if (
+      conv.lastWokenKey === dedupKey ||
+      wokenMap.get(conv.conversationId) === dedupKey ||
+      isPendingWakeActive(conv.pendingWake, dedupKey)
+    ) {
       continue;
     }
 
-    // Claim the wake key BEFORE calling execFileSync so the 300ms MCP fallback
-    // or a subsequent watcher tick does not double-send while agentapi runs,
-    // and so we do not overwrite a concurrent PreInvocation `state: "busy"`
-    // after execFileSync returns.
-    const prevWokenId = conv.lastWokenMessageId;
-    const prevWokenKey = conv.lastWokenKey;
-    const prevInMemKey = wokenMap.get(conv.conversationId);
-    wokenMap.set(conv.conversationId, dedupKey);
-    savePersistedWokenMap(wokenMap);
-    persistConversationWoken(conv.filePath, conv, lastMsgId || null, dedupKey);
+    // Record a PID-scoped `pendingWake` claim BEFORE calling execFileSync so
+    // the 300ms MCP fallback does not double-send while agentapi runs, while
+    // ensuring that if this sidecar crashes before execFileSync completes,
+    // `isProcessAlive(pendingWake.pid)` becomes false and the wake is retried.
+    updateConversationFile(conv.filePath, conv, {
+      pendingWake: {
+        key: dedupKey,
+        pid: process.pid,
+        claimedAt: Date.now(),
+      },
+    });
 
     const notification = buildWakeNotification(inbox);
     const { file, args } = resolveAgentApiInvocation(conv.conversationId, notification);
@@ -324,15 +369,19 @@ function checkAndWakeAll() {
         timeout: AGENTAPI_TIMEOUT_MS,
         stdio: ["ignore", "pipe", "pipe"],
       });
-    } catch (err) {
-      // Roll back the woken claim on failure while preserving any `state`
-      // transition that occurred on disk while agentapi was running.
-      if (prevInMemKey === undefined) wokenMap.delete(conv.conversationId);
-      else wokenMap.set(conv.conversationId, prevInMemKey);
+      wokenMap.set(conv.conversationId, dedupKey);
       savePersistedWokenMap(wokenMap);
+      updateConversationFile(conv.filePath, conv, {
+        lastWokenMessageId: lastMsgId || null,
+        lastWokenKey: dedupKey,
+        pendingWake: null,
+      });
+    } catch (err) {
       const afterErr = readSingleConversation(conv.filePath);
-      if (afterErr && afterErr.lastWokenKey === dedupKey) {
-        persistConversationWoken(conv.filePath, afterErr, prevWokenId, prevWokenKey);
+      if (afterErr && afterErr.pendingWake?.pid === process.pid) {
+        updateConversationFile(conv.filePath, afterErr, {
+          pendingWake: null,
+        });
       }
       process.stderr.write(
         `[remote-pi-mesh watcher] agentapi send-message failed for ${conv.conversationId}: ${err instanceof Error ? err.message : String(err)}\n`,

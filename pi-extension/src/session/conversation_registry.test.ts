@@ -172,14 +172,20 @@ describe("conversation_registry", () => {
     expect(customStandalone.args).toEqual(["send-message", "conv-1", "hello"]);
   });
 
-  test("maybeWakeIdleConversationForInbox claims lastWokenKey before agentapi finishes and preserves concurrent state changes", () => {
+  test("maybeWakeIdleConversationForInbox records pendingWake while agentapi runs, commits lastWokenKey on success, and recovers from dead pendingWake PIDs", () => {
     const workspace = join(tempHome, "claim-workspace");
     const convId = "conv-claim-1";
+    // Seed a stale pendingWake from a dead PID (999_999_999) to verify crash recovery
     const convPath = writeConversationRecord({
       conversationId: convId,
       workspacePath: workspace,
       hostPid: process.pid,
       state: "idle",
+      pendingWake: {
+        key: buildWakeDedupKey(convId, "m-claim", 1),
+        pid: 999_999_999,
+        claimedAt: Date.now(),
+      },
     });
 
     writeInboxState({
@@ -199,8 +205,8 @@ describe("conversation_registry", () => {
     });
     const inboxRec = readUnreadInboxStates([workspace])[0]!;
 
-    // Mock script that verifies lastWokenKey is ALREADY claimed on disk while
-    // agentapi is running AND simulates PreInvocation transitioning state to "busy".
+    // Mock script that verifies pendingWake is active on disk while agentapi
+    // is running AND simulates PreInvocation transitioning state to "busy".
     const verifyLogPath = join(tempHome, "in-flight-check.json");
     const mockScript = join(tempHome, "agentapi-inflight.mjs");
     writeFileSync(
@@ -221,15 +227,21 @@ writeFileSync(${JSON.stringify(convPath)}, JSON.stringify(current, null, 2), "ut
     });
     expect(woken).toBe(true);
 
-    // 1. While mockScript was running, lastWokenKey was already persisted on disk
+    // 1. While mockScript was running, pendingWake was active on disk with this process's PID
     const inFlightRecord = JSON.parse(readFileSync(verifyLogPath, "utf8")) as {
-      lastWokenKey: string;
+      pendingWake: { key: string; pid: number } | null;
+      lastWokenKey: string | null;
     };
-    expect(inFlightRecord.lastWokenKey).toBe(buildWakeDedupKey(convId, "m-claim", 1));
+    expect(inFlightRecord.pendingWake?.key).toBe(buildWakeDedupKey(convId, "m-claim", 1));
+    expect(inFlightRecord.pendingWake?.pid).toBe(process.pid);
+    expect(inFlightRecord.lastWokenKey).toBeNull();
 
-    // 2. After maybeWakeIdleConversationForInbox returned, the "busy" state written
-    // during agentapi execution was NOT overwritten with stale "idle"
-    expect(readConversationRecord(convId)?.state).toBe("busy");
+    // 2. After maybeWakeIdleConversationForInbox returned, lastWokenKey is committed,
+    // pendingWake is cleared, and the "busy" state written during execution is preserved.
+    const afterRec = readConversationRecord(convId);
+    expect(afterRec?.state).toBe("busy");
+    expect(afterRec?.lastWokenKey).toBe(buildWakeDedupKey(convId, "m-claim", 1));
+    expect(afterRec?.pendingWake).toBeNull();
   });
 
   test("buildWakeNotificationMessage formats sender and preview details", () => {

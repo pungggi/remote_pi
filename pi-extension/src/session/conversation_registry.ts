@@ -19,6 +19,13 @@ import {
 export type ConversationTurnState = "busy" | "idle";
 
 const AGENTAPI_TIMEOUT_MS = 10_000;
+const PENDING_WAKE_TTL_MS = AGENTAPI_TIMEOUT_MS + 5_000;
+
+export interface PendingWakeClaim {
+  readonly key: string;
+  readonly pid: number;
+  readonly claimedAt: number;
+}
 
 export interface ConversationRecord {
   readonly conversationId: string;
@@ -27,6 +34,7 @@ export interface ConversationRecord {
   readonly state: ConversationTurnState;
   readonly lastWokenMessageId: string | null;
   readonly lastWokenKey: string | null;
+  readonly pendingWake?: PendingWakeClaim | null;
   readonly updatedAt: number;
 }
 
@@ -37,6 +45,7 @@ export interface WriteConversationRecordParams {
   readonly state?: ConversationTurnState;
   readonly lastWokenMessageId?: string | null;
   readonly lastWokenKey?: string | null;
+  readonly pendingWake?: PendingWakeClaim | null;
   readonly updatedAt?: number;
 }
 
@@ -85,6 +94,39 @@ export function removeConversationRecord(filePath: string | null | undefined): v
   }
 }
 
+function parsePendingWake(raw: unknown): PendingWakeClaim | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const candidate = raw as Partial<PendingWakeClaim>;
+  if (
+    typeof candidate.key !== "string" ||
+    !candidate.key ||
+    typeof candidate.pid !== "number" ||
+    typeof candidate.claimedAt !== "number"
+  ) {
+    return null;
+  }
+  return {
+    key: candidate.key,
+    pid: candidate.pid,
+    claimedAt: candidate.claimedAt,
+  };
+}
+
+/**
+ * Returns true when `claim` belongs to a live process and has not exceeded the
+ * maximum `agentapi` execution window. If the claiming process crashed mid-call,
+ * `isProcessAlive(claim.pid)` is false and the claim is immediately ignored.
+ */
+export function isPendingWakeActive(
+  claim: PendingWakeClaim | null | undefined,
+  dedupKey: string,
+  now = Date.now(),
+): boolean {
+  if (!claim || claim.key !== dedupKey) return false;
+  if (now - claim.claimedAt > PENDING_WAKE_TTL_MS) return false;
+  return isProcessAlive(claim.pid);
+}
+
 function parseConversationFile(fullPath: string): ConversationRecord | null {
   try {
     const parsed = JSON.parse(readFileSync(fullPath, "utf8")) as Partial<ConversationRecord>;
@@ -110,6 +152,7 @@ function parseConversationFile(fullPath: string): ConversationRecord | null {
       lastWokenMessageId:
         typeof parsed.lastWokenMessageId === "string" ? parsed.lastWokenMessageId : null,
       lastWokenKey: typeof parsed.lastWokenKey === "string" ? parsed.lastWokenKey : null,
+      pendingWake: parsePendingWake(parsed.pendingWake),
       updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : 0,
     };
   } catch {
@@ -128,8 +171,8 @@ export function readConversationRecord(conversationId: string): ConversationReco
 
 /**
  * Atomically writes or updates a conversation registry record.
- * Preserves existing `lastWokenMessageId` / `lastWokenKey` when omitted so
- * lifecycle hook updates do not erase wakeup deduplication state.
+ * Preserves existing `lastWokenMessageId`, `lastWokenKey`, and `pendingWake`
+ * when omitted so lifecycle hook updates do not erase wakeup deduplication state.
  */
 export function writeConversationRecord(params: WriteConversationRecordParams): string {
   mkdirSync(conversationsDir(), { recursive: true });
@@ -147,6 +190,8 @@ export function writeConversationRecord(params: WriteConversationRecordParams): 
         : (existing?.lastWokenMessageId ?? null),
     lastWokenKey:
       params.lastWokenKey !== undefined ? params.lastWokenKey : (existing?.lastWokenKey ?? null),
+    pendingWake:
+      params.pendingWake !== undefined ? params.pendingWake : (existing?.pendingWake ?? null),
     updatedAt: params.updatedAt ?? Date.now(),
   };
 
@@ -223,7 +268,9 @@ export function findConversationForInbox(
 }
 
 /**
- * Records that `conversationId` has been woken for `(lastMessageId, unreadCount)`.
+ * Records that `conversationId` has been woken for `(lastMessageId, unreadCount)`
+ * and clears any in-flight `pendingWake` claim. Re-reads from disk so any
+ * concurrent `state` transition is preserved.
  */
 export function markConversationWoken(
   conversationId: string,
@@ -240,6 +287,7 @@ export function markConversationWoken(
     state: existing.state,
     lastWokenMessageId: lastMessageId,
     lastWokenKey: dedupKey,
+    pendingWake: null,
   });
   return readConversationRecord(conversationId);
 }
@@ -325,8 +373,14 @@ export function invokeAgentApiSendMessage(
 
 /**
  * Checks whether `inbox` belongs to an `idle` Antigravity conversation that has
- * not yet been woken for its latest unread state, and if so claims the wake key
- * on disk before invoking `agentapi` (rolling back the claim if `agentapi` fails).
+ * not yet been woken for its latest unread state.
+ *
+ * Uses a PID-scoped `pendingWake` claim while `agentapi` is in flight and only
+ * commits `lastWokenKey` after `execFileSync` succeeds:
+ *   - While `agentapi` is running, concurrent callers see `isPendingWakeActive`
+ *     and skip duplicate sends.
+ *   - If the caller crashes mid-call before queuing the prompt, `claim.pid` is
+ *     no longer alive, so a restarted sidecar or fallback immediately recovers.
  */
 export function maybeWakeIdleConversationForInbox(
   inbox: InboxStateRecord,
@@ -341,29 +395,37 @@ export function maybeWakeIdleConversationForInbox(
     (inbox.preview.length > 0 ? (inbox.preview[inbox.preview.length - 1]?.id ?? null) : null);
   const dedupKey = buildWakeDedupKey(conv.conversationId, lastMsgId, inbox.unreadCount);
   if (conv.lastWokenKey === dedupKey) return false;
+  if (isPendingWakeActive(conv.pendingWake, dedupKey)) return false;
 
-  // Claim the wake key BEFORE invoking agentapi so a concurrent sidecar or
-  // fallback timer sees `lastWokenKey === dedupKey` while agentapi is running.
-  const prevWokenId = conv.lastWokenMessageId;
-  const prevWokenKey = conv.lastWokenKey;
-  markConversationWoken(conv.conversationId, lastMsgId, inbox.unreadCount);
+  // Record a PID-scoped in-flight claim before invoking agentapi.
+  writeConversationRecordSafe({
+    conversationId: conv.conversationId,
+    workspacePath: conv.workspacePath,
+    hostPid: conv.hostPid,
+    state: conv.state,
+    pendingWake: {
+      key: dedupKey,
+      pid: process.pid,
+      claimedAt: Date.now(),
+    },
+  });
 
   const notification = buildWakeNotificationMessage(inbox);
   try {
     invokeAgentApiSendMessage(conv.conversationId, notification, env);
+    markConversationWoken(conv.conversationId, lastMsgId, inbox.unreadCount);
     return true;
   } catch (err) {
-    // Roll back the woken claim on failure while preserving any `state` update
+    // Clear our in-flight claim on failure while preserving any `state` update
     // (e.g. `PreInvocation` setting `state: "busy"`) that occurred in the meantime.
     const current = readConversationRecord(conv.conversationId);
-    if (current && current.lastWokenKey === dedupKey) {
+    if (current && current.pendingWake?.pid === process.pid) {
       writeConversationRecordSafe({
         conversationId: current.conversationId,
         workspacePath: current.workspacePath,
         hostPid: current.hostPid,
         state: current.state,
-        lastWokenMessageId: prevWokenId,
-        lastWokenKey: prevWokenKey,
+        pendingWake: null,
       });
     }
     throw err;

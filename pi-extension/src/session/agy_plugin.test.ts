@@ -429,6 +429,63 @@ if (process.env.SIMULATE_PREINVOCATION_BUSY === "1") {
     runWatcherOnce();
     expect(readCalls()).toHaveLength(2);
     expect(readCalls()[1]?.[3]).toContain("6 unread mesh message(s) arrived");
+
+    // 7. Re-reads inbox on each iteration: if a second workspace drains its inbox
+    // and becomes idle while the first workspace's agentapi call is running,
+    // watcher must NOT wake the second workspace for its drained inbox.
+    const workspace2 = join(tempDir, "watcher-repo-2");
+    const convId2 = "conv-watcher-2";
+    const convPath2 = conversationFilePath(convId2);
+    runHook({ conversationId: convId2, workspacePaths: [workspace2] }, "PreInvocation");
+    const inboxPath2 = writeInboxState({
+      cwd: workspace2,
+      name: "agy",
+      address: `${workspace2}@agy`,
+      ppid: process.pid,
+      messages: [
+        {
+          id: "m-transient",
+          from: `${workspace2}@pi`,
+          body: "drained mid-turn",
+          re: null,
+          at: "2026-10-31T18:00:00.000Z",
+        },
+      ],
+    });
+    // Queue a 7th message in workspace 1 so workspace 1 runs execFileSync, and
+    // during that execFileSync drain workspace 2's inbox and transition conv-watcher-2 to idle!
+    writeInboxState({
+      cwd: workspace,
+      name: "agy",
+      address: `${workspace}@agy`,
+      ppid: process.pid,
+      messages: [1, 2, 3, 4, 5, 6, 7].map((n) => ({
+        id: `m-${n}`,
+        from: `${workspace}@pi`,
+        body: `msg ${n}`,
+        re: null,
+        at: "2026-10-31T18:00:00.000Z",
+      })),
+    });
+    writeFileSync(
+      mockAgentApiScript,
+      `import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(callsLogPath)}, JSON.stringify(process.argv.slice(2)) + "\\n", "utf8");
+const in2 = JSON.parse(readFileSync(${JSON.stringify(inboxPath2)}, "utf8"));
+in2.unreadCount = 0;
+in2.lastMessageId = null;
+in2.preview = [];
+writeFileSync(${JSON.stringify(inboxPath2)}, JSON.stringify(in2, null, 2), "utf8");
+const c2 = JSON.parse(readFileSync(${JSON.stringify(convPath2)}, "utf8"));
+c2.state = "idle";
+writeFileSync(${JSON.stringify(convPath2)}, JSON.stringify(c2, null, 2), "utf8");
+`,
+      "utf8",
+    );
+    runWatcherOnce();
+    // Only workspace 1 (convId) was woken; convId2 was skipped because its inbox was drained!
+    expect(readCalls()).toHaveLength(3);
+    expect(readCalls()[2]?.[2]).toBe(convId);
   });
 
   test("mesh_hook ignores other sessions' inboxes in the same workspace", () => {

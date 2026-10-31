@@ -241,6 +241,7 @@ function writeConversationState({
           : (existingConv?.lastWokenMessageId ?? null),
       lastWokenKey:
         lastWokenKey !== undefined ? lastWokenKey : (existingConv?.lastWokenKey ?? null),
+      pendingWake: state === "busy" ? null : (existingConv?.pendingWake ?? null),
       updatedAt: Date.now(),
     };
     const payload = JSON.stringify(record, null, 2);
