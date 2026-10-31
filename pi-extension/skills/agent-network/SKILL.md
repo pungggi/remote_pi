@@ -1,6 +1,6 @@
 ---
 name: agent-network
-description: Use when the remote-pi mesh tools (`list_peers`, `agent_send`, and — on Claude / Antigravity `agy` — `get_messages`, `wait_for_message`, `mesh_status`) are available. You are an agent (a Pi coding agent, a Claude Code session, or a Google Antigravity `agy` session) connected to the remote-pi agent mesh over a local broker. This skill teaches how to discover who's online (`list_peers`), how to inspect your own address (`mesh_status`), how to send messages with a delivery ACK (`agent_send`), how incoming messages reach you (via `get_messages` / `wait_for_message` and lifecycle hooks on Agy/Claude, or delivered into your turn on Pi), how to reply (echo `re`), and how to treat every peer address as an opaque routing key that must be echoed verbatim.
+description: Use when the remote-pi mesh tools (`list_peers`, `agent_send`, and — on Claude / Antigravity `agy` — `get_messages`, `wait_for_message`, `mesh_status`) are available. You are an agent (a Pi coding agent, a Claude Code session, or a Google Antigravity `agy` session) connected to the remote-pi agent mesh over a local broker. This skill teaches how to discover who's online (`list_peers`), how to inspect your own address (`mesh_status`), how to send messages with a delivery ACK (`agent_send`), how incoming messages reach you (via `get_messages` / `wait_for_message`, lifecycle hooks, and sidecar `agentapi` wakeups on Agy/Claude, or delivered into your turn on Pi), how to reply (echo `re`), and how to treat every peer address as an opaque routing key that must be echoed verbatim.
 ---
 
 # Agent Network (remote-pi mesh)
@@ -25,18 +25,25 @@ You only ever receive messages addressed to you — the broker filters before
 delivery. **If a message arrived, someone wanted your attention. Don't ignore
 it.** How a message reaches you depends on your runtime:
 
-- **Antigravity (`agy` — MCP + Lifecycle Hooks):** incoming messages are buffered
-  in the `remote-pi-mesh` MCP server and tracked in a local inbox state file.
-  - When unread messages are waiting at the start of a turn, the `PreInvocation`
-    hook injects a `📨 [remote-pi mesh]` notification reminding you to call
-    `get_messages()`.
-  - If a message arrives while you are finishing a turn, the `Stop` hook
-    automatically continues your turn (`decision: "continue"`) so you can call
-    `get_messages()` and handle it immediately.
-  - When you send a request with `agent_send` and want to await the peer's reply
-    within the current turn (or inside a background subagent), call
-    `wait_for_message({ timeout_ms: 30000, from, re })` to block until the reply
-    arrives without busy-polling.
+- **Antigravity (`agy` — MCP + Lifecycle Hooks + `mesh-watcher` Sidecar):**
+  incoming messages are buffered in the `remote-pi-mesh` MCP server and tracked
+  in `~/.pi/piper/sessions/local/inbox/<roomId>.json` alongside active
+  conversation state in `~/.pi/piper/sessions/local/conversations/<conversationId>.json`.
+  - **Idle wakeup (`mesh-watcher` sidecar + `agentapi send-message`):** when your
+    conversation is idle (`state: "idle"`) and a peer sends you a message, the
+    `mesh-watcher` sidecar (or MCP fallback) automatically invokes
+    `agentapi send-message <conversationId> ...` to wake your conversation. Call
+    `get_messages()` to read the full structured payload.
+  - **Start of turn (`PreInvocation` hook):** when unread messages are waiting
+    before a prompt runs, the `PreInvocation` hook injects a
+    `📨 [remote-pi mesh]` notification reminding you to call `get_messages()`.
+  - **End of turn (`Stop` hook):** if a message arrives while you are executing a
+    turn, the `Stop` hook intercepts `NO_TOOL_CALL` and returns
+    `decision: "continue"` so your turn continues automatically.
+  - **Inline / subagent waiting:** when you send a request with `agent_send` and
+    want to await the peer's reply within the current turn (or inside a
+    background subagent), call `wait_for_message({ timeout_ms: 30000, from, re })`
+    to block until the reply arrives without busy-polling.
 
 - **Claude (MCP):** incoming messages are buffered. **At the start of every
   turn, call `get_messages`** to drain and read them:
@@ -170,9 +177,9 @@ The mesh is event-driven:
 
 1. You call `agent_send` → status `received`.
 2. Either your turn continues/ends (and the reply wakes you via Pi turn delivery,
-   `agy` `Stop`/`PreInvocation` hooks, or Claude channel), **or** on MCP runtimes
-   (`agy` / `claude`) you call `wait_for_message({ timeout_ms: 30000, from })`
-   to await the reply inline.
+   `agy` `mesh-watcher` sidecar / `Stop` / `PreInvocation` hooks, or Claude
+   channel), **or** on MCP runtimes (`agy` / `claude`) you call
+   `wait_for_message({ timeout_ms: 30000, from })` to await the reply inline.
 3. The reply carries `re` set to the `id` you originally sent.
 
 ### Walk-through

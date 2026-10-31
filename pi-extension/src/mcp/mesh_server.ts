@@ -28,10 +28,16 @@ import {
   MIN_WAIT_TIMEOUT_MS,
   MeshInbox,
   formatIncomingMessages,
+  readUnreadInboxStates,
   removeInboxState,
   writeInboxStateSafe,
   type InboxMessageLike,
 } from "./inbox_state.js";
+import {
+  buildWakeDedupKey,
+  findConversationForInbox,
+  maybeWakeIdleConversationForInbox,
+} from "../session/conversation_registry.js";
 import { sessionSockPath, sessionAuditPath, LOCAL_SESSION_NAME } from "../session/global_config.js";
 import { resolveRelayUrl } from "../config.js";
 import { acquireNamedCwdLock, type NamedAcquiredLock } from "../session/cwd_lock.js";
@@ -42,6 +48,9 @@ const MCP_ROOTS_TIMEOUT_MS = 1_000;
 const MCP_INIT_TIMEOUT_MS = 2_000;
 const JOIN_RETRY_MS = 2_000;
 const MAX_JOIN_ATTEMPTS = 4;
+const DIRECT_WAKE_FALLBACK_DELAY_MS = 300;
+const DIRECT_WAKE_BUSY_RETRY_MS = 1_000;
+const MAX_FALLBACK_WAKE_ERROR_RETRIES = 5;
 
 // ── Args / config ─────────────────────────────────────────────────────────────
 
@@ -95,6 +104,61 @@ process.on("uncaughtException", (err) => {
 
 let _mesh: MeshNode | null = null;
 let _inboxStatePath: string | null = null;
+let _fallbackWakeTimer: ReturnType<typeof setTimeout> | null = null;
+let _fallbackWakeErrorCount = 0;
+
+function clearFallbackWakeTimer(): void {
+  if (_fallbackWakeTimer) {
+    clearTimeout(_fallbackWakeTimer);
+    _fallbackWakeTimer = null;
+  }
+}
+
+function scheduleFallbackAgentApiWake(delayMs = DIRECT_WAKE_FALLBACK_DELAY_MS): void {
+  if (_shuttingDown) return;
+  if (!process.env["ANTIGRAVITY_LS_ADDRESS"] && !process.env["ANTIGRAVITY_AGENTAPI_EXE"]) {
+    return;
+  }
+  clearFallbackWakeTimer();
+  _fallbackWakeTimer = setTimeout(() => {
+    _fallbackWakeTimer = null;
+    if (_shuttingDown || inbox.count() === 0) return;
+    try {
+      const states = readUnreadInboxStates([_canonCwd]);
+      const mine = states.find((s) => s.pid === process.pid);
+      if (!mine || mine.unreadCount <= 0) return;
+
+      const woken = maybeWakeIdleConversationForInbox(mine);
+      _fallbackWakeErrorCount = 0;
+      if (woken) return;
+
+      // Reschedule while the conversation still has un-woken unread messages
+      // (e.g. currently `busy`, or a sidecar's `pendingWake` is in flight) so
+      // we recover if the turn ends in `USER_CANCELLED` or the sidecar fails.
+      const conv = findConversationForInbox(mine);
+      if (!conv) return;
+      const lastMsgId =
+        mine.lastMessageId ??
+        (mine.preview.length > 0 ? (mine.preview[mine.preview.length - 1]?.id ?? null) : null);
+      const dedupKey = buildWakeDedupKey(conv.conversationId, lastMsgId, mine.unreadCount);
+      if (conv.lastWokenKey !== dedupKey && inbox.count() > 0 && !_shuttingDown) {
+        scheduleFallbackAgentApiWake(DIRECT_WAKE_BUSY_RETRY_MS);
+      }
+    } catch {
+      // Transient agentapi failure / language server restart: retry up to
+      // MAX_FALLBACK_WAKE_ERROR_RETRIES while messages remain unread.
+      _fallbackWakeErrorCount++;
+      if (
+        _fallbackWakeErrorCount <= MAX_FALLBACK_WAKE_ERROR_RETRIES &&
+        inbox.count() > 0 &&
+        !_shuttingDown
+      ) {
+        scheduleFallbackAgentApiWake(DIRECT_WAKE_BUSY_RETRY_MS);
+      }
+    }
+  }, delayMs);
+  _fallbackWakeTimer.unref?.();
+}
 
 function syncInboxState(messages: readonly InboxMessageLike[]): void {
   const address = _mesh?.address() ?? `${_canonCwd}@${_lockedAgentName}`;
@@ -112,6 +176,13 @@ function syncInboxState(messages: readonly InboxMessageLike[]): void {
     return;
   }
   _inboxStatePath = path;
+  if (messages.length > 0) {
+    _fallbackWakeErrorCount = 0;
+    scheduleFallbackAgentApiWake();
+  } else {
+    _fallbackWakeErrorCount = 0;
+    clearFallbackWakeTimer();
+  }
 }
 
 const inbox = new MeshInbox((messages) => {
@@ -438,6 +509,7 @@ function shutdown(): void {
   if (_shuttingDown) return;
   _shuttingDown = true;
   if (_lockRetryTimer) { clearTimeout(_lockRetryTimer); _lockRetryTimer = null; }
+  clearFallbackWakeTimer();
   inbox.close();
   removeInboxState(_inboxStatePath);
   try { _lock?.release(); } catch { /* OS frees the UDS lock on exit anyway */ }
