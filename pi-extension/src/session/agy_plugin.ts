@@ -36,6 +36,7 @@ export interface InstalledAgyPluginPaths {
   readonly agyConfigPath: string;
   readonly hooksConfigPath: string;
   readonly hookScriptPath: string;
+  readonly hookCmdPath: string;
   readonly sidecarManifestPath: string;
   readonly sidecarScriptPath: string;
   readonly rulesPath: string;
@@ -304,15 +305,54 @@ function copyIfPresent(srcPath: string, destPath: string): void {
  * `PreInvocation`, `PostInvocation`, and `Stop` MUST be flat arrays of handler
  * objects under a named hook group.
  */
+/**
+ * Writes Antigravity-compliant `hooks.json`.
+ *
+ * In Antigravity's native `hooks.json` specification, only `PreToolUse` and
+ * `PostToolUse` use `{ "matcher": "...", "hooks": [...] }`. `SessionStart`,
+ * `PreInvocation`, `PostInvocation`, and `Stop` MUST be flat arrays of handler
+ * objects under a named hook group.
+ *
+ * Command formatting & Desktop Launch compatibility:
+ * - On Windows: Antigravity executes hooks via `cmd.exe /c "<command>"`.
+ *   When the command line contains quotes around both the executable and arguments,
+ *   Go's argument escaping produces `cmd /c "\"path\" \"script\" ..."`, causing
+ *   cmd.exe to fail with `'"path"' is not recognized`.
+ *   To bypass cmd.exe's quote-escaping bug while still preserving the resolved
+ *   absolute `nodeExec` path (vital when Antigravity is desktop-launched and Node
+ *   is missing from the desktop environment's inherited PATH), we generate
+ *   `scripts\mesh_hook.cmd` embedding `"${nodeExec}"` with a fallback to `node`,
+ *   and reference `scripts\mesh_hook.cmd` directly in `hooks.json`.
+ * - On POSIX (macOS/Linux): Antigravity executes hooks via `sh -c "<command>"`.
+ *   `"${nodeExec}" scripts/mesh_hook.mjs` preserves the exact node binary across
+ *   Homebrew, nvm, and standard locations without cmd.exe's quoting issues.
+ */
 function writePluginHooksConfig(
   hooksConfigPath: string,
   nodeExec: string,
   hookScriptPath: string,
 ): void {
+  const isWin = process.platform === "win32";
+  if (isWin) {
+    const hookCmdPath = hookScriptPath.replace(/\.mjs$/, ".cmd");
+    const cmdContent = [
+      "@echo off",
+      `if exist "${nodeExec}" (`,
+      `  "${nodeExec}" "%~dp0mesh_hook.mjs" %*`,
+      `) else (`,
+      `  node "%~dp0mesh_hook.mjs" %*`,
+      `)`,
+      "",
+    ].join("\r\n");
+    writeFileSync(hookCmdPath, cmdContent, "utf8");
+  }
+
   const makeHandler = (eventName: string) => [
     {
       type: "command",
-      command: `"${nodeExec}" "${hookScriptPath}" --event=${eventName}`,
+      command: isWin
+        ? `scripts\\mesh_hook.cmd --event=${eventName}`
+        : `"${nodeExec}" scripts/mesh_hook.mjs --event=${eventName}`,
       timeout: HOOK_TIMEOUT_SECONDS,
     },
   ];
@@ -369,6 +409,7 @@ export function ensureAgyMeshPluginInstalled(
   mkdirSync(rulesDir, { recursive: true });
   mkdirSync(skillDir, { recursive: true });
 
+  const hookCmdPath = join(scriptsDir, "mesh_hook.cmd");
   const paths: InstalledAgyPluginPaths = {
     pluginDir,
     pluginManifestPath: join(pluginDir, "plugin.json"),
@@ -376,6 +417,7 @@ export function ensureAgyMeshPluginInstalled(
     agyConfigPath: join(configDir, "config.json"),
     hooksConfigPath: join(pluginDir, "hooks.json"),
     hookScriptPath: join(scriptsDir, "mesh_hook.mjs"),
+    hookCmdPath,
     sidecarManifestPath: join(sidecarDir, "sidecar.json"),
     sidecarScriptPath: join(sidecarDir, "watcher.mjs"),
     rulesPath: join(rulesDir, "AGENTS.md"),
@@ -385,6 +427,7 @@ export function ensureAgyMeshPluginInstalled(
   removeLegacyPluginMcpConfig(pluginDir);
   copyOrWritePluginManifest(pkgRoot, paths.pluginManifestPath);
   copyIfPresent(join(pkgRoot, "agy-plugin", "scripts", "mesh_hook.mjs"), paths.hookScriptPath);
+  copyIfPresent(join(pkgRoot, "agy-plugin", "scripts", "mesh_hook.cmd"), paths.hookCmdPath);
   copyOrWriteSidecarManifest(pkgRoot, paths.sidecarManifestPath);
   copyIfPresent(
     join(pkgRoot, "agy-plugin", "sidecars", AGY_MESH_SIDECAR_ID, "watcher.mjs"),
