@@ -80,15 +80,61 @@ void main() {
 
       expect(find.text('GLM-4.6'), findsOneWidget);
       expect(find.text('3'), findsOneWidget);
-      // One mono text: every window, ordered shortest-first (5h before wk
-      // before mo), as the user chose ("all windows incl. 5h").
-      expect(find.textContaining('5h 3% · wk 4% · mo 0%'), findsOneWidget);
-      // Plan/156.1 — bar width tracks the SHORTEST window (5h 3%), not the
-      // max (wk 4%): the shortest lane is the tightest active constraint.
+      // Plan/156.2 — windows at 0% are NOT shown (space): the mo MCP marker
+      // sits at 0% almost always. Non-zero windows stay shortest-first.
+      expect(find.textContaining('5h 3% · wk 4%'), findsOneWidget);
+      expect(find.textContaining('mo'), findsNothing);
+      // Plan/156.1 — bar width tracks the SHORTEST non-zero window (5h 3%).
       final bar = tester.widget<AnimatedFractionallySizedBox>(
         find.byType(AnimatedFractionallySizedBox),
       );
       expect(bar.widthFactor, closeTo(0.03, 0.0001));
+    });
+
+    testWidgets('all-zero usage renders no usage line and no bar (plan/156.2)',
+        (tester) async {
+      const zero = PlanUsage(
+        provider: 'zai',
+        fetchedAt: 1,
+        windows: [
+          PlanUsageWindow(kind: 'tokens', label: '5h', percent: 0, minutes: 300),
+        ],
+      );
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(body: SessionGroupHeader(label: 'GLM-4.6', count: 1, usage: zero)),
+        ),
+      );
+
+      expect(find.textContaining('%'), findsNothing);
+      expect(find.byType(AnimatedFractionallySizedBox), findsNothing);
+    });
+
+    testWidgets('0% shortest lane is skipped: text and bar fall to weekly (plan/156.2)',
+        (tester) async {
+      const rolled = PlanUsage(
+        provider: 'zai',
+        fetchedAt: 1,
+        windows: [
+          PlanUsageWindow(kind: 'tokens', label: '5h', percent: 0, minutes: 300),
+          PlanUsageWindow(
+              kind: 'tokens', label: 'wk', percent: 40, minutes: 10080),
+        ],
+      );
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+              body: SessionGroupHeader(label: 'GLM-4.6', count: 1, usage: rolled)),
+        ),
+      );
+
+      // 5h at 0% is no constraint — hidden; weekly carries the line + bar.
+      expect(find.textContaining('wk 40%'), findsOneWidget);
+      expect(find.textContaining('5h'), findsNothing);
+      final bar = tester.widget<AnimatedFractionallySizedBox>(
+        find.byType(AnimatedFractionallySizedBox),
+      );
+      expect(bar.widthFactor, closeTo(0.40, 0.0001));
     });
 
     testWidgets('bar falls back to weekly when the 5h window is absent (plan/156.1)',
@@ -140,8 +186,8 @@ void main() {
               .toList() ??
           const <TextSpan>[];
       expect(children.length, 3, reason: 'window · separator · window');
-      final fiveHour = children[0]!.style!.color;
-      final weekly = children[2]!.style!.color;
+      final fiveHour = children[0].style!.color;
+      final weekly = children[2].style!.color;
       // Pressure ladder is per window: a 90% lane reads as error while a
       // 10% lane stays calm — one shared tint could never differ.
       expect(fiveHour, isNot(equals(weekly)));
@@ -186,24 +232,6 @@ void main() {
       expect(find.textContaining('%'), findsNothing);
     });
 
-    testWidgets('zero usage renders text but no bar', (tester) async {
-      const zero = PlanUsage(
-        provider: 'zai',
-        fetchedAt: 1,
-        windows: [
-          PlanUsageWindow(kind: 'tokens', label: '5h', percent: 0, minutes: 300),
-        ],
-      );
-      await tester.pumpWidget(
-        const MaterialApp(
-          home: Scaffold(body: SessionGroupHeader(label: 'GLM-4.6', count: 1, usage: zero)),
-        ),
-      );
-
-      expect(find.textContaining('5h 0%'), findsOneWidget);
-      expect(find.byType(AnimatedFractionallySizedBox), findsNothing);
-    });
-
     testWidgets('countdown text appears when a reset is plausible',
         (tester) async {
       final reset = DateTime.now().millisecondsSinceEpoch +
@@ -224,7 +252,7 @@ void main() {
         ),
       );
 
-      expect(find.textContaining('resets 2h 14m'), findsOneWidget);
+      expect(find.textContaining('⏳ 2h 14m'), findsOneWidget);
     });
 
     testWidgets('countdown ticks down every minute without a new push (PR #89 review)',
@@ -254,14 +282,14 @@ void main() {
           ),
         ),
       );
-      expect(find.textContaining('resets 2h 14m'), findsOneWidget);
+      expect(find.textContaining('⏳ 2h 14m'), findsOneWidget);
 
       // 2 minutes of wall time, no plan_usage push in between: the header's
       // own 1-min ticker must rebuild the countdown twice.
       await tester.pump(const Duration(minutes: 1));
-      expect(find.textContaining('resets 2h 13m'), findsOneWidget);
+      expect(find.textContaining('⏳ 2h 13m'), findsOneWidget);
       await tester.pump(const Duration(minutes: 1));
-      expect(find.textContaining('resets 2h 12m'), findsOneWidget);
+      expect(find.textContaining('⏳ 2h 12m'), findsOneWidget);
     });
   });
 
