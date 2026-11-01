@@ -9,6 +9,19 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
 
+## [1.5.2] - 2026-11-01
+
+### Changed
+
+- **Plan-usage header tweaks (plan/156.1, on-device review feedback)**:
+  the usage line is now centered in the group header (label left, session
+  count right), each window is tinted by its own pressure (a 90% weekly
+  lane reads red next to a calm 3% 5h lane instead of sharing one tint),
+  and the hairline bar tracks the **shortest window present** — 5h when
+  reported, weekly otherwise — instead of the max across windows (the
+  shortest lane is the tightest active constraint; z.ai omits the 5h lane
+  once it rolls over).
+
 ## [1.5.1] - 2026-11-01
 
 ### Changed

@@ -83,11 +83,93 @@ void main() {
       // One mono text: every window, ordered shortest-first (5h before wk
       // before mo), as the user chose ("all windows incl. 5h").
       expect(find.textContaining('5h 3% · wk 4% · mo 0%'), findsOneWidget);
-      // Bar width tracks the WORST window (wk 4%).
+      // Plan/156.1 — bar width tracks the SHORTEST window (5h 3%), not the
+      // max (wk 4%): the shortest lane is the tightest active constraint.
+      final bar = tester.widget<AnimatedFractionallySizedBox>(
+        find.byType(AnimatedFractionallySizedBox),
+      );
+      expect(bar.widthFactor, closeTo(0.03, 0.0001));
+    });
+
+    testWidgets('bar falls back to weekly when the 5h window is absent (plan/156.1)',
+        (tester) async {
+      const wkOnly = PlanUsage(
+        provider: 'zai',
+        fetchedAt: 1,
+        windows: [
+          PlanUsageWindow(
+              kind: 'tokens', label: 'wk', percent: 4, minutes: 10080),
+        ],
+      );
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+              body: SessionGroupHeader(label: 'GLM-4.6', count: 1, usage: wkOnly)),
+        ),
+      );
+
+      expect(find.textContaining('wk 4%'), findsOneWidget);
       final bar = tester.widget<AnimatedFractionallySizedBox>(
         find.byType(AnimatedFractionallySizedBox),
       );
       expect(bar.widthFactor, closeTo(0.04, 0.0001));
+    });
+
+    testWidgets('each window is tinted by its own pressure (plan/156.1)',
+        (tester) async {
+      const pressure = PlanUsage(
+        provider: 'zai',
+        fetchedAt: 1,
+        windows: [
+          PlanUsageWindow(
+              kind: 'tokens', label: '5h', percent: 90, minutes: 300),
+          PlanUsageWindow(
+              kind: 'tokens', label: 'wk', percent: 10, minutes: 10080),
+        ],
+      );
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+              body: SessionGroupHeader(label: 'GLM-4.6', count: 1, usage: pressure)),
+        ),
+      );
+
+      final text = tester.widget<Text>(find.textContaining('5h 90%'));
+      final children = (text.textSpan as TextSpan?)?.children
+              ?.whereType<TextSpan>()
+              .toList() ??
+          const <TextSpan>[];
+      expect(children.length, 3, reason: 'window · separator · window');
+      final fiveHour = children[0]!.style!.color;
+      final weekly = children[2]!.style!.color;
+      // Pressure ladder is per window: a 90% lane reads as error while a
+      // 10% lane stays calm — one shared tint could never differ.
+      expect(fiveHour, isNot(equals(weekly)));
+      // The pressure bar (5h is the shortest) matches the 90% error tint
+      // family, not the calm weekly one.
+      final bar = tester.widget<AnimatedFractionallySizedBox>(
+        find.byType(AnimatedFractionallySizedBox),
+      );
+      expect(bar.widthFactor, closeTo(0.90, 0.0001));
+    });
+
+    testWidgets('the usage line is centered in the header (plan/156.1)',
+        (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: SessionGroupHeader(label: 'GLM-4.6', count: 3, usage: usage),
+          ),
+        ),
+      );
+
+      final headerCenter = tester.getCenter(
+        find.byType(SessionGroupHeader),
+      );
+      final usageCenter = tester.getCenter(find.textContaining('5h 3%'));
+      // Truly centered between label and count — not end-packed next to
+      // the count (Stack overlay, not a Row slot).
+      expect(usageCenter.dx, closeTo(headerCenter.dx, 1.0));
     });
 
     testWidgets('no usage → plain header, no bar', (tester) async {

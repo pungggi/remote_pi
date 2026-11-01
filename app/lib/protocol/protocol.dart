@@ -1083,10 +1083,24 @@ class PlanUsage {
     required this.windows,
   });
 
-  /// Highest used percent across windows — drives the header bar and the
-  /// tint escalation.
+  /// Highest used percent across windows — the tint escalation fallback
+  /// when no window lengths were reported.
   int get maxPercent =>
       windows.fold(0, (m, w) => w.percent > m ? w.percent : m);
+
+  /// Plan/156.1 — the window the pressure BAR tracks: the shortest window
+  /// present (5h before wk before mo). The shortest lane is the tightest
+  /// active constraint — when 5h is absent, the weekly lane is what
+  /// throttles first — and its reset is the next boundary the plan
+  /// recovers at. Falls back to the highest-percent window when the
+  /// provider reported no lengths at all.
+  PlanUsageWindow? get primaryWindow {
+    if (windows.isEmpty) return null;
+    final known = displayWindows.where((w) => w.minutes != null);
+    if (known.isNotEmpty) return known.first;
+    return windows.fold<PlanUsageWindow?>(
+      null, (a, w) => a == null || w.percent > a.percent ? w : a);
+  }
 
   /// Windows ordered shortest-first for display (5h before wk before mo).
   List<PlanUsageWindow> get displayWindows {
