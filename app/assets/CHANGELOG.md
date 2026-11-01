@@ -9,6 +9,15 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
 
+## [1.5.3] - 2026-11-01
+
+### Changed
+
+- **Plan-usage header, round two**: windows at 0% are hidden (space —
+  the monthly MCP marker is 0% almost always), the bar likewise skips
+  0% lanes, and the countdown reads `⏳ 2h 14m` instead of `resets
+  2h 14m`.
+
 ## [1.5.2] - 2026-11-01
 
 ### Changed

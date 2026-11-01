@@ -172,13 +172,16 @@ class _SessionGroupHeaderState extends State<SessionGroupHeader> {
     return restHours > 0 ? '${days}d ${restHours}h' : '${days}d';
   }
 
-  /// Plan/156.1 — each window is a span tinted by ITS OWN pressure
-  /// (a 3% 5h lane reads calm next to a 92% weekly lane reading red),
-  /// separators stay muted. The countdown is temporal, not pressure —
-  /// muted regardless of how full the lanes are.
+  /// Plan/156.2 — each window is a span tinted by ITS OWN pressure
+  /// (a 3% 5h lane reads calm next to a 92% weekly lane reading red).
+  /// Windows at 0% are NOT shown — they're no constraint and the header
+  /// needs the space (the z.ai monthly MCP marker sits at 0% almost
+  /// always). The countdown glyph ⏳ stays muted (temporal, not
+  /// pressure).
   List<TextSpan> _usageSpans(AppColors colors, PlanUsage usage) {
     final spans = <TextSpan>[];
-    final windows = usage.displayWindows;
+    final windows =
+        usage.displayWindows.where((w) => w.percent > 0).toList();
     for (var i = 0; i < windows.length; i++) {
       final w = windows[i];
       if (i > 0) {
@@ -209,7 +212,7 @@ class _SessionGroupHeaderState extends State<SessionGroupHeader> {
           ));
         }
         spans.add(TextSpan(
-          text: 'resets ${_resetCountdown(left)}',
+          text: '⏳ ${_resetCountdown(left)}',
           style: TextStyle(fontFamily: kMonoFamily, fontSize: 11, color: colors.muted),
         ));
       }

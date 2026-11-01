@@ -9,6 +9,17 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
 
+## [1.5.3] - 2026-11-01
+
+### Changed
+
+- **Plan-usage header, round two (plan/156.2)**: windows at 0% are no
+  longer shown — they're no constraint and the header needs the space
+  (the z.ai monthly MCP marker sits at 0% almost always). The pressure
+  bar skips 0% lanes the same way (a freshly rolled-over 5h at 0% makes
+  the weekly lane carry the bar). The countdown's `resets` word became a
+  ⏳ glyph.
+
 ## [1.5.2] - 2026-11-01
 
 ### Changed

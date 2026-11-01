@@ -1088,17 +1088,26 @@ class PlanUsage {
   int get maxPercent =>
       windows.fold(0, (m, w) => w.percent > m ? w.percent : m);
 
-  /// Plan/156.1 — the window the pressure BAR tracks: the shortest window
-  /// present (5h before wk before mo). The shortest lane is the tightest
-  /// active constraint — when 5h is absent, the weekly lane is what
-  /// throttles first — and its reset is the next boundary the plan
-  /// recovers at. Falls back to the highest-percent window when the
-  /// provider reported no lengths at all.
+  /// Plan/156.1 — the window the pressure BAR tracks: the shortest
+  /// window present that actually has usage (5h before wk before mo; a
+  /// 0% lane is no constraint, so it's skipped — when 5h is absent or
+  /// freshly rolled over, the weekly lane is what throttles first).
+  /// Falls back to the highest-percent window when the provider reported
+  /// no lengths at all; null when nothing is consuming anything.
   PlanUsageWindow? get primaryWindow {
-    if (windows.isEmpty) return null;
-    final known = displayWindows.where((w) => w.minutes != null);
-    if (known.isNotEmpty) return known.first;
-    return windows.fold<PlanUsageWindow?>(
+    final candidates = windows.where((w) => w.percent > 0).toList();
+    if (candidates.isEmpty) return null;
+    final known = candidates
+      ..sort((a, b) {
+        final am = a.minutes;
+        final bm = b.minutes;
+        if (am == null && bm == null) return 0;
+        if (am == null) return 1;
+        if (bm == null) return -1;
+        return am.compareTo(bm);
+      });
+    if (known.first.minutes != null) return known.first;
+    return candidates.fold<PlanUsageWindow?>(
       null, (a, w) => a == null || w.percent > a.percent ? w : a);
   }
 
