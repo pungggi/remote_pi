@@ -9,6 +9,18 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Subscription usage on Home's model groups (plan/156)**: model-group
+  headers now show the provider's plan quota — every window the provider
+  reports (5h prompts, weekly tokens, monthly MCP credits on z.ai) — with
+  a subtle pressure bar and reset countdown. It appears only while at
+  least one session in the group is online, so stale offline caches never
+  read as live quota. z.ai GLM Coding Plan is supported first; more
+  providers can follow.
+
 ## [1.5.0] - 2026-10-30
 
 ### Added

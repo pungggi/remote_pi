@@ -9,6 +9,26 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Model subscription usage on the grouped Home (plan/156)**: when Home
+  is grouped by model and any session in a group is online, the group
+  header shows the provider's subscription quota (`5h 3% · wk 4% · mo 0%`)
+  with a hairline pressure bar. v1 probes the z.ai GLM Coding Plan
+  (`/api/monitor/usage/quota/limit`, key from `~/.pi/agent/auth.json`,
+  env `ZAI_API_KEY` fallback); more providers can slot into the probe
+  registry. The usage rides opaque `room_meta.plan_usage`:
+
+  - **Account-scoped**: a model switch within the same provider keeps it;
+    a provider change sends an explicit `plan_usage: null` clear.
+  - **Freshness**: refreshed on relay connect, model/provider select,
+    agent turn end, and a 10-min timer; deduped so idle ticks stay silent.
+  - **Safe by default**: probe failures never surface as errors, and the
+    API key never leaves the PC (only the normalized usage blob is
+    published).
+
 ## [1.5.0] - 2026-10-30
 
 ### Added

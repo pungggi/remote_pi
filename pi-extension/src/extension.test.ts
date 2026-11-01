@@ -5,7 +5,7 @@
  * over an opaque outer envelope whose `ct` is base64(JSON.stringify(inner)).
  */
 import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
-import { resetExtensionState } from "./extension-state.js";
+import { ext, resetExtensionState } from "./extension-state.js";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -8041,6 +8041,55 @@ describe("model meta", () => {
     }
     expect(updates[1]!.meta?.model).toBe("new-model");
     expect(updates[1]!.meta?.context_usage).toBeNull();
+  });
+
+  test("plan/156: provider change tombstones plan_usage; same-provider switch keeps it", async () => {
+    // Plan usage is ACCOUNT-scoped (per provider subscription), so the
+    // PR #67 rule is deliberately different from context_usage: a model
+    // switch WITHIN a provider keeps the quota, a PROVIDER change clears
+    // it (`plan_usage: null`) — the new provider may be another account.
+    delete process.env["ZAI_API_KEY"];
+    delete process.env["Z_AI_API_KEY"];
+    captureHandler("remote-pi");
+    const onSessionStart = captureEventHandler("session_start");
+    onSessionStart(
+      { type: "session_start" },
+      {
+        ui: { notify: vi.fn() },
+        cwd: "/tmp/remote-pi-plan-usage-tomb",
+        abort: vi.fn(),
+      } as never,
+    );
+    await _connectForTest(makeMockCtx("/tmp/remote-pi-plan-usage-tomb"));
+
+    const onModelSelect = captureEventHandler("model_select");
+    // First select records the provider (no previous one → nothing to clear).
+    onModelSelect({ type: "model_select", model: { name: "GLM-4.6", provider: "zai" } });
+    // Same provider, different model → plan_usage must NOT ride the update.
+    onModelSelect({ type: "model_select", model: { name: "GLM-4.5-Air", provider: "zai" } });
+    // Provider change → explicit `plan_usage: null` alongside the new name.
+    onModelSelect({ type: "model_select", model: { name: "Kimi K3.1", provider: "kimi-coding" } });
+
+    const updates = relayRef.current!.sendControl.mock.calls
+      .map((c) => c[0] as { type: string; meta?: { model?: string; plan_usage?: unknown } })
+      .filter((f) => f.type === "room_meta_update" && f.meta?.model);
+    expect(updates).toHaveLength(3);
+    expect(updates[0]!.meta?.model).toBe("GLM-4.6");
+    // Whether the FIRST select counts as a provider change depends on
+    // whether connect seeded a default provider (settings fallback) —
+    // either way it must never pair a LIVE plan_usage with the change.
+    if ("plan_usage" in (updates[0]!.meta ?? {})) {
+      expect(updates[0]!.meta?.plan_usage).toBeNull();
+    }
+    // Same provider, different model: the quota stays valid — no key at all.
+    expect(updates[1]!.meta?.model).toBe("GLM-4.5-Air");
+    expect("plan_usage" in (updates[1]!.meta ?? {})).toBe(false);
+    // Provider change: explicit clear alongside the new name.
+    expect(updates[2]!.meta?.model).toBe("Kimi K3.1");
+    expect(updates[2]!.meta?.plan_usage).toBeNull();
+    // The cached room_meta dropped the field too (reconnect hello must not
+    // resurrect the old provider's quota).
+    expect(ext.myRoomMeta?.plan_usage ?? null).toBeNull();
   });
 
   test("model_select with no model (undefined) is silently ignored", async () => {

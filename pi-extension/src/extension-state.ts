@@ -36,6 +36,7 @@ import type { ExtensionUiBridge } from "./extension_ui_bridge.js";
 import { MeshDeliveryRegistry } from "./session/mesh_delivery.js";
 import type { Ed25519Keypair } from "./pairing/crypto.js";
 import type { JournaledFrame, QueuedMessageItem, ThinkingLevel, WireGhRef, WireGitStatus, WireSessionStats } from "./protocol/types.js";
+import type { PlanUsage } from "./plan-usage.js";
 
 // ── Shared light constants (plan/143: live here so BOTH the thin entry and
 //    the lazy runtime can import them without pulling heavy modules) ──
@@ -155,8 +156,22 @@ export interface ExtensionState {
     gh_suggestion?: WireGhRef | null;
     /** Plan/149 — activity counters, pushed ONLY at turn boundaries. */
     stats?: WireSessionStats | null;
+    /** Plan/156 — subscription usage of the current model's provider
+     *  (account-scoped: survives same-provider model switches, cleared
+     *  only when the provider changes). Opaque to the relay, like
+     *  context_usage. */
+    plan_usage?: PlanUsage | null;
   } | null;
   currentModel: string | undefined;
+  /** Plan/156 — provider id of the current model ("zai", …), when
+   *  resolvable. Drives plan-usage probing; null = unknown/off. */
+  currentProvider: string | null;
+  /** Plan/156 — plan-usage probe lifecycle: recurring refresh timer, last
+   *  successful publish (throttle + payload dedupe), in-flight guard. */
+  planUsageTimer: ReturnType<typeof setInterval> | null;
+  planUsageLastPublishAt: number;
+  planUsageLastPayload: PlanUsage | null;
+  planUsageInFlight: boolean;
   currentThinking: ThinkingLevel | undefined;
   pendingModelRevert: FullSdkModel | null;
   sessionStartedAt: number | null;
@@ -266,6 +281,11 @@ export const ext: ExtensionState = {
   myRoomId: null,
   myRoomMeta: null,
   currentModel: undefined,
+  currentProvider: null,
+  planUsageTimer: null,
+  planUsageLastPublishAt: 0,
+  planUsageLastPayload: null,
+  planUsageInFlight: false,
   currentThinking: undefined,
   pendingModelRevert: null,
   sessionStartedAt: null,
@@ -350,6 +370,8 @@ export function resetExtensionState(): void {
   // stale timer still holds).
   if (ext.reconnectTimer !== null) clearTimeout(ext.reconnectTimer);
   if (ext.initialConnectRetryTimer !== null) clearTimeout(ext.initialConnectRetryTimer);
+  // Plan/156 — same orphaned-timer rule for the plan-usage refresh.
+  if (ext.planUsageTimer !== null) clearInterval(ext.planUsageTimer);
   Object.assign(ext, {
     state: "idle",
     relay: null,
@@ -370,6 +392,12 @@ export function resetExtensionState(): void {
     myRoomId: null,
     myRoomMeta: null,
     currentModel: undefined,
+    currentProvider: null,
+    // Plan/156 — cleared above with the other timers.
+    planUsageTimer: null,
+    planUsageLastPublishAt: 0,
+    planUsageLastPayload: null,
+    planUsageInFlight: false,
     currentThinking: undefined,
     pendingModelRevert: null,
     sessionStartedAt: null,

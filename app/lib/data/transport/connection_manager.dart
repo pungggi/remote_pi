@@ -1018,6 +1018,7 @@ class ConnectionManager extends Service {
         :final providerError,
         :final git,
         :final contextUsage,
+        :final planUsage,
         :final keeper,
         :final ghRef,
         :final ghSuggestion,
@@ -1044,6 +1045,7 @@ class ConnectionManager extends Service {
         var preservedProviderError = false;
         GitStatus? preservedGit;
         ContextUsage? preservedContextUsage;
+        PlanUsage? preservedPlanUsage;
         final existingIdx = list.indexWhere((r) => r.roomId == roomId);
         if (existingIdx >= 0) {
           preservedName = list[existingIdx].name;
@@ -1053,6 +1055,7 @@ class ConnectionManager extends Service {
           preservedProviderError = list[existingIdx].providerError;
           preservedGit = list[existingIdx].git;
           preservedContextUsage = list[existingIdx].contextUsage;
+          preservedPlanUsage = list[existingIdx].planUsage;
         }
         final next = RoomInfo(
           roomId: roomId,
@@ -1066,6 +1069,7 @@ class ConnectionManager extends Service {
           providerError: providerError ?? preservedProviderError,
           git: git ?? preservedGit,
           contextUsage: contextUsage ?? preservedContextUsage,
+          planUsage: planUsage ?? preservedPlanUsage,
           // Plan/140 C — wire wins: a real session re-announcing the room
           // (without the flag) flips the tile back to live; a keeper
           // re-taking a dark room re-marks it.
@@ -1161,6 +1165,8 @@ class ConnectionManager extends Service {
         :final hasGit,
         :final contextUsage,
         :final hasContextUsage,
+        :final planUsage,
+        :final hasPlanUsage,
         :final runDone,
         :final ghRef,
         :final hasGhRef,
@@ -1260,6 +1266,11 @@ class ConnectionManager extends Service {
             : hasModel && model != current.model
             ? null
             : current.contextUsage;
+        // Plan/156 — plan usage patch: has-flag convention, but NO
+        // model-change invalidation: the quota is account-scoped (per
+        // provider), so a model-only update keeps it. The extension sends
+        // an explicit `plan_usage: null` when the PROVIDER changes.
+        final nextPlanUsage = hasPlanUsage ? planUsage : current.planUsage;
         // Plan/149 — session-slot patches: has-flag convention (gh_ref and
         // stats can be explicitly null = cleared; absence preserves).
         final nextGhRef = hasGhRef ? ghRef : current.ghRef;
@@ -1274,6 +1285,7 @@ class ConnectionManager extends Service {
             current.providerError == nextProviderError &&
             current.git == nextGit &&
             current.contextUsage == nextContextUsage &&
+            current.planUsage == nextPlanUsage &&
             current.ghRef == nextGhRef &&
             current.ghSuggestion == nextGhSuggestion &&
             current.stats == nextStats) {
@@ -1287,6 +1299,7 @@ class ConnectionManager extends Service {
           providerError: nextProviderError,
           git: nextGit,
           contextUsage: nextContextUsage,
+          planUsage: nextPlanUsage,
           ghRef: nextGhRef,
           ghSuggestion: nextGhSuggestion,
           stats: nextStats,
@@ -1342,6 +1355,11 @@ class ConnectionManager extends Service {
             waitingForInput: r.waitingForInput,
             providerError: r.providerError,
             contextUsage: r.contextUsage ?? preservedUsage,
+          // Plan/156 — plan usage is account-scoped, so unlike context
+          // usage it survives regardless of a model change in the
+          // snapshot; the next live publish (connect/turn boundary)
+          // refreshes or clears it within minutes.
+          planUsage: r.planUsage ?? byId[r.roomId]?.planUsage,
             // Plan/140 C — the snapshot is authoritative for the keeper
             // marker too (the relay's `rooms_of` carries the live meta).
             keeper: r.keeper,

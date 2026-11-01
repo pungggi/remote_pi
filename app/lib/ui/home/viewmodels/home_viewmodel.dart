@@ -410,6 +410,13 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// Keeper mirrors always count as offline, including for the status color.
   bool isRoomOnline(HomeItem it) => _roomOnline(it.peer.remoteEpk, it.room);
 
+  /// Plan/156 — subscription usage for a model group's header: the first
+  /// ONLINE session's provider plan usage. Null when every session in the
+  /// group is offline (stale quota must never read as live) or the
+  /// provider has no usage probe. Only meaningful for model grouping.
+  PlanUsage? planUsageForGroup(HomeGroup group) =>
+      firstOnlinePlanUsage(group, isRoomOnline);
+
   /// Plan/140 C — a keeper-held room is a durable-history mirror, not a live
   /// agent: it counts as offline for status and plan/148 cleanup gating.
   bool _roomOnline(String epk, RoomInfo room) =>
