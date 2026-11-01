@@ -100,6 +100,23 @@ List<HomeGroup> groupHomeItems(
   return result;
 }
 
+/// Plan/156 — subscription usage to paint on a model group's header: the
+/// first ONLINE session's provider plan usage. Null when every session in
+/// the group is offline (stale quota must never read as live) or the
+/// provider has no usage probe. Pure so tests can drive it with a fake
+/// online predicate.
+PlanUsage? firstOnlinePlanUsage(
+  HomeGroup group,
+  bool Function(HomeItem item) isOnline,
+) {
+  for (final item in group.items) {
+    if (!isOnline(item)) continue;
+    final usage = item.room.planUsage;
+    if (usage != null) return usage;
+  }
+  return null;
+}
+
 /// Grouping identity for one item: the dedupe [key] (stable, full), the
 /// display [label], and whether the item lands in a fallback section.
 class _ItemGrouping {

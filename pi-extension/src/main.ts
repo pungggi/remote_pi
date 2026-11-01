@@ -119,6 +119,7 @@ import { handleStartSession } from "./actions/start_session.js";
 import { handleListProjects } from "./projects/handlers.js";
 import { handleChangeLayout } from "./actions/change_layout.js";
 import { ensureModelRegistry } from "./actions/registry.js";
+import { planUsageProbes, readProviderApiKey, type PlanUsage } from "./plan-usage.js";
 import {
   ensureGlobalDirs,
   LOCAL_SESSION_NAME,
@@ -334,7 +335,7 @@ function _currentModelName(): string | undefined {
  * explicit set/cycle (never on settings load), so default-model daemons would
  * otherwise never surface their model.
  */
-function _setCurrentModel(name: string): void {
+function _setCurrentModel(name: string, provider?: string | null): void {
   // PR #67 review — a model switch invalidates the cached context usage:
   // its tokens/contextWindow describe the PREVIOUS model. Drop it (cache
   // AND wire — `context_usage: null` rides the same Option<Option> clear
@@ -343,18 +344,45 @@ function _setCurrentModel(name: string): void {
   // the new model publishes fresh usage.
   const modelChanged =
     ext.currentModel !== undefined && ext.currentModel !== name;
+  // Plan/156 — plan usage is ACCOUNT-scoped (per provider subscription),
+  // so unlike context_usage it survives a model switch within the same
+  // provider and is tombstoned only when the PROVIDER changes (a different
+  // account may be behind it). `provider === undefined` = unknown, preserve.
+  const providerChanged =
+    typeof provider === "string" &&
+    ext.currentProvider !== null &&
+    ext.currentProvider !== provider;
+  if (typeof provider === "string") ext.currentProvider = provider;
   ext.currentModel = name;
   if (ext.myRoomMeta) {
     const next = { ...ext.myRoomMeta, model: name };
     if (modelChanged) delete next.context_usage;
+    if (providerChanged) {
+      delete next.plan_usage;
+      // PR #89 review — also drop the cached payload: the dedupe in
+      // `_voidMaybePublishPlanUsage` compares against it, so keeping it
+      // would absorb an unchanged-but-fresh result after returning to
+      // this provider and leave the header empty until a quota window
+      // moved. Null forces a real republish on the next probe.
+      ext.planUsageLastPayload = null;
+    }
     ext.myRoomMeta = next;
   }
   if (ext.relay && ext.myRoomId) {
+    const meta: Record<string, unknown> = { model: name };
+    if (modelChanged) meta["context_usage"] = null;
+    if (providerChanged) meta["plan_usage"] = null;
     ext.relay.sendControl({
       type: "room_meta_update",
       room_id: ext.myRoomId,
-      meta: modelChanged ? { model: name, context_usage: null } : { model: name },
+      meta,
     });
+  }
+  // Plan/156 — a provider change may make the room plan-usage-eligible
+  // (or clear eligibility); re-probe right away. Force so the new
+  // provider's quota lands without waiting for a turn boundary.
+  if (providerChanged || (typeof provider === "string" && !ext.planUsageLastPayload)) {
+    _voidMaybePublishPlanUsage({ force: providerChanged });
   }
 }
 
@@ -512,6 +540,102 @@ function _publishContextUsage(usage: WireContextUsage): void {
 function _refreshContextUsage(): void {
   const usage = ext.lastEventCtx?.getContextUsage?.();
   if (usage) _publishContextUsage(usage);
+}
+
+/** Plan/156 — one probe per 5 min minimum; the idle refresh timer ticks at 10. */
+const PLAN_USAGE_MIN_INTERVAL_MS = 5 * 60_000;
+const PLAN_USAGE_TIMER_MS = 10 * 60_000;
+
+/**
+ * Plan/156 — publish the provider subscription usage as opaque
+ * `room_meta.plan_usage` (relay forwards verbatim; the app paints it on the
+ * model-grouped Home header). Tombstone rule: account-scoped, cleared only
+ * on a provider change (see _setCurrentModel).
+ */
+function _publishPlanUsage(usage: PlanUsage): void {
+  if (ext.myRoomMeta) ext.myRoomMeta = { ...ext.myRoomMeta, plan_usage: usage };
+  if (ext.relay && ext.myRoomId) {
+    ext.relay.sendControl({ type: "room_meta_update", room_id: ext.myRoomId, meta: { plan_usage: usage } });
+  }
+}
+
+/** Display-identical payloads (provider/plan + per-window label/percent/
+ * resetAt) — republishing those would only churn the relay for a fetchedAt. */
+function _samePlanUsage(a: PlanUsage | null, b: PlanUsage | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.provider !== b.provider || a.plan !== b.plan || a.windows.length !== b.windows.length) return false;
+  return a.windows.every((w, i) => {
+    const o = b.windows[i]!;
+    return w.label === o.label && w.percent === o.percent && w.resetAt === o.resetAt;
+  });
+}
+
+/** Lazily start the 10-min plan-usage refresh timer on first eligibility.
+ * unref'd so it can never hold the host process open on exit. */
+function _ensurePlanUsageTimer(): void {
+  if (ext.planUsageTimer !== null || ext.disposed) return;
+  ext.planUsageTimer = setInterval(() => {
+    if (ext.disposed) {
+      _stopPlanUsageTimer();
+      return;
+    }
+    _voidMaybePublishPlanUsage();
+  }, PLAN_USAGE_TIMER_MS);
+  ext.planUsageTimer.unref?.();
+}
+
+export function _stopPlanUsageTimer(): void {
+  if (ext.planUsageTimer !== null) {
+    clearInterval(ext.planUsageTimer);
+    ext.planUsageTimer = null;
+  }
+}
+
+/**
+ * Plan/156 — probe the current provider's subscription usage and publish it.
+ * Best-effort by design: every failure (no probe for the provider, no key on
+ * disk, network/API error) is swallowed — quota is decoration and must never
+ * become a red session state. Throttled to one probe per 5 min; triggered by
+ * room connect, model/provider select, agent_end, and the refresh timer.
+ */
+export function _voidMaybePublishPlanUsage(opts?: { force?: boolean }): void {
+  if (ext.disposed) return;
+  const provider = ext.currentProvider;
+  if (!provider) return;
+  const probe = planUsageProbes[provider];
+  if (!probe) return;
+  // Room not up: nothing to publish to. The next connect / turn re-triggers.
+  if (!ext.relay || !ext.myRoomId) return;
+  const now = Date.now();
+  if (!opts?.force && now - ext.planUsageLastPublishAt < PLAN_USAGE_MIN_INTERVAL_MS) return;
+  if (ext.planUsageInFlight) return;
+  ext.planUsageInFlight = true;
+  _ensurePlanUsageTimer();
+  // Capture WHO we probed: a model_select to another provider may land
+  // while the fetch is in flight, and its result would describe another
+  // account (PR #89 review). The publish gate below drops it.
+  const probeProvider = provider;
+  readProviderApiKey(provider)
+    .then((key) => (key ? probe(key) : null))
+    .then((usage) => {
+      if (!usage || ext.disposed) return;
+      // Provider switched mid-probe: the tombstone already cleared the
+      // room — publishing now would resurrect the OLD account's quota
+      // under the new provider with nothing to clear it later.
+      if (ext.currentProvider !== probeProvider) return;
+      ext.planUsageLastPublishAt = Date.now();
+      // Refresh the cache either way (the hello seeds from it), but only
+      // push a control frame when something the app renders changed.
+      if (!_samePlanUsage(ext.planUsageLastPayload, usage)) _publishPlanUsage(usage);
+      ext.planUsageLastPayload = usage;
+    })
+    .catch(() => {
+      /* best-effort: quota outages must never surface as errors */
+    })
+    .finally(() => {
+      ext.planUsageInFlight = false;
+    });
 }
 
 /**
@@ -2904,13 +3028,14 @@ export function onInputRest(event: InputEvent): void {
  *  room_meta so apps render the current model without a new pair.
  *  (Param is structural: the SDK's ModelSelectEvent isn't root-exported.) */
 export function onModelSelect(event: { model?: unknown } | undefined | null): void {
-  const m = event?.model as { name?: string; id?: string } | undefined;
+  const m = event?.model as { name?: string; id?: string; provider?: string } | undefined;
   const modelName = m?.name ?? m?.id;
   if (!modelName) return;
   // Cache + fan out. Keeps the cached room_meta fresh so a future reconnect
   // carries the current model in its hello, and pushes a room_meta_update to
-  // apps already subscribed.
-  _setCurrentModel(modelName);
+  // apps already subscribed. Plan/156: the provider id rides along when the
+  // SDK exposes it (drives the plan-usage probe).
+  _setCurrentModel(modelName, typeof m?.provider === "string" ? m.provider : undefined);
 }
 
 /** `thinking_level_select` — mirror the model_select room_meta path for the
@@ -3056,6 +3181,9 @@ export function onAgentEnd(pi: ExtensionAPI, ctx: ExtensionContext): void {
   // (the ONLY stats push point — never per message).
   ext.statsTurns += 1;
   _publishStats();
+  // Plan/156 — turn boundary is the natural quota refresh point: usage
+  // moved if anything did. Throttled + deduped inside.
+  _voidMaybePublishPlanUsage();
   // Buffer is fed by `message_end`; here we only finalize the outbound
   // turn signal to every connected owner. No buffer mutation.
   // Flush coalesced text FIRST — the phone finalizes the streaming
@@ -3124,9 +3252,9 @@ export function onTurnStart(ctx: ExtensionContext): void {
   // whose model only materialises at turn 1 still reports it to the app.
   if (!ext.currentModel) {
     try {
-      const m = (ctx as Partial<ExtensionContext> & { getModel?: () => { name?: string; id?: string } | undefined }).getModel?.();
+      const m = (ctx as Partial<ExtensionContext> & { getModel?: () => { name?: string; id?: string; provider?: string } | undefined }).getModel?.();
       const name = m?.name ?? m?.id;
-      if (name) _setCurrentModel(name);
+      if (name) _setCurrentModel(name, typeof m?.provider === "string" ? m.provider : undefined);
     } catch { /* defensive — never block a turn on a model lookup */ }
   }
   // Plan/32 Part B: publish working=true as room_meta (raw, no debounce —
@@ -3291,6 +3419,9 @@ export async function onSessionShutdown(pi?: ExtensionAPI): Promise<void> {
   // generations keep queued work stale even if a same-module session_start
   // clears `ext.disposed` before its promises settle.
   ext.disposed = true;
+  // Plan/156 — the plan-usage refresh timer must not outlive the session
+  // (same orphaned-timer rule as resetExtensionState).
+  _stopPlanUsageTimer();
   ext.rootLifecycleGeneration += 1;
   ext.relayLifecycleGeneration += 1;
   ext.meshJoinGeneration += 1;
@@ -3709,8 +3840,8 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   if (!ext.currentModel) {
     try {
       const c = ctx as Partial<ExtensionContext> & {
-        model?: { name?: string; id?: string };
-        getModel?: () => { name?: string; id?: string } | undefined;
+        model?: { name?: string; id?: string; provider?: string };
+        getModel?: () => { name?: string; id?: string; provider?: string } | undefined;
       };
       // Prefer the live getModel() / ctx.model — populated for an interactive
       // Pi. For a HEADLESS DAEMON both are undefined at connect: the SDK only
@@ -3723,10 +3854,15 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
       const live = c.getModel?.() ?? c.model;
       if (live) {
         ext.currentModel = live.name ?? live.id ?? undefined;
+        // Plan/156 — remember the provider id (drives the plan-usage probe).
+        if (typeof live.provider === "string" && live.provider) ext.currentProvider = live.provider;
       } else {
         const sm = SettingsManager.create(cwd);
         const provider = sm.getDefaultProvider();
         const modelId = sm.getDefaultModel();
+        // Plan/156 — even without a live model, the configured default
+        // provider tells the probe what account to read.
+        ext.currentProvider = provider ?? null;
         if (modelId) {
           ext.currentModel = modelId;
           // pi 0.83: resolve the friendly name via the live ctx registry when one
@@ -3757,7 +3893,7 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   // activity counters resume instead of restarting from zero.
   const seededGhRef = _seedSessionSlotFromRegistry(roomId);
 
-  const roomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; git?: WireGitStatus | null; context_usage?: WireContextUsage | null; gh_ref?: WireGhRef | null; stats?: WireSessionStats | null } = { name: sessionName, cwd };
+  const roomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; git?: WireGitStatus | null; context_usage?: WireContextUsage | null; gh_ref?: WireGhRef | null; stats?: WireSessionStats | null; plan_usage?: PlanUsage | null } = { name: sessionName, cwd };
   const modelName = _currentModelName();
   if (modelName) roomMeta.model = modelName;
   if (ext.currentThinking) roomMeta.thinking = ext.currentThinking;
@@ -3768,6 +3904,12 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   // Seed context-window usage so the chat header shows it on connect.
   const helloUsage = ext.lastEventCtx?.getContextUsage?.();
   if (helloUsage) roomMeta.context_usage = helloUsage;
+  // Plan/156 — seed the cached plan usage when it belongs to the CURRENT
+  // provider (a switch to another provider must not leak the old account's
+  // quota into the hello). The connect-ok hook below re-probes right after.
+  if (ext.planUsageLastPayload && ext.planUsageLastPayload.provider === ext.currentProvider) {
+    roomMeta.plan_usage = ext.planUsageLastPayload;
+  }
   // Plan/149 — seeded ref + counters ride the hello (keeper rooms announce
   // the same fields from the registry on their side).
   if (seededGhRef) roomMeta.gh_ref = seededGhRef;
@@ -3888,6 +4030,9 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   ext.stopAutoListener = _installAutoListener(relay);
   _subscribeOwnerPresence(relay); // 2026-08-21 — learn owner online/offline
   startGitRefresh(); // Plan/107b — begin room_meta.git polling
+  // Plan/156 — the room is up: probe the provider subscription right away
+  // (force past the 5-min throttle so a fresh connect always refreshes).
+  _voidMaybePublishPlanUsage({ force: true });
   _refreshFooter(ctx);
 
   // SelfRevoke is the Pi path's single initial topology producer. Its first

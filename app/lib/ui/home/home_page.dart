@@ -1,5 +1,6 @@
 import 'package:app/data/actions/actions_repository.dart' show ActionFailure;
-import 'package:app/data/preferences/preferences.dart' show KeepAliveMode;
+import 'package:app/data/preferences/preferences.dart'
+    show HomeGroupBy, KeepAliveMode;
 import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart'
@@ -332,7 +333,15 @@ class HomePage extends StatelessWidget {
     final children = <Widget>[];
     for (final group in vm.visibleGroups) {
       children.add(
-        SessionGroupHeader(label: group.label, count: group.items.length),
+        SessionGroupHeader(
+          label: group.label,
+          count: group.items.length,
+          // Plan/156 — quota text + bar, only in model grouping and only
+          // when an online session in the group published one.
+          usage: vm.groupBy == HomeGroupBy.model
+              ? vm.planUsageForGroup(group)
+              : null,
+        ),
       );
       for (final item in group.items) {
         children.add(

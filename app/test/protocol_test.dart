@@ -635,4 +635,115 @@ void main() {
       expect(roomInfo.keeper, isTrue);
     });
   });
+
+  group('plan/156 plan_usage parsing', () {
+    const usageJson = {
+      'provider': 'zai',
+      'plan': 'max',
+      'fetchedAt': 42,
+      'windows': [
+        {
+          'kind': 'time',
+          'label': 'mo',
+          'percent': 0,
+          'minutes': 43200,
+          'resetAt': null,
+        },
+        {'kind': 'tokens', 'label': '5h', 'percent': 3, 'minutes': 300},
+        {'kind': 'tokens', 'label': 'wk', 'percent': 4, 'minutes': 10080},
+      ],
+    };
+
+    test('room_announced reads plan_usage flat AND under meta (both places)',
+        () {
+      final flat = ControlInbound.tryFromJson({
+        'type': 'room_announced',
+        'peer': 'p',
+        'room_id': 'main',
+        'started_at': 5,
+        'plan_usage': usageJson,
+      }) as RoomAnnounced;
+      expect(flat.planUsage?.provider, 'zai');
+      expect(flat.planUsage?.windows, hasLength(3));
+
+      final nested = ControlInbound.tryFromJson({
+        'type': 'room_announced',
+        'peer': 'p',
+        'room_id': 'main',
+        'started_at': 5,
+        'meta': {'plan_usage': usageJson},
+      }) as RoomAnnounced;
+      expect(nested.planUsage?.plan, 'max');
+    });
+
+    test('room_meta_updated applies the has-flag convention', () {
+      final present = ControlInbound.tryFromJson({
+        'type': 'room_meta_updated',
+        'peer': 'p',
+        'room_id': 'main',
+        'meta': {'plan_usage': usageJson},
+      }) as RoomMetaUpdated;
+      expect(present.hasPlanUsage, isTrue);
+      expect(present.planUsage?.maxPercent, 4);
+      expect(present.planUsage?.displayWindows.map((w) => w.label).toList(),
+          ['5h', 'wk', 'mo'],
+          reason: 'display orders windows shortest-first');
+
+      final cleared = ControlInbound.tryFromJson({
+        'type': 'room_meta_updated',
+        'peer': 'p',
+        'room_id': 'main',
+        'meta': {'plan_usage': null},
+      }) as RoomMetaUpdated;
+      expect(cleared.hasPlanUsage, isTrue);
+      expect(cleared.planUsage, isNull);
+
+      final absent = ControlInbound.tryFromJson({
+        'type': 'room_meta_updated',
+        'peer': 'p',
+        'room_id': 'main',
+        'meta': {'model': 'GLM-4.6'},
+      }) as RoomMetaUpdated;
+      expect(absent.hasPlanUsage, isFalse,
+          reason: 'model-only update preserves cached plan usage');
+    });
+
+    test('malformed plan_usage degrades to null, never throws', () {
+      final noProvider = ControlInbound.tryFromJson({
+        'type': 'room_meta_updated',
+        'peer': 'p',
+        'room_id': 'main',
+        'meta': {
+          'plan_usage': {'plan': 'max', 'windows': []},
+        },
+      }) as RoomMetaUpdated;
+      expect(noProvider.hasPlanUsage, isTrue);
+      expect(noProvider.planUsage, isNull);
+    });
+
+    test('PlanUsage.nearestResetWindow picks the nearest future reset', () {
+      final now = DateTime.fromMillisecondsSinceEpoch(1_000_000);
+      final usage = PlanUsage.fromJson({
+        'provider': 'zai',
+        'windows': [
+          {
+            'kind': 'tokens',
+            'label': '5h',
+            'percent': 3,
+            'minutes': 300,
+            'resetAt': now.millisecondsSinceEpoch + 3 * 3600_000,
+          },
+          {
+            'kind': 'tokens',
+            'label': 'wk',
+            'percent': 4,
+            'minutes': 10080,
+            'resetAt': now.millisecondsSinceEpoch - 1000, // already past
+          },
+        ],
+      })!;
+      expect(usage.nearestResetWindow(now)?.label, '5h',
+          reason: 'past resets never win; future ones race by timestamp');
+    });
+  });
 }

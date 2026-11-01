@@ -5,7 +5,7 @@
  * over an opaque outer envelope whose `ct` is base64(JSON.stringify(inner)).
  */
 import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
-import { resetExtensionState } from "./extension-state.js";
+import { ext, resetExtensionState } from "./extension-state.js";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { ClientMessage } from "./protocol/types.js";
 import { fileURLToPath } from "node:url";
+import { planUsageProbes, type PlanUsage } from "./plan-usage.js";
 import { getCapabilities, setCapabilities } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 
@@ -8041,6 +8042,148 @@ describe("model meta", () => {
     }
     expect(updates[1]!.meta?.model).toBe("new-model");
     expect(updates[1]!.meta?.context_usage).toBeNull();
+  });
+
+  test("plan/156: provider change tombstones plan_usage; same-provider switch keeps it", async () => {
+    // Plan usage is ACCOUNT-scoped (per provider subscription), so the
+    // PR #67 rule is deliberately different from context_usage: a model
+    // switch WITHIN a provider keeps the quota, a PROVIDER change clears
+    // it (`plan_usage: null`) — the new provider may be another account.
+    delete process.env["ZAI_API_KEY"];
+    delete process.env["Z_AI_API_KEY"];
+    captureHandler("remote-pi");
+    const onSessionStart = captureEventHandler("session_start");
+    onSessionStart(
+      { type: "session_start" },
+      {
+        ui: { notify: vi.fn() },
+        cwd: "/tmp/remote-pi-plan-usage-tomb",
+        abort: vi.fn(),
+      } as never,
+    );
+    await _connectForTest(makeMockCtx("/tmp/remote-pi-plan-usage-tomb"));
+
+    const onModelSelect = captureEventHandler("model_select");
+    // First select records the provider (no previous one → nothing to clear).
+    onModelSelect({ type: "model_select", model: { name: "GLM-4.6", provider: "zai" } });
+    // Same provider, different model → plan_usage must NOT ride the update.
+    onModelSelect({ type: "model_select", model: { name: "GLM-4.5-Air", provider: "zai" } });
+    // Provider change → explicit `plan_usage: null` alongside the new name.
+    onModelSelect({ type: "model_select", model: { name: "Kimi K3.1", provider: "kimi-coding" } });
+
+    const updates = relayRef.current!.sendControl.mock.calls
+      .map((c) => c[0] as { type: string; meta?: { model?: string; plan_usage?: unknown } })
+      .filter((f) => f.type === "room_meta_update" && f.meta?.model);
+    expect(updates).toHaveLength(3);
+    expect(updates[0]!.meta?.model).toBe("GLM-4.6");
+    // Whether the FIRST select counts as a provider change depends on
+    // whether connect seeded a default provider (settings fallback) —
+    // either way it must never pair a LIVE plan_usage with the change.
+    if ("plan_usage" in (updates[0]!.meta ?? {})) {
+      expect(updates[0]!.meta?.plan_usage).toBeNull();
+    }
+    // Same provider, different model: the quota stays valid — no key at all.
+    expect(updates[1]!.meta?.model).toBe("GLM-4.5-Air");
+    expect("plan_usage" in (updates[1]!.meta ?? {})).toBe(false);
+    // Provider change: explicit clear alongside the new name.
+    expect(updates[2]!.meta?.model).toBe("Kimi K3.1");
+    expect(updates[2]!.meta?.plan_usage).toBeNull();
+    // The cached room_meta dropped the field too (reconnect hello must not
+    // resurrect the old provider's quota).
+    expect(ext.myRoomMeta?.plan_usage ?? null).toBeNull();
+  });
+
+  test("plan/156 PR#89 review: mid-probe provider switch drops the late result; returning republishes", async () => {
+    // Two review findings in one flow: (a) a fetch that resolves AFTER a
+    // provider switch must be discarded (it describes another account and
+    // would resurrect a cleared quota), and (b) the provider change also
+    // clears the cached payload so switching BACK republishes instead of
+    // being absorbed by the identical-payload dedupe.
+    delete process.env["ZAI_API_KEY"];
+    delete process.env["Z_AI_API_KEY"];
+    // Sandbox auth.json so readProviderApiKey("zai") finds a key without
+    // touching the developer's real credential store.
+    const authPath = join(process.env["REMOTE_PI_HOME"]!, ".pi", "agent", "auth.json");
+    mkdirSync(dirname(authPath), { recursive: true });
+    writeFileSync(authPath, JSON.stringify({ zai: { type: "api", key: "test-key" } }));
+
+    const usage: PlanUsage = {
+      provider: "zai",
+      plan: "Max",
+      fetchedAt: 1,
+      windows: [
+        {
+          label: "5h",
+          kind: "prompt",
+          used: 10,
+          limit: 100,
+          resetAt: 2,
+          resetsInSeconds: 60,
+        },
+      ],
+    };
+    const realProbe = planUsageProbes["zai"]!;
+    let pending: ((u: PlanUsage) => void) | null = null;
+    planUsageProbes["zai"] = () =>
+      new Promise<PlanUsage>((res) => {
+        pending = res;
+      });
+    const flush = () => new Promise<void>((r) => setTimeout(r, 0));
+    // The probe only starts after an async auth.json read (thread pool) —
+    // wait for it instead of assuming one macrotask is enough.
+    const waitFor = async (cond: () => boolean) => {
+      for (let i = 0; i < 200 && !cond(); i++) await flush();
+      if (!cond()) throw new Error("condition never met");
+    };
+
+    try {
+      captureHandler("remote-pi");
+      const onSessionStart = captureEventHandler("session_start");
+      onSessionStart(
+        { type: "session_start" },
+        {
+          ui: { notify: vi.fn() },
+          cwd: "/tmp/remote-pi-plan-usage-race",
+          abort: vi.fn(),
+        } as never,
+      );
+      await _connectForTest(makeMockCtx("/tmp/remote-pi-plan-usage-race"));
+
+      const livePlanFrames = () =>
+        relayRef.current!.sendControl.mock.calls
+          .map((c) => c[0] as { type: string; meta?: { plan_usage?: unknown } })
+          .filter(
+            (f) =>
+              f.type === "room_meta_update" &&
+              f.meta?.plan_usage != null &&
+              (f.meta.plan_usage as { provider?: string }).provider === "zai",
+          );
+
+      const onModelSelect = captureEventHandler("model_select");
+      // Probe starts and stays in flight (pending unresolved).
+      onModelSelect({ type: "model_select", model: { name: "GLM-4.6", provider: "zai" } });
+      await waitFor(() => pending !== null);
+      // Provider switch lands MID-PROBE: tombstone fires, payload cache cleared.
+      onModelSelect({ type: "model_select", model: { name: "Kimi K3.1", provider: "kimi-coding" } });
+      expect(livePlanFrames()).toHaveLength(0);
+
+      // The stale fetch resolves late — must NOT publish (provider mismatch).
+      pending!(usage);
+      await waitFor(() => ext.planUsageInFlight === false);
+      expect(livePlanFrames()).toHaveLength(0);
+      expect(ext.planUsageLastPayload).toBeNull();
+
+      // Switch back: force-probe republishes even though the payload is
+      // display-identical (the cache was cleared by the provider change).
+      planUsageProbes["zai"] = () => Promise.resolve(usage);
+      onModelSelect({ type: "model_select", model: { name: "GLM-4.6", provider: "zai" } });
+      await waitFor(() => ext.planUsageInFlight === false);
+      const frames = livePlanFrames();
+      expect(frames).toHaveLength(1);
+    } finally {
+      planUsageProbes["zai"] = realProbe;
+      rmSync(authPath, { force: true });
+    }
   });
 
   test("model_select with no model (undefined) is silently ignored", async () => {

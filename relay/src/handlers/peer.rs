@@ -210,6 +210,8 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             .and_then(|v| v.as_bool());
         // Opaque context-usage blob (the relay forwards it verbatim).
         let context_usage = room_meta_val.and_then(|m| m.get("context_usage")).cloned();
+        // Plan/156 — opaque plan-usage blob (same verbatim passthrough).
+        let plan_usage = room_meta_val.and_then(|m| m.get("plan_usage")).cloned();
         // Plan/149 — GitHub ref / chat suggestion / activity stats (all
         // opaque passthrough; see RoomMeta::gh_ref).
         let gh_ref = room_meta_val.and_then(|m| m.get("gh_ref")).cloned();
@@ -231,6 +233,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             git,
             keeper,
             context_usage,
+            plan_usage,
             gh_ref,
             gh_suggestion,
             stats,
@@ -619,6 +622,16 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     let context_usage_patch = meta_obj
                                         .and_then(|m| m.get("context_usage"))
                                         .map(|v| Some(v.clone()));
+                                    // Plan/156 — opaque plan-usage passthrough.
+                                    // JSON null normalizes to clear-to-null
+                                    // (Some(None)); absent key = preserve
+                                    // (same as gh_ref below).
+                                    let mut plan_usage_patch = meta_obj
+                                        .and_then(|m| m.get("plan_usage"))
+                                        .map(|v| Some(v.clone()));
+                                    if let Some(Some(Value::Null)) = &plan_usage_patch {
+                                        plan_usage_patch = Some(None);
+                                    }
                                     // Plan/149 — GitHub ref / chat suggestion /
                                     // activity stats passthrough (opaque).
                                     // JSON null normalizes to clear-to-null
@@ -654,6 +667,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                         provider_error: provider_error_patch,
                                         git: git_patch,
                                         context_usage: context_usage_patch,
+                                        plan_usage: plan_usage_patch,
                                         gh_ref: gh_ref_patch,
                                         gh_suggestion: gh_suggestion_patch,
                                         stats: stats_patch,

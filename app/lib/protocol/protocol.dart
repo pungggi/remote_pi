@@ -1,5 +1,7 @@
 // ignore_for_file: lines_longer_than_80_chars
 
+import 'package:flutter/foundation.dart' show listEquals;
+
 // ---------------------------------------------------------------------------
 // Control frames (plano 12 — presence)
 //
@@ -47,6 +49,7 @@ sealed class ControlInbound {
         final rawGit = j['git'] ?? metaJson?['git'];
         final rawContextUsage =
             j['context_usage'] ?? metaJson?['context_usage'];
+        final rawPlanUsage = j['plan_usage'] ?? metaJson?['plan_usage'];
         // Plan/149 — session slot (gh_ref / gh_suggestion / stats), same
         // both-places read as git/context_usage.
         final rawGhRef = j['gh_ref'] ?? metaJson?['gh_ref'];
@@ -74,6 +77,9 @@ sealed class ControlInbound {
               : null,
           contextUsage: rawContextUsage is Map<String, dynamic>
               ? ContextUsage.fromJson(rawContextUsage)
+              : null,
+          planUsage: rawPlanUsage is Map<String, dynamic>
+              ? PlanUsage.fromJson(rawPlanUsage)
               : null,
           keeper: rawKeeper,
           ghRef: rawGhRef is Map<String, dynamic>
@@ -134,6 +140,7 @@ sealed class ControlInbound {
         final hasThinking = meta?.containsKey('thinking') ?? false;
         final hasGit = meta?.containsKey('git') ?? false;
         final hasContextUsage = meta?.containsKey('context_usage') ?? false;
+        final hasPlanUsage = meta?.containsKey('plan_usage') ?? false;
         // Plan/149 — has-flags for the session-slot keys (gh_ref and stats
         // can be explicitly null = cleared, so presence-of-key matters).
         final hasGhRef = meta?.containsKey('gh_ref') ?? false;
@@ -142,6 +149,7 @@ sealed class ControlInbound {
         final rawThinking = meta?['thinking'] as String?;
         final rawGit = meta?['git'];
         final rawContextUsage = meta?['context_usage'];
+        final rawPlanUsage = meta?['plan_usage'];
         final rawGhRef = meta?['gh_ref'];
         final rawGhSuggestion = meta?['gh_suggestion'];
         final rawStats = meta?['stats'];
@@ -179,10 +187,14 @@ sealed class ControlInbound {
           contextUsage: rawContextUsage is Map<String, dynamic>
               ? ContextUsage.fromJson(rawContextUsage)
               : null,
+          planUsage: rawPlanUsage is Map<String, dynamic>
+              ? PlanUsage.fromJson(rawPlanUsage)
+              : null,
           hasModel: hasModel,
           hasThinking: hasThinking,
           hasGit: hasGit,
           hasContextUsage: hasContextUsage,
+          hasPlanUsage: hasPlanUsage,
           ghRef: hasGhRef && rawGhRef is Map<String, dynamic>
               ? GhRef.fromJson(rawGhRef)
               : null,
@@ -424,6 +436,11 @@ class RoomInfo {
   /// until the first response reports usage (e.g. right after compaction).
   final ContextUsage? contextUsage;
 
+  /// Plan/156 — subscription usage of the current model's provider via
+  /// `room_meta.plan_usage` (account-scoped; survives same-provider model
+  /// switches). Null when the provider has no usage probe or none published.
+  final PlanUsage? planUsage;
+
   /// Plan/140 C — `true` when this room is held by the PC's room-keeper
   /// (durable-history mirror, no live agent). Home badges such sessions
   /// "Pi offline" and sorts them last; opening one still shows the full
@@ -455,6 +472,7 @@ class RoomInfo {
     this.providerError = false,
     this.git,
     this.contextUsage,
+    this.planUsage,
     this.keeper = false,
     this.ghRef,
     this.ghSuggestion,
@@ -482,6 +500,9 @@ class RoomInfo {
       contextUsage: j['context_usage'] is Map<String, dynamic>
           ? ContextUsage.fromJson(j['context_usage'] as Map<String, dynamic>)
           : null,
+      planUsage: j['plan_usage'] is Map<String, dynamic>
+          ? PlanUsage.fromJson(j['plan_usage'] as Map<String, dynamic>)
+          : null,
       ghRef: j['gh_ref'] is Map<String, dynamic>
           ? GhRef.fromJson(j['gh_ref'] as Map<String, dynamic>)
           : null,
@@ -506,6 +527,7 @@ class RoomInfo {
     'provider_error': providerError,
     if (git != null) 'git': git!.toJson(),
     if (contextUsage != null) 'context_usage': contextUsage!.toJson(),
+    if (planUsage != null) 'plan_usage': planUsage!.toJson(),
     if (ghRef != null) 'gh_ref': ghRef!.toJson(),
     if (ghSuggestion != null) 'gh_suggestion': ghSuggestion!.toJson(),
     if (stats != null) 'stats': stats!.toJson(),
@@ -522,6 +544,7 @@ class RoomInfo {
     bool? providerError,
     Object? git = _kRoomInfoUnset,
     Object? contextUsage = _kRoomInfoUnset,
+    Object? planUsage = _kRoomInfoUnset,
     Object? ghRef = _kRoomInfoUnset,
     Object? ghSuggestion = _kRoomInfoUnset,
     Object? stats = _kRoomInfoUnset,
@@ -541,6 +564,9 @@ class RoomInfo {
     contextUsage: identical(contextUsage, _kRoomInfoUnset)
         ? this.contextUsage
         : contextUsage as ContextUsage?,
+    planUsage: identical(planUsage, _kRoomInfoUnset)
+        ? this.planUsage
+        : planUsage as PlanUsage?,
     ghRef: identical(ghRef, _kRoomInfoUnset) ? this.ghRef : ghRef as GhRef?,
     ghSuggestion: identical(ghSuggestion, _kRoomInfoUnset)
         ? this.ghSuggestion
@@ -564,6 +590,7 @@ class RoomInfo {
       other.providerError == providerError &&
       other.git == git &&
       other.contextUsage == contextUsage &&
+      other.planUsage == planUsage &&
       other.ghRef == ghRef &&
       other.ghSuggestion == ghSuggestion &&
       other.stats == stats;
@@ -581,6 +608,7 @@ class RoomInfo {
     providerError,
     git,
     contextUsage,
+    planUsage,
     ghRef,
     ghSuggestion,
     stats,
@@ -621,6 +649,10 @@ class RoomAnnounced extends ControlInbound {
   /// Plan/115 — context-window fill (flat in room_announced).
   final ContextUsage? contextUsage;
 
+  /// Plan/156 — provider subscription usage (flat in room_announced,
+  /// same both-places read as context_usage).
+  final PlanUsage? planUsage;
+
   /// Plan/140 C — `true` when the announcing connection is the PC's
   /// room-keeper (durable-history mirror, no live agent). Never patched
   /// after announce; `false` on old relays that don't forward the flag.
@@ -648,6 +680,7 @@ class RoomAnnounced extends ControlInbound {
     this.providerError,
     this.git,
     this.contextUsage,
+    this.planUsage,
     this.keeper = false,
     this.ghRef,
     this.ghSuggestion,
@@ -747,6 +780,14 @@ class RoomMetaUpdated extends ControlInbound {
   final ContextUsage? contextUsage;
   final bool hasContextUsage;
 
+  /// Plan/156 — provider subscription usage patch from `meta.plan_usage`
+  /// (nullable-as-cleared, same convention as [contextUsage]). The clear
+  /// rides a PROVIDER change only — usage is account-scoped, so a model-only
+  /// update never invalidates it (deliberate difference from the PR #67
+  /// context_usage rule).
+  final PlanUsage? planUsage;
+  final bool hasPlanUsage;
+
   /// Plan/132 — run-completion marker from `meta.run_done` (broadcast-only
   /// on the relay; fires once per agent run). Like `working`, it is
   /// nullable-as-absent: an object key is either absent or present, so no
@@ -777,6 +818,7 @@ class RoomMetaUpdated extends ControlInbound {
     this.providerError,
     this.git,
     this.contextUsage,
+    this.planUsage,
     this.runDone,
     this.ghRef,
     this.ghSuggestion,
@@ -785,6 +827,7 @@ class RoomMetaUpdated extends ControlInbound {
     this.hasThinking = true,
     this.hasGit = true,
     this.hasContextUsage = true,
+    this.hasPlanUsage = true,
     this.hasGhRef = true,
     this.hasGhSuggestion = true,
     this.hasStats = true,
@@ -969,6 +1012,143 @@ class ContextUsage {
 }
 
 enum ApproveDecision { allow, deny }
+
+/// Plan/156 — one quota window of the provider's subscription usage
+/// (z.ai GLM Coding Plan first). Decoded extension-side into a stable
+/// label ("5h", "wk", "mo", …) so the app never knows provider units.
+class PlanUsageWindow {
+  /// "tokens" (prompts/token lanes) or "time" (MCP-credits lanes).
+  final String kind;
+  final String label;
+  final int percent;
+
+  /// Window length in minutes when the provider reported it.
+  final int? minutes;
+
+  /// Next reset, epoch ms. Null when absent or implausible (dropped by
+  /// the extension's plausibility guard).
+  final int? resetAt;
+  const PlanUsageWindow({
+    required this.kind,
+    required this.label,
+    required this.percent,
+    this.minutes,
+    this.resetAt,
+  });
+
+  factory PlanUsageWindow.fromJson(Map<String, dynamic> j) => PlanUsageWindow(
+    kind: (j['kind'] as String?) ?? 'tokens',
+    label: (j['label'] as String?) ?? '',
+    percent: ((j['percent'] as num?) ?? 0).clamp(0, 100).toInt(),
+    minutes: (j['minutes'] as num?)?.toInt(),
+    resetAt: (j['resetAt'] as num?)?.toInt(),
+  );
+
+  Map<String, dynamic> toJson() => {
+    'kind': kind,
+    'label': label,
+    'percent': percent,
+    'minutes': minutes,
+    'resetAt': resetAt,
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is PlanUsageWindow &&
+      other.kind == kind &&
+      other.label == label &&
+      other.percent == percent &&
+      other.minutes == minutes &&
+      other.resetAt == resetAt;
+
+  @override
+  int get hashCode => Object.hash(kind, label, percent, minutes, resetAt);
+}
+
+/// Plan/156 — subscription usage of the current model's provider, as
+/// `room_meta.plan_usage` (opaque blob, decoded by the extension from the
+/// provider's quota API). Account-scoped: a model switch within the same
+/// provider keeps it valid; only a provider change clears it.
+class PlanUsage {
+  final String provider;
+
+  /// Plan label when the provider reports one (e.g. z.ai `max`).
+  final String? plan;
+  final int fetchedAt;
+  final List<PlanUsageWindow> windows;
+  const PlanUsage({
+    required this.provider,
+    this.plan,
+    required this.fetchedAt,
+    required this.windows,
+  });
+
+  /// Highest used percent across windows — drives the header bar and the
+  /// tint escalation.
+  int get maxPercent =>
+      windows.fold(0, (m, w) => w.percent > m ? w.percent : m);
+
+  /// Windows ordered shortest-first for display (5h before wk before mo).
+  List<PlanUsageWindow> get displayWindows {
+    final sorted = [...windows]..sort((a, b) {
+      final am = a.minutes;
+      final bm = b.minutes;
+      if (am == null && bm == null) return 0;
+      if (am == null) return 1;
+      if (bm == null) return -1;
+      return am.compareTo(bm);
+    });
+    return sorted;
+  }
+
+  /// Nearest future reset across windows (countdown text), null when none.
+  PlanUsageWindow? nearestResetWindow([DateTime? now]) {
+    final nowMs = now?.millisecondsSinceEpoch ?? DateTime.now().millisecondsSinceEpoch;
+    PlanUsageWindow? nearest;
+    for (final w in windows) {
+      final r = w.resetAt;
+      if (r == null || r <= nowMs) continue;
+      if (nearest == null || r < nearest.resetAt!) nearest = w;
+    }
+    return nearest;
+  }
+
+  static PlanUsage? fromJson(Map<String, dynamic> j) {
+    final provider = j['provider'] as String?;
+    if (provider == null || provider.isEmpty) return null;
+    final rawWindows = j['windows'];
+    if (rawWindows is! List || rawWindows.isEmpty) return null;
+    final windows = rawWindows
+        .whereType<Map<String, dynamic>>()
+        .map(PlanUsageWindow.fromJson)
+        .toList();
+    if (windows.isEmpty) return null;
+    return PlanUsage(
+      provider: provider,
+      plan: j['plan'] as String?,
+      fetchedAt: ((j['fetchedAt'] as num?) ?? 0).toInt(),
+      windows: windows,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'provider': provider,
+    'plan': plan,
+    'fetchedAt': fetchedAt,
+    'windows': windows.map((w) => w.toJson()).toList(),
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is PlanUsage &&
+      other.provider == provider &&
+      other.plan == plan &&
+      other.fetchedAt == fetchedAt &&
+      listEquals(other.windows, windows);
+
+  @override
+  int get hashCode => Object.hash(provider, plan, fetchedAt, Object.hashAll(windows));
+}
 
 class UnsupportedTypeException implements Exception {
   final String type;
