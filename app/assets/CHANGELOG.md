@@ -11,6 +11,12 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+### Changed
+
+- **PR #89 review — the group-header "resets 2h" countdown now ticks**
+  every minute (a header-local timer, active only while a live countdown
+  is rendered) instead of freezing until the next 10-min usage push.
+
 ### Added
 
 - **Subscription usage on Home's model groups (plan/156)**: model-group

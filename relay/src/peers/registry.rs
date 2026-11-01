@@ -509,6 +509,7 @@ impl PeerRegistry {
             current_provider_error,
             current_git,
             current_context_usage,
+            current_plan_usage,
             current_gh_ref,
             current_gh_suggestion,
             current_stats,
@@ -542,6 +543,7 @@ impl PeerRegistry {
                             meta.provider_error,
                             meta.git.clone(),
                             meta.context_usage.clone(),
+                            meta.plan_usage.clone(),
                             meta.gh_ref.clone(),
                             meta.gh_suggestion.clone(),
                             meta.stats.clone(),
@@ -570,6 +572,10 @@ impl PeerRegistry {
                         if let Some(ref cu) = patch.context_usage {
                             meta.context_usage = cu.clone();
                         }
+                        // Plan/156 — opaque plan-usage passthrough.
+                        if let Some(ref pu) = patch.plan_usage {
+                            meta.plan_usage = pu.clone();
+                        }
                         // Plan/149 — opaque ref / suggestion / stats
                         // passthrough.
                         if let Some(ref r) = patch.gh_ref {
@@ -589,6 +595,7 @@ impl PeerRegistry {
                             meta.provider_error,
                             meta.git.clone(),
                             meta.context_usage.clone(),
+                            meta.plan_usage.clone(),
                             meta.gh_ref.clone(),
                             meta.gh_suggestion.clone(),
                             meta.stats.clone(),
@@ -612,6 +619,7 @@ impl PeerRegistry {
                         head.1.provider_error,
                         head.1.git.clone(),
                         head.1.context_usage.clone(),
+                        head.1.plan_usage.clone(),
                         head.1.gh_ref.clone(),
                         head.1.gh_suggestion.clone(),
                         head.1.stats.clone(),
@@ -696,6 +704,20 @@ impl PeerRegistry {
             // Opaque context-usage snapshot (only when the Pi reported one).
             if let Some(cu) = &current_context_usage {
                 meta_obj.insert("context_usage".to_string(), cu.clone());
+            }
+            // Plan/156 — opaque plan-usage snapshot. Present values ride
+            // along; an explicit clear by THIS patch broadcasts `null` (not
+            // omission) so subscribers don't silently keep stale quota —
+            // same rule as gh_ref/stats above.
+            match &current_plan_usage {
+                Some(pu) => {
+                    meta_obj.insert("plan_usage".to_string(), pu.clone());
+                }
+                None => {
+                    if matches!(&patch.plan_usage, Some(None)) {
+                        meta_obj.insert("plan_usage".to_string(), serde_json::Value::Null);
+                    }
+                }
             }
             // Plan/149 — opaque ref / suggestion / stats. Present values
             // ride along; a key explicitly cleared by THIS patch (`null`)
@@ -807,6 +829,7 @@ mod tests {
             git: None,
             keeper: None,
             context_usage: None,
+            plan_usage: None,
             gh_ref: None,
             gh_suggestion: None,
             stats: None,
@@ -1582,6 +1605,81 @@ mod tests {
 
     /// Plan/132 — consecutive markers (unique `ended_at`) each broadcast;
     /// the identical-frame suppression cannot absorb them.
+    /// Plan/156 — plan_usage rides the same opaque passthrough: real
+    /// changes broadcast, identical pushes are absorbed, and an explicit
+    /// clear broadcasts `null` (never omission — subscribers must drop the
+    /// stale quota, not silently keep it).
+    #[tokio::test]
+    async fn plan_usage_passthrough_and_null_clear_broadcast() {
+        let (reg, _metrics, pi, mut rx_app) = meta_fixture().await;
+
+        let pu = |pct: u64| {
+            Some(Some(serde_json::json!({
+                "provider": "zai",
+                "plan": "max",
+                "windows": [{ "label": "wk", "percent": pct }],
+            })))
+        };
+
+        let _ = reg
+            .update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    plan_usage: pu(4),
+                    ..Default::default()
+                },
+            )
+            .await;
+        let v = recv_meta(&mut rx_app);
+        assert_eq!(v["meta"]["plan_usage"]["windows"][0]["percent"], 4);
+
+        // Identical push → absorbed.
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    plan_usage: pu(4),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        assert!(rx_app.try_recv().is_err());
+
+        // Percent moved → broadcast.
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    plan_usage: pu(7),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        let v = recv_meta(&mut rx_app);
+        assert_eq!(v["meta"]["plan_usage"]["windows"][0]["percent"], 7);
+
+        // Provider-change tombstone (explicit null) → broadcast as null.
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    plan_usage: Some(None),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        let v = recv_meta(&mut rx_app);
+        assert!(v["meta"].get("plan_usage").is_some());
+        assert!(v["meta"]["plan_usage"].is_null());
+    }
+
     #[tokio::test]
     async fn run_done_markers_are_not_deduped() {
         let (reg, _metrics, pi, mut rx_app) = meta_fixture().await;

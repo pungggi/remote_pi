@@ -57,6 +57,14 @@ pub struct RoomMeta {
     /// it). `None` = not reported yet. Mirrors `git` (Plan/107b) passthrough.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_usage: Option<serde_json::Value>,
+    /// Plan/156 — provider subscription usage the Pi-extension pushes via
+    /// `room_meta.plan_usage` (opaque JSON blob: `{provider, plan,
+    /// fetchedAt, windows[]}`; the relay never inspects it, the app parses
+    /// it). Account-scoped on the extension side: a model switch within a
+    /// provider keeps it, a provider change sends an explicit `null` clear
+    /// (same clear semantics as `gh_ref`). `None` = not reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_usage: Option<serde_json::Value>,
     /// Plan/149 — GitHub ref linked to this session (opaque JSON blob:
     /// `{pr?: {number, url?, state?}, issue?: {…}, source}`; source is
     /// `manual` | `gh` | `chat`). The relay never inspects it; the registry
@@ -106,6 +114,10 @@ pub struct RoomMetaPatch {
     /// Opaque context-usage snapshot (JSON value passthrough). Same
     /// `Option<Option<_>>` semantics as `git`.
     pub context_usage: Option<Option<serde_json::Value>>,
+    /// Plan/156 — opaque plan-usage passthrough (see `RoomMeta::plan_usage`).
+    /// Same `Option<Option<_>>` semantics; an explicit JSON `null` means
+    /// clear-to-null and is BROADCAST as null (absent = preserve).
+    pub plan_usage: Option<Option<serde_json::Value>>,
     /// Plan/149 — opaque GitHub-ref passthrough (see `RoomMeta::gh_ref`).
     pub gh_ref: Option<Option<serde_json::Value>>,
     /// Plan/149 — opaque chat-scan suggestion passthrough.
@@ -136,6 +148,7 @@ impl RoomMetaPatch {
             && self.provider_error.is_none()
             && self.git.is_none()
             && self.context_usage.is_none()
+            && self.plan_usage.is_none()
             && self.gh_ref.is_none()
             && self.gh_suggestion.is_none()
             && self.stats.is_none()

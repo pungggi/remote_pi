@@ -11,6 +11,23 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ## [Unreleased]
 
+### Changed
+
+- **PR #89 review — relay now relays `plan_usage`** (the header data was
+  previously built but dropped by the relay: `RoomMeta`/`RoomMetaPatch`
+  whitelist fields, so `plan/156` needed explicit passthrough there —
+  hello seed, `room_meta_update` apply, `room_announced`/
+  `room_meta_updated` broadcast, and an explicit `null` broadcast on the
+  provider-tombstone so subscribers drop stale quota instead of keeping
+  it).
+- **PR #89 review — plan-usage races**: a probe that resolves after a
+  provider switch is discarded (it would resurrect the cleared account's
+  quota), and the provider change now also clears the dedupe cache so
+  switching back republishes immediately.
+- **PR #89 review — the Home "resets 2h" countdown now ticks** every
+  minute (header-local 1-min timer, only while a live countdown is on
+  screen) instead of waiting for the next 10-min usage push.
+
 ### Added
 
 - **Model subscription usage on the grouped Home (plan/156)**: when Home

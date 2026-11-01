@@ -144,6 +144,43 @@ void main() {
 
       expect(find.textContaining('resets 2h 14m'), findsOneWidget);
     });
+
+    testWidgets('countdown ticks down every minute without a new push (PR #89 review)',
+        (tester) async {
+      // Pin "now": the fake async clock advances timers but not
+      // DateTime.now(), so the header computes against this fixed instant
+      // (shifted by however far the fake clock has advanced).
+      final t0 = DateTime.now().millisecondsSinceEpoch;
+      final fakeBase = tester.binding.clock.now().millisecondsSinceEpoch;
+      SessionGroupHeader.debugNowMs = () =>
+          t0 +
+          (tester.binding.clock.now().millisecondsSinceEpoch - fakeBase);
+      addTearDown(() => SessionGroupHeader.debugNowMs = null);
+      final reset = t0 + const Duration(hours: 2, minutes: 14).inMilliseconds;
+      final usage = PlanUsage(
+        provider: 'zai',
+        fetchedAt: 1,
+        windows: [
+          PlanUsageWindow(
+              kind: 'tokens', label: '5h', percent: 30, minutes: 300, resetAt: reset),
+        ],
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SessionGroupHeader(label: 'GLM-4.6', count: 1, usage: usage),
+          ),
+        ),
+      );
+      expect(find.textContaining('resets 2h 14m'), findsOneWidget);
+
+      // 2 minutes of wall time, no plan_usage push in between: the header's
+      // own 1-min ticker must rebuild the countdown twice.
+      await tester.pump(const Duration(minutes: 1));
+      expect(find.textContaining('resets 2h 13m'), findsOneWidget);
+      await tester.pump(const Duration(minutes: 1));
+      expect(find.textContaining('resets 2h 12m'), findsOneWidget);
+    });
   });
 
   group('firstOnlinePlanUsage (plan/156)', () {

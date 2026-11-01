@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:app/data/preferences/preferences.dart' show HomeGroupBy;
 import 'package:app/protocol/protocol.dart' show PlanUsage;
 import 'package:app/ui/core/themes/themes.dart';
@@ -78,7 +80,7 @@ class HomeGroupingControl extends StatelessWidget {
 /// subscription usage (`5h 3% · wk 4%` plus a hairline fill bar), but ONLY
 /// when the caller sourced it from an ONLINE session: offline caches would
 /// paint stale quota as if it were live.
-class SessionGroupHeader extends StatelessWidget {
+class SessionGroupHeader extends StatefulWidget {
   final String label;
   final int count;
 
@@ -91,6 +93,58 @@ class SessionGroupHeader extends StatelessWidget {
     required this.count,
     this.usage,
   });
+
+  /// PR #89 review — tests pin the countdown's "now" here (widget tests'
+  /// fake async advances timers but NOT `DateTime.now()`, so a countdown
+  /// test would otherwise be unfalsifiable). Production code never sets it;
+  /// null = real wall clock.
+  @visibleForTesting
+  static int Function()? debugNowMs;
+
+  @override
+  State<SessionGroupHeader> createState() => _SessionGroupHeaderState();
+}
+
+/// PR #89 review — the "resets 2h 14m" countdown is computed from
+/// `resetAt - now`, but a StatelessWidget never rebuilds on its own, so the
+/// text would go stale until the next 10-min plan-usage push. This state
+/// keeps a 1-min periodic tick — ONLY while a usage with a live countdown
+/// is on screen — so the label counts down (and drops the suffix at zero)
+/// without any push. Groups without usage pay no timer at all.
+class _SessionGroupHeaderState extends State<SessionGroupHeader> {
+  Timer? _ticker;
+
+  @override
+  void initState() {
+    super.initState();
+    _syncTicker();
+  }
+
+  @override
+  void didUpdateWidget(SessionGroupHeader oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Usage appearing/disappearing (group went offline, provider switch
+    // tombstone) must start/stop the tick accordingly.
+    _syncTicker();
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  void _syncTicker() {
+    final want = widget.usage?.nearestResetWindow()?.resetAt != null;
+    if (want && _ticker == null) {
+      _ticker = Timer.periodic(const Duration(minutes: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    } else if (!want && _ticker != null) {
+      _ticker!.cancel();
+      _ticker = null;
+    }
+  }
 
   /// Pressure ladder, tuned like plan/147's context fill: <50% is healthy
   /// (accent), ≥50% is "watch it" (warning), ≥80% is "about to throttle"
@@ -124,7 +178,9 @@ class SessionGroupHeader extends StatelessWidget {
         .toList();
     final reset = usage.nearestResetWindow();
     if (reset?.resetAt != null) {
-      final left = reset!.resetAt! - DateTime.now().millisecondsSinceEpoch;
+      final nowMs = SessionGroupHeader.debugNowMs?.call() ??
+          DateTime.now().millisecondsSinceEpoch;
+      final left = reset!.resetAt! - nowMs;
       if (left > 0) parts.add('resets ${_resetCountdown(left)}');
     }
     return parts.join(' · ');
@@ -133,7 +189,7 @@ class SessionGroupHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final usage = this.usage;
+    final usage = widget.usage;
     return Semantics(
       header: true,
       child: Padding(
@@ -145,7 +201,7 @@ class SessionGroupHeader extends StatelessWidget {
               children: [
                 Expanded(
                   child: Text(
-                    label,
+                    widget.label,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -173,7 +229,7 @@ class SessionGroupHeader extends StatelessWidget {
                 ],
                 const SizedBox(width: 12),
                 Text(
-                  '$count',
+                  '${widget.count}',
                   style: TextStyle(
                     fontFamily: kMonoFamily,
                     fontSize: 11,

@@ -357,7 +357,15 @@ function _setCurrentModel(name: string, provider?: string | null): void {
   if (ext.myRoomMeta) {
     const next = { ...ext.myRoomMeta, model: name };
     if (modelChanged) delete next.context_usage;
-    if (providerChanged) delete next.plan_usage;
+    if (providerChanged) {
+      delete next.plan_usage;
+      // PR #89 review — also drop the cached payload: the dedupe in
+      // `_voidMaybePublishPlanUsage` compares against it, so keeping it
+      // would absorb an unchanged-but-fresh result after returning to
+      // this provider and leave the header empty until a quota window
+      // moved. Null forces a real republish on the next probe.
+      ext.planUsageLastPayload = null;
+    }
     ext.myRoomMeta = next;
   }
   if (ext.relay && ext.myRoomId) {
@@ -604,10 +612,18 @@ export function _voidMaybePublishPlanUsage(opts?: { force?: boolean }): void {
   if (ext.planUsageInFlight) return;
   ext.planUsageInFlight = true;
   _ensurePlanUsageTimer();
+  // Capture WHO we probed: a model_select to another provider may land
+  // while the fetch is in flight, and its result would describe another
+  // account (PR #89 review). The publish gate below drops it.
+  const probeProvider = provider;
   readProviderApiKey(provider)
     .then((key) => (key ? probe(key) : null))
     .then((usage) => {
       if (!usage || ext.disposed) return;
+      // Provider switched mid-probe: the tombstone already cleared the
+      // room — publishing now would resurrect the OLD account's quota
+      // under the new provider with nothing to clear it later.
+      if (ext.currentProvider !== probeProvider) return;
       ext.planUsageLastPublishAt = Date.now();
       // Refresh the cache either way (the hello seeds from it), but only
       // push a control frame when something the app renders changed.

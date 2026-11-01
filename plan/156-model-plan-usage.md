@@ -125,6 +125,11 @@ No changes — `room_meta` values are opaque pass-through.
 - [x] App parse/merge/group-header with tests
 - [x] analyze/typecheck/test green on both sides
 - [x] Changelog entries
+- [x] PR #89 review round (4 findings, all fixed + regression-tested):
+  relay `plan_usage` passthrough (hello/patch/broadcast + explicit-null
+  tombstone), mid-probe provider-switch discard, dedupe-cache clear on
+  provider change (returning republishes), 1-min countdown ticker in the
+  group header (test pins "now" via `debugNowMs` + binding fake clock)
 - [ ] User review on device
 
 ## Next plans

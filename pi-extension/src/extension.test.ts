@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { ClientMessage } from "./protocol/types.js";
 import { fileURLToPath } from "node:url";
+import { planUsageProbes, type PlanUsage } from "./plan-usage.js";
 import { getCapabilities, setCapabilities } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 
@@ -8090,6 +8091,99 @@ describe("model meta", () => {
     // The cached room_meta dropped the field too (reconnect hello must not
     // resurrect the old provider's quota).
     expect(ext.myRoomMeta?.plan_usage ?? null).toBeNull();
+  });
+
+  test("plan/156 PR#89 review: mid-probe provider switch drops the late result; returning republishes", async () => {
+    // Two review findings in one flow: (a) a fetch that resolves AFTER a
+    // provider switch must be discarded (it describes another account and
+    // would resurrect a cleared quota), and (b) the provider change also
+    // clears the cached payload so switching BACK republishes instead of
+    // being absorbed by the identical-payload dedupe.
+    delete process.env["ZAI_API_KEY"];
+    delete process.env["Z_AI_API_KEY"];
+    // Sandbox auth.json so readProviderApiKey("zai") finds a key without
+    // touching the developer's real credential store.
+    const authPath = join(process.env["REMOTE_PI_HOME"]!, ".pi", "agent", "auth.json");
+    mkdirSync(dirname(authPath), { recursive: true });
+    writeFileSync(authPath, JSON.stringify({ zai: { type: "api", key: "test-key" } }));
+
+    const usage: PlanUsage = {
+      provider: "zai",
+      plan: "Max",
+      fetchedAt: 1,
+      windows: [
+        {
+          label: "5h",
+          kind: "prompt",
+          used: 10,
+          limit: 100,
+          resetAt: 2,
+          resetsInSeconds: 60,
+        },
+      ],
+    };
+    const realProbe = planUsageProbes["zai"]!;
+    let pending: ((u: PlanUsage) => void) | null = null;
+    planUsageProbes["zai"] = () =>
+      new Promise<PlanUsage>((res) => {
+        pending = res;
+      });
+    const flush = () => new Promise<void>((r) => setTimeout(r, 0));
+    // The probe only starts after an async auth.json read (thread pool) —
+    // wait for it instead of assuming one macrotask is enough.
+    const waitFor = async (cond: () => boolean) => {
+      for (let i = 0; i < 200 && !cond(); i++) await flush();
+      if (!cond()) throw new Error("condition never met");
+    };
+
+    try {
+      captureHandler("remote-pi");
+      const onSessionStart = captureEventHandler("session_start");
+      onSessionStart(
+        { type: "session_start" },
+        {
+          ui: { notify: vi.fn() },
+          cwd: "/tmp/remote-pi-plan-usage-race",
+          abort: vi.fn(),
+        } as never,
+      );
+      await _connectForTest(makeMockCtx("/tmp/remote-pi-plan-usage-race"));
+
+      const livePlanFrames = () =>
+        relayRef.current!.sendControl.mock.calls
+          .map((c) => c[0] as { type: string; meta?: { plan_usage?: unknown } })
+          .filter(
+            (f) =>
+              f.type === "room_meta_update" &&
+              f.meta?.plan_usage != null &&
+              (f.meta.plan_usage as { provider?: string }).provider === "zai",
+          );
+
+      const onModelSelect = captureEventHandler("model_select");
+      // Probe starts and stays in flight (pending unresolved).
+      onModelSelect({ type: "model_select", model: { name: "GLM-4.6", provider: "zai" } });
+      await waitFor(() => pending !== null);
+      // Provider switch lands MID-PROBE: tombstone fires, payload cache cleared.
+      onModelSelect({ type: "model_select", model: { name: "Kimi K3.1", provider: "kimi-coding" } });
+      expect(livePlanFrames()).toHaveLength(0);
+
+      // The stale fetch resolves late — must NOT publish (provider mismatch).
+      pending!(usage);
+      await waitFor(() => ext.planUsageInFlight === false);
+      expect(livePlanFrames()).toHaveLength(0);
+      expect(ext.planUsageLastPayload).toBeNull();
+
+      // Switch back: force-probe republishes even though the payload is
+      // display-identical (the cache was cleared by the provider change).
+      planUsageProbes["zai"] = () => Promise.resolve(usage);
+      onModelSelect({ type: "model_select", model: { name: "GLM-4.6", provider: "zai" } });
+      await waitFor(() => ext.planUsageInFlight === false);
+      const frames = livePlanFrames();
+      expect(frames).toHaveLength(1);
+    } finally {
+      planUsageProbes["zai"] = realProbe;
+      rmSync(authPath, { force: true });
+    }
   });
 
   test("model_select with no model (undefined) is silently ignored", async () => {

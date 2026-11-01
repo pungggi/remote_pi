@@ -75,6 +75,7 @@ fn test_room_meta() -> RoomMeta {
         git: None,
         keeper: None,
         context_usage: None,
+        plan_usage: None,
         gh_ref: None,
         gh_suggestion: None,
         stats: None,
