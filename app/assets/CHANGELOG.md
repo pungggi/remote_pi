@@ -9,6 +9,16 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
 
+## [1.5.2] - 2026-11-01
+
+### Changed
+
+- **Plan-usage header tweaks (review feedback)**: the usage line is
+  centered in the group header, each window (`5h 3% · wk 4%`) now gets
+  its own color by how full that window is, and the hairline bar follows
+  the shortest window available (5h, else weekly, else monthly) rather
+  than the busiest one.
+
 ## [1.5.1] - 2026-11-01
 
 ### Changed

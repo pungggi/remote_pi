@@ -172,24 +172,56 @@ class _SessionGroupHeaderState extends State<SessionGroupHeader> {
     return restHours > 0 ? '${days}d ${restHours}h' : '${days}d';
   }
 
-  static String _usageText(PlanUsage usage) {
-    final parts = usage.displayWindows
-        .map((w) => '${w.label} ${w.percent}%')
-        .toList();
+  /// Plan/156.1 — each window is a span tinted by ITS OWN pressure
+  /// (a 3% 5h lane reads calm next to a 92% weekly lane reading red),
+  /// separators stay muted. The countdown is temporal, not pressure —
+  /// muted regardless of how full the lanes are.
+  List<TextSpan> _usageSpans(AppColors colors, PlanUsage usage) {
+    final spans = <TextSpan>[];
+    final windows = usage.displayWindows;
+    for (var i = 0; i < windows.length; i++) {
+      final w = windows[i];
+      if (i > 0) {
+        spans.add(TextSpan(
+          text: ' · ',
+          style: TextStyle(fontFamily: kMonoFamily, fontSize: 11, color: colors.muted2),
+        ));
+      }
+      spans.add(TextSpan(
+        text: '${w.label} ${w.percent}%',
+        style: TextStyle(
+          fontFamily: kMonoFamily,
+          fontSize: 11,
+          color: _textTint(colors, w.percent),
+        ),
+      ));
+    }
     final reset = usage.nearestResetWindow();
     if (reset?.resetAt != null) {
       final nowMs = SessionGroupHeader.debugNowMs?.call() ??
           DateTime.now().millisecondsSinceEpoch;
       final left = reset!.resetAt! - nowMs;
-      if (left > 0) parts.add('resets ${_resetCountdown(left)}');
+      if (left > 0) {
+        if (spans.isNotEmpty) {
+          spans.add(TextSpan(
+            text: ' · ',
+            style: TextStyle(fontFamily: kMonoFamily, fontSize: 11, color: colors.muted2),
+          ));
+        }
+        spans.add(TextSpan(
+          text: 'resets ${_resetCountdown(left)}',
+          style: TextStyle(fontFamily: kMonoFamily, fontSize: 11, color: colors.muted),
+        ));
+      }
     }
-    return parts.join(' · ');
+    return spans;
   }
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
     final usage = widget.usage;
+    final primary = usage?.primaryWindow;
     return Semantics(
       header: true,
       child: Padding(
@@ -197,50 +229,56 @@ class _SessionGroupHeaderState extends State<SessionGroupHeader> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
+            // Plan/156.1 — the usage line sits CENTERED in the header (not
+            // end-packed next to the count): label left, count right, usage
+            // truly centered on top. Stack order puts the label/count row in
+            // front so a long centered line ellipsizes under them instead of
+            // fighting for space in a Row.
+            Stack(
               children: [
-                Expanded(
-                  child: Text(
-                    widget.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontFamily: kMonoFamily,
-                      fontSize: 12,
-                      color: colors.muted2,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-                if (usage != null) ...[
-                  const SizedBox(width: 12),
-                  Flexible(
-                    child: Text(
-                      _usageText(usage),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontFamily: kMonoFamily,
-                        fontSize: 11,
-                        color: _textTint(colors, usage.maxPercent),
+                if (usage != null)
+                  Positioned.fill(
+                    child: Center(
+                      child: Text.rich(
+                        TextSpan(children: _usageSpans(colors, usage)),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ),
-                ],
-                const SizedBox(width: 12),
-                Text(
-                  '${widget.count}',
-                  style: TextStyle(
-                    fontFamily: kMonoFamily,
-                    fontSize: 11,
-                    color: colors.muted,
-                  ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        widget.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontFamily: kMonoFamily,
+                          fontSize: 12,
+                          color: colors.muted2,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      '${widget.count}',
+                      style: TextStyle(
+                        fontFamily: kMonoFamily,
+                        fontSize: 11,
+                        color: colors.muted,
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
-            // Hairline fill bar — width tracks the worst window's percent
-            // (400ms ease-out, same language as the plan/147 tile wedge).
-            if (usage != null && usage.maxPercent > 0)
+            // Hairline fill bar — width tracks the SHORTEST window's percent
+            // (plan/156.1: the tightest active lane — 5h, else weekly, else
+            // monthly; 400ms ease-out, same language as the plan/147 tile
+            // wedge).
+            if (primary != null && primary.percent > 0)
               Padding(
                 padding: const EdgeInsets.only(top: 5),
                 child: Row(
@@ -248,14 +286,14 @@ class _SessionGroupHeaderState extends State<SessionGroupHeader> {
                     Expanded(
                       child: ClipRect(
                         child: AnimatedFractionallySizedBox(
-                          widthFactor: (usage.maxPercent / 100)
+                          widthFactor: (primary.percent / 100)
                               .clamp(0.0, 1.0),
                           alignment: Alignment.centerLeft,
                           duration: const Duration(milliseconds: 400),
                           curve: Curves.easeOutCubic,
                           child: Container(
                             height: 2,
-                            color: _barTint(colors, usage.maxPercent),
+                            color: _barTint(colors, primary.percent),
                           ),
                         ),
                       ),
