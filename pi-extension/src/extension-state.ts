@@ -172,6 +172,10 @@ export interface ExtensionState {
   planUsageLastPublishAt: number;
   planUsageLastPayload: PlanUsage | null;
   planUsageInFlight: boolean;
+  /** Plan/157 — single-flight guard for reset-card redemptions: two rapid
+   *  confirm taps (or a retry racing a slow first POST) must never burn two
+   *  cards. Set while a redeem POST is in flight. */
+  planResetInFlight: boolean;
   currentThinking: ThinkingLevel | undefined;
   pendingModelRevert: FullSdkModel | null;
   sessionStartedAt: number | null;
@@ -286,6 +290,7 @@ export const ext: ExtensionState = {
   planUsageLastPublishAt: 0,
   planUsageLastPayload: null,
   planUsageInFlight: false,
+  planResetInFlight: false,
   currentThinking: undefined,
   pendingModelRevert: null,
   sessionStartedAt: null,
@@ -398,6 +403,7 @@ export function resetExtensionState(): void {
     planUsageLastPublishAt: 0,
     planUsageLastPayload: null,
     planUsageInFlight: false,
+    planResetInFlight: false,
     currentThinking: undefined,
     pendingModelRevert: null,
     sessionStartedAt: null,

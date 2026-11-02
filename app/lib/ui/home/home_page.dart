@@ -4,7 +4,7 @@ import 'package:app/data/preferences/preferences.dart'
 import 'package:app/data/transport/epk_encoding.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart'
-    show RoomInfo, OpenTerminalResult, WireWorktree;
+    show RoomInfo, OpenTerminalResult, PlanUsage, WireWorktree;
 import 'package:app/routing/adaptive.dart';
 import 'package:app/routing/routes.dart';
 import 'package:app/ui/chat/widgets/linkify.dart' show openUrl;
@@ -332,14 +332,21 @@ class HomePage extends StatelessWidget {
         visible.map((item) => item.peer.remoteEpk).toSet().length > 1;
     final children = <Widget>[];
     for (final group in vm.visibleGroups) {
+      final groupUsage = vm.groupBy == HomeGroupBy.model
+          ? vm.planUsageForGroup(group)
+          : null;
       children.add(
         SessionGroupHeader(
           label: group.label,
           count: group.items.length,
           // Plan/156 — quota text + bar, only in model grouping and only
           // when an online session in the group published one.
-          usage: vm.groupBy == HomeGroupBy.model
-              ? vm.planUsageForGroup(group)
+          usage: groupUsage,
+          // Plan/157 — 🔄×N chip; confirm dialog + send live here (the
+          // header only reports the tap and renders per the usage rules).
+          onRedeemResetCard: vm.groupBy == HomeGroupBy.model && groupUsage != null
+              ? (kind) =>
+                  _confirmRedeemResetCard(context, vm, kind, groupUsage)
               : null,
         ),
       );
@@ -818,6 +825,104 @@ class HomePage extends StatelessWidget {
         duration: const Duration(seconds: 3),
       ),
     );
+  }
+
+  /// Plan/157 — the confirm gate. Returns true ONLY on the explicit
+  /// Redeem press; barrier-dismiss and Cancel both yield false. Static so
+  /// the consent rule is unit-testable without a full page harness.
+  @visibleForTesting
+  static Future<bool> showResetCardConfirm(
+    BuildContext context, {
+    required bool weekly,
+    required int remainingAfter,
+    String? earliestExpire,
+  }) {
+    return showDialog<bool>(
+      context: context,
+      builder: (dCtx) {
+        final colors = dCtx.colors;
+        return AlertDialog(
+          backgroundColor: colors.bg,
+          title: Text(
+            weekly ? 'Redeem weekly reset card?' : 'Redeem 5h reset card?',
+            style: TextStyle(color: colors.text),
+          ),
+          content: Text(
+            '${weekly ? 'Resets the weekly limit (and the 5h window). ' : 'Resets the 5h window. '}'
+            '$remainingAfter card(s) left after this.'
+            '${earliestExpire == null ? '' : '\nEarliest card expires $earliestExpire.'}'
+            '\n\nThis cannot be undone.',
+            style: TextStyle(color: colors.muted, fontSize: 13, height: 1.4),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dCtx).pop(false),
+              child: Text('Cancel', style: TextStyle(color: colors.muted)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dCtx).pop(true),
+              child: Text(
+                'Redeem',
+                style: TextStyle(
+                  color: colors.error,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    ).then((v) => v ?? false);
+  }
+
+  /// Plan/157 — the ONLY path that redeems a z.ai reset card: explicit
+  /// confirm dialog → typed request → typed reply → toast. Nothing sends
+  /// without the dialog's Redeem press (extension double-checks provider
+  /// + single-flight on its side).
+  Future<void> _confirmRedeemResetCard(
+    BuildContext context,
+    HomeViewModel vm,
+    String kind,
+    PlanUsage usage,
+  ) async {
+    final cards = usage.resetCards;
+    final weekly = kind == 'week';
+    final count = weekly ? cards?.week.count ?? 0 : cards?.fiveHour.count ?? 0;
+    final expire = weekly
+        ? cards?.week.earliestExpire
+        : cards?.fiveHour.earliestExpire;
+    // Captured BEFORE the dialog awaits — the toast may fire long after.
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final confirmed = await showResetCardConfirm(
+      context,
+      weekly: weekly,
+      remainingAfter: count - 1,
+      earliestExpire: expire,
+    );
+    if (!confirmed) return;
+
+    try {
+      final result = await vm.redeemResetCard(kind);
+      if (messenger == null) return;
+      if (result.ok) {
+        _toast(
+          messenger,
+          result.remaining > 0
+              ? 'Reset card redeemed — ${result.remaining} left. Quota refreshes shortly.'
+              : 'Reset card redeemed. Quota refreshes shortly.',
+          isError: false,
+        );
+      } else {
+        _toast(
+          messenger,
+          'Redemption failed: ${result.message ?? 'unknown error'}',
+          isError: true,
+        );
+      }
+    } on ActionFailure catch (e) {
+      if (messenger == null) return;
+      _toast(messenger, 'Redemption failed: ${e.message}', isError: true);
+    }
   }
 
   Future<void> _promptRename(

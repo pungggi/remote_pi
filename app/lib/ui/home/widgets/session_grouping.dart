@@ -87,11 +87,17 @@ class SessionGroupHeader extends StatefulWidget {
   /// Plan/156 — provider plan usage; null renders the plain header.
   final PlanUsage? usage;
 
+  /// Plan/157 — invoked when the user taps the 🔄×N reset-card chip (only
+  /// rendered when a lane is EXHAUSTED and cards are available). Receives
+  /// 'week' | 'five_hour'. The page owns the confirm dialog + send.
+  final void Function(String kind)? onRedeemResetCard;
+
   const SessionGroupHeader({
     super.key,
     required this.label,
     required this.count,
     this.usage,
+    this.onRedeemResetCard,
   });
 
   /// PR #89 review — tests pin the countdown's "now" here (widget tests'
@@ -101,16 +107,47 @@ class SessionGroupHeader extends StatefulWidget {
   @visibleForTesting
   static int Function()? debugNowMs;
 
+  /// German weekday abbreviations — no intl dependency for three labels.
+  /// Months WITHOUT trailing dot (user spec: "Fr. 6. Nov").
+  static const _weekdays = ['Mo.', 'Di.', 'Mi.', 'Do.', 'Fr.', 'Sa.', 'So.'];
+  static const _monthsShort = [
+    'Jan', 'Feb', 'März', 'Apr', 'Mai', 'Juni', 'Juli', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez',
+  ];
+
+  /// Plan/157 — exact reset DATETIME (user request) instead of remaining
+  /// time, German, no leading zeros on day/month:
+  ///   5h lane  → "Fr. 15:14"
+  ///   weekly   → "Fr. 6.11 15:14"
+  ///   monthly  → "Fr. 6. Nov"
+  /// Window length picks the shape; when unknown, the distance to the reset
+  /// decides (≤6h short, ≤8d weekly-ish, else monthly).
+  @visibleForTesting
+  static String debugFormatReset(DateTime reset, int? windowMinutes, {int? msLeft}) {
+    final left = msLeft ?? 1;
+    final len = windowMinutes ??
+        (left <= 6 * 60 * 60000
+            ? 300
+            : left <= 8 * 24 * 60 * 60000
+                ? 10080
+                : 43200);
+    final wd = _weekdays[reset.weekday - 1];
+    final hh = reset.hour.toString().padLeft(2, '0');
+    final mm = reset.minute.toString().padLeft(2, '0');
+    if (len <= 300) return '$wd $hh:$mm';
+    if (len <= 10080) return '$wd ${reset.day}.${reset.month} $hh:$mm';
+    return '$wd ${reset.day}. ${_monthsShort[reset.month - 1]}';
+  }
+
   @override
   State<SessionGroupHeader> createState() => _SessionGroupHeaderState();
 }
 
-/// PR #89 review — the "resets 2h 14m" countdown is computed from
-/// `resetAt - now`, but a StatelessWidget never rebuilds on its own, so the
-/// text would go stale until the next 10-min plan-usage push. This state
-/// keeps a 1-min periodic tick — ONLY while a usage with a live countdown
-/// is on screen — so the label counts down (and drops the suffix at zero)
-/// without any push. Groups without usage pay no timer at all.
+/// PR #89 review — the "⏳ Fr. 15:14" reset deadline is computed against
+/// `resetAt - now`, but a StatelessWidget never rebuilds on its own, so a
+/// passed reset would linger until the next 10-min plan-usage push. This
+/// state keeps a 1-min periodic tick — ONLY while a usage with a live reset
+/// is on screen — so the label drops the moment the reset passes without
+/// any push. Groups without usage pay no timer at all.
 class _SessionGroupHeaderState extends State<SessionGroupHeader> {
   Timer? _ticker;
 
@@ -161,17 +198,6 @@ class _SessionGroupHeaderState extends State<SessionGroupHeader> {
     return colors.muted;
   }
 
-  static String _resetCountdown(int msLeft) {
-    final minutes = (msLeft / 60000).ceil();
-    if (minutes < 60) return '${minutes}m';
-    final hours = minutes ~/ 60;
-    final rest = minutes % 60;
-    if (hours < 24) return rest > 0 ? '${hours}h ${rest}m' : '${hours}h';
-    final days = hours ~/ 24;
-    final restHours = hours % 24;
-    return restHours > 0 ? '${days}d ${restHours}h' : '${days}d';
-  }
-
   /// Plan/156.2 — each window is a span tinted by ITS OWN pressure
   /// (a 3% 5h lane reads calm next to a 92% weekly lane reading red).
   /// Windows at 0% are NOT shown — they're no constraint and the header
@@ -212,7 +238,8 @@ class _SessionGroupHeaderState extends State<SessionGroupHeader> {
           ));
         }
         spans.add(TextSpan(
-          text: '⏳ ${_resetCountdown(left)}',
+          text:
+              '⏳ ${SessionGroupHeader.debugFormatReset(DateTime.fromMillisecondsSinceEpoch(reset.resetAt!), reset.minutes, msLeft: left)}',
           style: TextStyle(fontFamily: kMonoFamily, fontSize: 11, color: colors.muted),
         ));
       }
@@ -220,11 +247,50 @@ class _SessionGroupHeaderState extends State<SessionGroupHeader> {
     return spans;
   }
 
+  /// Plan/157 — tappable 🔄×N chip, shown ONLY when a lane is exhausted
+  /// and cards of a matching kind remain (weekly priority — a weekly reset
+  /// also restores the 5h lane). Error-tinted: it appears exactly when the
+  /// group is already throttled.
+  Widget _resetChip(AppColors colors, String kind, int count) {
+    final onTap = widget.onRedeemResetCard;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap == null ? null : () => onTap(kind),
+      child: Semantics(
+        button: true,
+        label: kind == 'week'
+            ? 'Wöchentliche Reset-Karte einlösen'
+            : '5h Reset-Karte einlösen',
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Text(
+            '🔄×$count',
+            style: TextStyle(
+              fontFamily: kMonoFamily,
+              fontSize: 11,
+              color: colors.error,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
     final usage = widget.usage;
     final primary = usage?.primaryWindow;
+    // Chip only when the page wired the handler AND the rules apply.
+    final redeemKind = widget.onRedeemResetCard != null
+        ? usage?.redeemableCardKind()
+        : null;
+    final redeemCount = switch (redeemKind) {
+      'week' => usage?.resetCards?.week.count ?? 0,
+      'five_hour' => usage?.resetCards?.fiveHour.count ?? 0,
+      _ => 0,
+    };
     return Semantics(
       header: true,
       child: Padding(
@@ -265,6 +331,10 @@ class _SessionGroupHeaderState extends State<SessionGroupHeader> {
                       ),
                     ),
                     const SizedBox(width: 12),
+                    if (redeemKind != null && redeemCount > 0) ...[
+                      _resetChip(colors, redeemKind, redeemCount),
+                      const SizedBox(width: 12),
+                    ],
                     Text(
                       '${widget.count}',
                       style: TextStyle(

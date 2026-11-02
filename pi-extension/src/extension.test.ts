@@ -8577,3 +8577,217 @@ describe("plan/152 exact session identity", () => {
   });
 });
 
+
+// ── Plan/157: reset-card redemption (plan_reset_card_request) ─────────────────
+
+describe("plan/157 reset-card redemption", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // The router's pi-binding guard needs ext.pi present (the redemption is
+    // a live-session action); the handler itself never touches it.
+    ext.pi = { sendUserMessage: vi.fn() } as never;
+    ext.currentProvider = null;
+    ext.planResetInFlight = false;
+    ext.relay = null;
+    ext.myRoomId = null;
+    ext.myRoomMeta = null;
+    ext.planUsageLastPublishAt = 0;
+    ext.planUsageLastPayload = null;
+    delete process.env["ZAI_API_KEY"];
+    delete process.env["Z_AI_API_KEY"];
+  });
+
+  type Sent = { type: string; [k: string]: unknown };
+  const makeSender = (): { sent: Sent[]; ch: unknown } => {
+    const sent: Sent[] = [];
+    return { sent, ch: { send: (m: Sent) => void sent.push(m) } };
+  };
+
+  const writeAuthKey = () => {
+    const authPath = join(process.env["REMOTE_PI_HOME"]!, ".pi", "agent", "auth.json");
+    mkdirSync(dirname(authPath), { recursive: true });
+    writeFileSync(authPath, JSON.stringify({ zai: { type: "api", key: "test-key" } }));
+  };
+
+  const LIST = {
+    success: true,
+    code: 200,
+    data: {
+      fiveHourResets: [],
+      weekResets: [
+        { recordId: 9, available: true, expireTime: "2026-12-22 23:59:59" },
+        { recordId: 10, available: true, expireTime: "2026-12-01 23:59:59" },
+      ],
+    },
+  };
+  const USE_OK = { success: true, code: 200 };
+  const QUOTA = {
+    success: true,
+    code: 200,
+    data: {
+      level: "max",
+      limits: [
+        { type: "TOKENS_LIMIT", unit: 6, number: 1, percentage: 100 },
+      ],
+    },
+  };
+
+  type FetchCall = { url: string; init?: RequestInit };
+  const mockApi = (routes: Record<string, unknown>) => {
+    const calls: FetchCall[] = [];
+    const orig = globalThis.fetch;
+    globalThis.fetch = ((url: string | URL, init?: RequestInit) => {
+      const path = String(url).split("?")[0]!;
+      calls.push({ url: String(url), init });
+      for (const [suffix, body] of Object.entries(routes)) {
+        if (path.endsWith(suffix)) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve(body),
+          } as Response);
+        }
+      }
+      return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
+    }) as typeof fetch;
+    return { calls, restore: () => void (globalThis.fetch = orig) };
+  };
+
+  test("happy path: redeems earliest card, replies ok, force-republishes quota", async () => {
+    writeAuthKey();
+    ext.currentProvider = "zai";
+    // Wire a minimal relay so the forced re-probe can publish room_meta.
+    const sendControl = vi.fn();
+    ext.relay = { sendControl } as never;
+    ext.myRoomId = "room-157";
+    ext.myRoomMeta = {};
+    const mock = mockApi({
+      "customer-package-reset/list": LIST,
+      "customer-package-reset/use": USE_OK,
+      "quota/limit": QUOTA,
+    });
+    const { sent, ch } = makeSender();
+    try {
+      await _routeClientMessageFrom(
+        ch as never,
+        { type: "plan_reset_card_request", id: "r1", kind: "week" },
+        { abort: () => undefined } as never,
+      );
+      // The handler awaits the list+use fetches before replying.
+      await vi.waitFor(() => expect(sent.length).toBeGreaterThan(0));
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toMatchObject({
+        type: "plan_reset_card_result",
+        in_reply_to: "r1",
+        ok: true,
+        kind: "week",
+        remaining: 1,
+        message: null,
+      });
+      // Exactly one list GET + one use POST — earliest-expiring recordId 10.
+      const useBodies = mock.calls
+        .filter((c) => c.url.includes("/use"))
+        .map((c) => JSON.parse(String(c.init?.body)) as Record<string, unknown>);
+      expect(useBodies).toHaveLength(1);
+      expect(useBodies[0]).toMatchObject({ resetType: "WEEK", recordId: 10 });
+      // The forced re-probe republished plan_usage (static mock: the list
+      // still reports 2 available, so the fresh payload carries count 2).
+      await vi.waitFor(() => {
+        const frames = sendControl.mock.calls
+          .map((c) => c[0] as { type: string; meta?: { plan_usage?: { resetCards?: { week?: { count?: number } } } } })
+          .filter((f) => f.type === "room_meta_update" && f.meta?.plan_usage?.resetCards);
+        expect(frames.length).toBeGreaterThan(0);
+        expect(frames[0]!.meta!.plan_usage!.resetCards!.week!.count).toBe(2);
+      });
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("provider != zai → ok:false with the provider named", async () => {
+    writeAuthKey();
+    ext.currentProvider = "kimi-coding";
+    const { sent, ch } = makeSender();
+    await _routeClientMessageFrom(
+      ch as never,
+      { type: "plan_reset_card_request", id: "r2", kind: "week" },
+      { abort: () => undefined } as never,
+    );
+    expect(sent[0]).toMatchObject({
+      type: "plan_reset_card_result",
+      ok: false,
+      remaining: 0,
+    });
+    expect(String(sent[0]!["message"])).toContain("kimi-coding");
+  });
+
+  test("no z.ai key configured → ok:false, no network at all", async () => {
+    ext.currentProvider = "zai";
+    let fetched = 0;
+    const orig = globalThis.fetch;
+    globalThis.fetch = (() => {
+      fetched += 1;
+      return Promise.resolve({} as Response);
+    }) as typeof fetch;
+    const { sent, ch } = makeSender();
+    try {
+      await _routeClientMessageFrom(
+        ch as never,
+        { type: "plan_reset_card_request", id: "r3", kind: "week" },
+        { abort: () => undefined } as never,
+      );
+      await vi.waitFor(() => expect(sent.length).toBeGreaterThan(0));
+      expect(sent[0]).toMatchObject({ type: "plan_reset_card_result", ok: false });
+      expect(String(sent[0]!["message"])).toMatch(/no z\.ai API key/);
+      expect(fetched).toBe(0);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  test("single-flight: an in-flight redemption rejects a second tap instantly", async () => {
+    writeAuthKey();
+    ext.currentProvider = "zai";
+    ext.planResetInFlight = true; // a first redemption is mid-POST
+    const { sent, ch } = makeSender();
+    await _routeClientMessageFrom(
+      ch as never,
+      { type: "plan_reset_card_request", id: "r4", kind: "week" },
+      { abort: () => undefined } as never,
+    );
+    expect(sent[0]).toMatchObject({ type: "plan_reset_card_result", ok: false });
+    expect(String(sent[0]!["message"])).toMatch(/already in flight/);
+  });
+
+  test("provider rejects the use → ok:false with the provider message, no force probe", async () => {
+    writeAuthKey();
+    ext.currentProvider = "zai";
+    const sendControl = vi.fn();
+    ext.relay = { sendControl } as never;
+    ext.myRoomId = "room-157b";
+    const mock = mockApi({
+      "customer-package-reset/list": LIST,
+      "customer-package-reset/use": { success: false, code: 400, msg: "card expired" },
+    });
+    const { sent, ch } = makeSender();
+    try {
+      await _routeClientMessageFrom(
+        ch as never,
+        { type: "plan_reset_card_request", id: "r5", kind: "week" },
+        { abort: () => undefined } as never,
+      );
+      await vi.waitFor(() => expect(sent.length).toBeGreaterThan(0));
+      expect(sent[0]).toMatchObject({
+        type: "plan_reset_card_result",
+        ok: false,
+        remaining: 2,
+        message: "card expired",
+      });
+      // Drain pending microtasks: the force probe must NOT have fired.
+      await new Promise<void>((r) => setImmediate(r));
+      expect(sendControl).not.toHaveBeenCalled();
+    } finally {
+      mock.restore();
+    }
+  });
+});

@@ -366,6 +366,12 @@ class HomeViewModel extends ViewModel<HomeState> {
     _reconcileReliability(next);
   }
 
+  /// Plan/157 — redeem ONE z.ai quota reset card on the paired PC.
+  /// Rethrows [ActionFailure] (offline/timeout) for the caller's snackbar;
+  /// provider-level failures come back as PlanResetResult(ok:false).
+  Future<PlanResetResult> redeemResetCard(String kind) =>
+      _actions.planResetCard(kind: kind);
+
   /// Plan/107b — refresh the ACTIVE session's git status (the action
   /// channel is active-peer-scoped, so only the session the user is in /
   /// last opened can be queried). Stores the snapshot keyed by

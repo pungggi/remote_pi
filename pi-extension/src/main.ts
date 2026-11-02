@@ -119,7 +119,7 @@ import { handleStartSession } from "./actions/start_session.js";
 import { handleListProjects } from "./projects/handlers.js";
 import { handleChangeLayout } from "./actions/change_layout.js";
 import { ensureModelRegistry } from "./actions/registry.js";
-import { planUsageProbes, readProviderApiKey, type PlanUsage } from "./plan-usage.js";
+import { planUsageProbes, readProviderApiKey, redeemZaiResetCard, type PlanUsage } from "./plan-usage.js";
 import {
   ensureGlobalDirs,
   LOCAL_SESSION_NAME,
@@ -560,15 +560,22 @@ function _publishPlanUsage(usage: PlanUsage): void {
 }
 
 /** Display-identical payloads (provider/plan + per-window label/percent/
- * resetAt) — republishing those would only churn the relay for a fetchedAt. */
+ * resetAt + reset-card counts) — republishing those would only churn the
+ * relay for a fetchedAt. */
 function _samePlanUsage(a: PlanUsage | null, b: PlanUsage | null): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
   if (a.provider !== b.provider || a.plan !== b.plan || a.windows.length !== b.windows.length) return false;
-  return a.windows.every((w, i) => {
+  if (!a.windows.every((w, i) => {
     const o = b.windows[i]!;
     return w.label === o.label && w.percent === o.percent && w.resetAt === o.resetAt;
-  });
+  })) return false;
+  // Plan/157 — card counts drive the app's 🔄×N chip; count changes must
+  // republish (a used or newly granted card is user-visible). Expiry
+  // strings stay decoration — comparing them would churn.
+  const cardCount = (u: PlanUsage) =>
+    u.resetCards ? `${u.resetCards.fiveHour.count}/${u.resetCards.week.count}` : "";
+  return cardCount(a) === cardCount(b);
 }
 
 /** Lazily start the 10-min plan-usage refresh timer on first eligibility.
@@ -636,6 +643,62 @@ export function _voidMaybePublishPlanUsage(opts?: { force?: boolean }): void {
     .finally(() => {
       ext.planUsageInFlight = false;
     });
+}
+
+/**
+ * Plan/157 — redeem ONE z.ai quota reset card on explicit app request.
+ *
+ * CONSENT MODEL (hard rule, plan/157): this is the ONLY redemption path.
+ * Nothing here is wired to timers, thresholds, or agent shell commands —
+ * the frame arrives exclusively from the paired app after its confirm
+ * dialog, and every failure is reported, never retried automatically
+ * (requestId is one-shot; a re-attempt is a fresh user confirmation).
+ *
+ * Guards: single-flight (a racing double-tap must not burn two cards),
+ * provider must be zai (redemption is provider-specific), key must be
+ * configured. Replies plan_reset_card_result, then force-reprobes so the
+ * header heals immediately (bypasses the 5-min throttle deliberately).
+ */
+async function handlePlanResetCard(
+  sender: PlainPeerChannel,
+  msg: ClientMessage & { type: "plan_reset_card_request" },
+): Promise<void> {
+  const reply = (ok: boolean, remaining: number, message: string | null) => {
+    sender.send({
+      type: "plan_reset_card_result",
+      in_reply_to: msg.id,
+      ok,
+      kind: msg.kind,
+      remaining,
+      message,
+    });
+  };
+  if (ext.planResetInFlight) {
+    reply(false, 0, "a reset-card redemption is already in flight");
+    return;
+  }
+  ext.planResetInFlight = true;
+  try {
+    if (ext.currentProvider !== "zai") {
+      reply(false, 0, `reset cards unavailable for provider "${ext.currentProvider ?? "none"}"`);
+      return;
+    }
+    const key = await readProviderApiKey("zai");
+    if (!key) {
+      reply(false, 0, "no z.ai API key configured");
+      return;
+    }
+    const result = await redeemZaiResetCard(key, msg.kind);
+    reply(result.ok, result.remaining, result.message);
+    if (result.ok) {
+      // Bump the throttle window so the forced probe actually fetches:
+      // _voidMaybePublishPlanUsage's guard reads planUsageLastPublishAt.
+      ext.planUsageLastPublishAt = 0;
+      _voidMaybePublishPlanUsage({ force: true });
+    }
+  } finally {
+    ext.planResetInFlight = false;
+  }
 }
 
 /**
@@ -5392,6 +5455,12 @@ export function _routeClientMessageFrom(
     // link works while the session is offline).
     case "set_session_ref_request":
       handleSetSessionRef(sender, msg);
+      break;
+    // Plan/157 — redeem one z.ai quota reset card (app confirm button).
+    // Destructive + provider-billed: single-flight, fresh inventory,
+    // one-shot requestId, no retry (see handlePlanResetCard).
+    case "plan_reset_card_request":
+      void handlePlanResetCard(sender, msg);
       break;
   }
 }
