@@ -18,6 +18,7 @@
  */
 
 import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -36,12 +37,25 @@ export type PlanUsageWindow = {
   limit: number | null;
 };
 
+/** Reset-card kind on the wire (app → pi). Matches z.ai's resetType. */
+export type ResetCardKind = "five_hour" | "week";
+
+/** Available reset cards per kind (plan/157). Counts only + earliest expiry
+ * for the confirm dialog — the recordId NEVER leaves the extension (the
+ * redemption picks a fresh card server-side at click time). */
+export type ResetCardInventory = {
+  fiveHour: { count: number; earliestExpire: string | null };
+  week: { count: number; earliestExpire: string | null };
+};
+
 /** Normalized subscription usage for one provider account. */
 export type PlanUsage = {
   provider: string;
   plan: string | null;
   fetchedAt: number;
   windows: PlanUsageWindow[];
+  /** Omitted when the inventory call failed (quota still publishes). */
+  resetCards?: ResetCardInventory;
 };
 
 /** Probe contract: turn an API key into a normalized PlanUsage. */
@@ -181,17 +195,26 @@ function zaiMonitorBase(): string {
   return "https://api.z.ai";
 }
 
-/** z.ai GLM Coding Plan probe — GET /api/monitor/usage/quota/limit. */
+/** z.ai GLM Coding Plan probe — GET /api/monitor/usage/quota/limit, plus
+ * the reset-card inventory in parallel (plan/157). Card-list failures are
+ * swallowed (quota still publishes, `resetCards` omitted); quota failures
+ * throw as before. */
 export const zaiPlanUsageProbe: PlanUsageProbe = async (key, signal) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15_000);
   try {
-    const res = await fetch(`${zaiMonitorBase()}/api/monitor/usage/quota/limit`, {
-      headers: { authorization: `Bearer ${key}`, accept: "application/json" },
-      signal: signal ?? controller.signal,
-    });
-    if (!res.ok) throw new Error(`z.ai quota API error: HTTP ${res.status}`);
-    return parseZaiQuotaBody(await res.json(), Date.now());
+    const [quota, cards] = await Promise.all([
+      fetch(`${zaiMonitorBase()}/api/monitor/usage/quota/limit`, {
+        headers: { authorization: `Bearer ${key}`, accept: "application/json" },
+        signal: signal ?? controller.signal,
+      }).then(async (res) => {
+        if (!res.ok) throw new Error(`z.ai quota API error: HTTP ${res.status}`);
+        return parseZaiQuotaBody(await res.json(), Date.now());
+      }),
+      fetchZaiResetCards(key, signal ?? controller.signal).catch(() => null),
+    ]);
+    if (cards) quota.resetCards = cards;
+    return quota;
   } finally {
     clearTimeout(timeout);
   }
@@ -201,6 +224,151 @@ export const zaiPlanUsageProbe: PlanUsageProbe = async (key, signal) => {
 export const planUsageProbes: Record<string, PlanUsageProbe> = {
   zai: zaiPlanUsageProbe,
 };
+
+// ── Plan/157: z.ai Quota Reset Cards ─────────────────────────────────────────
+
+interface ZaiResetCard {
+  recordId?: unknown;
+  available?: unknown;
+  expireTime?: unknown;
+}
+
+function availableCards(raw: unknown): ZaiResetCard[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (c): c is ZaiResetCard =>
+      !!c && typeof c === "object" && (c as ZaiResetCard).available === true,
+  );
+}
+
+/** "YYYY-MM-DD HH:MM:SS" lexicographic sort = chronological (GLMeter rule):
+ * burn the earliest-expiring card first so none dies unused. */
+function earliestExpire(cards: ZaiResetCard[]): string | null {
+  let earliest: string | null = null;
+  for (const c of cards) {
+    if (typeof c.expireTime === "string" && c.expireTime) {
+      if (earliest === null || c.expireTime < earliest) earliest = c.expireTime;
+    }
+  }
+  return earliest;
+}
+
+/** Parse a customer-package-reset/list body into the inventory. Throws on
+ * API-level failures so the caller can swallow (probe) or surface
+ * (redemption) them. */
+export function parseZaiResetCardBody(body: unknown): ResetCardInventory {
+  const root = body as { success?: unknown; code?: unknown; msg?: unknown; data?: unknown } | null;
+  if (!root || typeof root !== "object" || root.success !== true || root.code !== 200) {
+    const msg = root && typeof root.msg === "string" ? root.msg : "invalid response";
+    throw new Error(`z.ai reset-card API error: ${msg}`);
+  }
+  const data = root.data as { fiveHourResets?: unknown; weekResets?: unknown } | null;
+  if (!data || typeof data !== "object") {
+    throw new Error("z.ai reset-card API error: missing data");
+  }
+  const fiveHour = availableCards(data.fiveHourResets);
+  const week = availableCards(data.weekResets);
+  return {
+    fiveHour: { count: fiveHour.length, earliestExpire: earliestExpire(fiveHour) },
+    week: { count: week.length, earliestExpire: earliestExpire(week) },
+  };
+}
+
+/** Read-only inventory (dev-safe; only ever called with the user's key). */
+export async function fetchZaiResetCards(key: string, signal?: AbortSignal): Promise<ResetCardInventory> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const res = await fetch(`${zaiMonitorBase()}/api/biz/customer-package-reset/list?targetType=PERSONAL`, {
+      headers: { authorization: `Bearer ${key}`, accept: "application/json" },
+      signal,
+    });
+    if (!res.ok) throw new Error(`z.ai reset-card API error: HTTP ${res.status}`);
+    return parseZaiResetCardBody(await res.json());
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export type ResetCardRedemption = {
+  ok: boolean;
+  /** Cards of the kind still available after the attempt. */
+  remaining: number;
+  /** Human-readable failure reason (null on success). Message-only — the
+   * API key never appears here. */
+  message: string | null;
+};
+
+/** Redeem ONE reset card (plan/157). Only ever invoked from the explicit
+ * app button flow (`plan_reset_card_request`) — NEVER from timers,
+ * thresholds, or the agent shell.
+ *
+ * Fresh inventory → earliest-expiring available card of the kind → POST
+ * `use` with a one-shot uuid requestId. NO auto-retry: a failed POST is
+ * reported; the user re-confirms explicitly for another attempt. */
+export async function redeemZaiResetCard(
+  key: string,
+  kind: ResetCardKind,
+): Promise<ResetCardRedemption> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const res = await fetch(`${zaiMonitorBase()}/api/biz/customer-package-reset/list?targetType=PERSONAL`, {
+      headers: { authorization: `Bearer ${key}`, accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status} on reset-card list`);
+    const root = (await res.json()) as { success?: unknown; data?: unknown };
+    if (root.success !== true || !root.data || typeof root.data !== "object") {
+      throw new Error("reset-card list rejected");
+    }
+    const data = root.data as { fiveHourResets?: unknown; weekResets?: unknown };
+    const cards = availableCards(kind === "week" ? data.weekResets : data.fiveHourResets);
+    if (cards.length === 0) {
+      return { ok: false, remaining: 0, message: `no available ${kind} reset card` };
+    }
+    // Earliest lexicographic expireTime (GLMeter rule); ties → lowest recordId.
+    const pick = [...cards].sort((a, b) => {
+      const ea = typeof a.expireTime === "string" ? a.expireTime : "";
+      const eb = typeof b.expireTime === "string" ? b.expireTime : "";
+      if (ea !== eb) return ea < eb ? -1 : 1;
+      return (a.recordId ?? 0) > (b.recordId ?? 0) ? 1 : -1;
+    })[0]!;
+    const recordId = pick.recordId;
+    if (typeof recordId !== "number" || !Number.isInteger(recordId)) {
+      return { ok: false, remaining: cards.length, message: "reset card missing recordId" };
+    }
+    const use = await fetch(`${zaiMonitorBase()}/api/biz/customer-package-reset/use`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${key}`,
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({
+        targetType: "PERSONAL",
+        resetType: kind === "week" ? "WEEK" : "FIVE_HOUR",
+        recordId,
+        requestId: randomUUID(),
+      }),
+      signal: controller.signal,
+    });
+    const useBody = (await use.json().catch(() => null)) as {
+      success?: unknown;
+      msg?: unknown;
+    } | null;
+    const remaining = cards.length - 1;
+    if (!use.ok || !useBody || useBody.success !== true) {
+      const msg = useBody && typeof useBody.msg === "string" ? useBody.msg : `HTTP ${use.status}`;
+      return { ok: false, remaining: cards.length, message: msg };
+    }
+    return { ok: true, remaining, message: null };
+  } catch (err) {
+    return { ok: false, remaining: 0, message: err instanceof Error ? err.message : String(err) };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 const ENV_KEY_NAMES: Record<string, string[]> = {
   zai: ["ZAI_API_KEY", "Z_AI_API_KEY"],

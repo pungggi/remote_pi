@@ -35,6 +35,8 @@ const SERVER_TYPES = new Set<ServerMessage["type"]>([
   "start_session_result",
   // Plan/145 — delivery-ledger fallback nudge (journal overflow / epoch move).
   "sync_needed",
+  // Plan/157 — reset-card redemption reply (app confirm button).
+  "plan_reset_card_result",
 ]);
 
 export class DecodeError extends Error {

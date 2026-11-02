@@ -1065,6 +1065,59 @@ class PlanUsageWindow {
   int get hashCode => Object.hash(kind, label, percent, minutes, resetAt);
 }
 
+/// Plan/157 — available reset cards per kind (z.ai campaign benefit).
+/// Counts only + earliest expiry for the confirm dialog; the recordId
+/// never leaves the extension (redemption picks a fresh card there).
+class ResetCardKindInventory {
+  final int count;
+  final String? earliestExpire;
+  const ResetCardKindInventory({required this.count, this.earliestExpire});
+
+  factory ResetCardKindInventory.fromJson(Map<String, dynamic> j) =>
+      ResetCardKindInventory(
+        count: ((j['count'] as num?) ?? 0).clamp(0, 999).toInt(),
+        earliestExpire: j['earliestExpire'] as String?,
+      );
+
+  Map<String, dynamic> toJson() =>
+      {'count': count, if (earliestExpire != null) 'earliestExpire': earliestExpire};
+
+  @override
+  bool operator ==(Object other) =>
+      other is ResetCardKindInventory &&
+      other.count == count &&
+      other.earliestExpire == earliestExpire;
+
+  @override
+  int get hashCode => Object.hash(count, earliestExpire);
+}
+
+class ResetCardInventory {
+  final ResetCardKindInventory fiveHour;
+  final ResetCardKindInventory week;
+  const ResetCardInventory({required this.fiveHour, required this.week});
+
+  factory ResetCardInventory.fromJson(Map<String, dynamic> j) =>
+      ResetCardInventory(
+        fiveHour: ResetCardKindInventory.fromJson(
+            (j['fiveHour'] as Map<String, dynamic>?) ?? {}),
+        week: ResetCardKindInventory.fromJson(
+            (j['week'] as Map<String, dynamic>?) ?? {}),
+      );
+
+  Map<String, dynamic> toJson() =>
+      {'fiveHour': fiveHour.toJson(), 'week': week.toJson()};
+
+  @override
+  bool operator ==(Object other) =>
+      other is ResetCardInventory &&
+      other.fiveHour == fiveHour &&
+      other.week == week;
+
+  @override
+  int get hashCode => Object.hash(fiveHour, week);
+}
+
 /// Plan/156 — subscription usage of the current model's provider, as
 /// `room_meta.plan_usage` (opaque blob, decoded by the extension from the
 /// provider's quota API). Account-scoped: a model switch within the same
@@ -1076,11 +1129,16 @@ class PlanUsage {
   final String? plan;
   final int fetchedAt;
   final List<PlanUsageWindow> windows;
+
+  /// Plan/157 — reset-card inventory; null when the provider has none or
+  /// the inventory call failed (quota still publishes).
+  final ResetCardInventory? resetCards;
   const PlanUsage({
     required this.provider,
     this.plan,
     required this.fetchedAt,
     required this.windows,
+    this.resetCards,
   });
 
   /// Highest used percent across windows — the tint escalation fallback
@@ -1136,6 +1194,21 @@ class PlanUsage {
     return nearest;
   }
 
+  /// Plan/157 — the reset-card button offers a redemption when a lane is
+  /// EXHAUSTED and cards of a matching kind are available. Weekly wins
+  /// priority (a weekly reset also restores the 5h lane per z.ai FAQ);
+  /// 5h cards only surface when ONLY the 5h lane is dead.
+  /// Returns the kind ('week' | 'five_hour') or null when no offer applies.
+  String? redeemableCardKind() {
+    final cards = resetCards;
+    if (cards == null) return null;
+    bool exhausted(int minutes) => displayWindows.any(
+        (w) => w.minutes == minutes && w.percent >= 100);
+    if (exhausted(10080) && cards.week.count > 0) return 'week';
+    if (exhausted(300) && cards.fiveHour.count > 0) return 'five_hour';
+    return null;
+  }
+
   static PlanUsage? fromJson(Map<String, dynamic> j) {
     final provider = j['provider'] as String?;
     if (provider == null || provider.isEmpty) return null;
@@ -1151,6 +1224,9 @@ class PlanUsage {
       plan: j['plan'] as String?,
       fetchedAt: ((j['fetchedAt'] as num?) ?? 0).toInt(),
       windows: windows,
+      resetCards: j['resetCards'] is Map<String, dynamic>
+          ? ResetCardInventory.fromJson(j['resetCards'] as Map<String, dynamic>)
+          : null,
     );
   }
 
@@ -1159,6 +1235,7 @@ class PlanUsage {
     'plan': plan,
     'fetchedAt': fetchedAt,
     'windows': windows.map((w) => w.toJson()).toList(),
+    if (resetCards != null) 'resetCards': resetCards!.toJson(),
   };
 
   @override
@@ -1167,10 +1244,12 @@ class PlanUsage {
       other.provider == provider &&
       other.plan == plan &&
       other.fetchedAt == fetchedAt &&
-      listEquals(other.windows, windows);
+      listEquals(other.windows, windows) &&
+      other.resetCards == resetCards;
 
   @override
-  int get hashCode => Object.hash(provider, plan, fetchedAt, Object.hashAll(windows));
+  int get hashCode => Object.hash(
+      provider, plan, fetchedAt, Object.hashAll(windows), resetCards);
 }
 
 class UnsupportedTypeException implements Exception {
@@ -1588,6 +1667,19 @@ class GitStatusRequest extends ClientMessage {
   Map<String, dynamic> toJson() => {'type': 'git_status_request', 'id': id};
 }
 
+/// Plan/157 — redeem ONE z.ai quota reset card. Only ever sent after the
+/// explicit confirm dialog; [kind] 'week' | 'five_hour'. Reply:
+/// [PlanResetResult].
+class PlanResetCard extends ClientMessage {
+  final String id;
+  final String kind;
+  PlanResetCard({required this.id, required this.kind});
+
+  @override
+  Map<String, dynamic> toJson() =>
+      {'type': 'plan_reset_card_request', 'id': id, 'kind': kind};
+}
+
 /// Plan/108 — open a new terminal tab at a project folder on the PC
 /// (remote `/ps clone`). `cwd` null/omitted → the Pi uses its own session
 /// cwd; `runPi` default true launches `pi` in the new tab (plain shell when
@@ -1806,6 +1898,8 @@ sealed class ServerMessage {
       // Plan/145 — the journal can't cover our reported gap (frames fell out
       // of the ring) or the epoch moved on: fall back to a full session_sync.
       'sync_needed' => SyncNeeded.fromJson(json),
+      // Plan/157 — reply to PlanResetCard (reset-card redemption button).
+      'plan_reset_card_result' => PlanResetResult.fromJson(json),
       // forward-compat: unknown types are not fatal — callers catch and log
       _ => throw UnsupportedTypeException(type ?? ''),
     };
@@ -2711,6 +2805,35 @@ class GitStatusResult extends ServerMessage {
       status: s is Map<String, dynamic> ? GitStatus.fromJson(s) : null,
     );
   }
+}
+
+/// Plan/157 — reply to [PlanResetCard]. [ok] true exactly when the
+/// extension's use-POST succeeded; [remaining] = cards of that kind still
+/// available after the attempt; [message] carries the provider error text
+/// on failure (null on success).
+class PlanResetResult extends ServerMessage {
+  final String inReplyTo;
+  final bool ok;
+
+  /// 'week' | 'five_hour' (echoed request kind).
+  final String kind;
+  final int remaining;
+  final String? message;
+  PlanResetResult({
+    required this.inReplyTo,
+    required this.ok,
+    required this.kind,
+    required this.remaining,
+    this.message,
+  });
+
+  factory PlanResetResult.fromJson(Map<String, dynamic> j) => PlanResetResult(
+        inReplyTo: j['in_reply_to'] as String,
+        ok: j['ok'] as bool? ?? false,
+        kind: (j['kind'] as String?) ?? 'week',
+        remaining: ((j['remaining'] as num?) ?? 0).toInt(),
+        message: j['message'] as String?,
+      );
 }
 
 /// How the terminal was launched, for diagnostics. `none` when the platform

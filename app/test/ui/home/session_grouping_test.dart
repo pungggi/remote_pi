@@ -1,7 +1,14 @@
 import 'package:app/data/preferences/preferences.dart' show HomeGroupBy;
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart'
-    show PlanUsage, PlanUsageWindow, RoomInfo;
+    show
+        PlanResetCard,
+        PlanResetResult,
+        PlanUsage,
+        PlanUsageWindow,
+        ResetCardInventory,
+        ResetCardKindInventory,
+        RoomInfo;
 import 'package:app/ui/home/states/home_state.dart'
     show HomeGroup, HomeItem, firstOnlinePlanUsage;
 import 'package:app/ui/home/widgets/session_grouping.dart';
@@ -252,10 +259,37 @@ void main() {
         ),
       );
 
-      expect(find.textContaining('⏳ 2h 14m'), findsOneWidget);
+      // Plan/157: exact datetime (weekday + HH:mm for the 5h lane), not
+      // remaining time. The spans render inside ONE RichText.
+      final rich = tester.widget<RichText>(find.byType(RichText).first);
+      final plain = rich.text.toPlainText();
+      expect(plain, contains('⏳ '));
+      expect(RegExp(r'⏳ (Mo|Di|Mi|Do|Fr|Sa|So)\. \d{2}:\d{2}').hasMatch(plain),
+          isTrue,
+          reason: '5h lane must render weekday + HH:mm, got: $plain');
     });
 
-    testWidgets('countdown ticks down every minute without a new push (PR #89 review)',
+    test('debugFormatReset — German reset datetime shapes (plan/157)', () {
+      // 2026-11-06 is a Friday; constructed LOCAL (no TZ dependency).
+      final d = DateTime(2026, 11, 6, 15, 14);
+      expect(SessionGroupHeader.debugFormatReset(d, 300), 'Fr. 15:14');
+      expect(SessionGroupHeader.debugFormatReset(d, 10080), 'Fr. 6.11 15:14');
+      expect(SessionGroupHeader.debugFormatReset(d, 43200), 'Fr. 6. Nov');
+      // Unknown window length falls back to distance-based shaping.
+      expect(SessionGroupHeader.debugFormatReset(d, null, msLeft: 3 * 3600000),
+          'Fr. 15:14');
+      expect(
+          SessionGroupHeader.debugFormatReset(d, null, msLeft: 5 * 24 * 3600000),
+          'Fr. 6.11 15:14');
+      expect(
+          SessionGroupHeader.debugFormatReset(d, null, msLeft: 25 * 24 * 3600000),
+          'Fr. 6. Nov');
+      // Leading-zero sanity: day/month stay unpadded.
+      final d2 = DateTime(2026, 12, 3, 5, 7); // Thursday 3.12
+      expect(SessionGroupHeader.debugFormatReset(d2, 10080), 'Do. 3.12 05:07');
+    });
+
+    testWidgets('deadline label drops once the reset passes (PR #89 ticker)',
         (tester) async {
       // Pin "now": the fake async clock advances timers but not
       // DateTime.now(), so the header computes against this fixed instant
@@ -267,6 +301,11 @@ void main() {
           (tester.binding.clock.now().millisecondsSinceEpoch - fakeBase);
       addTearDown(() => SessionGroupHeader.debugNowMs = null);
       final reset = t0 + const Duration(hours: 2, minutes: 14).inMilliseconds;
+      String plainText() {
+        final rich = tester.widget<RichText>(find.byType(RichText).first);
+        return rich.text.toPlainText();
+      }
+
       final usage = PlanUsage(
         provider: 'zai',
         fetchedAt: 1,
@@ -282,14 +321,13 @@ void main() {
           ),
         ),
       );
-      expect(find.textContaining('⏳ 2h 14m'), findsOneWidget);
+      expect(plainText(), contains('⏳'));
 
-      // 2 minutes of wall time, no plan_usage push in between: the header's
-      // own 1-min ticker must rebuild the countdown twice.
-      await tester.pump(const Duration(minutes: 1));
-      expect(find.textContaining('⏳ 2h 13m'), findsOneWidget);
-      await tester.pump(const Duration(minutes: 1));
-      expect(find.textContaining('⏳ 2h 12m'), findsOneWidget);
+      // 2h15m of wall time with no plan_usage push: the header's own 1-min
+      // ticker must notice the reset has passed and drop the label.
+      await tester.pump(const Duration(hours: 2, minutes: 15));
+      await tester.pump();
+      expect(plainText(), isNot(contains('⏳')));
     });
   });
 
@@ -333,6 +371,187 @@ void main() {
     test('no usage anywhere → null even when online', () {
       final g = groupOf([item('a'), item('b')]);
       expect(firstOnlinePlanUsage(g, (_) => true), isNull);
+    });
+  });
+
+  group('reset cards (plan/157)', () {
+    ResetCardInventory cards({int week = 0, int fiveHour = 0}) =>
+        ResetCardInventory(
+          week: ResetCardKindInventory(
+              count: week, earliestExpire: week > 0 ? '2026-12-01 23:59:59' : null),
+          fiveHour: ResetCardKindInventory(count: fiveHour),
+        );
+
+    PlanUsage usageWith({required int wkPct, required int fivePct, ResetCardInventory? inv}) =>
+        PlanUsage(
+          provider: 'zai',
+          fetchedAt: 1,
+          windows: [
+            PlanUsageWindow(
+                kind: 'tokens', label: '5h', percent: fivePct, minutes: 300),
+            PlanUsageWindow(
+                kind: 'tokens', label: 'wk', percent: wkPct, minutes: 10080),
+          ],
+          resetCards: inv,
+        );
+
+    test('PlanUsage.resetCards parses (and stays null when absent)', () {
+      final j = {
+        'provider': 'zai',
+        'fetchedAt': 1,
+        'windows': [
+          {'kind': 'tokens', 'label': 'wk', 'percent': 100, 'minutes': 10080},
+        ],
+        'resetCards': {
+          'fiveHour': {'count': 0, 'earliestExpire': null},
+          'week': {'count': 3, 'earliestExpire': '2026-12-22 23:59:59'},
+        },
+      };
+      final u = PlanUsage.fromJson(j)!;
+      expect(u.resetCards?.week.count, 3);
+      expect(u.resetCards?.week.earliestExpire, '2026-12-22 23:59:59');
+      expect(u.resetCards?.fiveHour.count, 0);
+      // Roundtrip of the new field (windows carry legacy always-present
+      // null keys; toJson omits null earliestExpire — both shapes parse).
+      final out = u.toJson()['resetCards'] as Map<String, dynamic>?;
+      expect(out?['week'], (j['resetCards'] as Map)['week']);
+      expect(((out?['fiveHour']) as Map?)?['count'], 0);
+      expect(
+        ResetCardInventory.fromJson(Map<String, dynamic>.from(out!))..toString(),
+        u.resetCards,
+      );
+      // Absent field (inventory call failed extension-side) → null.
+      expect(
+          PlanUsage.fromJson({
+            ...j,
+            'resetCards': null,
+          })!.resetCards,
+          isNull);
+    });
+
+    test('PlanResetCard wire shape', () {
+      expect(PlanResetCard(id: 'r1', kind: 'week').toJson(), {
+        'type': 'plan_reset_card_request',
+        'id': 'r1',
+        'kind': 'week',
+      });
+    });
+
+    test('PlanResetResult parses ok/failure shapes', () {
+      expect(
+        PlanResetResult.fromJson({
+          'type': 'plan_reset_card_result',
+          'in_reply_to': 'r1',
+          'ok': true,
+          'kind': 'week',
+          'remaining': 1,
+          'message': null,
+        }),
+        isA<PlanResetResult>().having((r) => r.ok, 'ok', isTrue),
+      );
+      final fail = PlanResetResult.fromJson({
+        'type': 'plan_reset_card_result',
+        'in_reply_to': 'r1',
+        'ok': false,
+        'kind': 'week',
+        'remaining': 2,
+        'message': 'card expired',
+      });
+      expect(fail.ok, isFalse);
+      expect(fail.message, 'card expired');
+    });
+
+    test('redeemableCardKind — weekly priority, exhaustion gate, null rules',
+        () {
+      // Weekly exhausted + week cards → week (even when 5h also dead and
+      // 5h cards exist — weekly restores both).
+      expect(
+        usageWith(wkPct: 100, fivePct: 100, inv: cards(week: 2, fiveHour: 1))
+            .redeemableCardKind(),
+        'week');
+      // Only 5h dead + 5h cards → five_hour.
+      expect(
+        usageWith(wkPct: 40, fivePct: 100, inv: cards(fiveHour: 1))
+            .redeemableCardKind(),
+        'five_hour');
+      // Exhausted but no cards of that kind → null.
+      expect(usageWith(wkPct: 100, fivePct: 40, inv: cards()).redeemableCardKind(),
+          isNull);
+      // 5h dead, 5h cards, but weekly ALSO dead with NO week cards →
+      // five_hour (weekly rule doesn't apply without weekly cards).
+      expect(
+        usageWith(wkPct: 100, fivePct: 100, inv: cards(fiveHour: 2))
+            .redeemableCardKind(),
+        'five_hour');
+      // Not exhausted → null even with cards.
+      expect(
+        usageWith(wkPct: 94, fivePct: 60, inv: cards(week: 3))
+            .redeemableCardKind(),
+        isNull);
+      // No inventory at all → null.
+      expect(usageWith(wkPct: 100, fivePct: 100).redeemableCardKind(), isNull);
+    });
+
+    Future<void> pumpHeader(
+      WidgetTester tester, {
+      required PlanUsage usage,
+      void Function(String kind)? onRedeem,
+    }) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: SessionGroupHeader(
+            label: 'GLM-4.6',
+            count: 1,
+            usage: usage,
+            onRedeemResetCard: onRedeem,
+          ),
+        ),
+      ));
+    }
+
+    testWidgets('chip 🔄×N shows for exhausted weekly + cards; tap fires kind',
+        (tester) async {
+      String? fired;
+      await pumpHeader(
+        tester,
+        usage: usageWith(wkPct: 100, fivePct: 100, inv: cards(week: 2)),
+        onRedeem: (kind) => fired = kind,
+      );
+      expect(find.text('🔄×2'), findsOneWidget);
+      await tester.tap(find.text('🔄×2'));
+      expect(fired, 'week');
+    });
+
+    testWidgets('chip falls back to five_hour when only the 5h lane is dead',
+        (tester) async {
+      String? fired;
+      await pumpHeader(
+        tester,
+        usage: usageWith(wkPct: 40, fivePct: 100, inv: cards(fiveHour: 1)),
+        onRedeem: (kind) => fired = kind,
+      );
+      expect(find.text('🔄×1'), findsOneWidget);
+      await tester.tap(find.text('🔄×1'));
+      expect(fired, 'five_hour');
+    });
+
+    testWidgets('no chip below 100% — even with a pile of cards',
+        (tester) async {
+      await pumpHeader(
+        tester,
+        usage: usageWith(wkPct: 99, fivePct: 60, inv: cards(week: 3)),
+        onRedeem: (_) {},
+      );
+      expect(find.textContaining('🔄'), findsNothing);
+    });
+
+    testWidgets('no chip without a wired handler (safety: display-only)',
+        (tester) async {
+      await pumpHeader(
+        tester,
+        usage: usageWith(wkPct: 100, fivePct: 100, inv: cards(week: 3)),
+      );
+      expect(find.textContaining('🔄'), findsNothing);
     });
   });
 }

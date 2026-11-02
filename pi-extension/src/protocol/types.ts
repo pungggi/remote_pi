@@ -178,6 +178,8 @@ export type ExtensionUiResponseWire =
       ask: AskResponseEnrichmentWire;
     };
 
+import type { ResetCardKind } from "../plan-usage.js";
+
 export type ClientMessage =
   | { type: "pair_request"; id: string; token: string; device_name: string }
   // Plan/30: optional `images` carry inline base64 attachments (one today).
@@ -278,6 +280,12 @@ export type ClientMessage =
        *  Null/omitted for rooms the app knows are registered. */
       cwd?: string | null;
     }
+  // Plan/157 — redeem ONE z.ai quota reset card (5h or weekly). Only sent
+  // by the app AFTER an explicit confirm dialog, and only offered when the
+  // window is exhausted AND cards are available. The extension re-fetches
+  // the inventory, picks the earliest-expiring available card, and POSTs
+  // with a one-shot requestId (no retry). Reply: plan_reset_card_result.
+  | { type: "plan_reset_card_request"; id: string; kind: ResetCardKind }
   // Plan/100 — interactive extension prompt response (ask_user via pi-ask).
   // Mirrors RpcExtensionUIResponse; the optional `ask` envelope carries
   // pi-ask's structured answer so multi/preview/notes survive the round-trip.
@@ -497,6 +505,18 @@ export type ServerMessage =
   // Plan/107 — Reply to `git_status_request`. `status` is null when the cwd
   // isn't a git repo or git is unavailable.
   | { type: "git_status_result"; in_reply_to: string; status: WireGitStatus | null }
+  // Plan/157 — answer to plan_reset_card_request. `remaining` = cards of
+  // the kind still available after the attempt (0 when it failed and the
+  // inventory said none left). `message` carries the provider error text on
+  // failure, null on success.
+  | {
+      type: "plan_reset_card_result";
+      in_reply_to: string;
+      ok: boolean;
+      kind: ResetCardKind;
+      remaining: number;
+      message: string | null;
+    }
   // Plan/108 — Reply to `open_terminal_request`. `ok` is false when the
   // platform is unsupported, the path is missing, or the launcher failed.
   // `method` describes what was launched: "wt" (Windows Terminal tab),

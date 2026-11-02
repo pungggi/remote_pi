@@ -9,6 +9,27 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
 
+## [1.5.4] - 2026-11-02
+
+### Added
+
+- **z.ai quota reset cards (plan/157)**: the model-group header now shows
+  a 🔄×N chip — but ONLY when a quota lane is fully exhausted (100%) and
+  cards of a matching kind are available (weekly first; a weekly reset
+  also restores the 5h lane). Tapping opens an explicit confirmation
+  dialog (`Redeem` / `Cancel`); only `Redeem` sends the typed
+  `plan_reset_card_request` to the paired Pi, which re-checks the live
+  inventory, picks the earliest-expiring available card, and redeems it
+  with a one-shot idempotency key (no auto-retry). The header refreshes
+  from the forced re-probe right after.
+
+### Changed
+
+- **Reset deadline as exact datetime (user request)**: the ⏳ label now
+  prints the exact reset moment in German short form instead of remaining
+  time — `Fr. 15:14` for the 5h lane, `Fr. 6.11 15:14` for the weekly
+  lane, `Fr. 6. Nov` for the monthly MCP lane.
+
 ## [1.5.3] - 2026-11-01
 
 ### Changed

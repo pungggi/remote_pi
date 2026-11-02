@@ -39,6 +39,9 @@ class _FakeActionsRepository implements IActionsRepository {
   Future<GitStatus?> gitStatus() async => null;
 
   @override
+  Future<PlanResetResult> planResetCard({required String kind}) async => throw UnimplementedError();
+
+  @override
   Future<OpenTerminalResult> openTerminal({
     String? cwd,
     bool runPi = true,

@@ -169,6 +169,12 @@ abstract class IActionsRepository extends Repository {
   /// snapshot and on every connection-status change.
   ActiveRoomMeta get activeRoomMeta;
 
+  /// Plan/157 — redeem ONE z.ai quota reset card ([kind] 'week' |
+  /// 'five_hour'). Never throws on a provider-level failure — the result
+  /// carries ok=false + the provider message; throws [ActionFailure] only
+  /// on transport issues (offline / timeout).
+  Future<PlanResetResult> planResetCard({required String kind});
+
   /// Stream of [activeRoomMeta] snapshots — deduplicated by equality
   /// so consumers don't rebuild on no-op emits.
   Stream<ActiveRoomMeta> get activeRoomMetaStream;
@@ -263,6 +269,13 @@ class ActionsRepository extends Repository implements IActionsRepository {
         if (p == null) return;
         p.timeout.cancel();
         if (!p.completer.isCompleted) p.completer.complete(status);
+      // Plan/157 — reset-card redemption reply (ok=false is a RESULT, not
+      // an error: the provider message rides in the payload).
+      case PlanResetResult():
+        final p = _pending.remove(msg.inReplyTo);
+        if (p == null) return;
+        p.timeout.cancel();
+        if (!p.completer.isCompleted) p.completer.complete(msg);
       // Plan/108 — terminal-launch reply (quick action / session menu).
       case OpenTerminalResult(
         :final inReplyTo,
@@ -521,6 +534,16 @@ class ActionsRepository extends Repository implements IActionsRepository {
       _dispatch<GitStatus?>((id) => GitStatusRequest(id: id));
 
   @override
+  Future<PlanResetResult> planResetCard({required String kind}) =>
+      _dispatch<PlanResetResult>(
+        (id) => PlanResetCard(id: id, kind: kind),
+        // Redemption hits two provider round-trips (list + use) + the
+        // forced quota probe is fire-and-forget — give it room over the
+        // default 15s without hanging the UI forever.
+        timeout: const Duration(seconds: 30),
+      );
+
+  @override
   Future<OpenTerminalResult> openTerminal({
     String? cwd,
     bool runPi = true,
@@ -580,14 +603,17 @@ class ActionsRepository extends Repository implements IActionsRepository {
         ),
       );
 
-  Future<T> _dispatch<T>(ClientMessage Function(String id) builder) async {
+  Future<T> _dispatch<T>(
+    ClientMessage Function(String id) builder, {
+    Duration? timeout,
+  }) async {
     final ch = _channel;
     if (ch == null) {
       throw const ActionFailure('offline');
     }
     final id = 'act_${uuid7()}';
     final completer = Completer<dynamic>();
-    final timer = Timer(_timeout, () {
+    final timer = Timer(timeout ?? _timeout, () {
       final p = _pending.remove(id);
       if (p == null) return;
       if (!p.completer.isCompleted) {

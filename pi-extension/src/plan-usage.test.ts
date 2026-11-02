@@ -5,6 +5,9 @@ import { join } from "node:path";
 import {
   decodeZaiWindow,
   parseZaiQuotaBody,
+  parseZaiResetCardBody,
+  fetchZaiResetCards,
+  redeemZaiResetCard,
   readProviderApiKey,
   planUsageProbes,
 } from "./plan-usage.js";
@@ -214,5 +217,217 @@ describe("planUsageProbes registry", () => {
     process.env["REMOTE_PI_ZAI_MONITOR_BASE"] = "https://127.0.0.1:1";
     await expect(planUsageProbes["zai"]("test-key")).rejects.toBeInstanceOf(Error);
     delete process.env["REMOTE_PI_ZAI_MONITOR_BASE"];
+  });
+});
+
+// ── Plan/157: reset cards ───────────────────────────────────────────────
+
+/** Byte-shape of the verified 2026-11-02 list response (recordIds and
+ * expiries redacted to synthetic values — shape is what matters). */
+const LIST_BODY = {
+  code: 200,
+  msg: "Operation successful",
+  success: true,
+  data: {
+    fiveHourResets: [],
+    weekResets: [
+      { recordId: 9, available: true, expireTime: "2026-12-22 23:59:59" },
+      { recordId: 10, available: true, expireTime: "2026-12-01 23:59:59" },
+      { recordId: 11, available: false, expireTime: "2026-12-22 23:59:59" },
+    ],
+  },
+};
+
+type FetchCall = { url: string; init?: RequestInit };
+
+/** Swap global fetch for a URL router; returns the restore fn + captured
+ * calls (so tests can assert which POSTs actually happened). */
+function mockFetch(routes: Record<string, unknown>): { calls: FetchCall[]; restore: () => void } {
+  const calls: FetchCall[] = [];
+  const orig = globalThis.fetch;
+  globalThis.fetch = ((url: string | URL, init?: RequestInit) => {
+    const u = String(url);
+    calls.push({ url: u, init });
+    const path = u.split("?")[0]!;
+    for (const [suffix, body] of Object.entries(routes)) {
+      if (path.endsWith(suffix)) {
+        if (body instanceof Error) return Promise.reject(body);
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) } as Response);
+      }
+    }
+    return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
+  }) as typeof fetch;
+  return {
+    calls,
+    restore: () => {
+      globalThis.fetch = orig;
+    },
+  };
+}
+
+/** Decode the captured JSON bodies of all POSTs to a URL suffix. */
+function postedBodies(mock: { calls: FetchCall[] }, suffix: string): Array<Record<string, unknown>> {
+  return mock.calls
+    .filter((c) => c.url.endsWith(suffix) && c.init?.method === "POST")
+    .map((c) => JSON.parse(String(c.init?.body)) as Record<string, unknown>);
+}
+
+describe("parseZaiResetCardBody (plan/157)", () => {
+  test("counts available cards only + earliest expiry", () => {
+    const inv = parseZaiResetCardBody(LIST_BODY);
+    expect(inv.fiveHour).toEqual({ count: 0, earliestExpire: null });
+    expect(inv.week).toEqual({ count: 2, earliestExpire: "2026-12-01 23:59:59" });
+  });
+
+  test("API-level failure envelopes throw; missing data throws", () => {
+    expect(() => parseZaiResetCardBody({ success: false, code: 500, msg: "denied" })).toThrow(
+      /denied/,
+    );
+    expect(() => parseZaiResetCardBody({ success: true, code: 200 })).toThrow(/missing data/);
+  });
+});
+
+describe("fetchZaiResetCards (plan/157)", () => {
+  test("GET list → inventory", async () => {
+    const mock = mockFetch({ "customer-package-reset/list": LIST_BODY });
+    try {
+      const inv = await fetchZaiResetCards("test-key");
+      expect(inv.week.count).toBe(2);
+      expect(mock.calls).toHaveLength(1);
+      expect(mock.calls[0]!.url).toContain("customer-package-reset/list?targetType=PERSONAL");
+    } finally {
+      mock.restore();
+    }
+  });
+});
+
+describe("redeemZaiResetCard (plan/157)", () => {
+  test("picks the earliest-expiring available card; POSTs use with fresh requestId", async () => {
+    const mock = mockFetch({
+      "customer-package-reset/list": LIST_BODY,
+      "customer-package-reset/use": { success: true, code: 200 },
+    });
+    try {
+      const r1 = await redeemZaiResetCard("test-key", "week");
+      expect(r1).toEqual({ ok: true, remaining: 1, message: null });
+      const uses = postedBodies(mock, "customer-package-reset/use");
+      expect(uses).toHaveLength(1);
+      expect(uses[0]).toMatchObject({
+        targetType: "PERSONAL",
+        resetType: "WEEK",
+        recordId: 10, // 2026-12-01 expires before 2026-12-22
+      });
+      const requestId = uses[0]!["requestId"];
+      expect(typeof requestId).toBe("string");
+      expect(requestId).toMatch(/^[0-9a-f-]{36}$/i);
+
+      // Second redemption → NEW requestId (one-shot idempotency rule).
+      await redeemZaiResetCard("test-key", "week");
+      const uses2 = postedBodies(mock, "customer-package-reset/use");
+      expect(uses2).toHaveLength(2);
+      expect(uses2[1]!["requestId"]).not.toBe(requestId);
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("five_hour maps to resetType FIVE_HOUR", async () => {
+    const mock = mockFetch({
+      "customer-package-reset/list": {
+        success: true,
+        code: 200,
+        data: {
+          fiveHourResets: [{ recordId: 5, available: true, expireTime: "2026-12-01 00:00:00" }],
+          weekResets: [],
+        },
+      },
+      "customer-package-reset/use": { success: true, code: 200 },
+    });
+    try {
+      const r = await redeemZaiResetCard("test-key", "five_hour");
+      expect(r.ok).toBe(true);
+      expect(postedBodies(mock, "customer-package-reset/use")[0]).toMatchObject({
+        resetType: "FIVE_HOUR",
+        recordId: 5,
+      });
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("no available card of the kind → failure, and NO use POST happens", async () => {
+    const mock = mockFetch({
+      "customer-package-reset/list": {
+        success: true,
+        code: 200,
+        data: {
+          fiveHourResets: [{ recordId: 3, available: false, expireTime: "2026-12-01 00:00:00" }],
+          weekResets: [],
+        },
+      },
+      "customer-package-reset/use": { success: true, code: 200 },
+    });
+    try {
+      const r = await redeemZaiResetCard("test-key", "five_hour");
+      expect(r.ok).toBe(false);
+      expect(r.message).toMatch(/no available five_hour reset card/);
+      expect(postedBodies(mock, "customer-package-reset/use")).toHaveLength(0);
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("provider rejects the use call → ok:false with message, count intact", async () => {
+    const mock = mockFetch({
+      "customer-package-reset/list": LIST_BODY,
+      "customer-package-reset/use": { success: false, code: 400, msg: "card expired" },
+    });
+    try {
+      const r = await redeemZaiResetCard("test-key", "week");
+      expect(r).toEqual({ ok: false, remaining: 2, message: "card expired" });
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("list fetch fails → ok:false, never throws", async () => {
+    const mock = mockFetch({ "customer-package-reset/list": new Error("ECONNRESET") });
+    try {
+      const r = await redeemZaiResetCard("test-key", "week");
+      expect(r.ok).toBe(false);
+      expect(r.message).toMatch(/ECONNRESET/);
+    } finally {
+      mock.restore();
+    }
+  });
+});
+
+describe("zaiPlanUsageProbe reset-card merge (plan/157)", () => {
+  test("quota + inventory both succeed → resetCards present", async () => {
+    const mock = mockFetch({
+      "quota/limit": LIVE_MAX_BODY,
+      "customer-package-reset/list": LIST_BODY,
+    });
+    try {
+      const usage = await planUsageProbes["zai"]("test-key");
+      expect(usage.windows).toHaveLength(3);
+      expect(usage.resetCards).toEqual({
+        fiveHour: { count: 0, earliestExpire: null },
+        week: { count: 2, earliestExpire: "2026-12-01 23:59:59" },
+      });
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("inventory failure is swallowed → quota still publishes, field omitted", async () => {
+    const mock = mockFetch({ "quota/limit": LIVE_MAX_BODY });
+    try {
+      const usage = await planUsageProbes["zai"]("test-key");
+      expect(usage.windows).toHaveLength(3);
+      expect(usage.resetCards).toBeUndefined();
+    } finally {
+      mock.restore();
+    }
   });
 });
