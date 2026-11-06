@@ -12,6 +12,7 @@ import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart' show BoxX;
 import 'package:app/ui/core/viewmodel/viewmodel.dart';
 import 'package:app/ui/home/states/home_state.dart';
+import 'package:app/ui/home/viewmodels/session_cleanup_report.dart';
 
 /// HomeViewModel — passive list of paired peers + live presence dots
 /// + rooms discovered on each peer (plan 17). A single tile per
@@ -570,28 +571,47 @@ class HomeViewModel extends ViewModel<HomeState> {
     return _cachedMatchFor(epk, _roomOf(epk, roomId)?.cwd);
   }
 
-  /// Plan/148 — remove the worktree + branch behind an OFFLINE session and,
-  /// only on success, drop the phone-side room record so the tile disappears
-  /// in the same frame (the plan/17 delete path).
+  /// Plan/158 — THE consolidated cleanup: one call that makes a past session
+  /// disappear for good. Supersedes plan/148's `cleanupWorktree` (which left
+  /// the PC-side registry alive, so the keeper resurrected the tile) and the
+  /// plan/17 local-only delete (which never touched the PC):
   ///
-  /// On failure nothing is touched: `git worktree remove` refuses a dirty
-  /// tree, the registry entry survives, and the room record stays so the user
-  /// can retry after committing/stashing. Throws [ActionFailure] when the PC
-  /// cannot be reached or a live session still anchors the folder; a git
-  /// refusal comes back as `ok:false` with the server's message.
-  Future<RemoveWorktreeResult> cleanupWorktree({
+  /// 1. removes the worktree + branch on the PC (when [worktree] is given and
+  ///    [removeWorktree] — the dialog's unchecked box skips this),
+  /// 2. makes the PC FORGET the room (prunes `rooms.json`; the keeper releases
+  ///    it on its next sweep, so it never re-announces → no resurrection),
+  ///    deleting the chat-history transcripts too when [deleteHistory],
+  /// 3. drops the phone-side room record so the tile disappears in the same
+  ///    frame (the plan/17 delete path).
+  ///
+  /// Failure semantics: a git refusal (dirty tree) aborts BEFORE anything is
+  /// forgotten — tile and PC state stay intact for a retry. Each later step
+  /// is idempotent, so a failure after the worktree removal (e.g. PC dropped
+  /// mid-flow) continues correctly on retry: the worktree is then untracked
+  /// ([findWorktreeFor] → null) and the forget/delete steps re-run.
+  /// Throws [ActionFailure] when the PC cannot be reached or the liveness
+  /// guard trips (a same-peer session came online at the folder); throws
+  /// nothing for server-side refusals — those come back as `ok:false`.
+  Future<SessionCleanupReport> cleanupSession({
     required String epk,
     required String roomId,
-    required WireWorktree worktree,
+    WireWorktree? worktree,
+    bool removeWorktree = true,
+    bool deleteHistory = false,
   }) async {
     await _routeToPeer(epk);
     if (_disposed) throw const ActionFailure('cancelled');
-    // Race guard (PR #70 review): the tile was offline at tap time, but any
-    // session may have come back while the dialog was open. Git happily
-    // removes a CLEAN worktree an agent is using — liveness, not dirtiness,
-    // is what protects here — so re-check EVERY same-peer session anchored at
-    // or under the worktree folder, not just the tile that was long-pressed.
-    final liveOwner = _liveWorktreeOwner(epk, worktree, exceptRoomId: roomId);
+    // Race guard (plan/148, PR #70 review): the tile was offline at tap
+    // time, but any session may have come back while the dialog was open.
+    // Git happily removes a CLEAN worktree an agent is using — liveness,
+    // not dirtiness, is what protects. With a worktree the guard covers the
+    // folder AND anything nested inside it; without one it covers the room's
+    // own cwd (a dead duplicate sharing the folder must not be forgotten
+    // out from under a live sibling).
+    final room = _roomOf(epk, roomId);
+    final liveOwner = worktree != null
+        ? _liveWorktreeOwner(epk, worktree, exceptRoomId: roomId)
+        : _liveCwdOwner(epk, room?.cwd, exceptRoomId: roomId);
     if (liveOwner != null) {
       throw ActionFailure(
         liveOwner == roomId
@@ -600,24 +620,176 @@ class HomeViewModel extends ViewModel<HomeState> {
                   'nothing was removed.',
       );
     }
-    final room = _actionRoomFor(epk, roomId);
-    if (room == null) {
+    final actionRoom = _actionRoomFor(epk, roomId);
+    if (actionRoom == null) {
       throw ActionFailure(
         'Could not reach ${_peerLabelForError()}. Start the Cockpit or Pi on '
         'that computer (the supervisor must be running).',
       );
     }
-    _conn.switchRoom(room);
-    final res = await _actions.removeWorktree(worktree.id);
-    if (_disposed) return res;
-    if (res.ok) {
-      // Folder + branch are gone on the PC: forget the cached list (the next
-      // attempt refetches) and drop the phone-side record so the tile goes
-      // away immediately instead of lingering as a dead entry.
-      _worktreesByEpk.remove(epk);
-      await deleteRoom(epk, roomId);
+    _conn.switchRoom(actionRoom);
+
+    // Step 1 — worktree + branch (optional).
+    var worktreeAttempted = false;
+    String? worktreeMessage;
+    if (worktree != null && removeWorktree) {
+      worktreeAttempted = true;
+      final res = await _actions.removeWorktree(worktree.id);
+      if (_disposed) {
+        return SessionCleanupReport(
+          epk: epk,
+          roomId: roomId,
+          ok: false,
+          message: 'cancelled',
+          worktreeAttempted: true,
+          worktreeMessage: res.message,
+        );
+      }
+      worktreeMessage = res.message;
+      if (!res.ok) {
+        // Nothing else runs: git refused, so folder + branch + registry
+        // entry + tile all stay — the only safe failure mode (plan/148).
+        return SessionCleanupReport(
+          epk: epk,
+          roomId: roomId,
+          ok: false,
+          message: res.message,
+          worktreeAttempted: true,
+          worktreeMessage: res.message,
+        );
+      }
+      // Keep the cached registry honest for the remaining tiles/batch items
+      // (rebuilt, not mutated: the cached list may be unmodifiable).
+      final cached = _worktreesByEpk[epk];
+      if (cached != null) {
+        _worktreesByEpk[epk] = cached.where((w) => w.id != worktree.id).toList();
+      }
     }
-    return res;
+
+    // Step 2 — the PC forgets the room (no more keeper resurrection).
+    ForgetRoomResult forget;
+    try {
+      forget = await _actions.forgetRoom(roomId, deleteHistory: deleteHistory);
+    } on ActionFailure {
+      rethrow; // PC dropped mid-flow — retry continues (worktree gone).
+    }
+    if (_disposed) {
+      return SessionCleanupReport(
+        epk: epk,
+        roomId: roomId,
+        ok: false,
+        message: 'cancelled',
+        worktreeAttempted: worktreeAttempted,
+        worktreeMessage: worktreeMessage,
+        roomForgotten: forget.registryRemoved,
+        historyRemoved: forget.historyRemoved,
+        historyNote: forget.historyNote,
+      );
+    }
+    if (!forget.ok) {
+      return SessionCleanupReport(
+        epk: epk,
+        roomId: roomId,
+        ok: false,
+        message: forget.message,
+        worktreeAttempted: worktreeAttempted,
+        worktreeMessage: worktreeMessage,
+      );
+    }
+
+    // Step 3 — drop the phone-side record (plan/17 path) so the tile goes
+    // away in the same frame instead of waiting for the keeper's sweep.
+    await deleteRoom(epk, roomId);
+    return SessionCleanupReport(
+      epk: epk,
+      roomId: roomId,
+      ok: true,
+      message: forget.message,
+      worktreeAttempted: worktreeAttempted,
+      worktreeMessage: worktreeMessage,
+      roomForgotten: forget.registryRemoved,
+      historyRemoved: forget.historyRemoved,
+      historyNote: forget.historyNote,
+    );
+  }
+
+  /// Plan/158 — batch cleanup for "Clean up finished sessions…": runs
+  /// [cleanupSession] for every given item, grouped per peer so the shared
+  /// connection routes once per PC. One item's failure NEVER aborts the
+  /// batch — it becomes a `ok:false` report the summary sheet can show.
+  /// Returns one report per input item, in input order.
+  Future<List<SessionCleanupReport>> cleanupFinishedSessions({
+    required List<HomeItem> items,
+    bool removeWorktrees = true,
+    bool deleteHistory = false,
+  }) async {
+    final byPeer = <String, List<HomeItem>>{};
+    for (final it in items) {
+      byPeer.putIfAbsent(it.peer.remoteEpk, () => []).add(it);
+    }
+    // Processed grouped per peer (routing once per PC), but reported in the
+    // caller's input order — the batch sheet pairs rows by (epk, roomId),
+    // so the order is cosmetic; keeping it stable keeps tests + debugging
+    // simple (PR #94 review).
+    final byKey = <String, SessionCleanupReport>{};
+    for (final entry in byPeer.entries) {
+      final epk = entry.key;
+      // One registry fetch per PC refines worktree matching for the whole
+      // group (same tap-time rule as the single-session flow).
+      try {
+        await _routeToPeer(epk);
+        _worktreesByEpk[epk] = await _actions.listWorktrees();
+      } on ActionFailure catch (e) {
+        for (final it in entry.value) {
+          byKey['$epk|${it.room.roomId}'] = SessionCleanupReport(
+            epk: epk,
+            roomId: it.room.roomId,
+            ok: false,
+            message: e.message,
+          );
+        }
+        continue;
+      }
+      if (_disposed) break;
+      for (final it in entry.value) {
+        // Disposed mid-batch: stop here instead of routing+failing each
+        // remaining item against a dead session (PR #94 review). The UI
+        // that would show the reports is gone with the ViewModel anyway.
+        if (_disposed) break;
+        final worktree = _cachedMatchFor(epk, it.room.cwd);
+        try {
+          final report = await cleanupSession(
+            epk: epk,
+            roomId: it.room.roomId,
+            worktree: worktree,
+            // No tracked folder → nothing to remove; forget + local delete
+            // still run (that IS the cleanup for main-checkout sessions).
+            removeWorktree: removeWorktrees && worktree != null,
+            deleteHistory: deleteHistory,
+          );
+          byKey['${report.epk}|${report.roomId}'] = report;
+        } on ActionFailure catch (e) {
+          byKey['$epk|${it.room.roomId}'] = SessionCleanupReport(
+            epk: epk,
+            roomId: it.room.roomId,
+            ok: false,
+            message: e.message,
+          );
+        }
+      }
+    }
+    // Input order; anything never processed (disposed mid-batch) reports
+    // 'cancelled' so the per-input-item contract holds.
+    return [
+      for (final it in items)
+        byKey['${it.peer.remoteEpk}|${it.room.roomId}'] ??
+            SessionCleanupReport(
+              epk: it.peer.remoteEpk,
+              roomId: it.room.roomId,
+              ok: false,
+              message: 'cancelled',
+            ),
+    ];
   }
 
   /// Plan/148 — the roomId of a LIVE same-peer session whose cwd is the
@@ -641,6 +813,85 @@ class HomeViewModel extends ViewModel<HomeState> {
       }
     }
     return null;
+  }
+
+  /// Plan/158 — the roomId of a LIVE same-peer session whose cwd IS [cwd]
+  /// (dead duplicates in the same folder must not be forgotten out from
+  /// under a live sibling), or null — the no-worktree counterpart of
+  /// [_liveWorktreeOwner]. The target room counts too, so a revived session
+  /// aborts its own cleanup with "running again".
+  String? _liveCwdOwner(String epk, String? cwd, {required String exceptRoomId}) {
+    for (final it in _allItems()) {
+      if (it.peer.remoteEpk != epk) continue;
+      if (!_roomOnline(epk, it.room)) continue;
+      final isTarget = it.room.roomId == exceptRoomId;
+      if (isTarget || _samePath(it.room.cwd, cwd)) return it.room.roomId;
+    }
+    return null;
+  }
+
+  /// Plan/158 — every offline tile (keeper mirrors count as offline), the
+  /// batch cleanup's candidate pool. Tap-time refinement (liveness,
+  /// worktree match, reachability) happens later in [batchCleanupCandidates].
+  List<HomeItem> offlineCleanupItems() =>
+      _allItems().where((it) => !_roomOnline(it.peer.remoteEpk, it.room)).toList();
+
+  /// Plan/158 — resolve the batch sheet's rows at TAP time (same rule as the
+  /// single-session flow: the menu/button never routes the shared
+  /// connection, only the tap does). Filters the given offline items down to
+  /// cleanable rows — dropping rooms that came back live meanwhile — and
+  /// attaches each row's tracked-worktree match (one registry fetch per PC)
+  /// + ref label for the open-PR warning. PCs that cannot be reached do not
+  /// fail the whole batch: their sessions are skipped and reported via
+  /// [CleanupBatchPrep.unreachablePeers].
+  Future<CleanupBatchPrep> batchCleanupCandidates(List<HomeItem> items) async {
+    final plans = <SessionCleanupPlan>[];
+    final unreachable = <String>{};
+    final byPeer = <String, List<HomeItem>>{};
+    for (final it in items) {
+      // Rooms that revived between tap and prep are not "finished" anymore.
+      if (_roomOnline(it.peer.remoteEpk, it.room)) continue;
+      byPeer.putIfAbsent(it.peer.remoteEpk, () => []).add(it);
+    }
+    for (final entry in byPeer.entries) {
+      final epk = entry.key;
+      try {
+        await _routeToPeer(epk);
+        _worktreesByEpk[epk] = await _actions.listWorktrees();
+      } on ActionFailure {
+        final peer = entry.value.first.peer;
+        unreachable.add(
+          (peer.nickname?.isNotEmpty ?? false)
+              ? peer.nickname!
+              : peer.sessionName,
+        );
+        continue;
+      }
+      if (_disposed) return CleanupBatchPrep(plans: const [], unreachablePeers: const []);
+      for (final it in entry.value) {
+        final ref = it.room.ghRef;
+        plans.add(
+          SessionCleanupPlan(
+            epk: epk,
+            roomId: it.room.roomId,
+            // Same title the tile shows (name → cwd tail → nickname).
+            sessionTitle: it.displayName,
+            worktree: _cachedMatchFor(epk, it.room.cwd),
+            ghRefLabel: ref?.display != null ? ref!.label : null,
+            ghRefOpenPr: ref != null && _refIsOpenPr(ref),
+          ),
+        );
+      }
+    }
+    return CleanupBatchPrep(plans: plans, unreachablePeers: unreachable.toList());
+  }
+
+  /// Plan/158 — the plan/148 open-PR rule (open or unknown state warns).
+  static bool _refIsOpenPr(dynamic ref) {
+    final pr = ref?.pr;
+    if (pr == null) return false;
+    final state = pr.state?.toUpperCase();
+    return state == null || state == 'OPEN';
   }
 
   /// Plan/148 — route the action channel to [epk]: switch peer when needed and

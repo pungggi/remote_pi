@@ -1508,6 +1508,9 @@ class SyncService extends Service {
       // (session-info dialog), not the message sync.
       case ListWorktreesResult():
       case RemoveWorktreeResult():
+      // Plan/158 — forget_room replies are owned by ActionsRepository
+      // (consolidated session cleanup), not the message sync.
+      case ForgetRoomResult():
       // Plan/121 — discovered projects reply is owned by ActionsRepository
       // (Projects screen), not the message sync.
       case ListProjectsResult():
