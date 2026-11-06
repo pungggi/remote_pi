@@ -132,6 +132,13 @@ abstract class IActionsRepository extends Repository {
   /// branch delete + registry prune). Returns the Pi's ok/message.
   Future<RemoveWorktreeResult> removeWorktree(String worktreeId);
 
+  /// Plan/158 — make the PC forget a past session (prune the rooms.json
+  /// registry entry so the keeper stops re-announcing it → the phone tile
+  /// never resurrects) and optionally delete the chat-history transcripts.
+  /// [deleteHistory] is opt-in; the result's `historyNote` reports what
+  /// actually happened. Throws [ActionFailure] on offline/timeout.
+  Future<ForgetRoomResult> forgetRoom(String roomId, {bool deleteHistory});
+
   /// Plan/121 — list git projects discovered under the PC's configured roots
   /// (served by the always-on device daemon). Call after switching the
   /// connection to room [kDeviceRoom]; throws [ActionFailure] on
@@ -315,6 +322,30 @@ class ActionsRepository extends Repository implements IActionsRepository {
               inReplyTo: inReplyTo,
               ok: ok,
               message: message,
+            ),
+          );
+        }
+      // Plan/158 — forget_room reply (consolidated session cleanup).
+      case ForgetRoomResult(
+        :final inReplyTo,
+        :final ok,
+        :final message,
+        :final registryRemoved,
+        :final historyRemoved,
+        :final historyNote,
+      ):
+        final p = _pending.remove(inReplyTo);
+        if (p == null) return;
+        p.timeout.cancel();
+        if (!p.completer.isCompleted) {
+          p.completer.complete(
+            ForgetRoomResult(
+              inReplyTo: inReplyTo,
+              ok: ok,
+              message: message,
+              registryRemoved: registryRemoved,
+              historyRemoved: historyRemoved,
+              historyNote: historyNote,
             ),
           );
         }
@@ -570,6 +601,12 @@ class ActionsRepository extends Repository implements IActionsRepository {
   Future<RemoveWorktreeResult> removeWorktree(String worktreeId) =>
       _dispatch<RemoveWorktreeResult>(
         (id) => RemoveWorktreeRequest(id: id, worktreeId: worktreeId),
+      );
+
+  @override
+  Future<ForgetRoomResult> forgetRoom(String roomId, {bool deleteHistory = false}) =>
+      _dispatch<ForgetRoomResult>(
+        (id) => ForgetRoomRequest(id: id, roomId: roomId, deleteHistory: deleteHistory),
       );
 
   @override

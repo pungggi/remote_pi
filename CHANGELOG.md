@@ -9,6 +9,32 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
 
+## [1.5.5] - 2026-11-06
+
+### Added
+
+- **Consolidated session cleanup (plan/158)**: past sessions can now be
+  cleaned up FOR GOOD from the Home list. The old flows were partial —
+  "Delete session (local only)" (plan/17) never touched the PC and the
+  keeper re-announced the room (tile resurrection), while "Delete worktree
+  & branch" (plan/148) removed the folder + branch but left the
+  `~/.pi/piper/rooms.json` registry entry alive, so the keeper kept serving
+  the room as an archive tile. Now one action does all of it:
+  - **New `forget_room` PC action**: prunes the registry entry (the
+    keeper releases the room on its next sweep — no more resurrection)
+    and, opt-in, deletes the session's chat-history transcripts under
+    `~/.pi/agent/sessions/` (exact per-session files when the Pi session
+    ID is known).
+  - **"Clean up session…"** replaces both old menu entries on offline
+    tiles: one itemized dialog (worktree + branch checkbox, history
+    checkbox default OFF, fixed "computer forgets session + phone copy
+    removed") with the plan/148 guards intact (offline-only, live-owner
+    race guard, git-refusal safety).
+  - **Batch cleanup**: a Home app-bar action resolves every finished
+    session (one registry fetch per PC), shows a checkbox sheet with a
+    shared history toggle, and reports per-session ✓/✗ — one failure
+    never aborts the batch.
+
 ## [1.5.4] - 2026-11-02
 
 ### Added

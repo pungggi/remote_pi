@@ -25,6 +25,18 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   and neither ever re-nags. Denials are recoverable via the OS
   notification settings for the app.
 
+## [1.5.5] - 2026-11-06
+
+### Added
+
+- **Clean up session (plan/158)**: one long-press action on offline tiles
+  now removes the worktree + branch (when tracked), makes the computer
+  FORGET the session (it won't reappear in this list anymore), and deletes
+  the phone copy — replacing "Delete session (local only)" and "Delete
+  worktree & branch". Chat history on the computer is opt-in (checkbox,
+  off by default). A Home app-bar action cleans up ALL finished sessions
+  at once with per-session results.
+
 ## [1.5.3] - 2026-11-01
 
 ### Changed

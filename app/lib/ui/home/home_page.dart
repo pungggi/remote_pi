@@ -13,6 +13,7 @@ import 'package:app/ui/core/widgets/branch_name_dialog.dart';
 import 'package:app/ui/home/states/home_state.dart';
 import 'package:app/ui/settings/settings_sheet.dart';
 import 'package:app/ui/home/viewmodels/home_viewmodel.dart';
+import 'package:app/ui/home/viewmodels/session_cleanup_report.dart' show CleanupBatchPrep;
 import 'package:app/ui/home/widgets/widgets.dart';
 import 'package:app/ui/update/widgets/update_banner.dart';
 import 'package:flutter/material.dart';
@@ -122,6 +123,15 @@ class HomePage extends StatelessWidget {
       toolbarHeight: 56,
       automaticallyImplyLeading: false,
       actions: [
+        // Plan/158 — batch cleanup of finished sessions. Shown when at least
+        // one offline tile exists (the candidate pool); eligibility is
+        // refined at tap time (registry fetch per PC).
+        if (state is HomeList && vm.offlineCleanupItems().isNotEmpty)
+          IconButton(
+            tooltip: 'Clean up finished sessions',
+            icon: Icon(LucideIcons.eraser, color: colors.muted2),
+            onPressed: () => _showCleanupBatch(context, vm),
+          ),
         // Plan/121 — Projects list (discovered repos on the paired PC).
         IconButton(
           tooltip: 'Projects',
@@ -574,26 +584,29 @@ class HomePage extends StatelessWidget {
                     _openTerminal(context, vm, it);
                   },
                 ),
-                // Plan/148 — one-tap cleanup of a dead session's worktree +
-                // branch, offered exactly where the clutter is visible. Shown on
-                // offline tiles (keeper mirrors count as offline); whether the
-                // folder is really a tracked worktree is validated at tap time —
-                // the menu itself never touches the shared connection (PR #70
-                // review).
+                // Plan/158 — THE consolidated cleanup: one entry that removes
+                // the worktree + branch (when tracked), makes the PC forget
+                // the room (no keeper resurrection — plan/148's missing
+                // half), and drops the phone-side record. Replaces plan/17's
+                // "Delete session (local only)" + plan/148's worktree-only
+                // entry. Shown on offline tiles (keeper mirrors count as
+                // offline); whether the folder is really a tracked worktree
+                // is validated at tap time — the menu itself never touches
+                // the shared connection (PR #70 review).
                 if (!isLive && vm.mayOfferCleanup(it))
                   ListTile(
-                    leading: Icon(LucideIcons.folderX, color: colors.error),
+                    leading: Icon(LucideIcons.eraser, color: colors.error),
                     title: Text(
-                      'Delete worktree & branch',
+                      'Clean up session…',
                       style: TextStyle(color: colors.text),
                     ),
                     subtitle: Text(
-                      'Removes this session\'s worktree folder on the computer.',
+                      'Worktree, PC memory and phone copy — in one go.',
                       style: TextStyle(color: colors.muted, fontSize: 11),
                     ),
                     onTap: () {
                       Navigator.of(sheetCtx).pop();
-                      _deleteWorktree(context, vm, it);
+                      _cleanupSession(context, vm, it);
                     },
                   ),
                 ListTile(
@@ -607,31 +620,6 @@ class HomePage extends StatelessWidget {
                     _promptRename(context, vm, it);
                   },
                 ),
-                ListTile(
-                  leading: Icon(
-                    LucideIcons.trash2,
-                    color: isLive ? colors.muted : colors.error,
-                  ),
-                  enabled: !isLive,
-                  title: Text(
-                    'Delete session (local only)',
-                    style: TextStyle(
-                      color: isLive ? colors.muted : colors.text,
-                    ),
-                  ),
-                  subtitle: isLive
-                      ? Text(
-                          'Only available when the room is offline',
-                          style: TextStyle(color: colors.muted, fontSize: 11),
-                        )
-                      : null,
-                  onTap: isLive
-                      ? null
-                      : () {
-                          Navigator.of(sheetCtx).pop();
-                          _confirmDelete(context, vm, it);
-                        },
-                ),
               ],
             ),
           ),
@@ -640,15 +628,14 @@ class HomePage extends StatelessWidget {
     );
   }
 
-  /// Plan/148 — confirm + execute the worktree cleanup for an offline session.
-  /// Tap time is the first moment the shared connection may be routed (PR #70
-  /// review): resolve the registry match, confirm naming branch/base/folder,
-  /// then remove. On success the VM also drops the phone-side record, so the
-  /// tile disappears while the toast reports the server's message. On a git
-  /// refusal nothing was removed and the tile stays — the only safe failure
-  /// mode. An untracked folder (main checkout) resolves to a toast, not an
-  /// error.
-  Future<void> _deleteWorktree(
+  /// Plan/158 — confirm + execute the CONSOLIDATED cleanup for an offline
+  /// session. Tap time is the first moment the shared connection may be
+  /// routed (PR #70 review): resolve the registry match (null = untracked
+  /// folder, which is fine — the dialog then offers only forget + local
+  /// delete), confirm with the itemized dialog, then run the VM's
+  /// [HomeViewModel.cleanupSession]. A git refusal keeps the tile; a
+  /// success drops it (the VM deletes the phone record).
+  Future<void> _cleanupSession(
     BuildContext context,
     HomeViewModel vm,
     HomeItem it,
@@ -657,22 +644,12 @@ class HomePage extends StatelessWidget {
     // the toasts must survive the awaits regardless of navigation.
     final messenger = ScaffoldMessenger.of(context);
     _toast(messenger, 'Checking worktree…', isError: false);
-    final WireWorktree worktree;
+    WireWorktree? worktree;
     try {
-      final found = await vm.findWorktreeFor(
+      worktree = await vm.findWorktreeFor(
         epk: it.peer.remoteEpk,
         roomId: it.room.roomId,
       );
-      if (found == null) {
-        _toast(
-          messenger,
-          'This session\'s folder is not a tracked worktree — '
-          'nothing to clean up.',
-          isError: false,
-        );
-        return;
-      }
-      worktree = found;
     } on ActionFailure catch (e) {
       _toast(messenger, e.message, isError: true);
       return;
@@ -681,28 +658,26 @@ class HomePage extends StatelessWidget {
       return;
     }
     if (!context.mounted) return;
-    final confirmed = await showCleanupWorktreeDialog(
+    final request = await showCleanupSessionDialog(
       context,
       sessionTitle: _titleFor(it.peer, it.room),
       worktree: worktree,
       ghRef: it.room.ghRef,
     );
-    if (!confirmed) return;
+    if (request == null) return;
     try {
-      final res = await vm.cleanupWorktree(
+      final report = await vm.cleanupSession(
         epk: it.peer.remoteEpk,
         roomId: it.room.roomId,
         worktree: worktree,
+        removeWorktree: request.removeWorktree,
+        deleteHistory: request.deleteHistory,
       );
-      _toast(
-        messenger,
-        res.ok ? 'Worktree and branch removed' : res.message,
-        isError: !res.ok,
-      );
+      _toast(messenger, report.message, isError: !report.ok);
     } on ActionFailure catch (e) {
       _toast(messenger, e.message, isError: true);
     } catch (_) {
-      _toast(messenger, 'Could not remove worktree', isError: true);
+      _toast(messenger, 'Could not clean up the session', isError: true);
     }
   }
 
@@ -970,38 +945,67 @@ class HomePage extends StatelessWidget {
     await vm.renameRoom(it.peer.remoteEpk, it.room.roomId, result);
   }
 
-  Future<void> _confirmDelete(
-    BuildContext context,
-    HomeViewModel vm,
-    HomeItem it,
-  ) async {
-    final ok = await showDialog<bool>(
+  // Plan/158 — the plan/17 "Delete session (local only)" entry was folded
+  // into the consolidated "Clean up session…" flow (see [_cleanupSession]):
+  // a local-only delete always resurrected the tile via the keeper, so it
+  // was a trap, not a feature.
+
+  /// Plan/158 — batch cleanup from the app bar: resolve candidates at tap
+  /// time (one registry fetch per PC), open the sheet, run the confirmed
+  /// selection. The sheet owns selection/history-toggle/results UI; the VM
+  /// owns per-item isolation and routing.
+  Future<void> _showCleanupBatch(BuildContext context, HomeViewModel vm) async {
+    final messenger = ScaffoldMessenger.of(context);
+    _toast(messenger, 'Checking finished sessions…', isError: false);
+    final candidates = vm.offlineCleanupItems();
+    final CleanupBatchPrep prep;
+    try {
+      prep = await vm.batchCleanupCandidates(candidates);
+    } on ActionFailure catch (e) {
+      _toast(messenger, e.message, isError: true);
+      return;
+    } catch (_) {
+      _toast(messenger, 'Could not reach the computer', isError: true);
+      return;
+    }
+    if (!context.mounted) return;
+    if (prep.plans.isEmpty) {
+      _toast(
+        messenger,
+        prep.unreachablePeers.isEmpty
+            ? 'No finished sessions to clean up.'
+            : 'Could not reach ${prep.unreachablePeers.join(', ')} — nothing '
+                'checked.',
+        isError: prep.unreachablePeers.isNotEmpty,
+      );
+      return;
+    }
+    await showModalBottomSheet<void>(
       context: context,
-      builder: (dCtx) {
-        final colors = dCtx.colors;
-        return AlertDialog(
-          backgroundColor: colors.bg,
-          title: Text('Delete session?', style: TextStyle(color: colors.text)),
-          content: Text(
-            'Removes locally only. If the session comes back online on '
-            'the Pi, it reappears in the list.',
-            style: TextStyle(color: colors.muted, fontSize: 12),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dCtx).pop(false),
-              child: Text('Cancel', style: TextStyle(color: colors.muted)),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(dCtx).pop(true),
-              child: Text('Delete', style: TextStyle(color: colors.error)),
-            ),
-          ],
-        );
-      },
+      backgroundColor: context.colors.bg,
+      isScrollControlled: true,
+      builder: (sheetCtx) => CleanupBatchSheet(
+        prep: prep,
+        onConfirm: (plans, deleteHistory) {
+          // Map the selected plan rows back to their items (identity is
+          // (epk, roomId); the tile list can't have changed under the modal
+          // barrier, but match defensively anyway).
+          final byKey = {
+            for (final c in candidates) '${c.peer.remoteEpk}|${c.room.roomId}': c,
+          };
+          final items = [
+            for (final p in plans)
+              if (byKey['${p.epk}|${p.roomId}'] != null)
+                byKey['${p.epk}|${p.roomId}']!,
+          ];
+          return vm.cleanupFinishedSessions(
+            items: items,
+            removeWorktrees: true,
+            deleteHistory: deleteHistory,
+          );
+        },
+      ),
     );
-    if (ok != true) return;
-    await vm.deleteRoom(it.peer.remoteEpk, it.room.roomId);
   }
 
   static Future<void> _open(

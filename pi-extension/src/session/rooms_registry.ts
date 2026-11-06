@@ -233,6 +233,23 @@ export function pruneRooms(maxAgeMs: number, path: string = roomsRegistryPath())
   return removed;
 }
 
+/** Plan/158 — removes ONE entry by roomId and persists. Returns the removed
+ *  entry, or null when the room was never registered (idempotent retry:
+ *  the caller reports "already forgotten" instead of failing). The keeper
+ *  picks the change up on its next sweep and releases the room as stale —
+ *  no RPC into the supervisor needed. */
+export function forgetRoom(
+  roomId: string,
+  path: string = roomsRegistryPath(),
+): RoomsRegistryEntry | null {
+  const map = readRoomsRegistry(path);
+  const prev = map.get(roomId);
+  if (!prev) return null;
+  map.delete(roomId);
+  writeRoomsRegistry(map, path);
+  return prev;
+}
+
 /** Hard cap on stored rooms (newest by lastSeenAt kept). Bounds the file
  *  and the keeper's candidate pool — the 2026-09-08 fleet registered 207
  *  rooms in ONE day, and an unbounded registry would keep growing. */
