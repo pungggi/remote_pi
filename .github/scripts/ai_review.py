@@ -257,6 +257,7 @@ Regeln:
 - "line" nur angeben, wenn die Zeile eindeutig aus dem Diff hervorgeht; sonst null.
 - "suggestion" nur, wenn der Fix exakt als Codeblock ausdrückbar ist (wird als GitHub-Suggestion gerendert).
 - Nichts erfinden: wenn der Kontext fehlt, das Finding weglassen.
+- Der gelieferte Diff IST vollständig: die autoritative Dateiliste des PRs aus der GitHub-Files-API. Behaupte NIEMALS, im Diff fehlten Dateien oder Code — eine Datei, die nicht im Diff steht, wurde im PR schlicht nicht geändert; schließe nicht aus dem Commit-Verlauf (Merges!) auf einen „unvollständigen" Diff. Nur wenn der Diff explizit als „gekürzt" markiert ist, darf auf fehlenden Kontext hingewiesen werden. (Eingeführt nach remote_pi#96, Runde 1: Modell behauptete trotz vollständigen 26k-Zeichen-Diffs, Produktionscode fehle.)
 - Wenn es nichts Nennenswertes gibt: findings = [] und summary hält sich kurz."""
 
 
@@ -502,9 +503,13 @@ def review_pr(repo: str, n: int) -> str:
 
     instructions = get_instructions(repo, head_sha)
     meta = f"# PR #{n}: {pr.get('title', '')}\n\n{pr.get('body') or ''}"[:1500]
+    # Truncation-Marker sichtbar machen — die System-Prompt-Regel "Diff ist
+    # vollständig" darf nur greifen, wenn GEKÜRZT wirklich ausgeschlossen
+    # werden kann; sonst muss das Modell den Marker sehen können.
+    diff_hdr = "# Diff (GEKÜRZT — Zusammenfassung/Zeilen fehlen, nur die ersten Dateien)" if truncated else "# Diff"
     user_prompt = (
         f"{('# Projekt-Review-Regeln\n' + instructions) if instructions else ''}\n\n"
-        f"{meta}\n\n# Diff\n```diff\n{diff}\n```"
+        f"{meta}\n\n{diff_hdr}\n```diff\n{diff}\n```"
     )
 
     log(f"{repo}#{n}: Rufe {MODEL} auf ({len(diff)} Zeichen Diff) ...")
