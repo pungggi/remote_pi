@@ -300,6 +300,12 @@ export type ClientMessage =
   // the inventory, picks the earliest-expiring available card, and POSTs
   // with a one-shot requestId (no retry). Reply: plan_reset_card_result.
   | { type: "plan_reset_card_request"; id: string; kind: ResetCardKind }
+  // Plan/158 — fetch one chunk of a pushed agent_file (registry sidecar is
+  // the source of truth). Answered UNICAST to the sender: one
+  // `agent_file_payload` per request (window = 1 — the app sends the next
+  // fetch only after this reply), or one `agent_file_error`. `offset` is a
+  // raw byte cursor; reply echoes it with `total` (current file size).
+  | { type: "agent_file_fetch"; id: string; fileId: string; offset: number }
   // Plan/100 — interactive extension prompt response (ask_user via pi-ask).
   // Mirrors RpcExtensionUIResponse; the optional `ask` envelope carries
   // pi-ask's structured answer so multi/preview/notes survive the round-trip.
@@ -370,7 +376,23 @@ export type SessionHistoryEvent =
     }
   // Plan/32: a context-compaction marker, replayed in history (survives
   // re-sync like images) so the app re-renders the "context compacted" notice.
-  | { ts: number; type: "compaction"; summary: string; tokens_before: number };
+  | { ts: number; type: "compaction"; summary: string; tokens_before: number }
+  // Plan/158 — a pushed document's reference record (from the per-session
+  // file registry sidecar), merged into the history timeline by ts. The app
+  // renders an agent_file bubble from metadata and fetches bytes on demand
+  // via `agent_file_fetch`. NEVER carries payload data — history wire + app
+  // DB stay free of base64 file bytes.
+  | {
+      ts: number;
+      type: "agent_file_ref";
+      fileId: string;
+      kind: "markdown" | "text" | "pdf" | "html" | "mermaid";
+      mime?: string;
+      name?: string;
+      bytes?: number;
+      caption?: string;
+      allow_network?: boolean;
+    };
 
 export type ServerMessage =
   | {
@@ -447,14 +469,14 @@ export type ServerMessage =
       width?: number;
       height?: number;
     }
-  // Plan/126 — a document the agent pushes to the user from a file in the repo
-  // (Markdown / text / PDF / HTML). Triggered by the `show_file` tool (see
-  // src/index.ts `_registerShowFileTool`). Same discipline as `agent_image`:
-  // inline base64 `data` to every connected owner, tool_result carries ONLY
-  // metadata, live broadcast (not replayed via `session_history`), anchored to
-  // the turn via `in_reply_to`. `kind` drives which viewer the app opens.
-  // `allow_network` is HTML-only: when true the WebView sandbox permits remote
-  // resources; default (absent/false) blocks all network (JS still runs inline).
+  // Plan/126 — LEGACY (plan/158 flipped the live push to metadata-only):
+  // an inline-base64 document broadcast, emitted only by PRE-158 extensions.
+  // New extensions emit `agent_file_ref` instead; new apps keep parsing this
+  // shape so a new app paired against an old extension still opens files.
+  // Triggered by the `show_file` tool. `kind` drives which viewer the app
+  // opens. `allow_network` is HTML-only: when true the WebView sandbox
+  // permits remote resources; default (absent/false) blocks all network
+  // (JS still runs inline).
   | {
       type: "agent_file";
       id: string;
@@ -475,6 +497,56 @@ export type ServerMessage =
        *  (scripts/images/fetch/ws). Absent/false = sandboxed (JS runs, network
        *  blocked). Ignored for non-html kinds. */
       allow_network?: boolean;
+    }
+  // Plan/158 — metadata-only live push for a `show_file` document (replaces
+  // the inline-base64 `agent_file` broadcast). The app renders the bubble
+  // from metadata and fetches bytes on demand via `agent_file_fetch`.
+  // Broadcast + ledger-stamped like every session frame, so journal replay
+  // re-delivers it to owners that attach mid-turn. `id` == `fileId` (stable
+  // dedupe key across live + journal replay + history merge).
+  | {
+      type: "agent_file_ref";
+      id: string;
+      in_reply_to: string;
+      fileId: string;
+      ts: number;
+      kind: "markdown" | "text" | "pdf" | "html" | "mermaid";
+      mime?: string;
+      /** Basename of the pushed path (display / save name). */
+      name?: string;
+      /** Raw file size in bytes. */
+      bytes?: number;
+      caption?: string;
+      /** HTML only: when true the WebView sandbox permits remote resources. */
+      allow_network?: boolean;
+    }
+  // Plan/158 — one raw chunk (≤ 1 MiB before base64) of a pushed file,
+  // answering a specific `agent_file_fetch`. UNICAST to the requesting peer:
+  // never broadcast, never journaled (per-sender query answer, like
+  // `session_history` — a stamp would look like a stream gap).
+  | {
+      type: "agent_file_payload";
+      in_reply_to: string;
+      fileId: string;
+      /** Raw byte offset this chunk serves (echoes the request). */
+      offset: number;
+      /** Current file size in bytes (progress total + change detection). */
+      total: number;
+      /** Base64-encoded raw chunk bytes. */
+      data: string;
+      /** False on the final chunk. */
+      more: boolean;
+    }
+  // Plan/158 — a fetch that could not be served. Codes: `not_found`
+  // (unknown fileId / no registry), `gone` (file deleted), `changed`
+  // (mtime/size differ from the push-time registry entry — covers both
+  // pre-serve and mid-read mutations), `busy` (a fetch is already in flight
+  // on this channel — client retries once after a short delay).
+  | {
+      type: "agent_file_error";
+      in_reply_to: string;
+      fileId: string;
+      code: "not_found" | "gone" | "changed" | "busy";
     }
   // Plan/32: pushed after a context compaction (live, and replayed on history
   // re-sync). `tokens_before` is the pre-compaction token count.
