@@ -247,6 +247,20 @@ export type ClientMessage =
   // filtered by base repo path) and remove one by id.
   | { type: "list_worktrees_request"; id: string; base?: string | null }
   | { type: "remove_worktree_request"; id: string; worktree_id: string }
+  // Plan/158 — make the PC FORGET a past session: prune the rooms.json
+  // registry entry (the keeper then releases the room on its next sweep, so
+  // it stops re-announcing and the phone tile never resurrects) and
+  // optionally delete the session's chat-history transcripts under
+  // ~/.pi/agent/sessions/<encoded cwd>/. Consolidated with remove_worktree
+  // by the app's "Clean up session" flow; served by the device daemon like
+  // the other offline-session actions.
+  | {
+      type: "forget_room_request";
+      id: string;
+      room_id: string;
+      /** Delete the room's transcripts on the PC (opt-in, default false). */
+      delete_history?: boolean;
+    }
   // Plan/121 — list git projects discovered under the configured roots
   // (served by the always-on device daemon so the phone can show a Projects
   // list with no live pi). The chosen project is then spawned as a worktree
@@ -542,6 +556,21 @@ export type ServerMessage =
       in_reply_to: string;
       ok: boolean;
       message: string;
+    }
+  // Plan/158 — reply to forget_room_request. `registry_removed` is false when
+  // the room was never registered (idempotent retry — still ok:true). The
+  // history fields are present only when `delete_history` was requested:
+  // `history_removed` says whether anything was deleted, `history_note`
+  // spells out what happened ("deleted" / "kept: <reason>") so the app can
+  // toast the truth instead of guessing.
+  | {
+      type: "forget_room_result";
+      in_reply_to: string;
+      ok: boolean;
+      message: string;
+      registry_removed: boolean;
+      history_removed?: boolean;
+      history_note?: string;
     }
   // Plan/121 — reply to list_projects_request. `ok:false` only if discovery
   // itself threw (best-effort; an empty list is a valid, ok:true answer).

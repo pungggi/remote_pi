@@ -1741,6 +1741,29 @@ class RemoveWorktreeRequest extends ClientMessage {
   };
 }
 
+/// Plan/158 — make the PC forget a past session: prune the rooms.json
+/// registry entry (the keeper then releases the room on its next sweep, so
+/// it stops re-announcing and the phone tile never resurrects) and
+/// optionally delete the session's chat-history transcripts on the PC.
+class ForgetRoomRequest extends ClientMessage {
+  final String id;
+  final String roomId;
+  final bool deleteHistory;
+  ForgetRoomRequest({
+    required this.id,
+    required this.roomId,
+    this.deleteHistory = false,
+  });
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'forget_room_request',
+    'id': id,
+    'room_id': roomId,
+    if (deleteHistory) 'delete_history': true,
+  };
+}
+
 /// Plan/121 — request the list of git projects discovered under the PC's
 /// configured roots. Served by the always-on device daemon (room
 /// [kDeviceRoom]) so the phone can show a Projects list even when no
@@ -1883,6 +1906,9 @@ sealed class ServerMessage {
       // Plan/112 — worktree tracking replies (list / remove).
       'list_worktrees_result' => ListWorktreesResult.fromJson(json),
       'remove_worktree_result' => RemoveWorktreeResult.fromJson(json),
+      // Plan/158 — the PC forgot a past session (registry prune + optional
+      // transcript deletion).
+      'forget_room_result' => ForgetRoomResult.fromJson(json),
       // Plan/121 — discovered projects list (Projects screen).
       'list_projects_result' => ListProjectsResult.fromJson(json),
       // api.changeLayout — Cockpit orchestration reply.
@@ -2961,6 +2987,36 @@ class RemoveWorktreeResult extends ServerMessage {
         ok: j['ok'] as bool? ?? false,
         message: (j['message'] as String?) ?? '',
       );
+}
+
+/// Plan/158 — reply to [ForgetRoomRequest]. `registryRemoved` is false when
+/// the room was never registered (idempotent retry — still ok). The history
+/// fields are present only when `delete_history` was requested; the note
+/// spells out what actually happened so the UI can toast the truth.
+class ForgetRoomResult extends ServerMessage {
+  final String inReplyTo;
+  final bool ok;
+  final String message;
+  final bool registryRemoved;
+  final bool? historyRemoved;
+  final String? historyNote;
+  ForgetRoomResult({
+    required this.inReplyTo,
+    required this.ok,
+    required this.message,
+    required this.registryRemoved,
+    this.historyRemoved,
+    this.historyNote,
+  });
+
+  factory ForgetRoomResult.fromJson(Map<String, dynamic> j) => ForgetRoomResult(
+    inReplyTo: j['in_reply_to'] as String,
+    ok: j['ok'] as bool? ?? false,
+    message: (j['message'] as String?) ?? '',
+    registryRemoved: j['registry_removed'] as bool? ?? false,
+    historyRemoved: j['history_removed'] as bool?,
+    historyNote: j['history_note'] as String?,
+  );
 }
 
 /// Plan/121 — one discovered git project (main repo) for the Projects list.

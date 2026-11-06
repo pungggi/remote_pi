@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  forgetRoom,
   pruneRooms,
   readRoomsRegistry,
   roomsRegistryPath,
@@ -64,6 +65,26 @@ describe("rooms_registry (plan/140)", () => {
     const map = readRoomsRegistry(p);
     expect(map.has("oldRoom")).toBe(false);
     expect(map.has("newRoom")).toBe(true);
+  });
+
+  // Plan/158 — forget_room: prune ONE entry by id, idempotent on retry.
+  it("forgetRoom removes exactly one entry and persists", () => {
+    const p = tempPath();
+    upsertRoom({ cwd: "C:\\proj", roomId: "deadRoom", lastSeenAt: 1000, sessionId: "s-123" }, p);
+    upsertRoom({ cwd: "C:\\keep", roomId: "liveRoom", lastSeenAt: 2000 }, p);
+    const removed = forgetRoom("deadRoom", p);
+    expect(removed).toEqual({ cwd: "C:\\proj", roomId: "deadRoom", lastSeenAt: 1000, sessionId: "s-123" });
+    const map = readRoomsRegistry(p);
+    expect(map.has("deadRoom")).toBe(false);
+    expect(map.has("liveRoom")).toBe(true);
+  });
+
+  it("forgetRoom returns null for an unknown room (idempotent retry)", () => {
+    const p = tempPath();
+    upsertRoom({ cwd: "C:\\proj", roomId: "roomAAA", lastSeenAt: 1000 }, p);
+    expect(forgetRoom("neverWas", p)).toBeNull();
+    // Registry file untouched.
+    expect(readRoomsRegistry(p).has("roomAAA")).toBe(true);
   });
 
   it("caps stored entries at the 200 newest (plan/140 C)", () => {

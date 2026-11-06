@@ -115,6 +115,7 @@ import {
 import { handleGitStatus, getGitStatus } from "./actions/git_status.js";
 import type { WireGhRef, WireGitStatus, WireSessionStats } from "./protocol/types.js";
 import { handleOpenTerminal, handleListWorktrees, handleRemoveWorktree } from "./actions/open_terminal.js";
+import { handleForgetRoom } from "./actions/forget_room.js";
 import { handleStartSession } from "./actions/start_session.js";
 import { handleListProjects } from "./projects/handlers.js";
 import { handleChangeLayout } from "./actions/change_layout.js";
@@ -5430,6 +5431,13 @@ export function _routeClientMessageFrom(
       break;
     case "remove_worktree_request":
       handleRemoveWorktree(sender, msg);
+      break;
+    // Plan/158 — the PC forgets a past session: prune the rooms.json entry
+    // (keeper releases the room on its next sweep → no more resurrection)
+    // and optionally delete the transcripts. Device-daemon served, like the
+    // other offline-session actions.
+    case "forget_room_request":
+      handleForgetRoom(sender, msg);
       break;
     // Plan/121 — list git projects discovered under the configured roots
     // (device daemon serves this so the phone can show a Projects list with

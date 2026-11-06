@@ -220,6 +220,24 @@ class _RecordingActions implements IActionsRepository {
     return nextRemoveResult;
   }
 
+  // Plan/158 — forget_room bookkeeping (the PC-side registry prune).
+  final List<({String roomId, bool deleteHistory})> forgetCalls = [];
+  ForgetRoomResult nextForgetResult = ForgetRoomResult(
+    inReplyTo: 'x',
+    ok: true,
+    message: 'The computer forgot this session.',
+    registryRemoved: true,
+  );
+
+  @override
+  Future<ForgetRoomResult> forgetRoom(
+    String roomId, {
+    bool deleteHistory = false,
+  }) async {
+    forgetCalls.add((roomId: roomId, deleteHistory: deleteHistory));
+    return nextForgetResult;
+  }
+
   @override
   Future<GitStatus?> gitStatus() async => null;
   @override
@@ -1142,24 +1160,137 @@ void main() {
   });
 
   group(
-    'HomeViewModel — worktree cleanup execution (plan/148, PR #70 review)',
+    'HomeViewModel — consolidated cleanup execution (plan/158, carries the '
+    'plan/148 PR #70 review guards)',
     () {
-      test('removes the worktree and drops the phone-side tile', () async {
+      test('removes worktree + branch, forgets the room, drops the tile',
+          () async {
         final h = await _cleanupHarness();
         final w = await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1');
 
-        final res = await h.vm.cleanupWorktree(
+        final report = await h.vm.cleanupSession(
           epk: 'epk_A',
           roomId: 'r1',
           worktree: w!,
         );
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
-        expect(res.ok, isTrue);
+        expect(report.ok, isTrue);
+        expect(report.roomForgotten, isTrue);
         expect(h.actions.removedIds, ['w1']);
+        // Step 2 ran for THIS room, history untouched (opt-in default).
+        expect(
+          h.actions.forgetCalls,
+          [(roomId: 'r1', deleteHistory: false)],
+        );
         // Same-frame disappearance: the delete path ran through
         // ConnectionManager.deleteCachedRoom.
         expect(h.hasRoom('r1'), isFalse);
+
+        await h.dispose();
+      });
+
+      test('deleteHistory rides through to the forget call', () async {
+        final h = await _cleanupHarness();
+        final w = (await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'))!;
+
+        final report = await h.vm.cleanupSession(
+          epk: 'epk_A',
+          roomId: 'r1',
+          worktree: w,
+          deleteHistory: true,
+        );
+        expect(report.ok, isTrue);
+        expect(
+          h.actions.forgetCalls,
+          [(roomId: 'r1', deleteHistory: true)],
+        );
+
+        await h.dispose();
+      });
+
+      test('removeWorktree:false skips the git step but still forgets + '
+          'deletes locally (unchecked dialog box)', () async {
+        final h = await _cleanupHarness();
+        final w = (await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'))!;
+
+        final report = await h.vm.cleanupSession(
+          epk: 'epk_A',
+          roomId: 'r1',
+          worktree: w,
+          removeWorktree: false,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        expect(report.ok, isTrue);
+        expect(report.worktreeAttempted, isFalse);
+        expect(h.actions.removedIds, isEmpty);
+        expect(h.actions.forgetCalls.single.roomId, 'r1');
+        expect(h.hasRoom('r1'), isFalse);
+
+        await h.dispose();
+      });
+
+      test('no tracked worktree (main checkout) → forget + local delete '
+          'still run; a live sibling in the SAME cwd blocks', () async {
+        // Two dead duplicates in the main checkout: cleaning one is fine.
+        final h = await _cleanupHarness(
+          roomCwd: '/home/me/main-checkout',
+          worktrees: const [],
+        );
+        final report = await h.vm.cleanupSession(
+          epk: 'epk_A',
+          roomId: 'r1',
+        );
+        expect(report.ok, isTrue);
+        expect(report.worktreeAttempted, isFalse);
+        expect(h.actions.removedIds, isEmpty);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(h.hasRoom('r1'), isFalse);
+        await h.dispose();
+
+        // …but a LIVE sibling sharing that cwd must block the forget.
+        final h2 = await _cleanupHarness(
+          roomCwd: '/home/me/main-checkout',
+          worktrees: const [],
+          extraRooms: const [
+            _SeedRoom('epk_A', roomId: 'r2', cwd: '/home/me/main-checkout'),
+          ],
+        );
+        await expectLater(
+          h2.vm.cleanupSession(epk: 'epk_A', roomId: 'r1'),
+          throwsA(
+            isA<ActionFailure>().having(
+              (e) => e.message,
+              'message',
+              contains('Another session'),
+            ),
+          ),
+        );
+        expect(h2.actions.forgetCalls, isEmpty);
+        await h2.dispose();
+      });
+
+      test('a forget refusal keeps the tile (nothing half-done)', () async {
+        final h = await _cleanupHarness();
+        final w = (await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'))!;
+        h.actions.nextForgetResult = ForgetRoomResult(
+          inReplyTo: 'x',
+          ok: false,
+          message: 'registry write failed',
+          registryRemoved: false,
+        );
+
+        final report = await h.vm.cleanupSession(
+          epk: 'epk_A',
+          roomId: 'r1',
+          worktree: w,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        expect(report.ok, isFalse);
+        expect(report.message, contains('registry'));
+        expect(h.hasRoom('r1'), isTrue);
 
         await h.dispose();
       });
@@ -1173,15 +1304,18 @@ void main() {
           message: 'worktree is dirty — nothing removed',
         );
 
-        final res = await h.vm.cleanupWorktree(
+        final report = await h.vm.cleanupSession(
           epk: 'epk_A',
           roomId: 'r1',
           worktree: w,
         );
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
-        expect(res.ok, isFalse);
-        expect(res.message, contains('dirty'));
+        expect(report.ok, isFalse);
+        expect(report.message, contains('dirty'));
+        // Step 2 never ran: forgetting a room whose worktree removal failed
+        // would leave the folder behind AND stop the keeper from serving it.
+        expect(h.actions.forgetCalls, isEmpty);
         expect(h.hasRoom('r1'), isTrue);
         // Cache kept → the entry stays visible for a retry without a fetch.
         expect(h.vm.mayOfferCleanup(h.item('r1')), isTrue);
@@ -1204,7 +1338,7 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
         await expectLater(
-          h.vm.cleanupWorktree(epk: 'epk_A', roomId: 'r1', worktree: w),
+          h.vm.cleanupSession(epk: 'epk_A', roomId: 'r1', worktree: w),
           throwsA(
             isA<ActionFailure>().having(
               (e) => e.message,
@@ -1214,6 +1348,7 @@ void main() {
           ),
         );
         expect(h.actions.removedIds, isEmpty);
+        expect(h.actions.forgetCalls, isEmpty);
         expect(h.hasRoom('r1'), isTrue);
 
         await h.dispose();
@@ -1229,7 +1364,7 @@ void main() {
         final w = (await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'))!;
 
         await expectLater(
-          h.vm.cleanupWorktree(epk: 'epk_A', roomId: 'r1', worktree: w),
+          h.vm.cleanupSession(epk: 'epk_A', roomId: 'r1', worktree: w),
           throwsA(
             isA<ActionFailure>().having(
               (e) => e.message,
@@ -1259,7 +1394,7 @@ void main() {
           final w = (await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'))!;
 
           await expectLater(
-            h.vm.cleanupWorktree(epk: 'epk_A', roomId: 'r1', worktree: w),
+            h.vm.cleanupSession(epk: 'epk_A', roomId: 'r1', worktree: w),
             throwsA(isA<ActionFailure>()),
           );
           expect(h.actions.removedIds, isEmpty);
@@ -1279,15 +1414,16 @@ void main() {
         expect(h.vm.isRoomLive('epk_B', 'b1'), isTrue);
         final w = (await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'))!;
 
-        final res = await h.vm.cleanupWorktree(
+        final report = await h.vm.cleanupSession(
           epk: 'epk_A',
           roomId: 'r1',
           worktree: w,
         );
         await Future<void>.delayed(const Duration(milliseconds: 10));
 
-        expect(res.ok, isTrue);
+        expect(report.ok, isTrue);
         expect(h.actions.removedIds, ['w1']);
+        expect(h.actions.forgetCalls.single.roomId, 'r1');
 
         await h.dispose();
       });
@@ -1311,7 +1447,7 @@ void main() {
           await Future<void>.delayed(const Duration(milliseconds: 10));
 
           await expectLater(
-            h.vm.cleanupWorktree(epk: 'epk_A', roomId: 'r1', worktree: w),
+            h.vm.cleanupSession(epk: 'epk_A', roomId: 'r1', worktree: w),
             throwsA(
               isA<ActionFailure>().having(
                 (e) => e.message,
@@ -1321,6 +1457,7 @@ void main() {
             ),
           );
           expect(h.actions.removedIds, isEmpty);
+          expect(h.actions.forgetCalls, isEmpty);
 
           await h.dispose();
         },
@@ -1339,5 +1476,105 @@ void main() {
         await h.dispose();
       });
     },
+  );
+
+  group('HomeViewModel — batch cleanup (plan/158)', () {
+    test('prep resolves worktree matches, skips live rooms and reports '
+        'unreachable PCs', () async {
+      final h = await _cleanupHarness(
+        worktrees: const [_kWorktree],
+        extraRooms: const [
+          // A second session in the MAIN checkout (no worktree match).
+          _SeedRoom('epk_A', roomId: 'r9', cwd: '/home/me/main-checkout'),
+        ],
+      );
+      // Make r9 a FINISHED session too (it seeded live).
+      h.ch.pushControl(const RoomEnded(peer: 'epk_A', roomId: 'r9', sinceTs: 99));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      final items = h.vm.offlineCleanupItems();
+      // r1 (offline) + r9 (offline, no tracker match) — nothing else.
+      expect(items.map((i) => i.room.roomId), containsAll(['r1', 'r9']));
+
+      final prep = await h.vm.batchCleanupCandidates(items);
+      expect(prep.unreachablePeers, isEmpty);
+      expect(prep.plans.map((p) => p.roomId), containsAll(['r1', 'r9']));
+      expect(
+        prep.plans.firstWhere((p) => p.roomId == 'r1').worktree?.id,
+        'w1',
+      );
+      expect(
+        prep.plans.firstWhere((p) => p.roomId == 'r9').worktree,
+        isNull,
+      );
+
+      await h.dispose();
+    });
+
+    test('batch cleans every selected item and isolates one failure',
+        () async {
+      final h = await _cleanupHarness(
+        worktrees: const [_kWorktree],
+        extraRooms: const [
+          _SeedRoom('epk_A', roomId: 'r9', cwd: '/home/me/main-checkout'),
+        ],
+      );
+      h.ch.pushControl(const RoomEnded(peer: 'epk_A', roomId: 'r9', sinceTs: 99));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      final prep = await h.vm.batchCleanupCandidates(h.vm.offlineCleanupItems());
+      final itemsByKey = {
+        for (final i in h.vm.offlineCleanupItems())
+          '${i.peer.remoteEpk}|${i.room.roomId}': i,
+      };
+
+      // The worktree removal for r1 is REFUSED: r1's report fails while r9
+      // (forget + local delete only) still succeeds — per-item isolation.
+      h.actions.nextRemoveResult = RemoveWorktreeResult(
+        inReplyTo: 'x',
+        ok: false,
+        message: 'worktree is dirty — nothing removed',
+      );
+      final reports = await h.vm.cleanupFinishedSessions(
+        items: [
+          for (final p in prep.plans) itemsByKey['${p.epk}|${p.roomId}']!,
+        ],
+        deleteHistory: false,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(reports, hasLength(2));
+      final r1 = reports.firstWhere((r) => r.roomId == 'r1');
+      final r9 = reports.firstWhere((r) => r.roomId == 'r9');
+      expect(r1.ok, isFalse);
+      expect(r1.message, contains('dirty'));
+      expect(r9.ok, isTrue);
+      expect(r9.worktreeAttempted, isFalse);
+      // Both items were attempted; only r9's forget ran.
+      expect(h.actions.forgetCalls.map((f) => f.roomId), ['r9']);
+      expect(h.hasRoom('r1'), isTrue);
+      expect(h.hasRoom('r9'), isFalse);
+
+      await h.dispose();
+    });
+
+    test('an unreachable PC marks ALL its items as failed reports', () async {
+      final h = await _cleanupHarness(
+        deviceLive: false,
+        withPeerB: true,
+        worktrees: const [],
+      );
+      // r1 (peer A, unreachable) + a live room on peer B is filtered out of
+      // candidates; construct the batch from the still-offline r1 only.
+      final items = h.vm.offlineCleanupItems();
+      expect(items.map((i) => i.room.roomId), ['r1']);
+
+      final reports = await h.vm.cleanupFinishedSessions(items: items);
+      expect(reports, hasLength(1));
+      expect(reports.single.ok, isFalse);
+      expect(reports.single.message, isNotEmpty);
+      expect(h.actions.forgetCalls, isEmpty);
+
+      await h.dispose();
+    });
+  },
   );
 }

@@ -63,6 +63,15 @@ class _FakeActionsRepository implements IActionsRepository {
       RemoveWorktreeResult(inReplyTo: '', ok: true, message: 'stub');
 
   @override
+  Future<ForgetRoomResult> forgetRoom(String roomId, {bool deleteHistory = false}) async =>
+      ForgetRoomResult(
+        inReplyTo: '',
+        ok: true,
+        message: 'stub',
+        registryRemoved: true,
+      );
+
+  @override
   Future<List<WireProject>> listProjects() async => const [];
 
   @override

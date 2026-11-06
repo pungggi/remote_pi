@@ -29,6 +29,9 @@ const SERVER_TYPES = new Set<ServerMessage["type"]>([
   // Plan/112 — worktree tracking replies (list / remove).
   "list_worktrees_result",
   "remove_worktree_result",
+  // Plan/158 — the PC forgets a past session (registry prune + optional
+  // transcript deletion) so the phone tile never resurrects.
+  "forget_room_result",
   // Plan/121 — discovered projects list (phone's Projects tab).
   "list_projects_result",
   // Plan/124 — reply to start_session_request (revive offline session).
