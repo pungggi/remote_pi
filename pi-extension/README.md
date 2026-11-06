@@ -97,13 +97,20 @@ opens a full-screen viewer (pinch-zoom, save, share). It returns only metadata
 (`path`, `mime`, dimensions, size) — the image bytes go straight to the app
 over the relay and never enter the model context. JPEG/PNG/WebP/GIF up to 4 MiB.
 
-`show_file` (plan/126) generalizes that to **documents**: Markdown, plain
+`show_file` (plan/126, metadata-only since plan/158) generalizes that to
+**documents**: Markdown, plain
 text/code, PDF, HTML (with JavaScript), and Mermaid diagrams (plan/144). The LLM calls
 `show_file({ path, caption?, kind?, allowNetwork? })`; the extension detects
 the viewer `kind` from the extension (override with `kind=`), enforces per-kind
-caps (1 MiB text/markdown/html/mermaid, 10 MiB PDF), confirms UTF-8 for the text kinds,
-broadcasts an `agent_file` with inline base64, and returns only metadata
-(`kind`, `path`, `mime`, `bytes`). The app opens the right viewer per kind.
+caps (1 MiB text/markdown/html/mermaid, 20 MiB PDF), confirms UTF-8 for the text kinds,
+registers the file in a per-session transfer ledger, broadcasts an
+`agent_file_ref` with **metadata only** (no bytes), and returns only metadata
+(`kind`, `path`, `mime`, `bytes`). The app shows a reference card and pulls
+the bytes on demand via chunked `agent_file_fetch` / `agent_file_payload`
+unicasts (1 MiB raw per chunk, window = 1) when the user opens, saves, or
+shares the file — so a 12 MiB PDF crosses a relay whose single-frame cap is
+~4 MiB, which the old inline transport could never do. The app opens the
+right viewer per kind.
 For HTML, **JavaScript always runs**, but by default the network is **blocked**
 — a strict Content-Security-Policy meta is injected so inline JS/styles and
 `data:` assets work while remote scripts/images/`fetch`/websockets are blocked.

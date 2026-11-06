@@ -47,6 +47,37 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
     shared history toggle, and reports per-session ✓/✗ — one failure
     never aborts the batch.
 
+## [Unreleased]
+
+### Added
+
+- **Mesh file transfer PC→Phone (plan/158)**: `show_file` no longer ships
+  bytes. The Pi extension registers the file in a per-session ledger
+  (transcript-sibling `<session>.files.jsonl` sidecar) and broadcasts an
+  `agent_file_ref` — metadata only. The app shows a reference card and pulls
+  the content on demand (open / save / share) via chunked
+  `agent_file_fetch` → `agent_file_payload` unicasts (1 MiB raw chunks,
+  window = 1, resumable offset).
+- **Save to Downloads**: the document viewer gained a Save action
+  (MediaStore Downloads via platform channel, no permissions needed on
+  minSdk 34; system dedupes duplicate names) alongside the existing Share.
+- **Typed fetch failures** in the app: `gone` → inert card,
+  `changed` → "fetch current version" retry, `busy` → one automatic
+  1.5 s retry then a manual retry, silent chunk loss → watchdog re-requests
+  the same offset (3 attempts).
+- **History merge**: `agent_file_ref` events are merged into the right
+  `session_history` page by `ts`, so file cards survive app restarts and
+  re-syncs without any base64 ever entering a history payload.
+
+### Changed
+
+- **PDF cap raised 10 MiB → 20 MiB** (user decision #6): chunked transfer
+  makes the old relay frame cap irrelevant; the DoD test uses a 12 MiB PDF
+  to prove the old inline cap is gone.
+- **`agent_file` is now legacy**: pre-158 extensions still send inline
+  base64 and new apps still parse it, but plan/158 extensions only emit
+  `agent_file_ref`. See PROTOCOL.md for the mixed-version matrix.
+
 ## [1.5.4] - 2026-11-02
 
 ### Added

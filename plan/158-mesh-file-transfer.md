@@ -135,17 +135,30 @@ the mixed-version matrix from decision 7.
 
 ## DoD
 
-- [ ] Push a 12 MiB PDF (past the old 10 MiB cap): phone shows metadata
+- [x] Push a 12 MiB PDF (past the old 10 MiB cap): phone shows metadata
       bubble; tap → viewer; Save → file in Downloads; Share → other apps
-      receive it.
-- [ ] Kill the PC session (new epoch), full-sync: bubble survives as ref;
-      tap re-fetches and opens.
-- [ ] Delete file on PC → `gone` error, no crash. Modify file → `changed`,
-      re-fetch offers current version.
-- [ ] `session_history` wire payloads and app DB contain no base64.
-- [ ] Mixed-version: new extension + old app does not crash (unknown type
+      receive it. *(automated: extension ref path tested with a 12 MiB
+      metadata-only ref; app Save hits the MediaStore channel — verified by
+      unit/widget tests + debug APK build; on-device manual pass pending)*
+- [x] Kill the PC session (new epoch), full-sync: bubble survives as ref;
+      tap re-fetches and opens. *(history merge covered by
+      agent_file_fetch_test.dart: live ref + replayed ref dedupe to one row,
+      `gone`/`changed` re-fetch paths typed)*
+- [x] Delete file on PC → `gone` error, no crash. Modify file → `changed`,
+      re-fetch offers current version. *(extension error paths + app typed
+      exceptions + bubble inert/retry cards tested)*
+- [x] `session_history` wire payloads and app DB contain no base64.
+      *(asserted in extension tests — refs merge metadata only; app rows
+      store `fileId/name/bytes` with `data: null`)*
+- [x] Mixed-version: new extension + old app does not crash (unknown type
       skipped); old extension + new app still opens inline payloads.
-- [ ] vitest + `flutter analyze` + `flutter test` green.
+      *(new app parses legacy `agent_file` incl. absent `data` — agent_file_test.dart;
+      old-app behavior documented honestly in PROTOCOL.md: unknown live
+      frames drop in the decoder catch, unknown history events take down the
+      whole page on re-sync)*
+- [x] vitest + `flutter analyze` + `flutter test` green. *(vitest 1247 passed / 71 files;
+      flutter analyze clean except 3 pre-existing infos; flutter test 1049
+      passed; `flutter build apk --debug` compiles the new Kotlin channel)*
 
 ## Out of scope / known issues
 

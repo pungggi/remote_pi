@@ -358,11 +358,24 @@ Generalização do plan/114 além de imagens: o **agente mostra ao usuário** um
 diagrama **Mermaid** (plan/144).
 O agente chama a tool `show_file({ path, caption?, kind?, allowNetwork? })`;
 a pi-extension detecta o `kind` pela extensão (override via `kind=`), valida o
-teto por tipo (**1 MiB** texto/markdown/html/mermaid, **10 MiB** PDF), confirma UTF-8
-válido para os tipos textuais, faz broadcast de um `agent_file` ServerMessage
-com **inline base64** a todos os owners, e devolve ao modelo **só metadados**
+teto por tipo (**1 MiB** texto/markdown/html/mermaid, **20 MiB** PDF desde o
+plan/158), confirma UTF-8
+válido para os tipos textuais e devolve ao modelo **só metadados**
 (`{ shown, kind, path, mime, bytes }`) — os bytes **nunca** entram no contexto
-do modelo (mesma disciplina do plan/49/114). O app renderiza um balão (card)
+do modelo (mesma disciplina do plan/49/114).
+
+**Transporte (duas versões no fio):**
+
+- **plan/126 (legado)**: broadcast de um `agent_file` ServerMessage com
+  **inline base64**. Extensions pré-158 emitem este frame; apps novos ainda o
+  parseiam (compatibilidade retroativa).
+- **plan/158 (atual)**: broadcast **metadata-only** de um `agent_file_ref`
+  — os bytes viajam só quando o usuário abre/salva/compartilha, via
+  `agent_file_fetch` / `agent_file_payload` (seção abaixo). PDFs grandes
+  (até 20 MiB) não caberiam num frame de relay (cap ~4 MiB no `ct`); sem
+  chunking, o cap útil do plan/126 era ~2,9 MiB de bytes brutos.
+
+O app renderiza um balão (card)
 tappable que abre o viewer certo conforme `kind` (Markdown / texto / PDF /
 HTML+JS / Mermaid).
 
@@ -385,7 +398,7 @@ mantém labels sanitizados.
 
 ### Wire
 ServerMessage `agent_file` (broadcast ao vivo, **não** replayed via
-`session_history`):
+`session_history`; **legado — só extensions pré-158**):
 
 ```jsonc
 { "type": "agent_file",
@@ -409,6 +422,98 @@ html/htm/xhtml, pdf, mmd/mermaid, além de dotfiles comuns como `.env`/`.gitigno
 A detecção é **somente por extensão** no MVP — **sem** checagem de magic bytes;
 um PDF truncado/corrupt é aceito pelo `.pdf` e renderiza um erro no viewer (mais
 útil que recusar). O agente pode forçar o `kind=` quando a extensão não bastar.
+
+---
+
+## Transferência de arquivos PC→Telefone (plan/158)
+
+O `show_file` deixa de carregar bytes: a extension registra o arquivo num
+**ledger** (sidecar JSONL por sessão) e anuncia **apenas metadados**. O app
+mostra um card de referência e puxa os bytes sob demanda — quando o usuário
+abre, salva ou compartilha. Por quê: um PDF de 12 MiB nunca coube num frame
+do relay (cap ~4 MiB no `ct`, ~+77% de double-base64), e 95% dos arquivos
+empurrados nunca são abertos — embalar bytes antecipadamente é custo puro.
+
+### Wire — anúncio (pi-extension → app)
+
+```jsonc
+{ "type": "agent_file_ref",
+  "id": "file_<uuid>",              // == file_id (dedupe natural)
+  "in_reply_to": "<turn-id ou \"\" >",
+  "file_id": "file_<uuid>",
+  "ts": 1730000000000,
+  "kind": "pdf",                    // markdown | text | pdf | html | mermaid
+  "mime": "application/pdf",
+  "name": "relatorio.pdf",          // basename para display/save
+  "bytes": 12582912,                // tamanho declarado (progress bar)
+  "caption": "o relatório",         // opcional
+  "allow_network": false }          // só html
+```
+
+Sem `data` — nenhum byte no fio. Replay de history usa o MESMO shape como
+evento `{ type: "agent_file_ref", ts, ... }` (sem `id`), mergeado na página
+certa pelo `ts` (bounds `[slots[start].ts, slots[end].ts)`, página mais antiga
+com lower bound −∞). O ledger (sidecar `<session>.files.jsonl` ao lado do
+transcript, ou `<sessionsRoot>/<cwd>/.pending.files.jsonl`) guarda apenas
+`{fileId, kind, mime, name, bytes, caption?, allowNetwork?, path, mtimeMs,
+ts}` — **sem sha256, sem bytes**.
+
+### Wire — fetch sob demanda (app → pi-extension → app)
+
+```jsonc
+// app → Pi (janela = 1: o próximo pedido só sai depois do chunk anterior
+// anexado; offset retomável — a extension relê do disco, stateless)
+{ "type": "agent_file_fetch", "id": "req_<uuid>",
+  "file_id": "file_<uuid>", "offset": 1048576 }
+
+// Pi → app (chunk de 1 MiB RAW ≈ 1,4 MiB base64, cabe no ct de 4 MiB)
+{ "type": "agent_file_payload", "in_reply_to": "req_<uuid>",
+  "file_id": "file_<uuid>", "offset": 1048576, "total": 12582912,
+  "data": "<base64 slice>", "more": true }
+
+// Pi → app (recusa/aborta)
+{ "type": "agent_file_error", "in_reply_to": "req_<uuid>",
+  "file_id": "file_<uuid>", "code": "gone" }
+```
+
+Códigos de erro e o que o app faz:
+
+- **`not_found`**: fileId desconhecido → card inerte "no longer on the Pi".
+- **`gone`**: arquivo apagado do repo → idem, card inerte.
+- **`changed`**: mtime/tamanho mudou desde o anúncio → card de aviso;
+  tap refaz o fetch e recebe a versão atual.
+- **`busy`**: outro fetch em andamento na extension → auto-retry 1,5 s
+  (uma vez); segundo `busy` vira falha visível com retry manual.
+
+Resiliência no app (SyncService): watchdog de 10 s por chunk re-pede o
+MESMO offset (até 3 tentativas); chunks duplicados/fora de ordem são
+descartados (o offset esperado é o juiz). Bytes **não são persistidos**
+— a história fica metadata-only; o resultado vive só em memória
+(viewer / Save / Share).
+
+### Save e Share (app)
+
+- **Save**: platform channel `ch.pungitore.piper/files` → `saveToDownloads`
+  (MediaStore Downloads, minSdk 34, sem permissão; nomes duplicados são
+  dedupados pelo sistema). Toast confirma com o nome gravado.
+- **Share**: `share_plus` direto da memória (sem temp file), como no viewer
+  de imagens.
+
+### Compatibilidade (matriz de versões mistas)
+
+| extension | app | resultado |
+|---|---|---|
+| nova | nova | refs metadata-only + fetch chunked (caminho feliz) |
+| nova | velha | app velho não conhece `agent_file_ref` → o frame cai no catch-and-log do decode: o card não aparece; a extension ainda reporta `shown:true` se havia owner conectado (não distingue versão do app) — limitação declarada |
+| velha | nova | app novo parseia `agent_file` inline legado normalmente (bytes direto no viewer, sem fetch) |
+| history | velha | página de `session_history` contendo um evento `agent_file_ref` falha o decode INTEIRO (o throw do evento derruba o `SessionHistory.fromJson`) → app velho perde a página inteira no re-sync e registra o erro. Custa linhas de transcript no app velho; o app novo não é afetado |
+
+Notas:
+
+- O cap PDF subiu **10 MiB → 20 MiB** (decisão do usuário #6); os testes/DoD
+  usam um PDF de 12 MiB para provar que passou do cap antigo.
+- `show_image` (plan/114) segue inline — o drop do relay em >4 MiB é
+  limitação conhecida fora do escopo do 158.
 
 ---
 
