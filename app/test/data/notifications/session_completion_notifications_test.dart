@@ -7,6 +7,7 @@ import 'dart:io';
 import 'package:app/data/local/boxes.dart';
 import 'package:app/data/notifications/local_notifications.dart';
 import 'package:app/data/notifications/session_completion_notifications.dart';
+import 'package:app/data/notifications/waiting_input_notifications.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
@@ -18,11 +19,18 @@ class _FakeLocalNotifications implements LocalNotifications {
   /// Plan 132 review fix — simulates the cold-start launch payload.
   String? launchPayload;
 
+  /// Contextual-ask tests count requestPermission calls (toggle tests
+  /// route through setEnabled, so they don't assert on this).
+  int requests = 0;
+
   @override
   Future<void> initialize() async {}
 
   @override
-  Future<bool> requestPermission() async => permission;
+  Future<bool> requestPermission() async {
+    requests++;
+    return permission;
+  }
 
   @override
   Future<bool> hasPermission() async => permission;
@@ -95,15 +103,32 @@ void main() {
         marker: RunDoneMarker(turnId: turnId, endedAtMs: endedAt),
       );
 
-  test('toggle defaults off and persists through the box', () async {
+  test('toggle defaults ON and persists through the box', () async {
     final local = _FakeLocalNotifications();
     final svc = build(local);
 
+    // notifydefault (2026-11): a missing key means ENABLED — the feature
+    // works out of the box on every new session.
+    expect(svc.isEnabled('epkX', 'r1'), isTrue);
+    // Explicit opt-out sticks (future toggle UI contract).
+    await svc.setEnabled('epkX', 'r1', false);
     expect(svc.isEnabled('epkX', 'r1'), isFalse);
     await svc.setEnabled('epkX', 'r1', true);
     expect(svc.isEnabled('epkX', 'r1'), isTrue);
-    await svc.setEnabled('epkX', 'r1', false);
-    expect(svc.isEnabled('epkX', 'r1'), isFalse);
+  });
+
+  test('default-on: backgrounded marker banners with no toggle writes', () async {
+    final local = _FakeLocalNotifications();
+    final svc = build(local);
+    final events = StreamController<RunDoneEvent>.broadcast();
+    svc.attach(events.stream);
+    svc.setBackgrounded(true);
+
+    events.add(marker('r1', 100));
+    await Future<void>.delayed(Duration.zero);
+    expect(local.shown.length, 1,
+        reason: 'no key in the box → default ON → banner');
+    await events.close();
   });
 
   test('gate order — foreground, disabled, dedup, permission', () async {
@@ -119,7 +144,9 @@ void main() {
     await Future<void>.delayed(Duration.zero);
     expect(local.shown, isEmpty);
 
-    // Backgrounded but different room (toggle off) → suppressed.
+    // Backgrounded but different room — now defaults ON, so an explicit
+    // opt-out is needed to keep testing the gate.
+    await svc.setEnabled('epkX', 'r2', false);
     svc.setBackgrounded(true);
     events.add(marker('r2', 100));
     await Future<void>.delayed(Duration.zero);
@@ -205,5 +232,104 @@ void main() {
         isNull);
     expect(SessionCompletionNotifications.parsePayload(':r1'), isNull);
     expect(SessionCompletionNotifications.parsePayload('epk:'), isNull);
+  });
+
+  group('notifydefault — contextual permission ask (shared flag)', () {
+    test('first foreground run-done asks once per install, durably', () async {
+      final local = _FakeLocalNotifications()..permission = false;
+      final svc = build(local);
+      final events = StreamController<RunDoneEvent>.broadcast();
+      svc.attach(events.stream);
+      svc.setBackgrounded(false);
+
+      events.add(marker('r1', 100));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(local.requests, 1);
+      expect(local.shown, isEmpty, reason: 'foreground never banners');
+
+      // Second foreground marker — durable flag prevents a re-ask.
+      events.add(marker('r2', 100));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(local.requests, 1);
+
+      await events.close();
+      svc.dispose();
+
+      // Survives a facade restart — the flag lives in the Hive box.
+      final local2 = _FakeLocalNotifications()..permission = false;
+      final svc2 = build(local2);
+      final events2 = StreamController<RunDoneEvent>.broadcast();
+      svc2.attach(events2.stream);
+      events2.add(marker('r3', 100));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(local2.requests, 0, reason: 'once per INSTALL, not per run');
+      await events2.close();
+      svc2.dispose();
+    });
+
+    test('granted permission sets the flag without ever asking', () async {
+      final local = _FakeLocalNotifications(); // permission = true
+      final svc = build(local);
+      final events = StreamController<RunDoneEvent>.broadcast();
+      svc.attach(events.stream);
+      svc.setBackgrounded(false);
+
+      events.add(marker('r1', 100));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(local.requests, 0);
+
+      // Flag was set by the granted pass — flipping permission off later
+      // must not resurrect the ask.
+      local.permission = false;
+      events.add(marker('r1', 200));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(local.requests, 0);
+      await events.close();
+    });
+
+    test('backgrounded run-done never asks', () async {
+      final local = _FakeLocalNotifications()..permission = false;
+      final svc = build(local);
+      final events = StreamController<RunDoneEvent>.broadcast();
+      svc.attach(events.stream);
+      svc.setBackgrounded(true);
+
+      events.add(marker('r1', 100));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(local.requests, 0,
+          reason: 'the OS dialog needs a resumed activity');
+      expect(local.shown, isEmpty, reason: 'permission gate suppresses');
+      await events.close();
+    });
+
+    test('the ask flag is shared with the waiting-input facade', () async {
+      final local = _FakeLocalNotifications()..permission = false;
+
+      // Completion facade consumes the ask on a foreground run-done.
+      final completion = build(local);
+      final done = StreamController<RunDoneEvent>.broadcast();
+      completion.attach(done.stream);
+      completion.setBackgrounded(false);
+      done.add(marker('r1', 100));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(local.requests, 1);
+      await done.close();
+      completion.dispose();
+
+      // Waiting-input facade must NOT re-ask afterwards.
+      final waiting =
+          WaitingInputNotifications(boxes: LocalBoxes(), local: local);
+      waiting.setBackgrounded(false);
+      final waits = StreamController<WaitingForInputEvent>.broadcast();
+      waiting.attach(waits.stream);
+      waits.add(
+        const WaitingForInputEvent(epk: 'epkX', roomId: 'r1', waiting: true),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+      expect(local.requests, 1,
+          reason: 'shared kPermissionAskedKey covers both facades');
+      await waits.close();
+      waiting.dispose();
+    });
   });
 }

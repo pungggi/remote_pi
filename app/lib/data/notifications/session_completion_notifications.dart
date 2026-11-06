@@ -22,19 +22,33 @@ abstract class ICompletionNotifications extends ChangeNotifier
 ///
 /// One facade owning the whole feature:
 ///
-/// - **The per-session toggle** (durable, Hive `notify_prefs` box, default
-///   off) — `isEnabled` / `setEnabled`. It is a [ChangeNotifier] so Home can
-///   rebuild the bell badges when a toggle flips.
+/// - **The per-session toggle** (durable, Hive `notify_prefs` box) —
+///   `isEnabled` / `setEnabled`. It is a [ChangeNotifier] so Home can
+///   rebuild the bell badges when a toggle flips. **Default ON** (the
+///   `notifydefault` change, 2026-11): a missing key means enabled —
+///   only an explicit `false` opts a session out. There is no toggle UI
+///   yet, so default-off left the whole feature dormant; default-on makes
+///   completion banners work out of the box on every new session.
 /// - **The notification gate** — `attach` subscribes to a run-done stream
 ///   (wire it to [ConnectionManager.runDoneStream] in bootstrap) and, per
 ///   marker, applies the gates in order:
 ///   1. app backgrounded (`setBackgrounded`, driven from
 ///      `didChangeAppLifecycleState` — foreground, the tiles already show
-///      working→idle, so a banner would be noise);
+///      working→idle, so a banner would be noise; a FOREGROUND marker
+///      instead carries the contextual permission ask below);
 ///   2. toggle on for that (epk, room);
 ///   3. marker newer than the last one notified for that room (dedup —
 ///      belt-and-suspenders against any future relay re-broadcast);
 ///   4. notification permission granted.
+///
+/// **Contextual permission ask** (default-on companion): the first
+/// FOREGROUND run-done marker with permission missing triggers the
+/// POST_NOTIFICATIONS ask — once per install, guarded by the SAME durable
+/// flag the waiting-input facade uses ([LocalBoxes.kPermissionAskedKey]),
+/// so whichever facade hits first consumes the ask and a denial silences
+/// both without ever re-nagging. Without this, default-on would stay
+/// silently banner-less on Android 13+ for users who never hit an
+/// ask_user prompt.
 ///
 /// **Honest limits** (declared in Plan/132, surfaced in the toggle UI): the
 /// notification only fires while the process is alive — i.e. while the
@@ -64,6 +78,7 @@ class SessionCompletionNotifications extends ICompletionNotifications {
   StreamSubscription<RunDoneEvent>? _sub;
   bool _backgrounded = false;
   bool _disposed = false;
+  bool _askInFlight = false;
 
   /// Last `ended_at` (ms) notified per `<standardB64(epk)>:<roomId>` — the
   /// dedup gate. Volatile by design: the relay never replays markers
@@ -79,9 +94,13 @@ class SessionCompletionNotifications extends ICompletionNotifications {
       LocalBoxes.sessionKey(toStandardB64(epk), roomId);
 
   /// Whether completion notifications are enabled for this session.
+  /// Default ON: a missing key counts as enabled; only an explicit
+  /// `false` opts out (so a future toggle UI can never be surprised by a
+  /// stale absence — and existing installs with no key — i.e. every
+  /// install, since no UI ever wrote one — get the feature live).
   @override
   bool isEnabled(String epk, String roomId) =>
-      _boxes.notifyPrefsBox().get(prefsKey(epk, roomId)) == true;
+      _boxes.notifyPrefsBox().get(prefsKey(epk, roomId)) != false;
 
   /// Enable/disable completion notifications for this session. When turning
   /// ON, requests the notification permission first (Android 13+); returns
@@ -153,8 +172,13 @@ class SessionCompletionNotifications extends ICompletionNotifications {
   Future<void> _onRunDone(RunDoneEvent e) async {
     if (_disposed) return;
     // Gate 1 — only worth a banner when the user is not looking at the app.
-    if (!_backgrounded) return;
-    // Gate 2 — per-session opt-in.
+    // Foreground: no banner, but the default-on companion — the contextual
+    // once-per-install permission ask (see class doc).
+    if (!_backgrounded) {
+      await _maybeAskPermissionOnce();
+      return;
+    }
+    // Gate 2 — per-session opt-in (default ON; explicit `false` opts out).
     if (!isEnabled(e.epk, e.roomId)) return;
     // Gate 3 — dedup: only markers NEWER than the last notified one.
     final key = prefsKey(e.epk, e.roomId);
@@ -172,6 +196,35 @@ class SessionCompletionNotifications extends ICompletionNotifications {
       body: 'Task finished — tap to open.',
       payload: key,
     );
+  }
+
+  /// Default-on companion (mirrors plan/141's waiting-input ask): once per
+  /// install, at the first FOREGROUND run-done marker with permission
+  /// missing — the user just watched a task finish in-app, which is the
+  /// natural moment to offer background banners. Shares the durable
+  /// [LocalBoxes.kPermissionAskedKey] flag with the waiting-input facade:
+  /// whichever fires first consumes the ask; a denial silences both
+  /// features' banners and neither ever re-asks. Recovery is the OS
+  /// notification settings for the app.
+  Future<void> _maybeAskPermissionOnce() async {
+    if (_askInFlight) return;
+    final box = _boxes.notifyPrefsBox();
+    if (box.get(LocalBoxes.kPermissionAskedKey) == true) return;
+    _askInFlight = true;
+    try {
+      if (await _local.hasPermission()) {
+        // Nothing to ask — remember that too, so the check never runs
+        // again on this install.
+        await box.put(LocalBoxes.kPermissionAskedKey, true);
+        return;
+      }
+      // Set the flag BEFORE the await so a second concurrent marker can't
+      // slip past the guard (Hive updates its in-memory cache eagerly).
+      await box.put(LocalBoxes.kPermissionAskedKey, true);
+      await _local.requestPermission();
+    } finally {
+      _askInFlight = false;
+    }
   }
 
   /// Deterministic 31-bit notification id for a prefs key — **must not use

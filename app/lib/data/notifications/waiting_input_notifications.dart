@@ -37,9 +37,9 @@ import 'package:app/protocol/protocol.dart';
 ///    show; a FOREGROUND rising edge then asks for the permission ONCE
 ///    per install (durable `permission_asked` flag) because the OS dialog
 ///    can only appear while the activity is resumed. A backgrounded edge
-///    with missing permission stays silent (the Settings → Session alerts
-///    row is the recovery path) rather than burning the once-per-install
-///    ask on a dialog that can never appear.
+///    with missing permission stays silent rather than burning the
+///    once-per-install ask on a dialog that can never appear; the recovery
+///    path is the OS notification settings for the app.
 ///
 /// **Falling edges cancel** (plan/141 gap 3): when the prompt is answered
 /// — in the app, at the terminal, or by a run abort — the room's banner
@@ -58,11 +58,12 @@ import 'package:app/protocol/protocol.dart';
 /// per-session toggle surface to watch — nothing ever listens to this
 /// class; it only subscribes.
 class WaitingInputNotifications implements Service {
-  /// Durable key in the `notify_prefs` box — `true` once the proactive
-  /// POST_NOTIFICATIONS ask (plan/141) has been made on this install.
-  /// Denied users re-enable via Settings → Session alerts; the flag
-  /// prevents the facade from ever re-nagging unbidden.
-  static const String _kPermissionAsked = 'permission_asked';
+  /// Plan/141 dedupe — durable key in the `notify_prefs` box: `true` once
+  /// the proactive POST_NOTIFICATIONS ask has been made on this install.
+  /// Lives as [LocalBoxes.kPermissionAskedKey] — SHARED with the completion
+  /// facade's default-on contextual ask, so one ask (or denial) covers both
+  /// facades and neither ever re-nags. Denied users re-enable via the OS
+  /// notification settings for the app.
 
   final LocalBoxes _boxes;
   final LocalNotifications _local;
@@ -147,7 +148,7 @@ class WaitingInputNotifications implements Service {
       // Foreground only: the OS dialog can only appear while resumed. A
       // backgrounded denial stays silent — burning the once-per-install
       // ask on an unshowable dialog would lose it forever (Settings →
-      // Session alerts is the explicit recovery path).
+      // App notification settings is the explicit recovery path).
       if (!_backgrounded) await _maybeAskPermission(e.epk, e.roomId);
       return;
     }
@@ -175,26 +176,27 @@ class WaitingInputNotifications implements Service {
   /// Plan/141 — proactive POST_NOTIFICATIONS ask: once per install, at
   /// the first FOREGROUND rising edge with no sheet open (the OS dialog
   /// can only show while resumed). Never interrupts an in-progress answer
-  /// (sheet check); never re-asks after the first attempt (durable flag);
-  /// a denial is recoverable via the Settings → Session alerts row.
+  /// (sheet check); never re-asks after the first attempt (durable flag,
+  /// shared with the completion facade); a denial is recoverable via the
+  /// OS notification settings for the app.
   Future<void> _maybeAskPermission(String epk, String roomId) async {
     if (_askInFlight) return;
     // Sheet open — don't overlay the OS dialog on the answer the user is
     // giving; a later edge (or the next wait) retries.
     if (hasOpenAskSheet?.call(epk, roomId) ?? false) return;
     final box = _boxes.notifyPrefsBox();
-    if (box.get(_kPermissionAsked) == true) return;
+    if (box.get(LocalBoxes.kPermissionAskedKey) == true) return;
     _askInFlight = true;
     try {
       if (await _local.hasPermission()) {
         // Nothing to ask — remember that too, so the check never runs
         // again on this install.
-        await box.put(_kPermissionAsked, true);
+        await box.put(LocalBoxes.kPermissionAskedKey, true);
         return;
       }
       // Set the flag BEFORE the await so a second concurrent edge can't
       // slip past the guard (Hive updates its in-memory cache eagerly).
-      await box.put(_kPermissionAsked, true);
+      await box.put(LocalBoxes.kPermissionAskedKey, true);
       await _local.requestPermission();
     } finally {
       _askInFlight = false;
