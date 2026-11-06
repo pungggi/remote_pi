@@ -8,14 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
-## [1.5.6] - 2026-11-06
+## [1.6.0] - 2026-11-07
 
-### Fixed
+### Added
 
-- Cleanup menu entry could vanish after the first cleanup until an app restart.
-
-
-## [Unreleased]
+- **File transfer PC→Phone (plan/158)**: documents the agent shows you
+  (`show_file`) now arrive as lightweight reference cards — bytes are pulled
+  from the Pi only when you open, save, or share the file. Big PDFs (up to
+  20 MiB, chunked at 1 MiB) cross the relay reliably; no more silent drops
+  of large files. File cards survive app restarts and re-syncs.
+- **Save to Downloads** in the document viewer (system Downloads folder,
+  duplicate names deduped automatically) alongside Share.
 
 ### Changed
 
@@ -30,6 +33,13 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   waiting-for-input banners, so one ask or denial covers both features
   and neither ever re-nags. Denials are recoverable via the OS
   notification settings for the app.
+
+## [1.5.6] - 2026-11-06
+
+### Fixed
+
+- Cleanup menu entry could vanish after the first cleanup until an app restart.
+
 
 ## [1.5.5] - 2026-11-06
 
