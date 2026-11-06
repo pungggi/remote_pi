@@ -1,0 +1,40 @@
+name: AI PR Review
+
+# Thin stub — logic lives centrally in pungggi/ai-review (reusable workflow).
+# Needs secrets CHEAPESTINFERENCE_API_KEY + AI_REVIEW_TOKEN in this repo
+# (setup.md §2c) and variables AI_REVIEW_SLOT_START/END (UTC hours).
+#
+# Sweep over all repos (catches PRs pushed outside the CheapestInference
+# time block): runs centrally in pungggi/ai-review — nothing needed here.
+
+# Trigger policy (2026-11-03, ai-review#2): NO synchronize — every fix
+# push would otherwise fire the next review and the loop fed itself
+# (ztilt#24: 17+ rounds). Re-review is deliberately manual:
+# Actions → "AI PR Review" → Run workflow. Reference stub: ztilt cfeec3d.
+# The central sweep only catches up PRs that were NEVER reviewed.
+
+on:
+  pull_request:
+    types: [opened, reopened]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number (optional; empty = PR of the current branch)"
+        required: false
+        type: string
+
+# Multiple manual runs don't stack: newest wins.
+concurrency:
+  group: ai-review-${{ inputs.pr_number || github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    uses: pungggi/ai-review/.github/workflows/review.yml@main
+    with:
+      pr_number: ${{ inputs.pr_number }}
+    secrets: inherit
