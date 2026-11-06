@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
+## [1.5.6] - 2026-11-06
+
+### Fixed
+
+- Cleanup menu entry could vanish after the first cleanup until an app restart.
+
 
 ## [1.5.5] - 2026-11-06
 
