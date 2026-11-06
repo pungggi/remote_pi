@@ -31,7 +31,7 @@ void main() {
         'history_note': 'deleted 2 transcript file(s)',
       });
       expect(c, isA<ForgetRoomResult>());
-      final r = c! as ForgetRoomResult;
+      final r = c as ForgetRoomResult;
       expect(r.inReplyTo, 'r1');
       expect(r.ok, isTrue);
       expect(r.registryRemoved, isTrue);
@@ -48,7 +48,7 @@ void main() {
         'registry_removed': false,
       });
       expect(c, isA<ForgetRoomResult>());
-      final r = c! as ForgetRoomResult;
+      final r = c as ForgetRoomResult;
       expect(r.registryRemoved, isFalse);
       expect(r.historyRemoved, isNull);
       expect(r.historyNote, isNull);
@@ -61,7 +61,7 @@ void main() {
         'message': 'boom',
       });
       expect(c, isA<ForgetRoomResult>());
-      final r = c! as ForgetRoomResult;
+      final r = c as ForgetRoomResult;
       expect(r.ok, isFalse);
       expect(r.registryRemoved, isFalse);
     });

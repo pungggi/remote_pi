@@ -98,14 +98,35 @@ export function deleteRoomHistory(
 }
 
 /**
- * Plan/158 — replies with `forget_room_result`. Prunes the rooms.json entry
- * and (when asked) the room's transcripts. ok:false only when the registry
- * write itself throws — everything else is reported via fields + note.
+ * Plan/158 — replies with `forget_room_result`. Deletes the room's
+ * transcripts (when asked) and prunes the rooms.json entry. ok:false only
+ * when the registry write itself throws — everything else is reported via
+ * fields + note. History runs first so every crash window is recoverable.
  */
 export function handleForgetRoom(sender: ActionReplySender, msg: ForgetRoomRequestMsg): void {
   // Read BEFORE pruning: the entry carries the cwd (transcript folder) and
   // the Pi sessionId (exact file match).
   const entry = readRoomsRegistry().get(msg.room_id);
+
+  // History FIRST (PR #94 review): deleting transcripts before the registry
+  // prune keeps every failure window recoverable — if we crash mid-flow the
+  // room is still registered, so a retry re-runs both steps. Prune-then-
+  // history would orphan the transcripts forever: the entry (cwd + session
+  // id) is what locates them, and the UI path for a retry is gone.
+  let historyRemoved: boolean | undefined;
+  let historyNote: string | undefined;
+  if (msg.delete_history) {
+    if (!entry || typeof entry.cwd !== "string" || !entry.cwd.trim()) {
+      // Unknown room (or pre-cwd entry): nothing to locate on disk.
+      historyRemoved = false;
+      historyNote = "kept: session folder unknown (or never registered)";
+    } else {
+      const res = deleteRoomHistory(entry.cwd, entry.sessionId);
+      historyRemoved = res.removed;
+      historyNote = res.note;
+    }
+  }
+
   let registryRemoved = false;
   try {
     registryRemoved = forgetRoom(msg.room_id) !== null;
@@ -116,24 +137,10 @@ export function handleForgetRoom(sender: ActionReplySender, msg: ForgetRoomReque
       ok: false,
       message: `Could not update the session registry: ${(e as Error).message}`,
       registry_removed: false,
+      ...(historyRemoved !== undefined ? { history_removed: historyRemoved } : {}),
+      ...(historyNote !== undefined ? { history_note: historyNote } : {}),
     });
     return;
-  }
-
-  let historyRemoved: boolean | undefined;
-  let historyNote: string | undefined;
-  if (msg.delete_history) {
-    if (!entry || typeof entry.cwd !== "string" || !entry.cwd.trim()) {
-      // Unknown room (or pre-cwd entry): nothing to locate on disk.
-      historyRemoved = false;
-      historyNote = registryRemoved
-        ? "kept: session folder unknown"
-        : "kept: session was never registered on this computer";
-    } else {
-      const res = deleteRoomHistory(entry.cwd, entry.sessionId);
-      historyRemoved = res.removed;
-      historyNote = res.note;
-    }
   }
 
   sender.send({

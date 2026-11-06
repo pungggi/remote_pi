@@ -1556,6 +1556,36 @@ void main() {
       await h.dispose();
     });
 
+    test('batch reports come back in INPUT order, not per-peer group order '
+        '(PR #94 review: the old grouped order mispaired sheet rows)', () async {
+      final h = await _cleanupHarness(
+        worktrees: const [],
+        extraRooms: const [
+          _SeedRoom('epk_A', roomId: 'r9', cwd: '/home/me/main-checkout'),
+          _SeedRoom('epk_B', roomId: 'b1', cwd: '/home/me/other'),
+        ],
+        withPeerB: true,
+      );
+      // Finish the two extra rooms so all three are cleanup candidates.
+      h.ch.pushControl(const RoomEnded(peer: 'epk_A', roomId: 'r9', sinceTs: 99));
+      h.ch.pushControl(const RoomEnded(peer: 'epk_B', roomId: 'b1', sinceTs: 100));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      // Interleave the peers: the VM groups work per PC (peer A first
+      // here), but must report in the caller's order.
+      final reports = await h.vm.cleanupFinishedSessions(
+        items: [h.item('r1'), h.item('b1'), h.item('r9')],
+      );
+      expect(reports.map((r) => r.roomId).toList(), ['r1', 'b1', 'r9']);
+      // r1/r9 (peer A, device room answers) succeed; b1 fails honestly —
+      // this harness announces no action-capable room on peer B.
+      expect(reports[0].ok, isTrue);
+      expect(reports[1].ok, isFalse);
+      expect(reports[2].ok, isTrue);
+
+      await h.dispose();
+    });
+
     test('an unreachable PC marks ALL its items as failed reports', () async {
       final h = await _cleanupHarness(
         deviceLive: false,

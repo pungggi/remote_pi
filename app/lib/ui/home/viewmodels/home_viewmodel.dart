@@ -723,11 +723,15 @@ class HomeViewModel extends ViewModel<HomeState> {
     bool removeWorktrees = true,
     bool deleteHistory = false,
   }) async {
-    final reports = <SessionCleanupReport>[];
     final byPeer = <String, List<HomeItem>>{};
     for (final it in items) {
       byPeer.putIfAbsent(it.peer.remoteEpk, () => []).add(it);
     }
+    // Processed grouped per peer (routing once per PC), but reported in the
+    // caller's input order — the batch sheet pairs rows by (epk, roomId),
+    // so the order is cosmetic; keeping it stable keeps tests + debugging
+    // simple (PR #94 review).
+    final byKey = <String, SessionCleanupReport>{};
     for (final entry in byPeer.entries) {
       final epk = entry.key;
       // One registry fetch per PC refines worktree matching for the whole
@@ -737,22 +741,24 @@ class HomeViewModel extends ViewModel<HomeState> {
         _worktreesByEpk[epk] = await _actions.listWorktrees();
       } on ActionFailure catch (e) {
         for (final it in entry.value) {
-          reports.add(
-            SessionCleanupReport(
-              epk: epk,
-              roomId: it.room.roomId,
-              ok: false,
-              message: e.message,
-            ),
+          byKey['$epk|${it.room.roomId}'] = SessionCleanupReport(
+            epk: epk,
+            roomId: it.room.roomId,
+            ok: false,
+            message: e.message,
           );
         }
         continue;
       }
       if (_disposed) break;
       for (final it in entry.value) {
+        // Disposed mid-batch: stop here instead of routing+failing each
+        // remaining item against a dead session (PR #94 review). The UI
+        // that would show the reports is gone with the ViewModel anyway.
+        if (_disposed) break;
         final worktree = _cachedMatchFor(epk, it.room.cwd);
         try {
-          reports.add(await cleanupSession(
+          final report = await cleanupSession(
             epk: epk,
             roomId: it.room.roomId,
             worktree: worktree,
@@ -760,20 +766,30 @@ class HomeViewModel extends ViewModel<HomeState> {
             // still run (that IS the cleanup for main-checkout sessions).
             removeWorktree: removeWorktrees && worktree != null,
             deleteHistory: deleteHistory,
-          ));
+          );
+          byKey['${report.epk}|${report.roomId}'] = report;
         } on ActionFailure catch (e) {
-          reports.add(
-            SessionCleanupReport(
-              epk: epk,
-              roomId: it.room.roomId,
-              ok: false,
-              message: e.message,
-            ),
+          byKey['$epk|${it.room.roomId}'] = SessionCleanupReport(
+            epk: epk,
+            roomId: it.room.roomId,
+            ok: false,
+            message: e.message,
           );
         }
       }
     }
-    return reports;
+    // Input order; anything never processed (disposed mid-batch) reports
+    // 'cancelled' so the per-input-item contract holds.
+    return [
+      for (final it in items)
+        byKey['${it.peer.remoteEpk}|${it.room.roomId}'] ??
+            SessionCleanupReport(
+              epk: it.peer.remoteEpk,
+              roomId: it.room.roomId,
+              ok: false,
+              message: 'cancelled',
+            ),
+    ];
   }
 
   /// Plan/148 — the roomId of a LIVE same-peer session whose cwd is the

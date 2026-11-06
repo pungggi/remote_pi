@@ -111,17 +111,23 @@ class _CleanupBatchSheetState extends State<CleanupBatchSheet> {
 
   List<Widget> _resultRows(AppColors colors, TextStyle mono) {
     final results = _results!;
+    // Pair by identity (epk, roomId), not by index: the VM groups work per
+    // PC and _run may have run a SUBSET of the plans, so index pairing
+    // would show the wrong titles (PR #94 review, HIGH).
+    final titleByKey = {
+      for (final p in widget.prep.plans) '${p.epk}|${p.roomId}': p.sessionTitle,
+    };
     return [
-      for (var i = 0; i < results.length; i++)
+      for (final r in results)
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Icon(
-                results[i].ok ? Icons.check_circle_outline : Icons.error_outline,
+                r.ok ? Icons.check_circle_outline : Icons.error_outline,
                 size: 16,
-                color: results[i].ok ? colors.accent : colors.error,
+                color: r.ok ? colors.accent : colors.error,
               ),
               const SizedBox(width: 8),
               Expanded(
@@ -129,12 +135,12 @@ class _CleanupBatchSheetState extends State<CleanupBatchSheet> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      widget.prep.plans[i].sessionTitle,
+                      titleByKey['${r.epk}|${r.roomId}'] ?? r.roomId,
                       style: TextStyle(fontSize: 13, color: colors.text),
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      results[i].message,
+                      r.message,
                       style: TextStyle(fontSize: 11, color: colors.muted),
                     ),
                   ],
@@ -212,7 +218,23 @@ class _CleanupBatchSheetState extends State<CleanupBatchSheet> {
 
   Future<void> _run(List<SessionCleanupPlan> selected) async {
     setState(() => _running = true);
-    final results = await widget.onConfirm(selected, _deleteHistory);
+    // cleanupFinishedSessions isolates per-item ActionFailures into reports,
+    // but an unexpected exception (a bug) must not leave the sheet stuck on
+    // "Cleaning up…" forever (PR #94 review).
+    List<SessionCleanupReport> results;
+    try {
+      results = await widget.onConfirm(selected, _deleteHistory);
+    } catch (e) {
+      results = [
+        for (final p in selected)
+          SessionCleanupReport(
+            epk: p.epk,
+            roomId: p.roomId,
+            ok: false,
+            message: 'Unexpected error: $e',
+          ),
+      ];
+    }
     if (!mounted) return;
     setState(() {
       _running = false;
