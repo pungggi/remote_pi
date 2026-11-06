@@ -512,24 +512,20 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// at tap time: opening the long-press menu must never route the shared
   /// connection, or the next send of the chat visible in the tablet split
   /// view would go to whatever room the fetch was routed to (PR #70 review).
-  /// Absent = unknown, and the menu offers the entry optimistically — tap-time
-  /// validation filters untracked folders out with a toast.
   final Map<String, List<WireWorktree>> _worktreesByEpk = {};
 
-  /// Plan/148 — should the long-press sheet offer "Delete worktree & branch"?
-  ///
-  /// - **Offline only**: an online room's worktree is busy; keeper-held rooms
-  ///   count as offline (history mirrors, see [_roomOnline]).
-  /// - **Registry cache refines, never gates**: once the peer's registry has
-  ///   been fetched (any earlier cleanup attempt), a missing match hides the
-  ///   entry. With no cache we cannot know without routing the connection —
-  ///   so the entry shows and [findWorktreeFor] decides at tap time.
-  bool mayOfferCleanup(HomeItem it) {
-    if (_roomOnline(it.peer.remoteEpk, it.room)) return false;
-    final list = _worktreesByEpk[it.peer.remoteEpk];
-    if (list == null) return true; // unknown — let tap time decide
-    return _cachedMatchFor(it.peer.remoteEpk, it.room.cwd) != null;
-  }
+  /// Plan/158 — the long-press menu's cleanup gate: offered for EVERY
+  /// offline session (keeper mirrors count as offline), live sessions never
+  /// get it. Whether the folder is a tracked worktree is resolved at TAP
+  /// time by [findWorktreeFor] — untracked folders clean up fine without
+  /// one (forget + local delete IS the whole cleanup; the batch flow offers
+  /// them too). The old plan/148 cache gate here returned false once
+  /// `listWorktrees()` had been fetched and held no match for the cwd —
+  /// with an empty registry that hid the entry for ALL sessions after the
+  /// first cleanup, until an app restart cleared the cache (device review
+  /// 1.5.5, PR #97).
+  bool mayOfferCleanup(HomeItem it) =>
+      !_roomOnline(it.peer.remoteEpk, it.room);
 
   /// The tracked worktree whose folder IS [cwd], from the cached registry
   /// (cache-miss safe: returns null when the peer was never fetched).

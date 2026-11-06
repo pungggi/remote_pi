@@ -1124,18 +1124,37 @@ void main() {
       await h.dispose();
     });
 
-    test('untracked folder → findWorktreeFor returns null and the cached '
-        'registry hides the entry afterwards', () async {
+    test('untracked folder → findWorktreeFor returns null, and the fetched '
+        'registry must NOT hide the entry (1.5.5 device review: an empty '
+        'registry made the first cleanup hide all following ones until '
+        'app restart — PR #97)', () async {
       final h = await _cleanupHarness(
         roomCwd: '/home/me/main-checkout',
         worktrees: const [],
       );
 
       final it = h.item('r1');
-      expect(h.vm.mayOfferCleanup(it), isTrue); // optimistic, unknown yet
+      expect(h.vm.mayOfferCleanup(it), isTrue);
 
+      // The fetch ran and came back EMPTY (no tracked worktrees on the PC):
+      // the entry must survive — forget + local delete is the whole cleanup
+      // for untracked folders, exactly what the batch flow offers.
       expect(await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'), isNull);
-      expect(h.vm.mayOfferCleanup(it), isFalse); // now known-untracked
+      expect(h.vm.mayOfferCleanup(it), isTrue);
+
+      await h.dispose();
+    });
+
+    test('offline entry survives a fetched registry that tracks OTHER '
+        'folders (unmatched cwd is not a gate)', () async {
+      final h = await _cleanupHarness(
+        roomCwd: '/home/me/main-checkout',
+        worktrees: const [_kWorktree], // tracks /src/remote_pi_w1, NOT r1's cwd
+      );
+
+      final it = h.item('r1');
+      expect(await h.vm.findWorktreeFor(epk: 'epk_A', roomId: 'r1'), isNull);
+      expect(h.vm.mayOfferCleanup(it), isTrue);
 
       await h.dispose();
     });
