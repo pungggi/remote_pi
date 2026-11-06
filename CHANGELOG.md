@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
+## [1.5.6] - 2026-11-06
+
+### Fixed
+
+- **Cleanup menu vanished after the first cleanup (1.5.5 device review)**:
+  the long-press entry "Clean up session…" was gated on a fetched worktree
+  registry matching the session's folder. With an empty registry on the PC,
+  the first cleanup cached that empty list and every following offline tile
+  lost the entry until an app restart. The gate is now offline-only —
+  untracked folders clean up fine (forget + phone copy removed), tap-time
+  resolution unchanged.
+
 
 ## [1.5.5] - 2026-11-06
 
