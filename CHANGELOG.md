@@ -47,7 +47,7 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
     shared history toggle, and reports per-session ✓/✗ — one failure
     never aborts the batch.
 
-## [Unreleased]
+## [1.6.0] - 2026-11-06
 
 ### Added
 
