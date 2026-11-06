@@ -8,10 +8,9 @@
 //   DURABLE  msgs_<epk>__<roomId>   key = seq (int)        → MessageRecord
 //   DURABLE  sessions_index         key = <epk>:<roomId>   → SessionIndexRecord
 //   DURABLE  notify_prefs           key = <epk>:<roomId>   → bool (Plan 132,
-//                                 default ON since the notifydefault
-//                                 change; only an explicit `false` opts out)
+//                                 default ON — explicit false opts out)
 //                                 key = permission_asked  → bool (Plan 141,
-//                                 once-per-install ask flag, shared by both
+//                                 once-per-install ask flag, SHARED by both
 //                                 notification facades)
 //   DURABLE  read_markers           key = <epk>:<roomId>   → int (Plan/149:
 //                                 last-read seq; unread = msgs box rows
