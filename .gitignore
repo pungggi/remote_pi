@@ -100,3 +100,5 @@ cockpit/test/core/terminal/xterm/src/failures/
 marketing/
 
 openspec
+
+test-12mib.pdf
