@@ -10,7 +10,9 @@
 
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:app/data/local/boxes.dart';
 import 'package:app/data/local/records/message_record.dart';
@@ -26,6 +28,39 @@ import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:app/protocol/uuid7.dart';
 import 'package:flutter/foundation.dart';
+
+// ---------------------------------------------------------------------------
+// Plan/158 — agent_file chunked fetch state (window = 1)
+// ---------------------------------------------------------------------------
+
+/// Per-chunk watchdog before the same offset is re-requested.
+const Duration _agentFileChunkTimeout = Duration(seconds: 10);
+
+/// Delay before re-sending after a `busy` rejection.
+const Duration _agentFileBusyDelay = Duration(milliseconds: 1500);
+
+/// Silent-chunk-loss budget: the same offset is re-asked at most this many
+/// request rounds before the fetch gives up.
+const int _agentFileMaxAttempts = 3;
+
+/// `busy` auto-retry budget: one automatic re-ask, then surface to the UI.
+const int _agentFileMaxBusyRetries = 1;
+
+/// One in-flight `agent_file_fetch` transfer. Bytes accumulate in memory
+/// only — plan/158 keeps base64 out of the persisted history; the caller
+/// holds the result for the viewer / Save / Share call.
+class _AgentFileFetch {
+  final String fileId;
+  final Completer<Uint8List> completer = Completer<Uint8List>();
+  final BytesBuilder received = BytesBuilder(copy: false);
+  int offset = 0;
+  int total = 0;
+  int attempts = 0;
+  int busyRetries = 0;
+  Timer? watchdog;
+  void Function(int received, int total)? onProgress;
+  _AgentFileFetch(this.fileId);
+}
 
 class SyncService extends Service {
   final ConnectionManager _conn;
@@ -529,6 +564,8 @@ class SyncService extends Service {
     this.syncRetryDelay = const Duration(seconds: 6),
     this.ledgerHoldEscapeAfter = _defaultLedgerHoldEscapeAfter,
     this.ledgerTailReportEvery = _defaultLedgerTailReportEvery,
+    this.agentFileChunkTimeout = _agentFileChunkTimeout,
+    this.agentFileBusyDelay = _agentFileBusyDelay,
   }) {
     _connSub = _conn.statusStream.listen(_onStatus);
     _roomsSub = _conn.roomsStream.listen((_) {
@@ -938,6 +975,145 @@ class SyncService extends Service {
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // Plan/158 — agent_file chunked fetch loop (window = 1)
+  // ---------------------------------------------------------------------------
+
+  /// Fetch the bytes of a registered agent file from the Pi. Sends
+  /// `agent_file_fetch` for [fileId] at the running offset; every
+  /// `agent_file_payload` chunk is appended and the next offset requested
+  /// (window = 1); `more: false` completes. A per-chunk watchdog re-requests
+  /// the same offset up to [_agentFileMaxAttempts]; `busy` auto-retries once
+  /// after a short delay; `changed` / `gone` surface as typed failures
+  /// ([AgentFileChangedException], [AgentFileGoneException]) the UI turns
+  /// into a "fetch current version" affordance / a disabled card. Bytes are
+  /// NOT persisted (plan/158 keeps history metadata-only).
+  Future<Uint8List> fetchAgentFile(
+    String fileId, {
+    void Function(int received, int total)? onProgress,
+  }) {
+    final existing = _agentFileFetches[fileId];
+    if (existing != null) {
+      // Concurrent callers (open + save racing) share one transfer.
+      return existing.completer.future;
+    }
+    final f = _AgentFileFetch(fileId)..onProgress = onProgress;
+    _agentFileFetches[fileId] = f;
+    _agentFileRequestNext(f);
+    return f.completer.future.whenComplete(() {
+      f.watchdog?.cancel();
+      _agentFileFetches.remove(fileId);
+    });
+  }
+
+  void _agentFileRequestNext(_AgentFileFetch f) {
+    final ch = _conn.channel;
+    if (ch == null) {
+      _agentFileFail(f, AgentFileUnavailableException('not connected'));
+      return;
+    }
+    f.attempts += 1;
+    _agentFileArmWatchdog(f);
+    unawaited(
+      ch
+          .send(
+            AgentFileFetch(id: _newId(), fileId: f.fileId, offset: f.offset),
+          )
+          .catchError((Object _) {
+            // Teardown race — the watchdog owns recovery (re-send on the
+            // reconnected channel) until the attempt budget runs out.
+          }),
+    );
+  }
+
+  void _agentFileArmWatchdog(_AgentFileFetch f) {
+    f.watchdog?.cancel();
+    f.watchdog = Timer(agentFileChunkTimeout, () {
+      if (f.attempts < _agentFileMaxAttempts) {
+        // Silent chunk loss (relay drop, Pi restart): re-ask the SAME offset.
+        // The Pi re-reads from the offset (stateless ledger), so a resume is
+        // always safe.
+        _agentFileRequestNext(f);
+      } else {
+        _agentFileFail(f, AgentFileUnavailableException('timed out'));
+      }
+    });
+  }
+
+  void _agentFileHandlePayload(
+    String fileId,
+    int offset,
+    int total,
+    String data,
+    bool more,
+  ) {
+    final f = _agentFileFetches[fileId];
+    if (f == null) return; // late/stray chunk after the caller gave up
+    if (offset != f.offset) {
+      // Duplicate or out-of-order chunk: drop it; the watchdog re-requests.
+      return;
+    }
+    final bytes = base64Decode(data);
+    if (bytes.isNotEmpty) f.received.add(bytes);
+    f.offset += bytes.length;
+    f.total = total;
+    f.onProgress?.call(f.offset, total);
+    if (more) {
+      _agentFileRequestNext(f);
+    } else {
+      _agentFileSucceed(f, f.received.toBytes());
+    }
+  }
+
+  void _agentFileHandleError(String fileId, String code) {
+    final f = _agentFileFetches[fileId];
+    if (f == null) return;
+    switch (code) {
+      case 'busy':
+        // Another transfer is in flight on the Pi; auto-retry once, then
+        // surface (the bubble offers a Retry button).
+        if (f.busyRetries < _agentFileMaxBusyRetries) {
+          f.busyRetries += 1;
+          f.watchdog?.cancel();
+          f.watchdog = Timer(
+            agentFileBusyDelay,
+            () => _agentFileRequestNext(f),
+          );
+          return;
+        }
+        _agentFileFail(f, AgentFileUnavailableException('Pi is busy'));
+      case 'changed':
+        _agentFileFail(f, AgentFileChangedException());
+      case 'gone' || 'not_found':
+        _agentFileFail(f, AgentFileGoneException());
+      default:
+        _agentFileFail(
+          f,
+          AgentFileUnavailableException('Pi reported: $code'),
+        );
+    }
+  }
+
+  void _agentFileSucceed(_AgentFileFetch f, Uint8List bytes) {
+    f.watchdog?.cancel();
+    if (!f.completer.isCompleted) f.completer.complete(bytes);
+  }
+
+  void _agentFileFail(_AgentFileFetch f, AgentFileFetchException error) {
+    f.watchdog?.cancel();
+    if (!f.completer.isCompleted) f.completer.completeError(error);
+  }
+
+  /// Plan/158 — in-flight fetch transfers, keyed by fileId. Populated by
+  /// [fetchAgentFile], drained on completion/failure.
+  final Map<String, _AgentFileFetch> _agentFileFetches = {};
+
+  /// Plan/158 — per-chunk watchdog window (short in tests).
+  final Duration agentFileChunkTimeout;
+
+  /// Plan/158 — delay before re-sending after a `busy` rejection.
+  final Duration agentFileBusyDelay;
+
   /// Plan/128 — request session history. Normal sync asks for the newest page
   /// (limit omitted ⇒ the server serves its default, a few thousand); the
   /// durable append-only merge dedups on reconnect. `loadMore` pages OLDER
@@ -1272,6 +1448,59 @@ class SyncService extends Service {
                 ts: DateTime.now(),
               ),
         );
+
+      case AgentFileRef(
+        :final fileId,
+        :final ts,
+        :final kind,
+        :final mime,
+        :final name,
+        :final bytes,
+        :final caption,
+        :final allowNetwork,
+      ):
+        // Plan/158 — metadata-only file push (no bytes on the wire). Persist
+        // the reference as an assistant row; the bubble pulls bytes on demand
+        // via [fetchAgentFile]. Dedup by fileId guards rebroadcasts.
+        // ignore: discarded_futures
+        _upsert(
+          MsgRole.assistant,
+          fileId,
+          (seq, existing) =>
+              existing ??
+              MessageRecord(
+                id: fileId,
+                seq: seq,
+                role: MsgRole.assistant,
+                text: caption ?? '',
+                file: MessageFile(
+                  kind: kind,
+                  data: null,
+                  mime: mime,
+                  allowNetwork: allowNetwork,
+                  fileId: fileId,
+                  name: name,
+                  bytes: bytes,
+                ),
+                ts: ts != null
+                    ? DateTime.fromMillisecondsSinceEpoch(ts)
+                    : DateTime.now(),
+              ),
+        );
+
+      case AgentFilePayload(
+        :final fileId,
+        :final offset,
+        :final total,
+        :final data,
+        :final more,
+      ):
+        // Plan/158 — a chunk of an in-flight fetch. Routed to the transfer
+        // state machine; stray chunks (no matching caller) are dropped.
+        _agentFileHandlePayload(fileId, offset, total, data, more);
+
+      case AgentFileError(:final fileId, :final code):
+        _agentFileHandleError(fileId, code);
 
       case QueuedMessageState(:final items):
         _setQueuedMessages([
@@ -1908,6 +2137,37 @@ class SyncService extends Service {
               role: MsgRole.compaction,
               text: summary,
               tokensBefore: tokensBefore,
+              ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+            ),
+          );
+        case AgentFileRefEvt(
+          :final fileId,
+          :final kind,
+          :final mime,
+          :final name,
+          :final bytes,
+          :final caption,
+          :final allowNetwork,
+        ):
+          // Plan/158 — a file ref merged into a history page. Metadata only
+          // (the Pi never puts base64 in a history payload); the bubble
+          // fetches bytes on demand. Row id = fileId, mirroring the live row
+          // so a ref seen live AND replayed from history dedupes on merge.
+          out.add(
+            MessageRecord(
+              id: fileId,
+              seq: seq++,
+              role: MsgRole.assistant,
+              text: caption,
+              file: MessageFile(
+                kind: kind,
+                data: null,
+                mime: mime,
+                allowNetwork: allowNetwork,
+                fileId: fileId,
+                name: name,
+                bytes: bytes,
+              ),
               ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
             ),
           );

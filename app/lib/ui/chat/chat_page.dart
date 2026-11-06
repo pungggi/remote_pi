@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/share/shared_text_inbox.dart';
@@ -569,6 +571,8 @@ class ChatPage extends StatelessWidget {
           onDecide: (id, decision) => vm.approveTool(id, decision),
           truncated: state.truncated,
           onLoadMore: vm.loadMoreHistory,
+          // Plan/158 — agent_file refs pull their bytes from the Pi on demand.
+          fetcher: vm.fetchAgentFile,
         );
       }(),
     };
@@ -865,6 +869,14 @@ class MessageList extends StatefulWidget {
   final bool truncated;
   final VoidCallback? onLoadMore;
 
+  /// Plan/158 — chunked agent_file fetch loop (ChatViewModel pass-through).
+  /// Nullable so tests can mount the transcript without a Provider tree:
+  /// refs then render as a static card with no download affordance.
+  final Future<Uint8List> Function(
+    String fileId, {
+    void Function(int received, int total)? onProgress,
+  })? fetcher;
+
   const MessageList({
     super.key,
     required this.messages,
@@ -872,6 +884,7 @@ class MessageList extends StatefulWidget {
     required this.onDecide,
     required this.truncated,
     this.onLoadMore,
+    this.fetcher,
   });
 
   @override
@@ -1004,7 +1017,7 @@ class _MessageListState extends State<MessageList> {
     UserMsg() => UserBubble(msg, key: _keyFor(msg)),
     AssistantMsg() => AssistantBubble(msg),
     AgentImageMsg() => AgentImageBubble(msg),
-    AgentFileMsg() => AgentFileBubble(msg),
+    AgentFileMsg() => AgentFileBubble(msg, fetcher: widget.fetcher),
     ToolEvent() => ToolRequestCard(tool: msg, onDecide: widget.onDecide),
     CompactionMsg() => CompactionBubble(msg),
   };

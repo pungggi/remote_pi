@@ -12,29 +12,50 @@ enum MsgRole { user, assistant, tool, compaction }
 /// path. Persisted on the assistant row alongside `imagePath` (the repo path).
 class MessageFile {
   final String kind; // markdown | text | pdf | html | mermaid
-  final String data; // base64 raw file bytes
+
+  /// Plan/158 — base64 raw file bytes. Null on metadata-only refs (plan/158):
+  /// the bubble fetches the bytes from the Pi on demand.
+  final String? data;
   final String? mime;
   final bool allowNetwork; // HTML only
 
+  /// Plan/158 — present on refs: the `agent_file_fetch` key.
+  final String? fileId;
+
+  /// Plan/158 — present on refs: the basename announced by the Pi.
+  final String? name;
+
+  /// Plan/158 — present on refs: the declared size.
+  final int? bytes;
+
   const MessageFile({
     required this.kind,
-    required this.data,
+    this.data,
     this.mime,
     this.allowNetwork = false,
+    this.fileId,
+    this.name,
+    this.bytes,
   });
 
   Map<String, dynamic> toJson() => {
     'kind': kind,
-    'data': data,
+    if (data != null) 'data': data,
     if (mime != null) 'mime': mime,
     if (allowNetwork) 'allow_network': true,
+    if (fileId != null) 'file_id': fileId,
+    if (name != null) 'name': name,
+    if (bytes != null) 'bytes': bytes,
   };
 
   factory MessageFile.fromJson(Map<String, dynamic> j) => MessageFile(
     kind: j['kind'] as String,
-    data: j['data'] as String,
+    data: j['data'] as String?,
     mime: j['mime'] as String?,
     allowNetwork: (j['allow_network'] as bool?) ?? false,
+    fileId: j['file_id'] as String?,
+    name: j['name'] as String?,
+    bytes: (j['bytes'] as num?)?.toInt(),
   );
 
   @override
@@ -43,10 +64,14 @@ class MessageFile {
       other.kind == kind &&
       other.data == data &&
       other.mime == mime &&
-      other.allowNetwork == allowNetwork;
+      other.allowNetwork == allowNetwork &&
+      other.fileId == fileId &&
+      other.name == name &&
+      other.bytes == bytes;
 
   @override
-  int get hashCode => Object.hash(kind, data, mime, allowNetwork);
+  int get hashCode => Object.hash(kind, data, mime, allowNetwork, fileId, name,
+      bytes);
 }
 
 class MessageRecord {
@@ -202,6 +227,9 @@ class MessageRecord {
             data: agentFile.data,
             mime: agentFile.mime,
             path: imagePath,
+            fileId: agentFile.fileId,
+            name: agentFile.name,
+            bytes: agentFile.bytes,
             caption: text,
             allowNetwork: agentFile.allowNetwork,
           );
