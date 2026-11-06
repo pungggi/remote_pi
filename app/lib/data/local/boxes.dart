@@ -7,7 +7,12 @@
 //
 //   DURABLE  msgs_<epk>__<roomId>   key = seq (int)        → MessageRecord
 //   DURABLE  sessions_index         key = <epk>:<roomId>   → SessionIndexRecord
-//   DURABLE  notify_prefs           key = <epk>:<roomId>   → bool (Plan 132)
+//   DURABLE  notify_prefs           key = <epk>:<roomId>   → bool (Plan 132,
+//                                 default ON since the notifydefault
+//                                 change; only an explicit `false` opts out)
+//                                 key = permission_asked  → bool (Plan 141,
+//                                 once-per-install ask flag, shared by both
+//                                 notification facades)
 //   DURABLE  read_markers           key = <epk>:<roomId>   → int (Plan/149:
 //                                 last-read seq; unread = msgs box rows
 //                                 past it — NEVER a counter, plan/111=30 ev)
@@ -77,6 +82,13 @@ class LocalBoxes {
   /// counted on demand — never stored (plan/111 verdict: derived state
   /// drifts; the box rows are the SSOT).
   Box<dynamic> readMarkersBox() => Hive.box<dynamic>(_kReadMarkers);
+
+  /// Plan/141 — durable key in [notifyPrefsBox]: `true` once the proactive
+  /// POST_NOTIFICATIONS ask has been made on this install. SHARED by both
+  /// notification facades (waiting-for-input AND session-completion): one
+  /// denial covers both — neither ever re-asks unbidden; the recovery path
+  /// is the OS notification settings for the app.
+  static const String kPermissionAskedKey = 'permission_asked';
 
   /// Plan/149 — number of unread messages for a session: msgs box rows
   /// with `seq > lastReadSeq`. Returns 0 for unknown sessions / empty

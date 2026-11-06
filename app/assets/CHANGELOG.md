@@ -9,6 +9,22 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **Session-completion notifications default ON** (`notifydefault`): the
+  per-session completion toggle now defaults to enabled — a missing
+  `notify_prefs` key counts as ON; only an explicit opt-out disables a
+  session. Previously the default was OFF and no toggle UI ever shipped,
+  so completion banners never fired in practice.
+- **Contextual permission ask**: on Android 13+, the first time a task
+  finishes while the app is foregrounded, the app asks (once per install)
+  for the notification permission — reusing the same durable flag as the
+  waiting-for-input banners, so one ask or denial covers both features
+  and neither ever re-nags. Denials are recoverable via the OS
+  notification settings for the app.
+
 ## [1.5.3] - 2026-11-01
 
 ### Changed
