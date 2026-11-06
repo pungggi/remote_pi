@@ -8,6 +8,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
+## [1.6.0] - 2026-11-07
+
+### Added
+
+- **Mesh file transfer PC→Phone (plan/158)**: `show_file` no longer ships
+  bytes. The Pi extension registers the file in a per-session ledger
+  (transcript-sibling `<session>.files.jsonl` sidecar) and broadcasts an
+  `agent_file_ref` — metadata only. The app shows a reference card and pulls
+  the content on demand (open / save / share) via chunked
+  `agent_file_fetch` → `agent_file_payload` unicasts (1 MiB raw chunks,
+  window = 1, resumable offset).
+- **Save to Downloads**: the document viewer gained a Save action
+  (MediaStore Downloads via platform channel, no permissions needed on
+  minSdk 34; system dedupes duplicate names) alongside the existing Share.
+- **Typed fetch failures** in the app: `gone` → inert card,
+  `changed` → "fetch current version" retry, `busy` → one automatic
+  1.5 s retry then a manual retry, silent chunk loss → watchdog re-requests
+  the same offset (3 attempts).
+- **History merge**: `agent_file_ref` events are merged into the right
+  `session_history` page by `ts`, so file cards survive app restarts and
+  re-syncs without any base64 ever entering a history payload.
+
+### Changed
+
+- **PDF cap raised 10 MiB → 20 MiB** (user decision #6): chunked transfer
+  makes the old relay frame cap irrelevant; the DoD test uses a 12 MiB PDF
+  to prove the old inline cap is gone.
+- **`agent_file` is now legacy**: pre-158 extensions still send inline
+  base64 and new apps still parse it, but plan/158 extensions only emit
+  `agent_file_ref`. See PROTOCOL.md for the mixed-version matrix.
+- **Session-completion notifications default ON** (`notifydefault`): the
+  per-session completion toggle now defaults to enabled — a missing
+  `notify_prefs` key counts as ON; only an explicit opt-out disables a
+  session. Previously the default was OFF and no toggle UI ever shipped,
+  so completion banners never fired in practice.
+- **Contextual permission ask**: on Android 13+, the first time a task
+  finishes while the app is foregrounded, the app asks (once per install)
+  for the notification permission — reusing the same durable flag as the
+  waiting-for-input banners, so one ask or denial covers both features
+  and neither ever re-nags.
+
 ## [1.5.6] - 2026-11-06
 
 ### Fixed

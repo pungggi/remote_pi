@@ -70,5 +70,137 @@ void main() {
         expect((m as AgentFile).kind, kind);
       }
     });
+
+    // Plan/158 — new extensions never send agent_file inline; the parser
+    // stays tolerant so a mid-rollout legacy frame with no bytes still parses.
+    test('agent_file without data parses with data null (forward tolerance)', () {
+      final f = ServerMessage.fromJson({
+        'type': 'agent_file',
+        'id': 'doc_nodata',
+        'kind': 'markdown',
+      }) as AgentFile;
+      expect(f.data, isNull);
+      expect(f.kind, 'markdown');
+    });
+  });
+
+  group('plan/158 agent_file_ref', () {
+    test('parses the metadata-only live frame', () {
+      final m = ServerMessage.fromJson({
+        'type': 'agent_file_ref',
+        'id': 'af_1',
+        'in_reply_to': 'turn_1',
+        'file_id': 'af_1',
+        'ts': 1700000000000,
+        'kind': 'pdf',
+        'mime': 'application/pdf',
+        'name': 'report.pdf',
+        'bytes': 12582912,
+        'caption': 'Q3 report',
+        'allow_network': false,
+      });
+      final r = m as AgentFileRef;
+      expect(r.id, 'af_1');
+      expect(r.fileId, 'af_1');
+      expect(r.ts, 1700000000000);
+      expect(r.kind, 'pdf');
+      expect(r.mime, 'application/pdf');
+      expect(r.name, 'report.pdf');
+      expect(r.bytes, 12582912);
+      expect(r.caption, 'Q3 report');
+      expect(r.allowNetwork, isFalse);
+    });
+
+    test('optionals absent: id falls back to file_id, allow_network false', () {
+      final r = ServerMessage.fromJson({
+        'type': 'agent_file_ref',
+        'file_id': 'af_2',
+        'kind': 'markdown',
+      }) as AgentFileRef;
+      expect(r.id, 'af_2');
+      expect(r.inReplyTo, '');
+      expect(r.ts, isNull);
+      expect(r.mime, isNull);
+      expect(r.name, isNull);
+      expect(r.bytes, isNull);
+      expect(r.caption, isNull);
+      expect(r.allowNetwork, isFalse);
+    });
+  });
+
+  group('plan/158 agent_file_payload', () {
+    test('parses offset/total/data/more', () {
+      final p = ServerMessage.fromJson({
+        'type': 'agent_file_payload',
+        'in_reply_to': 'req_1',
+        'file_id': 'af_1',
+        'offset': 1048576,
+        'total': 2097152,
+        'data': 'aGVsbG8=',
+        'more': true,
+      }) as AgentFilePayload;
+      expect(p.inReplyTo, 'req_1');
+      expect(p.fileId, 'af_1');
+      expect(p.offset, 1048576);
+      expect(p.total, 2097152);
+      expect(p.data, 'aGVsbG8=');
+      expect(p.more, isTrue);
+    });
+
+    test('missing offset/total/more degrade to safe defaults', () {
+      final p = ServerMessage.fromJson({
+        'type': 'agent_file_payload',
+        'file_id': 'af_1',
+        'data': 'aGVsbG8=',
+      }) as AgentFilePayload;
+      expect(p.offset, 0);
+      expect(p.total, 0);
+      expect(p.more, isFalse);
+    });
+  });
+
+  group('plan/158 agent_file_error', () {
+    test('parses the code', () {
+      final e = ServerMessage.fromJson({
+        'type': 'agent_file_error',
+        'in_reply_to': 'req_2',
+        'file_id': 'af_1',
+        'code': 'changed',
+      }) as AgentFileError;
+      expect(e.fileId, 'af_1');
+      expect(e.code, 'changed');
+    });
+
+    test('missing code degrades to unknown', () {
+      final e = ServerMessage.fromJson({
+        'type': 'agent_file_error',
+        'file_id': 'af_1',
+      }) as AgentFileError;
+      expect(e.code, 'unknown');
+    });
+  });
+
+  group('plan/158 agent_file_ref history event', () {
+    test('SessionHistoryEvent dispatches to AgentFileRefEvt', () {
+      final e = SessionHistoryEvent.fromJson({
+        'type': 'agent_file_ref',
+        'ts': 1700000001000,
+        'file_id': 'af_hist',
+        'kind': 'markdown',
+        'mime': 'text/markdown',
+        'name': 'plan.md',
+        'bytes': 2048,
+        'caption': 'the plan',
+      });
+      final r = e as AgentFileRefEvt;
+      expect(r.ts, 1700000001000);
+      expect(r.fileId, 'af_hist');
+      expect(r.kind, 'markdown');
+      expect(r.mime, 'text/markdown');
+      expect(r.name, 'plan.md');
+      expect(r.bytes, 2048);
+      expect(r.caption, 'the plan');
+      expect(r.allowNetwork, isFalse);
+    });
   });
 }

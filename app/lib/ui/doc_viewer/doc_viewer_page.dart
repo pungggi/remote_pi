@@ -41,6 +41,8 @@ class DocViewerPage extends StatefulWidget {
 class _DocViewerPageState extends State<DocViewerPage> {
   bool _busy = false;
 
+  static const _filesChannel = MethodChannel('ch.pungitore.piper/files');
+
   Future<void> _share() async {
     if (_busy) return;
     setState(() => _busy = true);
@@ -52,6 +54,28 @@ class _DocViewerPageState extends State<DocViewerPage> {
       ));
     } catch (_) {
       _toast('Share failed');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Plan/158 — copy the bytes into the user's Downloads via MediaStore
+  /// (platform channel; works on any device, no file-manager interaction).
+  Future<void> _save() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final saved = await _filesChannel.invokeMethod<String>(
+        'saveToDownloads',
+        {'name': _fileName(), 'mime': _shareMime(), 'bytes': widget.bytes},
+      );
+      _toast('Saved to Downloads${saved == null ? '' : ' · $saved'}');
+    } on PlatformException catch (e) {
+      _toast(e.message == null || e.message!.isEmpty
+          ? 'Save failed'
+          : 'Save failed: ${e.message}');
+    } catch (_) {
+      _toast('Save failed');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -211,6 +235,8 @@ class _DocViewerPageState extends State<DocViewerPage> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              _action(Icons.save_alt, 'Save', _save),
+              const SizedBox(width: 24),
               _action(Icons.ios_share, 'Share', _share),
             ],
           ),

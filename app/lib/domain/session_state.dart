@@ -160,25 +160,34 @@ class AgentImageMsg extends ChatMessage {
 /// Plan/126 - a document the agent pushed to the user from a file in the repo
 /// (via the `show_file` tool): Markdown / plain text or code / PDF / HTML.
 /// Rendered as a left-aligned, tappable card ([AgentFileBubble]) that opens
-/// [DocViewerPage], which routes by [kind] to the right viewer. [data] is the
-/// raw file bytes base64-encoded (decoded in the viewer; valid UTF-8 for the
-/// text-y kinds). [allowNetwork] is HTML-only and flips the WebView sandbox
-/// state. [caption] (possibly empty) shows under the card; [path] is the
-/// original repo path used as the viewer title.
+/// [DocViewerPage], which routes by [kind] to the right viewer.
+///
+/// Plan/158 — two shapes share this domain message:
+/// - **inline** (legacy, pre-158 Pi extensions): [data] carries the base64
+///   bytes; [path] is the repo path used as viewer title.
+/// - **reference** (plan/158): [data] is null until fetched; [fileId] is the
+///   `agent_file_fetch` key, [name] the announced basename and [bytes] the
+///   declared size. The bubble fetches bytes when the user opens/saves/shares.
 class AgentFileMsg extends ChatMessage {
   final String kind; // markdown | text | pdf | html | mermaid
-  final String data; // base64 raw file bytes
+  final String? data; // base64 raw file bytes (null on plan/158 refs)
   final String? mime;
-  final String? path;
+  final String? path; // legacy inline: repo path (viewer title)
+  final String? fileId; // plan/158 — ref shape: the agent_file_fetch key
+  final String? name; // plan/158 — basename announced by the Pi
+  final int? bytes; // plan/158 — declared size
   final String caption;
   final bool allowNetwork;
 
   const AgentFileMsg({
     required super.id,
     required this.kind,
-    required this.data,
+    this.data,
     this.mime,
     this.path,
+    this.fileId,
+    this.name,
+    this.bytes,
     this.caption = '',
     this.allowNetwork = false,
   });
@@ -191,12 +200,16 @@ class AgentFileMsg extends ChatMessage {
       other.data == data &&
       other.mime == mime &&
       other.path == path &&
+      other.fileId == fileId &&
+      other.name == name &&
+      other.bytes == bytes &&
       other.caption == caption &&
       other.allowNetwork == allowNetwork;
 
   @override
   int get hashCode =>
-      Object.hash(id, kind, data, mime, path, caption, allowNetwork);
+      Object.hash(id, kind, data, mime, path, fileId, name, bytes, caption,
+          allowNetwork);
 }
 
 class ToolEvent extends ChatMessage {

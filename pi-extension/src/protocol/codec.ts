@@ -11,8 +11,12 @@ const SERVER_TYPES = new Set<ServerMessage["type"]>([
   // Plan/114 — image the agent pushes to the user (show_image tool).
   "agent_image",
   // Plan/126 — document the agent pushes to the user (show_file tool:
-  // markdown / text / pdf / html).
+  // markdown / text / pdf / html). LEGACY shape: pre-158 extensions only.
   "agent_file",
+  // Plan/158 — metadata-only push + chunked unicast fetch replies.
+  "agent_file_ref",
+  "agent_file_payload",
+  "agent_file_error",
   "tool_request",
   "tool_result",
   "error",

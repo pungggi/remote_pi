@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:app/data/local/records/message_record.dart';
 import 'package:app/data/local/records/runtime_record.dart';
@@ -502,6 +503,15 @@ class ChatViewModel extends ViewModel<ChatState> {
 
   Future<void> approveTool(String toolCallId, ApproveDecision decision) =>
       _sync.approveTool(toolCallId, decision);
+
+  /// Plan/158 — fetch the bytes of an `agent_file_ref` from the Pi (chunked
+  /// unicast, window = 1). Thin pass-through to the SyncService fetch loop;
+  /// [onProgress] reports (received, total) for the bubble's progress bar.
+  /// Throws typed [AgentFileFetchException]s the bubble can distinguish.
+  Future<Uint8List> fetchAgentFile(
+    String fileId, {
+    void Function(int received, int total)? onProgress,
+  }) => _sync.fetchAgentFile(fileId, onProgress: onProgress);
 
   // Plan/111 — load more history from the Pi (progressive limit increase).
   Future<void> loadMoreHistory() async {

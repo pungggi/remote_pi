@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
   chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync,
@@ -24,6 +24,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ClientMessage, ServerMessage } from "../protocol/types.js";
 import type { ReceivedImageDetails } from "../extension-state.js";
 import { ext } from "../extension-state.js";
+import { appendRegistryEntry, registryTargetForCwd } from "../session/file_registry.js";
 import {
   RECEIVED_IMAGE_MAX_BYTES,
   IMAGE_PREVIEW_MIME,
@@ -46,7 +47,9 @@ const jsonSchema = (s: object) => s as unknown as never;
 
 const SHOW_IMAGE_MAX_BYTES = 4 * 1024 * 1024;
 const SHOW_FILE_TEXT_MAX_BYTES = 1 * 1024 * 1024;
-const SHOW_FILE_PDF_MAX_BYTES = 10 * 1024 * 1024;
+// Plan/158 — raised from 10 MiB (user decision). With the metadata-only flip
+// the bytes never cross the live envelope, so the cap only gates fetchability.
+const SHOW_FILE_PDF_MAX_BYTES = 20 * 1024 * 1024;
 const IMAGE_CACHE_PREFIX = "pi-app-";
 export type ReceivedImagePreviewDelivery = "immediate" | "defer";
 
@@ -416,12 +419,16 @@ export function registerShowImageTool(pi: ExtensionAPI, deps: ImagePipelineDeps)
 // Mirrors `show_image` for non-image files. The agent calls
 // `show_file({ path, caption?, kind?, allowNetwork? })`; the handler detects
 // the kind (markdown/text/pdf/html/mermaid) by extension (explicit `kind`
-// overrides),
-// validates per-kind size caps + UTF-8 for text kinds, broadcasts an
-// `agent_file` ServerMessage with inline base64 to every connected owner, and
-// returns ONLY metadata to the model (same context-hygiene discipline as
-// plan/49/114). HTML carries an `allow_network` flag so the app knows whether
-// the WebView sandbox should permit remote resources (default: blocked).
+// overrides), validates per-kind size caps (+ UTF-8 for text kinds), writes a
+// metadata record to the per-session file registry (plan/158), and broadcasts
+// an `agent_file_ref` — METADATA ONLY, no bytes — to every connected owner.
+// The app renders a reference bubble and fetches bytes on demand via
+// `agent_file_fetch` (chunked unicast). A push costs one stat + one registry
+// append: the file is never read (PDF) or read only to validate UTF-8
+// (text kinds, ≤ 1 MiB). Returns ONLY metadata to the model (same
+// context-hygiene discipline as plan/49/114). HTML carries an `allow_network`
+// flag so the app knows whether the WebView sandbox should permit remote
+// resources (default: blocked).
 
 type ShowFileKind = "markdown" | "text" | "pdf" | "html" | "mermaid";
 
@@ -567,12 +574,14 @@ function handleShowFile(
   }
 
   let size: number;
+  let mtimeMs: number;
   try {
     const s = statSync(absPath);
     if (!s.isFile()) {
       return showFileError(`not a regular file: ${rawPath}`, rawPath);
     }
     size = s.size;
+    mtimeMs = s.mtimeMs;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return showFileError(`cannot read ${rawPath}: ${msg}`, rawPath);
@@ -590,8 +599,7 @@ function handleShowFile(
   }
 
   // Per-kind size cap (PDF may be large; text-y kinds small). Checked from
-  // stat size BEFORE reading the file, so an oversized file is rejected
-  // without ever being loaded into memory (mirrors show_image).
+  // stat size — an oversized file is rejected without ever being loaded.
   const cap = kind === "pdf" ? SHOW_FILE_PDF_MAX_BYTES : SHOW_FILE_TEXT_MAX_BYTES;
   if (size > cap) {
     return showFileError(
@@ -600,36 +608,66 @@ function handleShowFile(
     );
   }
 
-  let bytes: Buffer;
-  try {
-    bytes = readFileSync(absPath);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return showFileError(`cannot read ${rawPath}: ${msg}`, rawPath);
-  }
-
-  // Text-y kinds must decode as valid UTF-8 (reject binary pushed as text).
-  if (kind !== "pdf" && !isValidUtf8(bytes)) {
-    return showFileError(
-      `${kind} file is not valid UTF-8 (binary) — use show_image for images or pass a different path: ${rawPath}`,
-      rawPath,
-    );
+  // Plan/158 — text-y kinds are read ONLY to validate UTF-8 (reject binary
+  // pushed as text; the viewer would show garbage). PDFs skip the read
+  // entirely: bytes are served by the fetch handler straight from disk, so a
+  // 20 MiB push costs one stat, not 20 MiB of I/O.
+  if (kind !== "pdf") {
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(absPath);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return showFileError(`cannot read ${rawPath}: ${msg}`, rawPath);
+    }
+    if (!isValidUtf8(bytes)) {
+      return showFileError(
+        `${kind} file is not valid UTF-8 (binary) — use show_image for images or pass a different path: ${rawPath}`,
+        rawPath,
+      );
+    }
   }
 
   const mime = mimeForFileKind(kind);
-  const data = bytes.toString("base64");
 
-  // Broadcast to every connected owner — the app opens the right viewer.
-  // `allow_network` is carried only for HTML (ignored by the app otherwise).
+  // Plan/158 — registry record: the source of truth for on-demand fetch and
+  // history merges. `absPath` stays on the PC (never serialized to the app);
+  // a registry failure fails the push — a ref without a record would
+  // advertise bytes the fetch handler could never serve.
+  const fileId = `doc_${randomUUID()}`;
+  const ts = Date.now();
+  try {
+    appendRegistryEntry(registryTargetForCwd(process.cwd()), {
+      fileId,
+      ts,
+      kind,
+      mime,
+      name: basename(rawPath) || rawPath,
+      bytes: size,
+      ...(caption ? { caption } : {}),
+      ...(kind === "html" && allowNetwork ? { allowNetwork: true } : {}),
+      absPath,
+      mtimeMs,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return showFileError(`could not register ${rawPath} for on-demand fetch: ${msg}`, rawPath);
+  }
+
+  // Broadcast to every connected owner — METADATA ONLY (plan/158). The app
+  // shows a reference bubble and pulls bytes via agent_file_fetch when the
+  // user opens/saves/shares. `id` == `fileId` so journal replay + history
+  // merge dedupe naturally. `allow_network` is carried only for HTML.
   deps.broadcast({
-    type: "agent_file",
-    id: `doc_${randomUUID()}`,
+    type: "agent_file_ref",
+    id: fileId,
     in_reply_to: ext.currentTurnId ?? "",
+    fileId,
+    ts,
     kind,
-    data,
     mime,
-    path: rawPath,
-    size,
+    name: basename(rawPath) || rawPath,
+    bytes: size,
     ...(caption ? { caption } : {}),
     ...(kind === "html" && allowNetwork ? { allow_network: true } : {}),
   });
@@ -645,7 +683,7 @@ function handleShowFile(
   };
   const netNote = kind === "html" ? (allowNetwork ? ", network allowed" : ", network blocked") : "";
   const text = shown
-    ? `Showing ${kind} file to user: ${rawPath} (${mime}${netNote}, ${size} bytes).`
+    ? `Showing ${kind} file to user: ${rawPath} (${mime}${netNote}, ${size} bytes). The device shows a reference card and downloads the bytes when the user opens, saves or shares it.`
     : `File prepared (${rawPath}) but no paired device is connected right now — it was not displayed.`;
   return { content: [{ type: "text", text }], details };
 }
@@ -660,7 +698,7 @@ export function registerShowFileTool(pi: ExtensionAPI, deps: ImagePipelineDeps):
           "Path to a file in the repo, relative to the session cwd (or absolute). " +
           "Markdown (.md/.markdown), plain text or code (.txt/.json/.yaml/.dart/.ts/.py/...), " +
           "PDF (.pdf), HTML (.html/.htm), or a Mermaid diagram source (.mmd/.mermaid). " +
-          "Size caps: 1 MiB for text/markdown/html/mermaid, 10 MiB for PDF.",
+          "Size caps: 1 MiB for text/markdown/html/mermaid, 20 MiB for PDF.",
       },
       caption: {
         type: "string",
@@ -690,14 +728,15 @@ export function registerShowFileTool(pi: ExtensionAPI, deps: ImagePipelineDeps):
       "Display a document file from the repo to the user on their paired mobile app — " +
       "Markdown, plain text/code, PDF, HTML (with JavaScript), or a Mermaid diagram. Each opens " +
       "full-screen viewer. Use when the user asks to see/read/open a file that is not an " +
-      "image (use show_image for images). The file bytes go directly to the app out-of-band; " +
-      "this tool returns only metadata (kind, path, mime, size) — never the content — so it " +
-      "does not bloat the model context. For HTML, JavaScript always runs; network is blocked " +
-      "unless you pass allowNetwork:true. Mermaid renders offline from a bundled renderer.",
+      "image (use show_image for images). Only METADATA is broadcast (kind, name, mime, size); " +
+      "the app downloads the bytes on demand when the user opens/saves/shares the file, so " +
+      "large PDFs work. Returns only metadata (kind, path, mime, size) — never the content — " +
+      "so it does not bloat the model context. For HTML, JavaScript always runs; network is " +
+      "blocked unless you pass allowNetwork:true. Mermaid renders offline from a bundled renderer.",
     promptSnippet:
       "show_file({path, caption?, kind?, allowNetwork?}): display a Markdown/text/PDF/HTML/Mermaid file " +
-      "from disk to the user on their phone (full-screen viewer). HTML runs JS; network blocked " +
-      "unless allowNetwork. Mermaid (.mmd) renders offline. Returns metadata only.",
+      "from disk to the user on their phone (full-screen viewer; bytes download on demand). HTML runs JS; " +
+      "network blocked unless allowNetwork. Mermaid (.mmd) renders offline. Returns metadata only.",
     parameters: ShowFileParams,
     execute: async (_toolCallId, params) =>
       handleShowFile(params as {

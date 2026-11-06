@@ -10,14 +10,26 @@
  * an integration test in `extension.test.ts` (mirrors the `show_image
  * broadcasts` test).
  */
-import { describe, expect, test, beforeEach, afterEach } from "vitest";
+import { describe, expect, test, beforeEach, afterEach, afterAll } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 
+// Plan/158 — pushes write a registry sidecar under PI_CODING_AGENT_DIR.
+// Sandbox it per worker so tests never touch the real ~/.pi tree.
+const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+const tmpAgentDir = mkdtempSync(join(tmpdir(), "pi-show-file-agent-"));
+process.env.PI_CODING_AGENT_DIR = tmpAgentDir;
+
 const indexModule = await import("./index.js");
 const extension = indexModule.default as ExtensionFactory;
+
+afterAll(async () => {
+  if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
+  rmSync(tmpAgentDir, { recursive: true, force: true });
+});
 
 interface CapturedTool {
   name: string;
@@ -73,8 +85,15 @@ function assertNoBase64Payload(
 
 describe("show_file tool (plan/126)", () => {
   let dir: string;
-  beforeEach(() => { dir = tmpDir(); });
-  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+  // Plan/158 — registry sidecars accumulate across tests; purge per test so
+  // fetch/history assertions never see a previous test's pushes.
+  beforeEach(() => {
+    dir = tmpDir();
+    rmSync(join(tmpAgentDir, "sessions"), { recursive: true, force: true });
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
 
   test("valid .md → kind markdown, metadata only, no base64 in result", async () => {
     const path = join(dir, "doc.md");

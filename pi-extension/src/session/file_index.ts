@@ -119,6 +119,10 @@ export function resolveCurrentSessionFile(cwd: string): SessionFileRef | null {
   let best: { path: string; st: Stats } | null = null;
   for (const name of names) {
     if (!name.endsWith(".jsonl")) continue;
+    // Plan/158 — the agent_file registry sidecar (`<session>.files.jsonl`)
+    // is NOT a transcript; without this guard it would win the newest-mtime
+    // race right after a push and poison the registry path resolution.
+    if (name.endsWith(".files.jsonl")) continue;
     const path = join(sessionsRoot(), encodeCwd(cwd), name);
     let st: Stats;
     try {

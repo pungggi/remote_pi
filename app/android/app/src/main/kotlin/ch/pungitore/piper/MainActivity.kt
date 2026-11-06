@@ -88,6 +88,27 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+        // Plan/158 — save a transferred agent file into the user's Downloads
+        // (MediaStore). minSdk 34: MediaStore.Downloads always exists and no
+        // storage permission is needed for the app's own contributions.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "ch.pungitore.piper/files")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "saveToDownloads" -> {
+                        val name = call.argument<String>("name") ?: "file"
+                        val mime = call.argument<String>("mime")
+                        val bytes = call.argument<ByteArray>("bytes") ?: ByteArray(0)
+                        try {
+                            result.success(saveToDownloads(name, mime, bytes))
+                        } catch (e: Exception) {
+                            Log.w(TAG, "save failed: ${e.javaClass.simpleName}: ${e.message}")
+                            result.error("save_failed", e.message, null)
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
         // Plan 116 — connection reliability: one-tap self battery-optimization
         // exemption + deep-links to the Tailscale app-info (battery) and system
         // VPN (always-on) screens. No-op-safe: every call degrades gracefully
@@ -364,5 +385,32 @@ class MainActivity : FlutterActivity() {
         val t = pendingShareText
         pendingShareText = null
         return t
+    }
+
+    // Plan/158 — insert [bytes] into MediaStore Downloads under [name] (with
+    // [mime] when provided) and stream them in. Returns the stored display
+    // name (MediaStore auto-dedupes "report.pdf" → "report (1).pdf"). Throws
+    // on insertion/stream failure; the Dart side surfaces the error toast.
+    private fun saveToDownloads(name: String, mime: String?, bytes: ByteArray): String {
+        val safe = name.substringAfterLast('/').substringAfterLast('\\')
+            .trim().ifBlank { "file" }
+        val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.Downloads.DISPLAY_NAME, safe)
+            if (!mime.isNullOrBlank()) {
+                put(android.provider.MediaStore.Downloads.MIME_TYPE, mime)
+            }
+        }
+        val uri = contentResolver.insert(
+            android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+            values,
+        ) ?: error("MediaStore rejected the download entry")
+        contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+            ?: error("could not open output stream for $uri")
+        val stored = contentResolver
+            .query(uri, arrayOf(android.provider.MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)
+            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+            ?: safe
+        Log.d(TAG, "saved $stored (${bytes.size} bytes) to Downloads")
+        return stored
     }
 }

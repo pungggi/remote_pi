@@ -1414,6 +1414,23 @@ class Ping extends ClientMessage {
   Map<String, dynamic> toJson() => {'type': 'ping', 'id': id};
 }
 
+/// Plan/158 — ask the Pi for [offset] bytes of a registered file (window = 1:
+/// the next request goes out only after the previous chunk was appended).
+class AgentFileFetch extends ClientMessage {
+  final String id;
+  final String fileId;
+  final int offset;
+  AgentFileFetch({required this.id, required this.fileId, required this.offset});
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'agent_file_fetch',
+    'id': id,
+    'file_id': fileId,
+    'offset': offset,
+  };
+}
+
 class PairRequest extends ClientMessage {
   final String id;
   final String token;
@@ -1891,7 +1908,15 @@ sealed class ServerMessage {
       'agent_image' => AgentImage.fromJson(json),
       // Plan/126 — document the agent pushes to the user (show_file tool:
       // markdown / text / pdf / html). Inline base64 + kind discriminator.
+      // Plan/158 — legacy shape: only pre-158 extensions send bytes inline;
+      // new ones push `agent_file_ref` (metadata) instead.
       'agent_file' => AgentFile.fromJson(json),
+      // Plan/158 — metadata-only file push (live). Bytes travel lazily via
+      // `agent_file_fetch` requests answered by chunked `agent_file_payload`
+      // unicasts; `agent_file_error` reports not_found / gone / changed / busy.
+      'agent_file_ref' => AgentFileRef.fromJson(json),
+      'agent_file_payload' => AgentFilePayload.fromJson(json),
+      'agent_file_error' => AgentFileError.fromJson(json),
       // Plan/32 — Pi-extension emits this when a context compaction finishes.
       'compaction' => Compaction.fromJson(json),
       'session_history' => SessionHistory.fromJson(json),
@@ -2294,11 +2319,14 @@ class AgentImage extends ServerMessage {
 /// via `session_history`. For HTML, [allowNetwork] tells the WebView sandbox
 /// whether remote resources are permitted (default false = JS runs, network
 /// blocked).
+/// Plan/158 — [data] is nullable: newer extensions never attach bytes to this
+/// frame (they push `agent_file_ref` instead), so a non-null `data` on an
+/// `agent_file` is treated as the legacy inline shape.
 class AgentFile extends ServerMessage {
   final String id;
   final String inReplyTo;
   final String kind; // markdown | text | pdf | html | mermaid
-  final String data; // base64 (raw file bytes; valid UTF-8 for text kinds)
+  final String? data; // base64 (legacy inline bytes; null when absent)
   final String? mime;
   final String? path;
   final String? caption;
@@ -2309,7 +2337,7 @@ class AgentFile extends ServerMessage {
     required this.id,
     required this.inReplyTo,
     required this.kind,
-    required this.data,
+    this.data,
     this.mime,
     this.path,
     this.caption,
@@ -2321,13 +2349,131 @@ class AgentFile extends ServerMessage {
     id: j['id'] as String,
     inReplyTo: (j['in_reply_to'] as String?) ?? '',
     kind: j['kind'] as String,
-    data: j['data'] as String,
+    data: j['data'] as String?,
     mime: j['mime'] as String?,
     path: j['path'] as String?,
     caption: j['caption'] as String?,
     size: (j['size'] as num?)?.toInt(),
     allowNetwork: (j['allow_network'] as bool?) ?? false,
   );
+}
+
+/// Plan/158 — metadata-only file push. The Pi registered a repo file in its
+/// transfer ledger and announced it WITHOUT bytes: the app shows a reference
+/// card and pulls the content when the user opens / saves / shares it, via
+/// `agent_file_fetch` → `agent_file_payload` chunks. [fileId] is the stable
+/// fetch key ([id] mirrors it so dedupe works against legacy inline ids).
+class AgentFileRef extends ServerMessage {
+  final String id;
+  final String inReplyTo;
+  final String fileId;
+  final int? ts; // epoch millis
+  final String kind; // markdown | text | pdf | html | mermaid
+  final String? mime;
+  final String? name; // display basename
+  final int? bytes; // declared size (for the progress bar)
+  final String? caption;
+  final bool allowNetwork; // HTML only
+
+  AgentFileRef({
+    required this.id,
+    required this.inReplyTo,
+    required this.fileId,
+    this.ts,
+    required this.kind,
+    this.mime,
+    this.name,
+    this.bytes,
+    this.caption,
+    this.allowNetwork = false,
+  });
+
+  factory AgentFileRef.fromJson(Map<String, dynamic> j) => AgentFileRef(
+    id: (j['id'] as String?) ?? (j['file_id'] as String?) ?? '',
+    inReplyTo: (j['in_reply_to'] as String?) ?? '',
+    fileId: j['file_id'] as String,
+    ts: (j['ts'] as num?)?.toInt(),
+    kind: j['kind'] as String,
+    mime: j['mime'] as String?,
+    name: j['name'] as String?,
+    bytes: (j['bytes'] as num?)?.toInt(),
+    caption: j['caption'] as String?,
+    allowNetwork: (j['allow_network'] as bool?) ?? false,
+  );
+}
+
+/// Plan/158 — one chunk of an `agent_file_fetch` answer (window = 1: the app
+/// asks for the next offset only after appending this chunk). [data] is the
+/// base64 slice [offset, offset + len); [more] false marks the last chunk.
+class AgentFilePayload extends ServerMessage {
+  final String inReplyTo;
+  final String fileId;
+  final int offset;
+  final int total;
+  final String data; // base64 slice
+  final bool more;
+
+  AgentFilePayload({
+    required this.inReplyTo,
+    required this.fileId,
+    required this.offset,
+    required this.total,
+    required this.data,
+    required this.more,
+  });
+
+  factory AgentFilePayload.fromJson(Map<String, dynamic> j) => AgentFilePayload(
+    inReplyTo: (j['in_reply_to'] as String?) ?? '',
+    fileId: j['file_id'] as String,
+    offset: ((j['offset'] as num?) ?? 0).toInt(),
+    total: ((j['total'] as num?) ?? 0).toInt(),
+    data: j['data'] as String,
+    more: (j['more'] as bool?) ?? false,
+  );
+}
+
+/// Plan/158 — the Pi refused or aborted a fetch. Codes: `not_found` (unknown
+/// fileId), `gone` (file deleted from the repo), `changed` (mtime/size moved
+/// since the ref was broadcast — the Pi re-registered it; refetch gets the
+/// new version), `busy` (another fetch in flight; retry shortly).
+class AgentFileError extends ServerMessage {
+  final String inReplyTo;
+  final String fileId;
+  final String code;
+
+  AgentFileError({
+    required this.inReplyTo,
+    required this.fileId,
+    required this.code,
+  });
+
+  factory AgentFileError.fromJson(Map<String, dynamic> j) => AgentFileError(
+    inReplyTo: (j['in_reply_to'] as String?) ?? '',
+    fileId: j['file_id'] as String,
+    code: (j['code'] as String?) ?? 'unknown',
+  );
+}
+
+/// Plan/158 — typed fetch failures the UI distinguishes: [changed] offers a
+/// "fetch current version" retry, [gone] disables the card, anything else is
+/// a transient failure a plain retry may heal.
+sealed class AgentFileFetchException implements Exception {
+  final String message;
+  AgentFileFetchException(this.message);
+}
+
+class AgentFileGoneException extends AgentFileFetchException {
+  AgentFileGoneException([super.message = 'the file is no longer on the Pi']);
+}
+
+class AgentFileChangedException extends AgentFileFetchException {
+  AgentFileChangedException([
+    super.message = 'the file changed on the Pi since it was sent',
+  ]);
+}
+
+class AgentFileUnavailableException extends AgentFileFetchException {
+  AgentFileUnavailableException([super.message = 'fetch failed']);
 }
 
 /// Plan/32 — emitted by the Pi-extension when a context compaction finishes.
@@ -2452,6 +2598,18 @@ sealed class SessionHistoryEvent {
         summary: (j['summary'] as String?) ?? '',
         tokensBefore: (j['tokens_before'] as num?)?.toInt(),
       ),
+      // Plan/158 — metadata-only file push replayed from history. The bubble
+      // fetches bytes on demand; fields mirror the live `agent_file_ref`.
+      'agent_file_ref' => AgentFileRefEvt(
+        ts: ts,
+        fileId: j['file_id'] as String,
+        kind: j['kind'] as String,
+        mime: j['mime'] as String?,
+        name: j['name'] as String?,
+        bytes: (j['bytes'] as num?)?.toInt(),
+        caption: (j['caption'] as String?) ?? '',
+        allowNetwork: (j['allow_network'] as bool?) ?? false,
+      ),
       final t => throw UnsupportedTypeException(t ?? ''),
     };
   }
@@ -2522,6 +2680,28 @@ class CompactionEvt extends SessionHistoryEvent {
     required super.ts,
     required this.summary,
     this.tokensBefore,
+  });
+}
+
+/// Plan/158 — a file ref merged into a history page. No `id` on the wire
+/// (the Pi's ledger entry keys on [fileId], which doubles as the row id).
+class AgentFileRefEvt extends SessionHistoryEvent {
+  final String fileId;
+  final String kind; // markdown | text | pdf | html | mermaid
+  final String? mime;
+  final String? name;
+  final int? bytes;
+  final String caption;
+  final bool allowNetwork;
+  const AgentFileRefEvt({
+    required super.ts,
+    required this.fileId,
+    required this.kind,
+    this.mime,
+    this.name,
+    this.bytes,
+    this.caption = '',
+    this.allowNetwork = false,
   });
 }
 

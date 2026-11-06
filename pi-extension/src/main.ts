@@ -99,6 +99,13 @@ import {
   encodeCursor,
   type FileIndexEntry,
 } from "./session/file_index.js";
+import {
+  AGENT_FILE_CHUNK_RAW_BYTES,
+  loadRegistryEntries,
+  registryPathForSession,
+  registryTargetForCwd,
+  type AgentFileRegistryEntry,
+} from "./session/file_registry.js";
 import { formatPeerInventory } from "./session/peer_inventory.js";
 import { MeshNode } from "./session/mesh_node.js";
 import type { MeshDrainContext, MeshDeliveryController } from "./session/mesh_delivery.js";
@@ -146,9 +153,11 @@ import { isPiSubagentChildProcess } from "./session/pi_subagent.js";
 import { quoteWindowsShellArgs } from "./session/shell_quote.js";
 import type { InstalledAgyPluginPaths } from "./session/agy_plugin.js";
 import { updateFooter, type FooterState } from "./ui/footer.js";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFileSync, chmodSync, mkdtempSync, mkdirSync, copyFileSync, existsSync, unlinkSync, readFileSync, statSync, writeFileSync, realpathSync } from "node:fs";
+import { open } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import { createInterface } from "node:readline";
 import { spawnSync } from "node:child_process";
 import { hostname, tmpdir } from "node:os";
@@ -1489,6 +1498,107 @@ function _stampBroadcast(msg: ServerMessage): ServerMessage {
 
 /** Min spacing between replay bursts towards ONE channel (storm guard). */
 const REPLAY_MIN_SPACING_MS = 2_000;
+
+// ── Plan/158 — chunked agent_file fetch ───────────────────────────────────
+
+/** One in-flight fetch per channel (plan/158 decision #3, window = 1). */
+const _agentFileFetchInFlight = new WeakSet<PlainPeerChannel>();
+
+/**
+ * Serve ONE raw chunk of a registry-registered file to ONE requesting owner.
+ *
+ * Validation discipline (plan/158 decisions #4/#5):
+ * - `fileId` is opaque; `absPath` stays on the PC.
+ * - Re-stat before AND after reading the slice: a file replaced mid-read
+ *   must never yield mixed bytes (`changed` wins over a partial answer).
+ * - `mtimeMs` + `bytes` mismatch vs the push-time registry record →
+ *   `changed`; missing/unreadable → `gone`; unknown fileId → `not_found`;
+ *   concurrent fetch on the same channel → `busy`.
+ *
+ * Per plan/145's rule, this reply is NEVER stamped/journaled: it is a
+ * per-sender query answer, not a stream member. The app retries at the
+ * same offset on transport loss — no ledger involvement.
+ */
+async function _handleAgentFileFetch(
+  sender: PlainPeerChannel,
+  msg: Extract<ClientMessage, { type: "agent_file_fetch" }>,
+): Promise<void> {
+  const fail = (code: "not_found" | "gone" | "changed" | "busy") => {
+    try {
+      sender.send({ type: "agent_file_error", in_reply_to: msg.id, fileId: msg.fileId, code });
+    } catch { /* best-effort — channel may be closing */ }
+  };
+
+  if (_agentFileFetchInFlight.has(sender)) {
+    fail("busy");
+    return;
+  }
+  _agentFileFetchInFlight.add(sender);
+  try {
+    const entry: AgentFileRegistryEntry | undefined = loadRegistryEntries(
+      registryTargetForCwd(process.cwd()),
+    ).find((e) => e.fileId === msg.fileId);
+    if (!entry) {
+      fail("not_found");
+      return;
+    }
+
+    let st: Stats;
+    try {
+      st = statSync(entry.absPath);
+    } catch {
+      fail("gone");
+      return;
+    }
+    if (!st.isFile()) {
+      fail("gone");
+      return;
+    }
+    if (st.mtimeMs !== entry.mtimeMs || st.size !== entry.bytes) {
+      fail("changed");
+      return;
+    }
+    const offset = Math.floor(msg.offset);
+    if (!Number.isFinite(offset) || offset < 0 || offset >= st.size) {
+      // A cursor past EOF can only mean the file moved under a mid-download
+      // app (or a buggy client) — surface `changed` so it restarts cleanly.
+      fail("changed");
+      return;
+    }
+
+    const len = Math.min(AGENT_FILE_CHUNK_RAW_BYTES, st.size - offset);
+    const fh = await open(entry.absPath, "r");
+    try {
+      const buf = Buffer.alloc(len);
+      await fh.read(buf, 0, len, offset);
+      // Post-read re-stat (decision #5): the file changed while we read.
+      let st2: Stats;
+      try {
+        st2 = statSync(entry.absPath);
+      } catch {
+        fail("gone");
+        return;
+      }
+      if (st2.mtimeMs !== entry.mtimeMs || st2.size !== entry.bytes) {
+        fail("changed");
+        return;
+      }
+      sender.send({
+        type: "agent_file_payload",
+        in_reply_to: msg.id,
+        fileId: msg.fileId,
+        offset,
+        total: st.size,
+        data: buf.toString("base64"),
+        more: offset + len < st.size,
+      });
+    } finally {
+      await fh.close();
+    }
+  } finally {
+    _agentFileFetchInFlight.delete(sender);
+  }
+}
 
 type ReplayBookkeeping = {
   lastAt: number;
@@ -5109,6 +5219,21 @@ export function _routeClientMessageFrom(
     _handleReportSeq(sender, msg);
     return;
   }
+  // Plan/158 — chunked agent_file fetch: early-dispatch, per-sender (like
+  // session_sync/report_seq). The registry lives on disk, not in the Pi
+  // runtime, so serving must not depend on ext.pi. Reply goes to the
+  // requesting channel only — payload/error are never broadcast.
+  if (msg.type === "agent_file_fetch") {
+    void _handleAgentFileFetch(sender, msg).catch((err) => {
+      // Unexpected failure (disk error mid-read, …): log + best-effort
+      // `not_found` so the app's spinner always resolves.
+      console.error(`[remote-pi] agent_file_fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+      try {
+        sender.send({ type: "agent_file_error", in_reply_to: msg.id, fileId: msg.fileId, code: "not_found" });
+      } catch { /* channel closing */ }
+    });
+    return;
+  }
   if (msg.type === "cancel") {
     try {
       const aborted = _abortCurrentTurn(ctx);
@@ -5802,7 +5927,41 @@ async function _pageHistory(
     }
   }
 
-  return { events: _mapAgentMessagesToEvents(pageMsgs, precedingUserId), hasMore, nextBefore };
+  const events = _mapAgentMessagesToEvents(pageMsgs, precedingUserId);
+
+  // Plan/158 — merge this session's agent_file refs into the page timeline.
+  // Page span: [slots[startIdx].ts, slots[endIdx].ts) — lower bound inclusive
+  // at the page's oldest entry, upper bound exclusive at the boundary slot
+  // ABOVE the page (the paged request's cursor slot; +∞ on the newest page).
+  // The oldest page (startIdx == 0) extends its lower bound to -∞ so pushes
+  // made before the first transcript entry still surface. Refs outside the
+  // span belong to a neighboring page of the same session. Metadata only —
+  // no base64 ever enters a history payload (asserted in tests).
+  if (ref) {
+    const lowerBoundTs = startIdx === 0 ? Number.NEGATIVE_INFINITY : slots[startIdx]!.ts;
+    const upperBoundTs = endIdx < slots.length ? slots[endIdx]!.ts : Number.POSITIVE_INFINITY;
+    const refEvents: SessionHistoryEvent[] = [];
+    for (const e of loadRegistryEntries(registryPathForSession(ref.path))) {
+      if (e.ts < lowerBoundTs || e.ts >= upperBoundTs) continue;
+      refEvents.push({
+        ts: e.ts,
+        type: "agent_file_ref",
+        fileId: e.fileId,
+        kind: e.kind as "markdown" | "text" | "pdf" | "html" | "mermaid",
+        ...(e.mime ? { mime: e.mime } : {}),
+        ...(e.name ? { name: e.name } : {}),
+        ...(e.bytes ? { bytes: e.bytes } : {}),
+        ...(e.caption ? { caption: e.caption } : {}),
+        ...(e.allowNetwork ? { allow_network: true } : {}),
+      });
+    }
+    if (refEvents.length > 0) {
+      events.push(...refEvents);
+      events.sort((a, b) => a.ts - b.ts); // stable: keeps transcript order on ties
+    }
+  }
+
+  return { events, hasMore, nextBefore };
 }
 
 function _tsOf(m: BufferMsg): number {
