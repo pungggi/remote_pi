@@ -8,6 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
+## [1.6.1] - 2026-11-07
+
+### Added
+
+- **Session tile swipe cycling (plan/160)**: long session names/timestamps
+  on Home tiles now cycle through phases on swipe instead of a scrolling
+  marquee. Phase state lives in `HomeViewModel` (keyed per row), so it
+  survives tile reorders and lazy scroll-outs instead of resetting mid-cycle.
+- **`remote-pi doctor` (plan/159)**: pre-flight that checks registry health,
+  home conflicts, supervisor state, relay reachability, pi binary, and
+  settings consistency. Available from the CLI and via `/remote-pi doctor`;
+  exits non-zero on failure so scripts can gate on it.
+- **Per-daemon logs + crash-loop marker (plan/159)**: each daemon's stderr
+  lands in `~/.pi/piper/daemons/<id>.log` (5 MB cap). A crash-looping
+  daemon gets a `.dead` marker surfaced as `DEAD(ts)` in daemon status.
+
+### Fixed
+
+- **Duplicate-spawn crash (2026-11-07)**: the supervisor now guarantees one
+  child per cwd — `start`/`start_all` cover crashed rows (including the
+  device daemon and transients), register rejects home conflicts, and a
+  spawn collision guard refuses overlapping spawns instead of crashing.
+  `start_all` no longer reports false-positive `Started N` when the guard
+  refused a spawn.
+- **Fleet ↔ daemons.json drift**: a 60 s reconciliation loop adopts or stops
+  daemons so `daemons.json` cannot go stale behind the actual fleet
+  (backoff behavior untouched).
+- **Shipped watchdog**: `scripts/piper-watchdog.ps1` — health-first relay
+  check, logged supervisor start via `cmd /c >>`, and connect-probe
+  liveness (pipe listing alone serves stale names).
+
 ## [1.6.0] - 2026-11-07
 
 ### Added
