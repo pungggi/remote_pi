@@ -105,6 +105,31 @@ describe("doctor — checks", () => {
     expect(sup?.detail).toContain("crash-loop");
   });
 
+  test("transient fleet rows are not missing-registry false positives", async () => {
+    // Review f9, PR #103: doctor filtered transients by display NAME
+    // (`name !== \"transient\"`), so a registry daemon NAMED \"transient\"
+    // would false-positive as \"fleet rows without registry entries\".
+    // The filter now keys on the explicit `transient` flag.
+    saveRegistry({ daemons: [{ cwd: projectCwd, name: "transient" }] });
+    const deps = {
+      ...healthyDeps(),
+      supervisorStatus: async () => ({
+        daemons: [
+          // Registry row legitimately named "transient" — must NOT be flagged.
+          { id: daemonIdForCwd(projectCwd), cwd: projectCwd, name: "transient", state: "running" as const },
+          // A real transient spawn with a custom name — under the old
+          // name-based filter this flagged as "fleet rows without registry
+          // entries"; the flag now filters it.
+          { id: "deadbee0", cwd: "C:\\tmp\\other", name: "worker-2", state: "running" as const, transient: true },
+        ],
+      }),
+    };
+    const result = await runDoctor(deps);
+    const sup = result.checks.find((c) => c.name === "supervisor");
+    expect(sup?.status).toBe("ok");
+    expect(sup?.detail ?? "").not.toContain("without registry entries");
+  });
+
   test("path-based remote-pi worktree packages in settings warn", async () => {
     saveRegistry({ daemons: [{ cwd: projectCwd, name: "proj" }] });
     const deps = {

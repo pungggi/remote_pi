@@ -33,9 +33,18 @@ cycles back, and **the position is remembered per session list item**.
     it as `lastResponseAt` DateTime. Reads the same box the unread
     listenable watches, so the line refreshes on every delivery.
 - `app/lib/ui/home/home_page.dart`
-  - `_SubtitlePhase` (keyed `epk|roomId` per row) owns the raw phase for
-    the session's lifetime in the list; survives group reordering and
-    rebuilds via `ValueKey`; deliberately resets on app restart.
+  - The raw phase lives in the HomeViewModel as `Map<String, int>` keyed
+    by the row's session key (`epk|roomId`), read/written through
+    `subtitlePhaseFor` / `cycleSubtitle`. It survives group reordering,
+    rebuilds AND lazy scroll-outs (a SliverList matches children
+    positionally, so widget-local state resets on any index change or
+    cacheExtent eviction — review f1, PR #103). Deliberately resets on
+    app restart: it's a reading position, not a durable preference.
+  - **Staleness tradeoff (review f4, PR #103)**: the relative time
+    ("Last response: 5m ago") is computed at render time only — no
+    periodic timer refreshes it. A quiet session's "5m" stays frozen
+    until the next list rebuild (any delivery, unread change or swipe).
+    Accepted: correctness on every observable refresh, zero timers.
 
 ## Steps with acceptance criteria
 

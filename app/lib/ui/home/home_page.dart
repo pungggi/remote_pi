@@ -13,7 +13,8 @@ import 'package:app/ui/core/widgets/branch_name_dialog.dart';
 import 'package:app/ui/home/states/home_state.dart';
 import 'package:app/ui/settings/settings_sheet.dart';
 import 'package:app/ui/home/viewmodels/home_viewmodel.dart';
-import 'package:app/ui/home/viewmodels/session_cleanup_report.dart' show CleanupBatchPrep;
+import 'package:app/ui/home/viewmodels/session_cleanup_report.dart'
+    show CleanupBatchPrep;
 import 'package:app/ui/home/widgets/widgets.dart';
 import 'package:app/ui/update/widgets/update_banner.dart';
 import 'package:flutter/material.dart';
@@ -409,63 +410,54 @@ class HomePage extends StatelessWidget {
           it.peer.remoteEpk,
           it.room.roomId,
         );
-    // Plan/160 — the row owns the swiped subtitle position, keyed per
-    // session so the state follows the session (not the list index)
-    // through group reordering and list rebuilds.
+    // Plan/160 — the row's swiped subtitle position lives in the
+    // HomeViewModel keyed by 'epk|roomId', so it follows the session through
+    // group reordering, rebuilds AND lazy scroll-outs. (SliverList child
+    // state is matched positionally — a StatefulWidget's phase would reset
+    // on any reorder or scroll-out; review f1, PR #103.)
     final sessionKey = '${toStandardB64(it.peer.remoteEpk)}|${it.room.roomId}';
     return KeyedSubtree(
       key: ValueKey('session-tile|$sessionKey'),
-      child: _SubtitlePhase(
-        builder: (context, phase, cycle) => Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Plan/149 — rebuild the tile when unread changes (msgs row
-            // delivery or read-marker advance), independent of rooms stream
-            // updates. The listenable merges the session's msgs box and the
-            // read-markers box.
-            ListenableBuilder(
-              listenable: vm.unreadListenable(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Plan/149 — rebuild the tile when unread changes (msgs row
+          // delivery or read-marker advance), independent of rooms stream
+          // updates. The listenable merges the session's msgs box and the
+          // read-markers box.
+          ListenableBuilder(
+            listenable: vm.unreadListenable(it.peer.remoteEpk, it.room.roomId),
+            builder: (context, _) => SessionTile(
+              peer: it.peer,
+              isLive: isLive,
+              isReconnecting: isReconnecting,
+              isWorking: isWorking,
+              isWaitingForInput: isWaitingForInput,
+              isSelected: isSelected,
+              notifyOnDone: vm.notifyOnDone(it.peer.remoteEpk, it.room.roomId),
+              room: it.room,
+              deviceLabel: showDeviceLabel ? _deviceFor(it.peer) : null,
+              git:
+                  it.room.git ??
+                  state
+                      .gitByKey['${toStandardB64(it.peer.remoteEpk)}|${it.room.roomId}'],
+              groupBy: vm.groupBy,
+              lastPrompt: vm.lastUserPrompt(it.peer.remoteEpk, it.room.roomId),
+              lastResponseAt: vm.lastResponseAt(
                 it.peer.remoteEpk,
                 it.room.roomId,
               ),
-              builder: (context, _) => SessionTile(
-                peer: it.peer,
-                isLive: isLive,
-                isReconnecting: isReconnecting,
-                isWorking: isWorking,
-                isWaitingForInput: isWaitingForInput,
-                isSelected: isSelected,
-                notifyOnDone: vm.notifyOnDone(
-                  it.peer.remoteEpk,
-                  it.room.roomId,
-                ),
-                room: it.room,
-                deviceLabel: showDeviceLabel ? _deviceFor(it.peer) : null,
-                git:
-                    it.room.git ??
-                    state
-                        .gitByKey['${toStandardB64(it.peer.remoteEpk)}|${it.room.roomId}'],
-                groupBy: vm.groupBy,
-                lastPrompt: vm.lastUserPrompt(
-                  it.peer.remoteEpk,
-                  it.room.roomId,
-                ),
-                lastResponseAt: vm.lastResponseAt(
-                  it.peer.remoteEpk,
-                  it.room.roomId,
-                ),
-                unread: vm.unreadCount(it.peer.remoteEpk, it.room.roomId),
-                subtitlePhase: phase,
-                onCycleSubtitle: cycle,
-                onOpenRef: _openRefUrl(context, it.room),
-                onOpen: () => _open(context, vm, it.peer, it.room),
-                onLongPress: () =>
-                    _showSessionMenu(context, vm, it, isLive: isLive),
-              ),
+              unread: vm.unreadCount(it.peer.remoteEpk, it.room.roomId),
+              subtitlePhase: vm.subtitlePhaseFor(sessionKey),
+              onCycleSubtitle: (delta) => vm.cycleSubtitle(sessionKey, delta),
+              onOpenRef: _openRefUrl(context, it.room),
+              onOpen: () => _open(context, vm, it.peer, it.room),
+              onLongPress: () =>
+                  _showSessionMenu(context, vm, it, isLive: isLive),
             ),
-            Divider(color: colors.border, height: 1),
-          ],
-        ),
+          ),
+          Divider(color: colors.border, height: 1),
+        ],
       ),
     );
   }
@@ -999,7 +991,7 @@ class HomePage extends StatelessWidget {
         prep.unreachablePeers.isEmpty
             ? 'No finished sessions to clean up.'
             : 'Could not reach ${prep.unreachablePeers.join(', ')} — nothing '
-                'checked.',
+                  'checked.',
         isError: prep.unreachablePeers.isNotEmpty,
       );
       return;
@@ -1015,7 +1007,8 @@ class HomePage extends StatelessWidget {
           // (epk, roomId); the tile list can't have changed under the modal
           // barrier, but match defensively anyway).
           final byKey = {
-            for (final c in candidates) '${c.peer.remoteEpk}|${c.room.roomId}': c,
+            for (final c in candidates)
+              '${c.peer.remoteEpk}|${c.room.roomId}': c,
           };
           final items = [
             for (final p in plans)
@@ -1103,37 +1096,6 @@ class HomePage extends StatelessWidget {
 }
 
 /// Plan-17 follow-up — soft empty state for paired-but-no-rooms.
-/// Plan/160 — remembers the swiped subtitle position for one session
-/// row for as long as the Home list lives. The row is keyed per session
-/// (epk|roomId), so this state follows the session through group
-/// reordering and list rebuilds; it deliberately resets on app restart
-/// (a reading position, not a durable preference).
-class _SubtitlePhase extends StatefulWidget {
-  const _SubtitlePhase({required this.builder});
-
-  final Widget Function(
-    BuildContext context,
-    int phase,
-    void Function(int delta) cycle,
-  )
-  builder;
-
-  @override
-  State<_SubtitlePhase> createState() => _SubtitlePhaseState();
-}
-
-class _SubtitlePhaseState extends State<_SubtitlePhase> {
-  int _phase = 0;
-
-  void _cycle(int delta) {
-    if (delta == 0) return;
-    setState(() => _phase += delta.sign);
-  }
-
-  @override
-  Widget build(BuildContext context) => widget.builder(context, _phase, _cycle);
-}
-
 class _LonelyEmptyState extends StatelessWidget {
   const _LonelyEmptyState();
 

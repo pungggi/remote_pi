@@ -379,6 +379,8 @@ describe("Supervisor — start_transient (plan/124 — bring session to life)", 
     const entry = list.ok ? list.data!.daemons.find((d) => d.id === id) : undefined;
     expect(entry).toBeDefined();
     expect(entry?.name).toBe("transient");
+    // Plan/159 — the flag, not just the display name (doctor filters on it).
+    expect(entry?.transient).toBe(true);
     expect(entry?.cwd).toBe(cwd);
 
     // `stop <id>` works for a transient (non-registry) id — it must NOT
@@ -455,6 +457,39 @@ describe("Supervisor — plan/159 resilience", () => {
     const r = await ask({ op: "start_all" }) as ControlReply<{ started: string[] }>;
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.data!.started).toContain("device");
+  });
+
+  test("start_all does not count a transient spawn the guard refused (f2, PR #103)", async () => {
+    // The transient branch of _opStartAll used to push the id into
+    // `started` WITHOUT checking _spawnEntry's return — a refused spawn
+    // (collision guard: another daemon owns the cwd) would still report
+    // "Started 1". That's the inverse of the original incident. Arrange it
+    // without a real second daemon: a crashed transient slot + a stubbed
+    // refusal.
+    const tmp = mkdtempSync(join(tmpdir(), "pi-sv-f2-"));
+    const tr = await ask({ op: "start_transient", cwd: tmp }) as ControlReply<{ id: string }>;
+    expect(tr.ok).toBe(true);
+    const id = tr.ok ? tr.data!.id : "";
+    const sv = supervisor as unknown as {
+      children: Map<string, { cwd: string; name: string; transient: boolean; child: { state: string } }>;
+      _spawnEntry: (id: string, cwd: string, name: string, transient?: boolean) => boolean;
+    };
+    // Force the branch conditions: not running/starting (RpcChild.state is
+    // a getter, so swap in a fake crashed slot), not registry, not device.
+    const realSlot = sv.children.get(id)!;
+    sv.children.set(id, { cwd: tmp, name: "transient", transient: true, child: { state: "crashed" } });
+    const realSpawn = sv._spawnEntry.bind(sv);
+    sv._spawnEntry = (sid, cwd, name, transient) =>
+      sid === id ? false : realSpawn(sid, cwd, name, transient);
+    try {
+      const r = await ask({ op: "start_all" }) as ControlReply<{ started: string[] }>;
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.data!.started).not.toContain(id);
+    } finally {
+      sv._spawnEntry = realSpawn;
+      sv.children.set(id, realSlot);
+      await ask({ op: "stop", id });
+    }
   });
 
   test("device daemon stderr lands in the per-daemon log", async () => {

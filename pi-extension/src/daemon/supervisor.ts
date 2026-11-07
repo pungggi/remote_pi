@@ -401,6 +401,11 @@ export class Supervisor {
           id,
           cwd: slot.cwd,
           name: "transient",
+          // Plan/159 — an explicit flag, not just the display name: doctor
+          // filters transients out of the "fleet rows without registry
+          // entries" check and must not false-positive on a registry daemon
+          // that happens to be NAMED "transient" (review f9, PR #103).
+          transient: true,
           state: slot.child.state,
           ...(slot.child.pid !== undefined ? { pid: slot.child.pid } : {}),
           ...(slot.child.uptimeMs !== undefined
@@ -439,8 +444,11 @@ export class Supervisor {
       if (id === DEVICE_DAEMON_ID) {
         if (this._spawnDeviceDaemon()) started.push(id);
       } else {
-        this._spawnEntry(id, slot.cwd, slot.name, slot.transient);
-        started.push(id);
+        // Plan/159 — check the spawn result: the collision guard can refuse
+        // (another daemon owns the cwd). Pushing the id anyway would report
+        // a false-positive "Started N" — the exact inverse of the original
+        // incident (review f2, PR #103).
+        if (this._spawnEntry(id, slot.cwd, slot.name, slot.transient)) started.push(id);
       }
     }
     return { ok: true, data: { started, already_running: already } };

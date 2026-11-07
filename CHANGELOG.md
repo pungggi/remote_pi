@@ -128,8 +128,11 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   swipe on the tile cycles through the available lines — git summary →
   model / last prompt → **last response datetime** — a right swipe
   cycles back, and the position is remembered per session for as long as
-  the Home list lives. Tiles with a single line (or none) keep the static
-  subtitle as before — the swipe gesture does not register there.
+  the Home list lives — kept in the viewmodel keyed by session, so it
+  survives reordering and lazy scroll-outs, not just rebuilds. Tiles with a
+  single line (or none) keep the static subtitle as before — the swipe
+  gesture does not register there. The relative "last response" time is
+  computed at render time only (no periodic refresh timer).
 
 ## [1.5.4] - 2026-11-02
 

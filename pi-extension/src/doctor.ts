@@ -175,7 +175,7 @@ export async function runDoctor(deps: DoctorDeps = {}): Promise<DoctorResult> {
     if (crashed.length > 0) problems.push(`${crashed.length} crashed: ${crashed.map((d) => d.id).join(", ")}`);
     if (dead.length > 0) problems.push(`crash-loop marker on: ${dead.map((d) => d.id).join(", ")}`);
     const registryIds = new Set(registry.map((e) => e.id));
-    const missing = fleet.filter((d) => !registryIds.has(d.id) && d.id !== "device" && d.name !== "transient");
+    const missing = fleet.filter((d) => !registryIds.has(d.id) && d.id !== "device" && !d.transient);
     if (missing.length > 0) problems.push(`fleet rows without registry entries: ${missing.map((d) => d.id).join(", ")}`);
     checks.push(
       problems.length === 0
