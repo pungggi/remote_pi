@@ -33,6 +33,7 @@ import {
   type NewJobInput,
 } from "./cron_registry.js";
 import { appendCronLog, readCronLog, type CronResult } from "./cron_log.js";
+import { appendDaemonLog, clearDeadMarker, readDeadMarker, writeDeadMarker } from "./diagnostics.js";
 
 /**
  * Plan/120 — the supervisor always spawns this system daemon alongside the
@@ -84,6 +85,12 @@ function supervisorSockPath(): string {
   return ipcAddress("supervisor", join(root, ".pi", "piper", SUPERVISOR_SOCK_NAME));
 }
 
+/** Plan/159 — the home the device daemon would run in. Honors
+ *  `REMOTE_PI_HOME` so tests and production agree on "home". */
+function supervisorHome(): string {
+  return process.env["REMOTE_PI_HOME"] || homedir();
+}
+
 /** Thrown by `start()` when another live supervisor already holds the UDS.
  *  Prevents a second supervisor from orphaning the first's children. */
 export class SupervisorAlreadyRunningError extends Error {
@@ -124,6 +131,10 @@ export interface SupervisorOptions {
   /** Override the control-socket address (tests inject a unique path/pipe to
    *  isolate from any live production supervisor; production leaves unset). */
   sockPath?: string;
+  /** Plan/159 — how often the supervisor reconciles its in-memory fleet
+   *  against `daemons.json` (adopts externally-added entries, stops removed
+   *  ones). Default 60 s; tests inject a short interval. `0` disables. */
+  reconcileIntervalMs?: number;
 }
 
 /** Pure decision for `fireJob` (plan/39) — picks the action from the daemon's
@@ -153,6 +164,11 @@ interface ChildSlot {
    *  restarted on crash, but NOT registry-backed, so NOT resurrected at
    *  boot and deleted from `children` once deliberately stopped. */
   transient: boolean;
+  /** Plan/159 — the spawn name (agent_name) this slot was started with, so
+   *  `start_all` / reconcile can respawn crashed non-registry slots (device
+   * daemon, transients) with the same identity instead of a folder-derived
+   * default. */
+  name?: string;
 }
 
 export class Supervisor {
@@ -164,6 +180,8 @@ export class Supervisor {
    *  rooms). Null when it failed to start (never fatal to the supervisor). */
   private keeper: RoomKeeper | null = null;
   private shuttingDown = false;
+  /** Plan/159 — periodic fleet ↔ registry reconciliation handle. */
+  private reconcileTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly opts: SupervisorOptions) {}
 
@@ -183,6 +201,9 @@ export class Supervisor {
     this._spawnAllFromRegistry();
     // Plan/120 — always-on device daemon (handles offline terminal-open).
     this._spawnDeviceDaemon();
+    // Plan/159 — keep the in-memory fleet honest against a hand-edited or
+    // externally-written daemons.json without requiring a supervisor bounce.
+    this._startReconcileLoop();
     // Plan/140 — durable-history keeper for dark rooms. Started AFTER the
     // children so a registry daemon wins the race for its own room (the
     // keeper backs off on RoomAlreadyOpen and the real daemon has the
@@ -196,6 +217,11 @@ export class Supervisor {
   /** Graceful shutdown: stop all children, close UDS. */
   async stop(): Promise<void> {
     this.shuttingDown = true;
+    // Plan/159 — stop reconciling first; a late pass would fight teardown.
+    if (this.reconcileTimer !== null) {
+      clearInterval(this.reconcileTimer);
+      this.reconcileTimer = null;
+    }
     // Plan/140 — release keeper rooms first so a concurrently starting
     // sibling supervisor doesn't fight RoomAlreadyOpen ghosts during the
     // handover.
@@ -342,11 +368,15 @@ export class Supervisor {
         if (slot.child.uptimeMs !== undefined) info.uptime_s = Math.floor(slot.child.uptimeMs / 1000);
         info.restart_count = slot.child.restartCount;
       }
+      // Plan/159 — surface the crash-loop marker when present.
+      const dead = readDeadMarker(entry.id);
+      if (dead) info.dead_since = dead.at;
       return info;
     });
     // Plan/120 — append the always-on device daemon (not in the registry).
     const devSlot = this.children.get(DEVICE_DAEMON_ID);
     if (devSlot) {
+      const devDead = readDeadMarker(DEVICE_DAEMON_ID);
       out.push({
         id: DEVICE_DAEMON_ID,
         cwd: devSlot.cwd,
@@ -357,6 +387,7 @@ export class Supervisor {
           ? { uptime_s: Math.floor(devSlot.child.uptimeMs / 1000) }
           : {}),
         restart_count: devSlot.child.restartCount,
+        ...(devDead ? { dead_since: devDead.at } : {}),
       });
     }
     // Plan/124 — append transient (revived) spawns: they live in `children`
@@ -385,28 +416,62 @@ export class Supervisor {
   private _opStartAll(): ControlReply<unknown> {
     const started: string[] = [];
     const already: string[] = [];
-    for (const entry of listDaemons()) {
+    const registry = listDaemons();
+    for (const entry of registry) {
       const slot = this.children.get(entry.id);
       if (slot && slot.child.state === "running") {
         already.push(entry.id);
         continue;
       }
-      this._spawnEntry(entry.id, entry.cwd);
-      started.push(entry.id);
+      if (this._spawnEntry(entry.id, entry.cwd, entry.name)) started.push(entry.id);
+    }
+    // Plan/159 — `start_all` used to cover ONLY registry entries, so a
+    // crashed device daemon or a crashed transient sat forever in backoff
+    // while the CLI reported "Started 0" (2026-11-07 incident). Non-registry
+    // slots that exist but aren't running are startable too.
+    const registryIds = new Set(registry.map((e) => e.id));
+    for (const [id, slot] of this.children) {
+      if (registryIds.has(id)) continue; // handled above
+      if (slot.child.state === "running" || slot.child.state === "starting") {
+        already.push(id);
+        continue;
+      }
+      if (id === DEVICE_DAEMON_ID) {
+        if (this._spawnDeviceDaemon()) started.push(id);
+      } else {
+        this._spawnEntry(id, slot.cwd, slot.name, slot.transient);
+        started.push(id);
+      }
     }
     return { ok: true, data: { started, already_running: already } };
   }
 
-  /** Spawn a single registered daemon by id. Idempotent: a daemon already
-   *  running returns `started: false`. Unknown id → ok:false. This is what
-   *  `/remote-pi create` calls so a freshly-registered folder boots its Pi
-   *  immediately instead of waiting for the next supervisor restart. */
+  /** Spawn a single daemon by id (registry-backed, the device daemon, or a
+   *  transient). Idempotent: a daemon already running returns
+   *  `started: false`. Unknown id → ok:false. This is what `/remote-pi create`
+ *  calls so a freshly-registered folder boots its Pi immediately instead of
+   *  waiting for the next supervisor restart. Plan/159: also accepts the
+   *  built-in device daemon and transient ids, which live in `children` but
+   *  not in the registry (previously "no daemon with id device" — the
+   *  2026-11-07 wedge: a crashed device daemon could never be restarted). */
   private _opStart(id: string): ControlReply<unknown> {
     const entry = listDaemons().find((d) => d.id === id);
-    if (!entry) return { ok: false, error: `no daemon with id ${id}` };
     const slot = this.children.get(id);
+    if (!entry && !slot) return { ok: false, error: `no daemon with id ${id}` };
     if (slot && slot.child.state === "running") {
       return { ok: true, data: { id, state: slot.child.state, started: false } };
+    }
+    if (id === DEVICE_DAEMON_ID || !entry) {
+      // Device daemon needs its fixed room/name config; transients keep
+      // their captured name. Both rebuild via their own spawn paths.
+      const spawned = id === DEVICE_DAEMON_ID
+        ? this._spawnDeviceDaemon()
+        : this._spawnEntry(id, slot!.cwd, slot!.name, slot!.transient);
+      if (!spawned) {
+        return { ok: false, error: `daemon ${id} was not spawned (another daemon owns its cwd)` };
+      }
+      const state = this.children.get(id)?.child.state ?? "starting";
+      return { ok: true, data: { id, state, started: true } };
     }
     this._spawnEntry(entry.id, entry.cwd, entry.name);
     const state = this.children.get(id)?.child.state ?? "starting";
@@ -537,8 +602,21 @@ export class Supervisor {
 
   private _opRegister(rawCwd: string): ControlReply<unknown> {
     try {
-      const { id, cwd } = addDaemon(rawCwd);
-      return { ok: true, data: { id, cwd } };
+      // Plan/159 — the home cwd belongs to the always-on device daemon
+      // (plan/120). A registry entry there spawns a SECOND child in the same
+      // cwd; one loses the room lock and lingers as a plain agent (the
+      // 2026-11-07 duplicate). Register a project folder instead.
+      const cwd = normalizeCwd(rawCwd);
+      if (cwd === supervisorHome()) {
+        return {
+          ok: false,
+          error:
+            `${cwd} is the user home — it is already served by the always-on ` +
+            "device daemon (plan/120). Register a project folder instead.",
+        };
+      }
+      const { id, cwd: normalized } = addDaemon(cwd);
+      return { ok: true, data: { id, cwd: normalized } };
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
@@ -574,8 +652,8 @@ export class Supervisor {
     // crash-backoff wiring) but tag the slot transient so stop/boot treat
     // it as ephemeral. `--continue` (inside rpcSpawnArgs) resumes the cwd's
     // most-recent session JSONL → the existing conversation carries over.
-    this._spawnEntry(id, cwd, effectiveName, true);
-    return { ok: true, data: { id, cwd, room_id, started: true } };
+    const spawned = this._spawnEntry(id, cwd, effectiveName, true);
+    return { ok: true, data: { id, cwd, room_id, started: spawned } };
   }
 
   private async _opUnregister(id: string): Promise<ControlReply<unknown>> {
@@ -753,9 +831,16 @@ export class Supervisor {
    * sessions (the extension handler creates the worktree at the *requested*
    * cwd, so the daemon's own cwd is irrelevant).
    */
-  private _spawnDeviceDaemon(): void {
+  private _spawnDeviceDaemon(): boolean {
     const id = DEVICE_DAEMON_ID;
-    const cwd = process.env["REMOTE_PI_HOME"] || homedir();
+    const cwd = supervisorHome();
+    if (listDaemons().some((e) => e.cwd === cwd)) {
+      process.stderr.write(
+        `[remote-pi-supervisord] device daemon skipped — a registry entry already covers ${cwd} ` +
+        "(remove it to restore the built-in device daemon)\n",
+      );
+      return false;
+    }
     // Plan/140 — same proactive keeper yield as per-project daemons.
     this.keeper?.dropRoom(DEVICE_ROOM);
     // Clean up any prior slot (crashed + waiting for backoff).
@@ -778,8 +863,10 @@ export class Supervisor {
     const child = new RpcChild(childOpts);
     const slot: ChildSlot = { id, cwd, child, restartTimer: null, restartAttempt: 0, spawnedAt: Date.now(), transient: false };
     this.children.set(id, slot);
+    this._wireChildDiagnostics(id, child);
     child.on("exit", (evt: RpcChildExitEvent) => this._onChildExit(id, evt));
     child.spawn();
+    return true;
   }
 
   /** Plan/140 — start the in-process room keeper. Never throws: a keeper
@@ -802,7 +889,31 @@ export class Supervisor {
     }
   }
 
-  private _spawnEntry(id: string, cwd: string, name?: string, transient = false): void {
+  /** Plan/159 — wire a freshly created child's diagnostics: persist stderr
+   *  to the per-daemon log (`~/.pi/piper/daemons/<id>.log`) so crash
+   *  forensics survive ANY launcher, and clear any crash-loop marker from a
+   *  previous incarnation (a spawn means we're trying again — dead lifts). */
+  private _wireChildDiagnostics(id: string, child: RpcChild): void {
+    clearDeadMarker(id);
+    child.on("stderr", (text: string) => appendDaemonLog(id, text));
+  }
+
+  private _spawnEntry(id: string, cwd: string, name?: string, transient = false): boolean {
+    // Plan/159 — one child per cwd, ever. Two ids covering the same folder
+    // (e.g. a registry entry for home + the built-in device daemon) means one
+    // child loses the room lock and lingers as an unmanaged plain agent
+    // (2026-11-07 incident). The register-op guard prevents the known case;
+    // this is the belt-and-suspenders for every other spawn path.
+    const collision = [...this.children.values()].find(
+      (s) => s.cwd === cwd && s.id !== id && (s.child.state === "running" || s.child.state === "starting"),
+    );
+    if (collision) {
+      process.stderr.write(
+        `[remote-pi-supervisord] not spawning ${id} (${cwd}) — daemon ${collision.id} ` +
+        `already owns that cwd\n`,
+      );
+      return false;
+    }
     // Plan/140 — a real daemon for this room is starting: proactively yield
     // the keeper's connection so the child's relay connect doesn't hit
     // RoomAlreadyOpen (claim_room is the reactive fallback for interactive
@@ -831,11 +942,13 @@ export class Supervisor {
     };
     if (this.opts.piBin !== undefined) childOpts.piBin = this.opts.piBin;
     const child = new RpcChild(childOpts);
-    const slot: ChildSlot = { id, cwd, child, restartTimer: null, restartAttempt: 0, spawnedAt: Date.now(), transient };
+    const slot: ChildSlot = { id, cwd, child, restartTimer: null, restartAttempt: 0, spawnedAt: Date.now(), transient, name };
     this.children.set(id, slot);
+    this._wireChildDiagnostics(id, child);
 
     child.on("exit", (evt: RpcChildExitEvent) => this._onChildExit(id, evt));
     child.spawn();
+    return true;
   }
 
   private _onChildExit(id: string, evt: RpcChildExitEvent): void {
@@ -882,6 +995,10 @@ export class Supervisor {
       process.stderr.write(
         `[remote-pi-supervisord] ${id}: crash loop — continuing at ${delay}ms cadence (no give-up)\n`,
       );
+      // Plan/159 — persist the crash-loop state so `daemon status`,
+      // `remote-pi doctor`, and a watchdog can see "this daemon is dead"
+      // instead of silence. Cleared on the next successful spawn.
+      writeDeadMarker(id, { at: new Date().toISOString(), exit_code: evt.code, attempt: slot.restartAttempt });
     }
     process.stderr.write(
       `[remote-pi-supervisord] scheduling restart of ${id} in ${delay}ms (attempt ${slot.restartAttempt + 1})\n`,
@@ -890,9 +1007,69 @@ export class Supervisor {
       slot.restartTimer = null;
       slot.restartAttempt += 1;
       slot.spawnedAt = Date.now();
+      // Plan/159 — a retry clears the crash-loop marker: we're trying again,
+      // so the daemon is no longer "dead" even if it still reports crashed.
+      clearDeadMarker(id);
       slot.child.noteRestart();
       slot.child.spawn();
     }, delay);
+  }
+
+  // ── Plan/159 — fleet ↔ registry reconciliation ─────────────────────
+
+  /** Starts the periodic reconciliation loop (see `_reconcileOnce`).
+   *  `unref`ed so a test or tooling process isn't kept alive by it. */
+  private _startReconcileLoop(): void {
+    const interval = this.opts.reconcileIntervalMs ?? 60_000;
+    if (interval <= 0 || this.reconcileTimer !== null) return;
+    this.reconcileTimer = setInterval(() => {
+      try { this._reconcileOnce(); }
+      catch (e) {
+        process.stderr.write(`[remote-pi-supervisord] reconcile pass failed: ${String(e)}\n`);
+      }
+    }, interval);
+    this.reconcileTimer.unref?.();
+  }
+
+  /** One reconciliation pass: make the in-memory fleet match `daemons.json`.
+   *
+   *  - A registry entry with NO live slot is adopted (spawned) — covers a
+   *    hand-edited or externally-written registry without a supervisor bounce
+   *    (2026-11-07: memory had a zombie row while disk was empty, and vice
+   *    versa; nothing reconciled the two).
+   *  - A slot whose registry entry vanished is stopped and dropped. The
+   *    device daemon and transient slots are NOT registry-backed and are
+   *    never touched here.
+   *
+   *  Deliberately does NOT revive crashed/stopped registry slots: the crash
+   *  backoff owns crashed children (a 60 s force-respawn would defeat the
+   *  5-min backoff cadence), and a deliberate `stop <id>` must stay stopped.
+   *  Use `daemon start`/`start_all` for that (plan/159 made those cover
+   *  crashed rows). */
+  _reconcileOnce(): void {
+    const entries = listDaemons();
+    const byId = new Map(entries.map((e) => [e.id, e] as const));
+    for (const [id, slot] of [...this.children]) {
+      if (id === DEVICE_DAEMON_ID || slot.transient) continue;
+      if (!byId.has(id)) {
+        process.stderr.write(
+          `[remote-pi-supervisord] reconcile: registry entry for ${id} vanished — stopping child\n`,
+        );
+        if (slot.restartTimer !== null) {
+          clearTimeout(slot.restartTimer);
+          slot.restartTimer = null;
+        }
+        void slot.child.stop();
+        this.children.delete(id);
+      }
+    }
+    for (const entry of entries) {
+      if (this.children.has(entry.id)) continue;
+      process.stderr.write(
+        `[remote-pi-supervisord] reconcile: adopting registry entry ${entry.id} (${entry.cwd})\n`,
+      );
+      this._spawnEntry(entry.id, entry.cwd, entry.name);
+    }
   }
 }
 

@@ -26,6 +26,10 @@ export interface DaemonInfo {
   pid?: number;          // current process pid, when running
   uptime_s?: number;     // since last successful spawn, when running
   restart_count?: number;
+  /** Plan/159 — ISO timestamp of the crash-loop marker (`<id>.dead`) when
+   *  this daemon exhausted the restart backoff and is retrying at the max
+   *  cadence. Absent = healthy / not in a crash loop. */
+  dead_since?: string;
 }
 
 /** Requests sent CLI → supervisor. */
