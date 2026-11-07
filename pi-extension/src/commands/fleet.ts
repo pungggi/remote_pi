@@ -154,7 +154,10 @@ function formatDaemonTable(daemons: DaemonInfo[]): string {
     const uptime = d.uptime_s !== undefined ? `${d.uptime_s}s` : "—";
     const pid = d.pid !== undefined ? String(d.pid) : "—";
     const restarts = d.restart_count ?? 0;
-    return `  ${d.id}  ${d.state.padEnd(8)}  pid=${pid}  up=${uptime}  restarts=${restarts}  ${d.name}  ${d.cwd}`;
+    // Plan/159 — crash-loop marker (dead since …) so a wedged daemon is
+    // visible at a glance instead of reading as an ordinary crash.
+    const dead = d.dead_since !== undefined ? `  DEAD(${d.dead_since.slice(0, 19)})` : "";
+    return `  ${d.id}  ${d.state.padEnd(8)}  pid=${pid}  up=${uptime}  restarts=${restarts}${dead}  ${d.name}  ${d.cwd}`;
   });
   return rows.join("\n");
 }
@@ -197,6 +200,14 @@ export async function cmdDaemonStatus(ctx: Pick<ExtensionContext, "ui">): Promis
     if (err instanceof SupervisorOfflineError) { notifyOffline(ctx, err); return; }
     ctx.ui.notify(`[remote-pi] status failed: ${String(err)}`, "error");
   }
+}
+
+/** `/remote-pi doctor` — plan/159 pre-flight (registry, supervisor, relay,
+ *  pi binary, settings). Interactive variant of the `remote-pi doctor` CLI. */
+export async function cmdDoctor(ctx: Pick<ExtensionContext, "ui">): Promise<void> {
+  const { runDoctor, printDoctor } = await import("../doctor.js");
+  const result = await runDoctor();
+  printDoctor(result, (line) => ctx.ui.notify(line, result.healthy ? "info" : "error"));
 }
 
 export async function cmdDaemonStart(ctx: Pick<ExtensionContext, "ui">, id?: string): Promise<void> {

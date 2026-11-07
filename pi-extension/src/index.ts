@@ -751,6 +751,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
         "config",
         "peers",  // plan/25 Wave D — local + cross-PC inventory
         "create", "remove", "daemons",  // daemon registry (plan/26 W1)
+        "doctor",  // plan/159 — stack pre-flight
         // Fleet ops use the `daemon` prefix so `/remote-pi stop` keeps
         // meaning "stop this local Pi" — the local UX shipped in plan/25.
         "daemon start", "daemon stop", "daemon restart",
@@ -817,6 +818,7 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // Fleet ops via the supervisor (plan/26 W2). `/remote-pi stop` stays as
   // local stop — fleet stop is `/remote-pi daemon stop`.
   pi.registerCommand("remote-pi daemons",        { description: "List registered daemons + state", handler: async (_, ctx) => { ext.lastCtx = ctx; await dispatch("daemons", ctx); } });
+  pi.registerCommand("remote-pi doctor",         { description: "Diagnose the remote stack: registry, supervisor, relay, pi binary, settings (plan/159)", handler: async (_, ctx) => { ext.lastCtx = ctx; await dispatch("doctor", ctx); } });
   pi.registerCommand("remote-pi daemon start",   { description: "Start daemons: all, or one by id (`daemon start <id>`)", handler: async (args, ctx) => { ext.lastCtx = ctx; await dispatch(`daemon start ${args.trim()}`, ctx); } });
   pi.registerCommand("remote-pi daemon stop",    { description: "Stop daemons: all, or one by id (`daemon stop <id>`)", handler: async (args, ctx) => { ext.lastCtx = ctx; await dispatch(`daemon stop ${args.trim()}`, ctx); } });
   pi.registerCommand("remote-pi daemon restart", { description: "Restart daemons: all, or one by id (`daemon restart <id>`)", handler: async (args, ctx) => { ext.lastCtx = ctx; await dispatch(`daemon restart ${args.trim()}`, ctx); } });

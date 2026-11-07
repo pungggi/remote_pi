@@ -306,9 +306,15 @@ export class RpcChild extends EventEmitter {
 
     child.stdout?.on("data", (chunk: Buffer) => this._onStdout(chunk));
     child.stderr?.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
       // Forward stderr to our own stderr so `journalctl --user -u remote-pi-supervisord`
-      // sees daemon logs (with cwd prefix for disambiguation).
-      process.stderr.write(`[${this.opts.cwd}] ${chunk.toString()}`);
+      // sees daemon logs (with cwd prefix for disambiguation)…
+      process.stderr.write(`[${this.opts.cwd}] ${text}`);
+      // …and emit for plan/159: the supervisor persists it to the per-daemon
+      // log (`~/.pi/piper/daemons/<id>.log`) so crash forensics survive a
+      // supervisor launched WITHOUT output redirection (2026-11-07 incident:
+      // a hidden-start watchdog supervisor discarded stderr entirely).
+      this.emit("stderr", text);
     });
     child.on("exit", (code, signal) => this._onExit(code, signal));
     child.on("error", (err) => {

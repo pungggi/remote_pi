@@ -199,7 +199,7 @@ import {
 import {
   cmdCreate, cmdRemove, cmdDaemonsList, cmdDaemonStatus, cmdDaemonStart,
   cmdDaemonStop, cmdDaemonRestart, cmdDaemonSend, cmdCron, cmdInstall,
-  cmdUninstall,
+  cmdUninstall, cmdDoctor,
 } from "./commands/fleet.js";
 import { enrichToolArgs, stringifyContent, stringifyToolResult } from "./tools/format.js";
 import { startGitRefresh, stopGitRefresh } from "./git/refresh.js";
@@ -3661,6 +3661,7 @@ export async function dispatchRootCommand(args: string, ctx: ExtensionCommandCon
   else if (sub.startsWith("create"))         { await cmdCreate(sub.slice("create".length).trim(), ctx); }
   else if (sub.startsWith("remove"))         { await cmdRemove(sub.slice("remove".length).trim(), ctx); }
   else if (sub === "daemons")                { await cmdDaemonsList(ctx); }
+  else if (sub === "doctor")                 { await cmdDoctor(ctx); }
   else if (sub === "daemon start" || sub.startsWith("daemon start "))     { await cmdDaemonStart(ctx, sub.slice("daemon start".length).trim() || undefined); }
   else if (sub === "daemon stop" || sub.startsWith("daemon stop "))       { await cmdDaemonStop(ctx, sub.slice("daemon stop".length).trim() || undefined); }
   else if (sub === "daemon restart" || sub.startsWith("daemon restart ")) { await cmdDaemonRestart(ctx, sub.slice("daemon restart".length).trim() || undefined); }
@@ -6347,6 +6348,14 @@ export async function runCli(argv: string[]): Promise<void> {
     else {
       console.log("Usage: remote-pi daemon <start|stop|restart [<id>]|status|send <id> \"<text>\">");
     }
+  } else if (subcmd === "doctor") {
+    // Plan/159 — one-command pre-flight over registry, supervisor, relay,
+    // pi binary and pi settings. Non-zero exit on any failing check so
+    // scripts/watchdogs can gate on it.
+    const { runDoctor, printDoctor } = await import("./doctor.js");
+    const result = await runDoctor();
+    const code = printDoctor(result, (line) => console.log(line));
+    if (code !== 0) process.exitCode = code;
   } else if (subcmd === "cron") {
     // `remote-pi cron <op> [args]`. Re-quote args with spaces so the shared
     // parser sees the same shape as a Pi slash prompt.
@@ -6398,6 +6407,7 @@ export async function runCli(argv: string[]): Promise<void> {
       "  create <cwd> [--name \"Name\"]   Register a folder as a daemon",
       "  remove <id>                     Unregister a daemon",
       "  daemons                         List registered daemons",
+      "  doctor                          Diagnose registry, supervisor, relay, pi binary, settings",
       "",
       "Fleet control:",
       "  daemon start [<id>]             Start all daemons, or one by id",

@@ -88,6 +88,52 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
     shared history toggle, and reports per-session ✓/✗ — one failure
     never aborts the batch.
 
+## [Unreleased]
+
+### Added
+
+- **`remote-pi doctor` (plan/159)**: one-command pre-flight over the whole
+  remote stack — registry sanity, home-cwd conflicts, supervisor fleet
+  state, relay `/health`, the `pi` binary, and path-based remote-pi
+  worktree packages in pi's global settings. Non-zero exit on failing
+  checks; also available as `/remote-pi doctor`.
+- **Per-daemon logs (plan/159)**: every daemon child's stderr is persisted
+  to `~/.pi/piper/daemons/<id>.log` (timestamped, 5 MB cap) regardless of
+  how the supervisor was launched.
+- **Crash-loop marker (plan/159)**: a daemon retrying at the max backoff
+  cadence writes `~/.pi/piper/daemons/<id>.dead` and shows
+  `DEAD(<timestamp>)` in `daemon status`; the marker lifts on respawn.
+- **Fleet reconciliation (plan/159)**: the supervisor re-reads
+  `daemons.json` every 60 s — externally added entries are adopted,
+  removed entries' children are stopped — so memory and disk can no longer
+  drift apart without a supervisor bounce.
+- **Shipped watchdog (plan/159)**: `pi-extension/scripts/piper-watchdog.ps1`
+  — health-first relay check and supervisor start with log redirection —
+  the host-local copy under `~/.pi/piper/` stays authoritative.
+
+### Changed
+
+- **`daemon start` now covers crashed rows (plan/159)**: `start`/`start all`
+  cancel the crash backoff and respawn — including the built-in `device`
+  daemon and transient slots, which previously answered
+  "no daemon with id"/"Started 0" while status showed `crashed`.
+- **One child per cwd (plan/159)**: `create` rejects registering the user
+  home (always owned by the device daemon), the device daemon skips when
+  a registry entry covers home, and every spawn path refuses a second
+  child in a cwd another daemon owns. Fixes the duplicate-spawn crash
+  where two children fought over one room lock.
+
+- **Session tile: swipe to cycle info (plan/160)**: the Home session row's
+  subtitle no longer auto-alternates on a shared 3-second clock. A left
+  swipe on the tile cycles through the available lines — git summary →
+  model / last prompt → **last response datetime** — a right swipe
+  cycles back, and the position is remembered per session for as long as
+  the Home list lives — kept in the viewmodel keyed by session, so it
+  survives reordering and lazy scroll-outs, not just rebuilds. Tiles with a
+  single line (or none) keep the static subtitle as before — the swipe
+  gesture does not register there. The relative "last response" time is
+  computed at render time only (no periodic refresh timer).
+
 ## [1.5.4] - 2026-11-02
 
 ### Added

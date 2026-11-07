@@ -234,6 +234,36 @@ class HomeViewModel extends ViewModel<HomeState> {
   String? lastUserPrompt(String epk, String roomId) =>
       previewPrompt(_boxes.lastUserPrompt(epk, roomId));
 
+  /// Plan/160 — when the session's last agent response landed (subtitle
+  /// cycling line). Reads the same msgs box rows as [lastUserPrompt], so
+  /// the tile's existing unread listenable refreshes this line too.
+  DateTime? lastResponseAt(String epk, String roomId) {
+    final ts = _boxes.lastAssistantTs(epk, roomId);
+    return ts == null ? null : DateTime.fromMillisecondsSinceEpoch(ts);
+  }
+
+  // -- Plan/160: swipe-cycled subtitle position -------------------------
+
+  /// Plan/160 — raw swipe offset per session ('epk|roomId', the row's
+  /// ValueKey string). Kept here, NOT in widget state: SliverList matches
+  /// children positionally, so a reorder or a lazy scroll-out would discard
+  /// a StatefulWidget's phase (review f1, PR #103). The tile normalizes the
+  /// raw offset modulo its current line count, so the map stores unbounded
+  /// ints and never needs pruning logic.
+  final Map<String, int> _subtitlePhases = {};
+
+  /// Plan/160 — current raw phase for a session (0 when never swiped).
+  int subtitlePhaseFor(String sessionKey) => _subtitlePhases[sessionKey] ?? 0;
+
+  /// Plan/160 — advance the phase by one swipe ([delta] contributes only
+  /// its sign). Notifies so the row re-renders with the new line.
+  void cycleSubtitle(String sessionKey, int delta) {
+    if (delta == 0) return;
+    _subtitlePhases[sessionKey] =
+        (_subtitlePhases[sessionKey] ?? 0) + delta.sign;
+    notifyListeners();
+  }
+
   /// Collapses [raw] onto one line and caps it at 200 characters
   /// (code-point-safe — never splits a surrogate pair; ellipsis when
   /// capped). `null`/blank → `null`.
@@ -524,8 +554,7 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// with an empty registry that hid the entry for ALL sessions after the
   /// first cleanup, until an app restart cleared the cache (device review
   /// 1.5.5, PR #97).
-  bool mayOfferCleanup(HomeItem it) =>
-      !_roomOnline(it.peer.remoteEpk, it.room);
+  bool mayOfferCleanup(HomeItem it) => !_roomOnline(it.peer.remoteEpk, it.room);
 
   /// The tracked worktree whose folder IS [cwd], from the cached registry
   /// (cache-miss safe: returns null when the peer was never fetched).
@@ -658,7 +687,9 @@ class HomeViewModel extends ViewModel<HomeState> {
       // (rebuilt, not mutated: the cached list may be unmodifiable).
       final cached = _worktreesByEpk[epk];
       if (cached != null) {
-        _worktreesByEpk[epk] = cached.where((w) => w.id != worktree.id).toList();
+        _worktreesByEpk[epk] = cached
+            .where((w) => w.id != worktree.id)
+            .toList();
       }
     }
 
@@ -816,7 +847,11 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// under a live sibling), or null — the no-worktree counterpart of
   /// [_liveWorktreeOwner]. The target room counts too, so a revived session
   /// aborts its own cleanup with "running again".
-  String? _liveCwdOwner(String epk, String? cwd, {required String exceptRoomId}) {
+  String? _liveCwdOwner(
+    String epk,
+    String? cwd, {
+    required String exceptRoomId,
+  }) {
     for (final it in _allItems()) {
       if (it.peer.remoteEpk != epk) continue;
       if (!_roomOnline(epk, it.room)) continue;
@@ -829,8 +864,9 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// Plan/158 — every offline tile (keeper mirrors count as offline), the
   /// batch cleanup's candidate pool. Tap-time refinement (liveness,
   /// worktree match, reachability) happens later in [batchCleanupCandidates].
-  List<HomeItem> offlineCleanupItems() =>
-      _allItems().where((it) => !_roomOnline(it.peer.remoteEpk, it.room)).toList();
+  List<HomeItem> offlineCleanupItems() => _allItems()
+      .where((it) => !_roomOnline(it.peer.remoteEpk, it.room))
+      .toList();
 
   /// Plan/158 — resolve the batch sheet's rows at TAP time (same rule as the
   /// single-session flow: the menu/button never routes the shared
@@ -863,7 +899,8 @@ class HomeViewModel extends ViewModel<HomeState> {
         );
         continue;
       }
-      if (_disposed) return CleanupBatchPrep(plans: const [], unreachablePeers: const []);
+      if (_disposed)
+        return CleanupBatchPrep(plans: const [], unreachablePeers: const []);
       for (final it in entry.value) {
         final ref = it.room.ghRef;
         plans.add(
@@ -879,7 +916,10 @@ class HomeViewModel extends ViewModel<HomeState> {
         );
       }
     }
-    return CleanupBatchPrep(plans: plans, unreachablePeers: unreachable.toList());
+    return CleanupBatchPrep(
+      plans: plans,
+      unreachablePeers: unreachable.toList(),
+    );
   }
 
   /// Plan/158 — the plan/148 open-PR rule (open or unknown state warns).

@@ -168,6 +168,32 @@ class LocalBoxes {
     return bestText;
   }
 
+  /// Plan/160 — epoch-ms of the session's most recent assistant row
+  /// (the last completed response), or `null` when unknown (box not open
+  /// yet or no response yet). Same `ts`/`seq` tie-break as
+  /// [lastUserPrompt]: `ts` is chronology, `seq` breaks ties for replayed
+  /// history pages.
+  int? lastAssistantTs(String epk, String roomId) {
+    if (!isMsgsBoxOpen(epk, roomId)) return null;
+    final box = openMsgsBox(epk, roomId);
+    var bestTs = -1;
+    var bestSeq = -1;
+    var found = false;
+    for (final entry in box.toMap().entries) {
+      final value = entry.value;
+      if (value is! Map) continue;
+      if (value['role'] != 'assistant') continue;
+      final ts = (value['ts'] as num?)?.toInt() ?? 0;
+      final seq = entry.key is int ? entry.key as int : -1;
+      if (ts > bestTs || (ts == bestTs && seq > bestSeq)) {
+        bestTs = ts;
+        bestSeq = seq;
+        found = true;
+      }
+    }
+    return found ? bestTs : null;
+  }
+
   /// `:` and the epk's `/`+`=` would break the on-disk filename — sanitise to
   /// the url-safe, unpadded epk form (same approach as the v1 store).
   static String msgsBoxName(String epk, String roomId) =>

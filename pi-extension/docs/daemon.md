@@ -6,6 +6,39 @@ likely causes and how to fix.
 
 ---
 
+## 0. `remote-pi doctor` — run this first
+
+One command walks the whole failure chain (plan/159): registry sanity,
+home-cwd conflicts, supervisor + fleet state (crashed / crash-looped rows),
+relay `/health`, the `pi` binary, and path-based remote-pi worktree
+packages in pi's global settings.
+
+```bash
+remote-pi doctor
+# ✓ registry: 1 daemon(s) registered
+# ✓ home conflict: home cwd left to the device daemon
+# ✓ supervisor: running, 2 daemon(s), none crashed
+# ✓ relay: http://127.0.0.1:3000 healthy
+# ✓ pi binary: node /path/cli.js pi 1.5.0
+# ✓ pi settings: no remote-pi worktree packages in global settings
+```
+
+Exit code is non-zero when any check fails, so scripts and watchdogs can
+gate on it. Inside Pi, `/remote-pi doctor` prints the same report.
+
+**Per-daemon logs (plan/159):** every child's stderr is persisted to
+`~/.pi/piper/daemons/<id>.log` (timestamped, capped at 5 MB) no matter how
+the supervisor was launched. When a daemon crashes, read that file FIRST —
+it survives launcher configurations that discard the supervisor's own
+output.
+
+**Crash-loop marker:** when a daemon exhausts the restart backoff and is
+retrying at the max cadence, `daemon status` shows `DEAD(<timestamp>)` and
+`~/.pi/piper/daemons/<id>.dead` records the last exit. The marker lifts on
+the next spawn.
+
+---
+
 ## 1. `remote-pi install` fails
 
 ### "supervisor script not found"
@@ -141,11 +174,32 @@ Common reasons a daemon won't start:
 
 ### Step 3 — force a re-spawn
 
-After fixing the underlying problem, kick the supervisor:
+After fixing the underlying problem, kick the daemon. Since plan/159,
+`daemon start` (and `start all`) covers **crashed** rows — including the
+built-in device daemon — by cancelling the backoff and respawning:
 
 ```bash
+remote-pi daemon start <id>   # respawn one (also works for id "device")
+remote-pi daemon start        # respawn every non-running daemon
 remote-pi daemon restart      # bounces every daemon
 ```
+
+Note: `start` deliberately does NOT spawn a second child into a cwd that
+another daemon already owns (one child per folder, ever — see the home
+cwd rule under `doctor`).
+
+**Windows single-launcher rule:** keep exactly ONE thing starting the
+supervisor (the shipped `scripts/piper-watchdog.ps1`, started from the
+Startup folder, is the recommended one — it also tees the supervisor's
+output to `supervisord.log`). If a `RemotePiSupervisor` scheduled task
+exists from an older install, disable it from an elevated shell:
+
+```powershell
+schtasks /change /tn RemotePiSupervisor /disable
+```
+
+The supervisor's single-instance guard makes races harmless, but two
+launchers double the noise and can mask which path actually started it.
 
 ---
 

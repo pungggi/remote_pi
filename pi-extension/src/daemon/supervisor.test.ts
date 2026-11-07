@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { Supervisor, decideFireAction } from "./supervisor.js";
+import { Supervisor, decideFireAction, _idForCwdForTest } from "./supervisor.js";
+import { daemonLogPath, readDeadMarker, writeDeadMarker } from "./diagnostics.js";
 import { ipcAddress, usesNamedPipe } from "../session/ipc.js";
 import { addDaemon } from "./registry.js";
 import { readCronLog } from "./cron_log.js";
@@ -378,6 +379,8 @@ describe("Supervisor — start_transient (plan/124 — bring session to life)", 
     const entry = list.ok ? list.data!.daemons.find((d) => d.id === id) : undefined;
     expect(entry).toBeDefined();
     expect(entry?.name).toBe("transient");
+    // Plan/159 — the flag, not just the display name (doctor filters on it).
+    expect(entry?.transient).toBe(true);
     expect(entry?.cwd).toBe(cwd);
 
     // `stop <id>` works for a transient (non-registry) id — it must NOT
@@ -390,5 +393,172 @@ describe("Supervisor — start_transient (plan/124 — bring session to life)", 
     const list2 = await ask({ op: "list" }) as ControlReply<{ daemons: DaemonInfo[] }>;
     const gone = list2.ok ? list2.data!.daemons.find((d) => d.id === id) : undefined;
     expect(gone).toBeUndefined();
+  });
+});
+
+describe("Supervisor — plan/159 resilience", () => {
+  /** Polls fleet state until `id` reaches `state`, or times out. */
+  async function waitState(id: string, state: string, ms = 4000): Promise<boolean> {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      const list = await ask({ op: "list" }) as ControlReply<{ daemons: DaemonInfo[] }>;
+      const row = list.ok ? list.data!.daemons.find((d) => d.id === id) : undefined;
+      if (row?.state === state) return true;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return false;
+  }
+
+  test("register rejects the home cwd (duplicate with the device daemon)", async () => {
+    const r = await ask({ op: "register", cwd: testHome });
+    expect(r).toMatchObject({ ok: false });
+    if (!r.ok) expect(r.error).toMatch(/device daemon/i);
+  });
+
+  test("boot skips the device daemon when a registry entry covers home", async () => {
+    // Stop the shared instance; boot a fresh supervisor over a registry that
+    // (hand-edited style) contains the home cwd. Exactly one child may run in
+    // home: the registry entry, never a second built-in device daemon.
+    await supervisor!.stop();
+    const { addDaemon } = await import("./registry.js");
+    addDaemon(testHome, "device");
+    // The `ask` helper talks to `testSock` — repoint it at the fresh
+    // instance's socket before booting it.
+    testSock = isolatedSupervisorSock();
+    const fresh = new Supervisor({
+      sockPath: testSock,
+      extensionPath: "/no/such/extension.js",
+      piBin: process.execPath,
+      reconcileIntervalMs: 0,
+    });
+    supervisor = fresh;
+    await fresh.start();
+    const list = await ask({ op: "list" }) as ControlReply<{ daemons: DaemonInfo[] }>;
+    const ids = list.ok ? list.data!.daemons.map((d) => d.id) : [];
+    expect(ids).not.toContain("device");
+    expect(ids).toEqual([_idForCwdForTest(testHome)]);
+  });
+
+  test("start on a crashed device daemon respawns it", async () => {
+    // piBin=node exits immediately → the device daemon crashes at boot.
+    const crashed = await waitState("device", "crashed");
+    expect(crashed).toBe(true);
+    const r = await ask({ op: "start", id: "device" }) as ControlReply<{ started: boolean; state: string }>;
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.data!.started).toBe(true);
+      expect(["starting", "running", "crashed"]).toContain(r.data!.state);
+    }
+  });
+
+  test("start_all includes the crashed device daemon", async () => {
+    const crashed = await waitState("device", "crashed");
+    expect(crashed).toBe(true);
+    const r = await ask({ op: "start_all" }) as ControlReply<{ started: string[] }>;
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.data!.started).toContain("device");
+  });
+
+  test("start_all does not count a transient spawn the guard refused (f2, PR #103)", async () => {
+    // The transient branch of _opStartAll used to push the id into
+    // `started` WITHOUT checking _spawnEntry's return — a refused spawn
+    // (collision guard: another daemon owns the cwd) would still report
+    // "Started 1". That's the inverse of the original incident. Arrange it
+    // without a real second daemon: a crashed transient slot + a stubbed
+    // refusal.
+    const tmp = mkdtempSync(join(tmpdir(), "pi-sv-f2-"));
+    const tr = await ask({ op: "start_transient", cwd: tmp }) as ControlReply<{ id: string }>;
+    expect(tr.ok).toBe(true);
+    const id = tr.ok ? tr.data!.id : "";
+    const sv = supervisor as unknown as {
+      children: Map<string, { cwd: string; name: string; transient: boolean; child: { state: string } }>;
+      _spawnEntry: (id: string, cwd: string, name: string, transient?: boolean) => boolean;
+    };
+    // Force the branch conditions: not running/starting (RpcChild.state is
+    // a getter, so swap in a fake crashed slot), not registry, not device.
+    const realSlot = sv.children.get(id)!;
+    sv.children.set(id, { cwd: tmp, name: "transient", transient: true, child: { state: "crashed" } });
+    const realSpawn = sv._spawnEntry.bind(sv);
+    sv._spawnEntry = (sid, cwd, name, transient) =>
+      sid === id ? false : realSpawn(sid, cwd, name, transient);
+    try {
+      const r = await ask({ op: "start_all" }) as ControlReply<{ started: string[] }>;
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.data!.started).not.toContain(id);
+    } finally {
+      sv._spawnEntry = realSpawn;
+      sv.children.set(id, realSlot);
+      await ask({ op: "stop", id });
+    }
+  });
+
+  test("device daemon stderr lands in the per-daemon log", async () => {
+    // The crashing device child (node + bad args) writes stderr; plan/159
+    // persists it under REMOTE_PI_HOME/.pi/piper/daemons/device.log.
+    await waitState("device", "crashed");
+    const path = daemonLogPath("device");
+    const deadline = Date.now() + 4000;
+    while (Date.now() < deadline && !existsSync(path)) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(existsSync(path)).toBe(true);
+  });
+
+  test("crash-loop marker surfaces in status and lifts on respawn", async () => {
+    writeDeadMarker("device", { at: "2026-11-07T00:00:00Z", exit_code: 1, attempt: 4 });
+    const st = await ask({ op: "status" }) as ControlReply<{ daemons: DaemonInfo[] }>;
+    const row = st.ok ? st.data!.daemons.find((d) => d.id === "device") : undefined;
+    expect(row?.dead_since).toBe("2026-11-07T00:00:00Z");
+    // A respawn clears the marker (the spawn says "trying again") — whether
+    // it came from this `start` op or the crash-backoff timer racing us.
+    const r = await ask({ op: "start", id: "device" }) as ControlReply<{ started: boolean }>;
+    expect(r.ok).toBe(true);
+    const deadline = Date.now() + 4000;
+    while (Date.now() < deadline && readDeadMarker("device") !== null) {
+      await new Promise((res) => setTimeout(res, 100));
+    }
+    expect(readDeadMarker("device")).toBeNull();
+  });
+
+  test("reconcile adopts hand-added registry entries and drops removed ones", async () => {
+    const { addDaemon, removeDaemon } = await import("./registry.js");
+    const proj = mkdtempSync(join(tmpdir(), "pi-sv-rec-"));
+    const added = addDaemon(proj, "proj");
+    // No `start` op fired — only the reconcile pass discovers the entry.
+    supervisor!._reconcileOnce();
+    let list = await ask({ op: "list" }) as ControlReply<{ daemons: DaemonInfo[] }>;
+    let ids = list.ok ? list.data!.daemons.map((d) => d.id) : [];
+    expect(ids).toContain(added.id);
+
+    removeDaemon(added.id);
+    supervisor!._reconcileOnce();
+    list = await ask({ op: "list" }) as ControlReply<{ daemons: DaemonInfo[] }>;
+    ids = list.ok ? list.data!.daemons.map((d) => d.id) : [];
+    expect(ids).not.toContain(added.id);
+  });
+
+  test("reconcile leaves the device daemon and transients alone", async () => {
+    const before = await ask({ op: "list" }) as ControlReply<{ daemons: DaemonInfo[] }>;
+    const beforeIds = before.ok ? before.data!.daemons.map((d) => d.id) : [];
+    supervisor!._reconcileOnce();
+    const after = await ask({ op: "list" }) as ControlReply<{ daemons: DaemonInfo[] }>;
+    const afterIds = after.ok ? after.data!.daemons.map((d) => d.id) : [];
+    expect(afterIds).toContain("device");
+    expect(afterIds.length).toBeGreaterThanOrEqual(beforeIds.length);
+  });
+
+  test("two ids never share a cwd: spawn is refused for the loser", async () => {
+    // Simulate a collision: a transient already covers tmp; a registry
+    // entry (different id) for the same cwd must not spawn a second child.
+    const tmp = mkdtempSync(join(tmpdir(), "pi-sv-col-"));
+    const tr = await ask({ op: "start_transient", cwd: tmp }) as ControlReply<{ id: string }>;
+    expect(tr.ok).toBe(true);
+    const { addDaemon } = await import("./registry.js");
+    const entry = addDaemon(tmp, "twin");
+    const start = await ask({ op: "start", id: entry.id }) as ControlReply<{ started: boolean }>;
+    // The op succeeds (the daemon is "known"), but the spawn is refused —
+    // no second child in the cwd. `started` reports the refusal.
+    expect(start.ok).toBe(true);
+    if (start.ok) expect(start.data!.started).toBe(false);
   });
 });
