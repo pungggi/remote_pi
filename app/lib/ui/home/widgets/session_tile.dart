@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:app/data/preferences/preferences.dart' show HomeGroupBy;
 import 'package:app/pairing/storage.dart';
 import 'package:app/protocol/protocol.dart';
@@ -53,10 +51,10 @@ class SessionTile extends StatelessWidget {
   final String? deviceLabel;
 
   /// Plan/107b — on-demand git snapshot for this session (when fetched).
-  /// When both this and the room's model are available, the subtitle
-  /// alternates every 3 seconds (branch summary ↔ selected model) in
-  /// lock-step across ALL tiles; with only one of the two, that one
-  /// wins statically (git → model → "Last paired").
+  /// When both this and the room's model/prompt are available, the
+  /// subtitle cycles between them on a horizontal swipe (plan/160, git
+  /// first); with only one of the two, that one wins statically
+  /// (git → model → "Last paired").
   final GitStatus? git;
 
   /// Grouped-Home display mode. **By repository**: the tile title shows
@@ -71,6 +69,20 @@ class SessionTile extends StatelessWidget {
   /// user prompt (already collapsed + capped by the view model). `null`
   /// when unknown; the subtitle then falls back to git / "Last paired".
   final String? lastPrompt;
+
+  /// Plan/160 — when the session's last agent response landed. Joins the
+  /// cyclable subtitle lines (git → secondary → last response); null when
+  /// the session has no response yet.
+  final DateTime? lastResponseAt;
+
+  /// Plan/160 — position in the cyclable subtitle lines, remembered per
+  /// session by the Home list (raw counter; the tile normalizes it
+  /// against however many lines are currently available).
+  final int subtitlePhase;
+
+  /// Plan/160 — swipe feedback: +1 = swipe left (next line), -1 = swipe
+  /// right (previous). Null → no gesture (caller has no phase storage).
+  final void Function(int delta)? onCycleSubtitle;
 
   final VoidCallback onOpen;
 
@@ -115,6 +127,9 @@ class SessionTile extends StatelessWidget {
     this.notifyOnDone = false,
     this.unread = 0,
     this.onOpenRef,
+    this.subtitlePhase = 0,
+    this.onCycleSubtitle,
+    this.lastResponseAt,
   });
 
   @override
@@ -122,7 +137,7 @@ class SessionTile extends StatelessWidget {
     final colors = context.colors;
     final statusColor = _statusColor(colors);
     final contextFraction = _contextFraction(room?.contextUsage);
-    return Material(
+    final tile = Material(
       color: colors.bg,
       child: InkWell(
         onTap: onOpen,
@@ -187,6 +202,8 @@ class SessionTile extends StatelessWidget {
                         deviceLabel: deviceLabel,
                         groupBy: groupBy,
                         lastPrompt: lastPrompt,
+                        lastResponseAt: lastResponseAt,
+                        phase: subtitlePhase,
                       ),
                     ),
                     if (room?.keeper ?? false) ...[
@@ -207,6 +224,39 @@ class SessionTile extends StatelessWidget {
         ),
       ),
     );
+
+    // Plan/160 — cycling registers only when there is something to cycle
+    // through and the caller stores the position. Horizontal drags never
+    // fight the vertical list scroll (different axes) and leave tap /
+    // long-press to the InkWell above.
+    final cycle = onCycleSubtitle;
+    if (cycle == null || _cyclableLines < 2) return tile;
+    // Direction = net horizontal displacement during the drag (not release
+    // velocity): a slow, deliberate swipe cycles just as reliably as a
+    // fling, and widget-test drags (velocity 0) hit the same path.
+    var dragDx = 0.0;
+    return GestureDetector(
+      onHorizontalDragStart: (_) => dragDx = 0,
+      onHorizontalDragUpdate: (details) => dragDx += details.delta.dx,
+      onHorizontalDragEnd: (_) {
+        if (dragDx < -_swipeCycleMinDx) cycle(1);
+        if (dragDx > _swipeCycleMinDx) cycle(-1);
+      },
+      child: tile,
+    );
+  }
+
+  /// Plan/160 — how many subtitle lines the swipe can cycle through (git
+  /// summary + secondary); gates the horizontal drag gesture. Must stay
+  /// in sync with [_TitleBlock._buildSubtitle].
+  int get _cyclableLines {
+    final hasGit = git != null;
+    final hasSecondary = groupBy == HomeGroupBy.model
+        ? (lastPrompt?.trim().isNotEmpty ?? false)
+        : (room?.model ?? '').isNotEmpty;
+    return (hasGit ? 1 : 0) +
+        (hasSecondary ? 1 : 0) +
+        (lastResponseAt != null ? 1 : 0);
   }
 
   String _avatarName() {
@@ -342,43 +392,18 @@ class _SessionSlot extends StatelessWidget {
   }
 }
 
-/// One clock for the whole list: every [_TitleBlock] listens to the same
-/// notifier, so all tiles flip between the branch (git) phase and the
-/// model phase in lock-step: a coordinated alternation, not per-tile
-/// flicker. Ref-counted: the timer only runs while tiles are mounted,
-/// and the phase resets to "branch" when the last one goes away.
-class _SubtitleClock {
-  static const interval = Duration(seconds: 3);
-  static final ValueNotifier<bool> showGitPhase = ValueNotifier<bool>(true);
-  static Timer? _timer;
-  static int _refs = 0;
-
-  static void retain() {
-    _refs++;
-    _timer ??= Timer.periodic(interval, (_) {
-      showGitPhase.value = !showGitPhase.value;
-    });
-  }
-
-  static void release() {
-    _refs = _refs > 0 ? _refs - 1 : 0;
-    if (_refs == 0 && _timer != null) {
-      _timer!.cancel();
-      _timer = null;
-      // Reopening the list starts on the branch phase for a stable
-      // first paint.
-      if (!showGitPhase.value) showGitPhase.value = true;
-    }
-  }
-}
-
-class _TitleBlock extends StatefulWidget {
+class _TitleBlock extends StatelessWidget {
   final PeerRecord peer;
   final RoomInfo? room;
   final GitStatus? git;
   final String? deviceLabel;
   final HomeGroupBy groupBy;
   final String? lastPrompt;
+
+  /// Plan/160 — when the session's last agent response landed (the last
+  /// cyclable subtitle line).
+  final DateTime? lastResponseAt;
+
   const _TitleBlock({
     required this.peer,
     required this.room,
@@ -386,30 +411,18 @@ class _TitleBlock extends StatefulWidget {
     this.deviceLabel,
     this.groupBy = HomeGroupBy.model,
     this.lastPrompt,
+    this.lastResponseAt,
+    this.phase = 0,
   });
 
-  @override
-  State<_TitleBlock> createState() => _TitleBlockState();
-}
-
-class _TitleBlockState extends State<_TitleBlock> {
-  @override
-  void initState() {
-    super.initState();
-    _SubtitleClock.retain();
-  }
-
-  @override
-  void dispose() {
-    _SubtitleClock.release();
-    super.dispose();
-  }
+  /// Plan/160 — swiped subtitle position (see [SessionTile.subtitlePhase]).
+  final int phase;
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final peer = widget.peer;
-    final r = widget.room;
+    final peer = this.peer;
+    final r = room;
     // Title preference: a name the user actually chose → (by-repo: git
     // branch) → cwd basename → peer nickname → session name. The cwd path
     // line was dropped on purpose — the tile now shows just title +
@@ -419,11 +432,11 @@ class _TitleBlockState extends State<_TitleBlock> {
       final name = r.name?.trim();
       if (name != null && name.isNotEmpty && !_isAutoDerivedName(r)) {
         title = name;
-      } else if (widget.groupBy == HomeGroupBy.repository) {
+      } else if (groupBy == HomeGroupBy.repository) {
         // By-repo: the group header already names the repository, so the
         // title slot carries the BRANCH — the piece that actually tells
         // worktree sessions of the same repo apart.
-        final branch = widget.git?.branch.trim();
+        final branch = git?.branch.trim();
         if (branch != null && branch.isNotEmpty) {
           title = branch;
         } else {
@@ -452,10 +465,10 @@ class _TitleBlockState extends State<_TitleBlock> {
             fontWeight: FontWeight.w500,
           ),
         ),
-        if (widget.deviceLabel != null) ...[
+        if (deviceLabel != null) ...[
           const SizedBox(height: 3),
           Text(
-            widget.deviceLabel!,
+            deviceLabel!,
             key: const ValueKey('session-tile-device-label'),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
@@ -505,23 +518,18 @@ class _TitleBlockState extends State<_TitleBlock> {
     return clean == base || (parent != null && clean == '$parent/$base');
   }
 
-  /// Plan/107b + model alternation: with BOTH a git snapshot and a
-  /// published model, the line flips every 3 seconds between the
-  /// posh-git summary (branch / ahead / behind / dirty / stash) and
-  /// the selected model, crossfading in sync with every other tile.
-  /// With only one of the two it renders statically (git beats model,
-  /// as before); with neither it falls back to "Last paired" so the
-  /// row keeps a stable height.
-  ///
-  /// Grouped by model: the model never renders here (the group header
-  /// owns it) — the last user prompt preview takes its phase instead,
-  /// alternating with the git summary exactly like the model did.
+  /// Plan/107b + plan/160: with BOTH a git snapshot and a secondary line
+  /// (model by-repo / last user prompt by-model), a horizontal swipe on
+  /// the tile cycles between them (git first), crossfading. With only one
+  /// of the two it renders statically (git beats model, as before); with
+  /// neither it falls back to "Last paired" so the row keeps a stable
+  /// height.
   Widget _buildSubtitle(BuildContext context) {
     final colors = context.colors;
-    final git = widget.git;
-    final model = widget.room?.model;
+    final git = this.git;
+    final model = room?.model;
     final hasModel = model != null && model.isNotEmpty;
-    final prompt = widget.lastPrompt?.trim();
+    final prompt = lastPrompt?.trim();
     final hasPrompt = prompt != null && prompt.isNotEmpty;
 
     Widget gitLine() => Text.rich(
@@ -530,7 +538,7 @@ class _TitleBlockState extends State<_TitleBlock> {
       overflow: TextOverflow.ellipsis,
     );
     Widget modelLine() => Text(
-      _modelLabel(model!, widget.room?.contextUsage?.contextWindow),
+      _modelLabel(model!, room?.contextUsage?.contextWindow),
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
       style: TextStyle(
@@ -550,35 +558,49 @@ class _TitleBlockState extends State<_TitleBlock> {
         fontFamily: kMonoFamily,
       ),
     );
+    Widget responseLine() => Text(
+      'Last response: ${_relativeTimeFrom(lastResponseAt!)}',
+      key: const ValueKey('session-tile-last-response'),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        color: colors.muted,
+        fontSize: 12,
+        fontFamily: kMonoFamily,
+      ),
+    );
 
     Widget? secondaryLine() {
       // By-model: the prompt replaces the model phase entirely — the group
       // header already names the model. By-repo keeps the model line.
-      if (widget.groupBy == HomeGroupBy.model) {
+      if (groupBy == HomeGroupBy.model) {
         return hasPrompt ? promptLine() : null;
       }
       return hasModel ? modelLine() : null;
     }
 
-    final secondary = secondaryLine();
-    if (git != null && secondary != null) {
-      return ValueListenableBuilder<bool>(
-        valueListenable: _SubtitleClock.showGitPhase,
-        builder: (context, showGit, _) => AnimatedSwitcher(
-          duration: const Duration(milliseconds: 300),
-          child: showGit
-              ? KeyedSubtree(key: const ValueKey('git'), child: gitLine())
-              : KeyedSubtree(
-                  key: const ValueKey('session-tile-subtitle-secondary'),
-                  child: secondary,
-                ),
+    final cyclable = <Widget>[
+      if (git != null)
+        KeyedSubtree(key: const ValueKey('git'), child: gitLine()),
+      if (secondaryLine() case final secondary?)
+        KeyedSubtree(
+          key: const ValueKey('session-tile-subtitle-secondary'),
+          child: secondary,
         ),
+      if (lastResponseAt != null) responseLine(),
+    ];
+    if (cyclable.length > 1) {
+      // Plan/160 — normalized against the CURRENT line count, so an
+      // arriving/departing git snapshot or prompt degrades gracefully
+      // instead of going out of range.
+      return AnimatedSwitcher(
+        duration: const Duration(milliseconds: 300),
+        child: cyclable[_phaseIndex(phase, cyclable.length)],
       );
     }
-    if (git != null) return gitLine();
-    if (secondary != null) return secondary;
+    if (cyclable.isNotEmpty) return cyclable.first;
     return Text(
-      'Last paired: ${_relativeTime(widget.peer.pairedAt)}',
+      'Last paired: ${_relativeTime(peer.pairedAt)}',
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
       style: TextStyle(
@@ -675,6 +697,16 @@ class _ContextFill extends StatelessWidget {
   }
 }
 
+/// Plan/160 — minimum net horizontal displacement (logical px) before a
+/// drag counts as a cycle swipe. The recognizer's own touch slop already
+/// filters jitter; this only rejects sub-slop drags held past recognition.
+const double _swipeCycleMinDx = 16;
+
+/// Plan/160 — positive modulo: swiping back from line 0 wraps to the last
+/// line instead of going negative (Dart's `%` keeps the sign).
+int _phaseIndex(int phase, int lineCount) =>
+    lineCount <= 1 ? 0 : ((phase % lineCount) + lineCount) % lineCount;
+
 class _Avatar extends StatelessWidget {
   final String name;
   final Color statusColor;
@@ -711,6 +743,18 @@ String _initial(String name) {
   final trimmed = name.trim();
   if (trimmed.isEmpty) return '?';
   return trimmed.characters.first.toUpperCase();
+}
+
+/// Plan/160 — relative time for a [DateTime] (the last-response line);
+/// same buckets as [_relativeTime].
+String _relativeTimeFrom(DateTime dt) {
+  final diff = DateTime.now().difference(dt);
+  if (diff.inSeconds < 60) return 'just now';
+  if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+  if (diff.inHours < 24) return '${diff.inHours}h ago';
+  if (diff.inDays < 30) return '${diff.inDays}d ago';
+  if (diff.inDays < 365) return '${(diff.inDays / 30).floor()}mo ago';
+  return dt.toUtc().toIso8601String().substring(0, 10);
 }
 
 String _relativeTime(String isoUtc) {

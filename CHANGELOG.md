@@ -88,6 +88,18 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
     shared history toggle, and reports per-session ✓/✗ — one failure
     never aborts the batch.
 
+## [Unreleased]
+
+### Changed
+
+- **Session tile: swipe to cycle info (plan/160)**: the Home session row's
+  subtitle no longer auto-alternates on a shared 3-second clock. A left
+  swipe on the tile cycles through the available lines — git summary →
+  model / last prompt → **last response datetime** — a right swipe
+  cycles back, and the position is remembered per session for as long as
+  the Home list lives. Tiles with a single line (or none) keep the static
+  subtitle as before — the swipe gesture does not register there.
+
 ## [1.5.4] - 2026-11-02
 
 ### Added

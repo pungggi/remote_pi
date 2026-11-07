@@ -32,6 +32,9 @@ Future<void> _pump(
   HomeGroupBy groupBy = HomeGroupBy.model,
   GitStatus? git,
   String? lastPrompt,
+  DateTime? lastResponseAt,
+  int subtitlePhase = 0,
+  void Function(int delta)? onCycleSubtitle,
 }) {
   return tester.pumpWidget(
     MaterialApp(
@@ -48,6 +51,9 @@ Future<void> _pump(
           git: git,
           groupBy: groupBy,
           lastPrompt: lastPrompt,
+          lastResponseAt: lastResponseAt,
+          subtitlePhase: subtitlePhase,
+          onCycleSubtitle: onCycleSubtitle,
           onOpen: () {},
         ),
       ),
@@ -763,5 +769,182 @@ void main() {
         expect(find.textContaining('Last paired:'), findsOneWidget);
       },
     );
+  });
+
+  // Plan/160 — the subtitle is swipe-cycled per session; no auto-alternation
+  // clock exists anymore.
+  group('subtitle cycling (plan/160)', () {
+    const gitKey = ValueKey('git');
+    const secondaryKey = ValueKey('session-tile-subtitle-secondary');
+
+    testWidgets('left swipe requests +1, right swipe requests -1 '
+        '(by-repo, git + model available)', (tester) async {
+      final deltas = <int>[];
+      await _pump(
+        tester,
+        groupBy: HomeGroupBy.repository,
+        git: const GitStatus(branch: 'main'),
+        room: const RoomInfo(roomId: 'r1', startedAt: 1, model: 'gpt-5.2'),
+        onCycleSubtitle: deltas.add,
+      );
+      await tester.drag(find.byType(SessionTile), const Offset(-220, 0));
+      await tester.pumpAndSettle();
+      expect(deltas, [1]);
+
+      await tester.drag(find.byType(SessionTile), const Offset(220, 0));
+      await tester.pumpAndSettle();
+      expect(deltas, [1, -1]);
+    });
+
+    testWidgets('phase 0 → git line; phase 1 → model line (by-repo)', (
+      tester,
+    ) async {
+      Future<void> pumpAt(int phase) => _pump(
+        tester,
+        groupBy: HomeGroupBy.repository,
+        subtitlePhase: phase,
+        git: const GitStatus(branch: 'main'),
+        room: const RoomInfo(roomId: 'r1', startedAt: 1, model: 'gpt-5.2'),
+      );
+
+      await pumpAt(0);
+      await tester.pumpAndSettle();
+      expect(find.byKey(gitKey), findsOneWidget);
+      expect(find.byKey(secondaryKey), findsNothing);
+      expect(find.text('gpt-5.2'), findsNothing);
+
+      await pumpAt(1);
+      await tester.pumpAndSettle();
+      expect(find.byKey(gitKey), findsNothing);
+      expect(find.text('gpt-5.2'), findsOneWidget);
+    });
+
+    testWidgets('phase wraps: 2 → git again, -1 → secondary (2 lines)', (
+      tester,
+    ) async {
+      Future<void> pumpAt(int phase) => _pump(
+        tester,
+        groupBy: HomeGroupBy.repository,
+        subtitlePhase: phase,
+        git: const GitStatus(branch: 'main'),
+        room: const RoomInfo(roomId: 'r1', startedAt: 1, model: 'gpt-5.2'),
+      );
+
+      await pumpAt(2);
+      await tester.pumpAndSettle();
+      expect(find.byKey(gitKey), findsOneWidget);
+
+      await pumpAt(-1);
+      await tester.pumpAndSettle();
+      expect(find.byKey(secondaryKey), findsOneWidget);
+      expect(find.byKey(gitKey), findsNothing);
+    });
+
+    testWidgets('by-model: cycles git ↔ last prompt, model never shows', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        subtitlePhase: 1,
+        git: const GitStatus(branch: 'main'),
+        lastPrompt: 'fix the relay keepalive',
+        room: const RoomInfo(roomId: 'r1', startedAt: 1, model: 'gpt-5.2'),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('session-tile-last-prompt')),
+        findsOneWidget,
+      );
+      expect(find.text('fix the relay keepalive'), findsOneWidget);
+      expect(find.byKey(gitKey), findsNothing);
+      // The group header owns the model; it never takes a cycle slot.
+      expect(find.textContaining('gpt-5.2'), findsNothing);
+    });
+
+    testWidgets(
+      'three lines (git + model + last response): phases 0/1/2 and wrap at 3',
+      (tester) async {
+        final responseAt = DateTime.now().subtract(const Duration(minutes: 5));
+        Future<void> pumpAt(int phase) => _pump(
+          tester,
+          groupBy: HomeGroupBy.repository,
+          subtitlePhase: phase,
+          git: const GitStatus(branch: 'main'),
+          room: const RoomInfo(roomId: 'r1', startedAt: 1, model: 'gpt-5.2'),
+          lastResponseAt: responseAt,
+        );
+
+        await pumpAt(0);
+        await tester.pumpAndSettle();
+        expect(find.byKey(gitKey), findsOneWidget);
+
+        await pumpAt(1);
+        await tester.pumpAndSettle();
+        expect(find.text('gpt-5.2'), findsOneWidget);
+
+        await pumpAt(2);
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const ValueKey('session-tile-last-response')),
+          findsOneWidget,
+        );
+        expect(find.textContaining('Last response:'), findsOneWidget);
+
+        await pumpAt(3); // wraps back to git
+        await tester.pumpAndSettle();
+        expect(find.byKey(gitKey), findsOneWidget);
+      },
+    );
+
+    testWidgets('response-only tile renders it statically, no swipe gesture', (
+      tester,
+    ) async {
+      final deltas = <int>[];
+      await _pump(
+        tester,
+        groupBy: HomeGroupBy.model,
+        room: const RoomInfo(roomId: 'r1', startedAt: 1),
+        lastResponseAt: DateTime.now().subtract(const Duration(hours: 2)),
+        onCycleSubtitle: deltas.add,
+      );
+      expect(find.textContaining('Last response:'), findsOneWidget);
+      expect(find.textContaining('2h ago'), findsOneWidget);
+      await tester.drag(find.byType(SessionTile), const Offset(-220, 0));
+      await tester.pumpAndSettle();
+      expect(deltas, isEmpty);
+    });
+
+    testWidgets(
+      'single line (git only) → no drag gesture, callback never fires',
+      (tester) async {
+        final deltas = <int>[];
+        await _pump(
+          tester,
+          groupBy: HomeGroupBy.repository,
+          git: const GitStatus(branch: 'main'),
+          room: const RoomInfo(roomId: 'r1', startedAt: 1),
+          onCycleSubtitle: deltas.add,
+        );
+        await tester.drag(find.byType(SessionTile), const Offset(-220, 0));
+        await tester.pumpAndSettle();
+        expect(deltas, isEmpty);
+      },
+    );
+
+    testWidgets('no cyclable lines → Last paired fallback, no gesture', (
+      tester,
+    ) async {
+      final deltas = <int>[];
+      await _pump(
+        tester,
+        groupBy: HomeGroupBy.model,
+        room: const RoomInfo(roomId: 'r1', startedAt: 1),
+        onCycleSubtitle: deltas.add,
+      );
+      expect(find.textContaining('Last paired:'), findsOneWidget);
+      await tester.drag(find.byType(SessionTile), const Offset(-220, 0));
+      await tester.pumpAndSettle();
+      expect(deltas, isEmpty);
+    });
   });
 }

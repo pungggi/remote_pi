@@ -234,6 +234,14 @@ class HomeViewModel extends ViewModel<HomeState> {
   String? lastUserPrompt(String epk, String roomId) =>
       previewPrompt(_boxes.lastUserPrompt(epk, roomId));
 
+  /// Plan/160 — when the session's last agent response landed (subtitle
+  /// cycling line). Reads the same msgs box rows as [lastUserPrompt], so
+  /// the tile's existing unread listenable refreshes this line too.
+  DateTime? lastResponseAt(String epk, String roomId) {
+    final ts = _boxes.lastAssistantTs(epk, roomId);
+    return ts == null ? null : DateTime.fromMillisecondsSinceEpoch(ts);
+  }
+
   /// Collapses [raw] onto one line and caps it at 200 characters
   /// (code-point-safe — never splits a surrogate pair; ellipsis when
   /// capped). `null`/blank → `null`.
