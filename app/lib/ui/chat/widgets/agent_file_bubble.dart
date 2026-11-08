@@ -92,6 +92,7 @@ class _AgentFileBubbleState extends State<AgentFileBubble> {
         'pdf' => 'PDF document',
         'html' => 'HTML page',
         'mermaid' => 'Mermaid diagram',
+        'file' => 'File',
         _ => 'Document',
       };
 
@@ -109,6 +110,7 @@ class _AgentFileBubbleState extends State<AgentFileBubble> {
         'pdf' => Icons.picture_as_pdf_outlined,
         'html' => Icons.code_outlined,
         'mermaid' => Icons.account_tree_outlined,
+        'file' => Icons.folder_zip_outlined,
         _ => Icons.drafts_outlined,
       };
 
@@ -431,6 +433,7 @@ class _AgentFileBubbleState extends State<AgentFileBubble> {
       'pdf' => 'PDF',
       'html' => 'HTML',
       'mermaid' => 'Mermaid',
+      'file' => 'File',
       _ => widget.message.kind,
     };
     final children = <Widget>[

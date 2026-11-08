@@ -475,13 +475,17 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // Track active model so the app can show it in the SessionTile (plano 18).
   pi.on("model_select", (event) => {
     if (mainLoaded || !runtimeIdle()) { fwd((m) => m.onModelSelect(event)); return; }
-    const m = (event as { model?: unknown } | undefined | null)?.model as { name?: string; id?: string } | undefined;
+    const m = (event as { model?: unknown } | undefined | null)?.model as { name?: string; id?: string; provider?: string } | undefined;
     const modelName = m?.name ?? m?.id;
     if (!modelName) return;
     // ext-write prefix of main.onModelSelect; its relay publish is impossible
-    // on this path (relay is null by construction).
+    // on this path (relay is null by construction). Plan/161 — cache the
+    // provider slug too (grouping + plan-usage probing both read it).
     ext.currentModel = modelName;
-    if (ext.myRoomMeta) ext.myRoomMeta = { ...ext.myRoomMeta, model: modelName };
+    if (typeof m?.provider === "string" && m.provider) ext.currentProvider = m.provider;
+    if (ext.myRoomMeta) {
+      ext.myRoomMeta = { ...ext.myRoomMeta, model: modelName, ...(m?.provider ? { provider: m.provider } : {}) };
+    }
   });
   // Plan/28 Wave D.1: mirror model's room_meta_update path for thinking level.
   pi.on("thinking_level_select", (event) => {
@@ -553,11 +557,16 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     // and context-usage refresh are relay-gated and impossible here.
     if (!ext.currentModel) {
       try {
-        const m = (ctx as { getModel?: () => { name?: string; id?: string } | undefined }).getModel?.();
+        const m = (ctx as { getModel?: () => { name?: string; id?: string; provider?: string } | undefined }).getModel?.();
         const name = m?.name ?? m?.id;
         if (name) {
           ext.currentModel = name;
-          if (ext.myRoomMeta) ext.myRoomMeta = { ...ext.myRoomMeta, model: name };
+          // Plan/161 — hydrate the provider slug with the model (grouping +
+          // plan-usage probing read it).
+          if (typeof m?.provider === "string" && m.provider) ext.currentProvider = m.provider;
+          if (ext.myRoomMeta) {
+            ext.myRoomMeta = { ...ext.myRoomMeta, model: name, ...(m?.provider ? { provider: m.provider } : {}) };
+          }
         }
       } catch { /* defensive — never block a turn on a model lookup */ }
     }

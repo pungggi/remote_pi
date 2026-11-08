@@ -29,7 +29,7 @@ Future<void> _pump(
   bool isWaitingForInput = false,
   int unread = 0,
   String? deviceLabel,
-  HomeGroupBy groupBy = HomeGroupBy.model,
+  HomeGroupBy groupBy = HomeGroupBy.provider,
   GitStatus? git,
   String? lastPrompt,
   DateTime? lastResponseAt,
@@ -730,7 +730,7 @@ void main() {
         'prompt takes the subtitle instead', (tester) async {
       await _pump(
         tester,
-        groupBy: HomeGroupBy.model,
+        groupBy: HomeGroupBy.provider,
         lastPrompt: 'fix the auth timeout in the relay worker',
         room: const RoomInfo(
           roomId: 'r1',
@@ -761,7 +761,7 @@ void main() {
       (tester) async {
         await _pump(
           tester,
-          groupBy: HomeGroupBy.model,
+          groupBy: HomeGroupBy.provider,
           room: const RoomInfo(roomId: 'r1', startedAt: 1, model: 'GLH-5.3'),
         );
 
@@ -902,7 +902,7 @@ void main() {
       final deltas = <int>[];
       await _pump(
         tester,
-        groupBy: HomeGroupBy.model,
+        groupBy: HomeGroupBy.provider,
         room: const RoomInfo(roomId: 'r1', startedAt: 1),
         lastResponseAt: DateTime.now().subtract(const Duration(hours: 2)),
         onCycleSubtitle: deltas.add,
@@ -937,7 +937,7 @@ void main() {
       final deltas = <int>[];
       await _pump(
         tester,
-        groupBy: HomeGroupBy.model,
+        groupBy: HomeGroupBy.provider,
         room: const RoomInfo(roomId: 'r1', startedAt: 1),
         onCycleSubtitle: deltas.add,
       );

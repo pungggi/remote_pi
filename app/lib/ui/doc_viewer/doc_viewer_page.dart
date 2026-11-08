@@ -18,7 +18,7 @@ import 'package:share_plus/share_plus.dart';
 /// follows the theme; the route restores the previous style when popped.
 class DocViewerPage extends StatefulWidget {
   final Uint8List bytes;
-  final String kind; // markdown | text | pdf | html | mermaid
+  final String kind; // markdown | text | pdf | html | mermaid | file
   final String? mime;
   final String title;
   final String caption;
@@ -61,15 +61,39 @@ class _DocViewerPageState extends State<DocViewerPage> {
 
   /// Plan/158 — copy the bytes into the user's Downloads via MediaStore
   /// (platform channel; works on any device, no file-manager interaction).
+  /// Plan/163 — native returns {name, uri}; the snackbar gains an Open
+  /// action that VIEWs the saved file. Tolerates an older native side that
+  /// still returns only the display-name string (no Open action then).
   Future<void> _save() async {
     if (_busy) return;
     setState(() => _busy = true);
     try {
-      final saved = await _filesChannel.invokeMethod<String>(
+      final res = await _filesChannel.invokeMethod(
         'saveToDownloads',
         {'name': _fileName(), 'mime': _shareMime(), 'bytes': widget.bytes},
       );
-      _toast('Saved to Downloads${saved == null ? '' : ' · $saved'}');
+      String? name;
+      String? uri;
+      if (res is Map) {
+        name = res['name'] as String?;
+        uri = res['uri'] as String?;
+      } else if (res is String) {
+        name = res;
+      }
+      final label = 'Saved to Downloads${name == null ? '' : ' · $name'}';
+      if (!mounted) return;
+      if (uri == null) {
+        _toast(label);
+        return;
+      }
+      final openUri = uri; // promoted non-null; captured by the closure below
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(
+          content: Text(label),
+          duration: const Duration(seconds: 4),
+          action: SnackBarAction(label: 'Open', onPressed: () => _openSaved(openUri)),
+        ),
+      );
     } on PlatformException catch (e) {
       _toast(e.message == null || e.message!.isEmpty
           ? 'Save failed'
@@ -78,6 +102,24 @@ class _DocViewerPageState extends State<DocViewerPage> {
       _toast('Save failed');
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Plan/163 — VIEW the saved Downloads file. `false` means Android found
+  /// no handler for the MIME type; say so instead of failing silently.
+  Future<void> _openSaved(String uri) async {
+    try {
+      final ok = await _filesChannel.invokeMethod<bool>(
+        'openSavedFile',
+        {'uri': uri, 'mime': _shareMime()},
+      );
+      if (ok == false) _toast('No app can open this file type');
+    } on PlatformException catch (e) {
+      _toast(e.message == null || e.message!.isEmpty
+          ? 'Could not open saved file'
+          : 'Open failed: ${e.message}');
+    } catch (_) {
+      _toast('Could not open saved file');
     }
   }
 
@@ -97,8 +139,9 @@ class _DocViewerPageState extends State<DocViewerPage> {
       final parts = t.split(RegExp(r'[/\\]')).where((s) => s.isNotEmpty);
       if (parts.isNotEmpty) base = parts.last;
     }
-    String cleaned = base.replaceAll(RegExp(r'[^\w.\-]'), '_');
+    String cleaned = base.replaceAll(RegExp(r'[^[0-9A-Za-z_.\-]]'), '_');
     if (cleaned.isEmpty) cleaned = 'document';
+    cleaned = cleaned.replaceAll(RegExp(r'\.+$'), '');
     final ext = switch (widget.kind) {
       'markdown' => 'md',
       'text' => 'txt',
@@ -107,7 +150,11 @@ class _DocViewerPageState extends State<DocViewerPage> {
       'mermaid' => 'mmd',
       _ => 'bin',
     };
-    final hasExt = RegExp(r'\.[A-Za-z0-9]{1,5}$').hasMatch(cleaned);
+    // Trust the announced name's own suffix when it looks like an extension.
+    // Basenames come from the PC filesystem, so any trailing dot + alphanumeric
+    // run is kept as-is — the old 1-5 char cap mangled real ones like
+    // `.jwlibrary` (9 chars) into `Backup.jwlibrary.bin` (plan/163 follow-up).
+    final hasExt = RegExp(r'\.[A-Za-z0-9]{1,32}$').hasMatch(cleaned);
     return hasExt ? cleaned : '$cleaned.$ext';
   }
 
@@ -133,6 +180,12 @@ class _DocViewerPageState extends State<DocViewerPage> {
         );
       case 'mermaid':
         return MermaidViewer(bytes: widget.bytes);
+      case 'file':
+        return _BinaryFileBody(
+          name: _fileName(),
+          bytes: widget.bytes.length,
+          mime: _shareMime(),
+        );
       default:
         return Center(
           child: Text(
@@ -261,6 +314,68 @@ class _DocViewerPageState extends State<DocViewerPage> {
               label,
               style: context.typo.sansBody
                   .copyWith(color: colors.muted, fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Plan/162 — body for the generic `file` kind: no in-app viewer for
+/// arbitrary binaries (.jwlibrary backups, archives, office docs). The page
+/// exists for its Save (Downloads via MediaStore) + Share actions; the body
+/// just states what arrived so the buttons have context.
+class _BinaryFileBody extends StatelessWidget {
+  final String name;
+  final int bytes;
+  final String mime;
+
+  const _BinaryFileBody({
+    required this.name,
+    required this.bytes,
+    required this.mime,
+  });
+
+  String get _sizeLabel {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.folder_zip_outlined, size: 56, color: colors.accent),
+            const SizedBox(height: 12),
+            Text(
+              name,
+              style: context.typo.sansBody.copyWith(
+                color: colors.text,
+                fontWeight: FontWeight.w600,
+              ),
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '$_sizeLabel · $mime',
+              style: context.typo.monoSmall.copyWith(color: colors.muted),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'No preview for this file type.\n'
+              'Use Save (Downloads) or Share below to keep it —\n'
+              'e.g. import a .jwlibrary backup into JW Library from Share.',
+              style: context.typo.sansBody.copyWith(color: colors.muted2),
+              textAlign: TextAlign.center,
             ),
           ],
         ),

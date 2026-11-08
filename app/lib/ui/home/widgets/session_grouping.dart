@@ -5,8 +5,11 @@ import 'package:app/protocol/protocol.dart' show PlanUsage;
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 
-/// Two-way control that switches the Home list between model and repository
-/// sections. The selected mode is announced by [SegmentedButton] semantics.
+/// Two-way control that switches the Home list between the provider ▸ model
+/// nesting and repository sections. The selected mode is announced by
+/// [SegmentedButton] semantics. Plan/161 — the former 'Model' segment
+/// became 'Provider': models nest under their provider and the
+/// subscription usage renders once per provider.
 class HomeGroupingControl extends StatelessWidget {
   final HomeGroupBy value;
   final ValueChanged<HomeGroupBy> onChanged;
@@ -40,7 +43,7 @@ class HomeGroupingControl extends StatelessWidget {
             width: double.infinity,
             child: SegmentedButton<HomeGroupBy>(
               segments: const [
-                ButtonSegment(value: HomeGroupBy.model, label: Text('Model')),
+                ButtonSegment(value: HomeGroupBy.provider, label: Text('Provider')),
                 ButtonSegment(
                   value: HomeGroupBy.repository,
                   label: Text('Repo'),
@@ -74,12 +77,13 @@ class HomeGroupingControl extends StatelessWidget {
   }
 }
 
-/// Label and session count for one model or repository section.
-///
-/// Plan/156 — in model grouping the header also carries the provider
-/// subscription usage (`5h 3% · wk 4%` plus a hairline fill bar), but ONLY
-/// when the caller sourced it from an ONLINE session: offline caches would
-/// paint stale quota as if it were live.
+/// Label and session count for one section header. Plan/161 — in provider
+/// grouping this is the PROVIDER row: it carries the provider subscription
+/// usage (`5h 3% · wk 4%` plus a hairline fill bar and the 🔄×N reset chip)
+/// exactly ONCE per provider — the quota is account-scoped, so repeating it
+/// per model was noise. Rendered ONLY when the caller sourced it from an
+/// ONLINE session: offline caches would paint stale quota as if it were
+/// live.
 class SessionGroupHeader extends StatefulWidget {
   final String label;
   final int count;
@@ -374,6 +378,52 @@ class _SessionGroupHeaderState extends State<SessionGroupHeader> {
                   ],
                 ),
               ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Plan/161 — compact model sub-label nested under a provider section
+/// header. Deliberately plain: model + session count only. The
+/// subscription usage lives on the PROVIDER header (account-scoped), so a
+/// per-model usage line would just repeat the same numbers — the exact
+/// wall-of-numbers problem this nesting solves.
+class ModelGroupLabel extends StatelessWidget {
+  final String label;
+  final int count;
+
+  const ModelGroupLabel({super.key, required this.label, required this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Semantics(
+      header: true,
+      child: Padding(
+        // Indented under the provider header (20 → 36) and lighter: a
+        // sub-level, not a peer of the section headers.
+        padding: const EdgeInsets.fromLTRB(36, 8, 20, 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontFamily: kMonoFamily,
+                  fontSize: 11,
+                  color: colors.muted2,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              '$count',
+              style: TextStyle(fontFamily: kMonoFamily, fontSize: 10, color: colors.muted2),
+            ),
           ],
         ),
       ),

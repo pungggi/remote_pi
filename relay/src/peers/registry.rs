@@ -503,6 +503,7 @@ impl PeerRegistry {
             previous_working,
             previous_waiting_for_input,
             current_model,
+            current_provider,
             current_thinking,
             current_working,
             current_waiting_for_input,
@@ -537,6 +538,7 @@ impl PeerRegistry {
                     for (_, meta, _) in v.iter_mut() {
                         let before = (
                             meta.model.clone(),
+                            meta.provider.clone(),
                             meta.thinking.clone(),
                             meta.working,
                             meta.waiting_for_input,
@@ -550,6 +552,10 @@ impl PeerRegistry {
                         );
                         if let Some(ref m) = patch.model {
                             meta.model = m.clone();
+                        }
+                        // Plan/161 — provider slug passthrough.
+                        if let Some(ref p) = patch.provider {
+                            meta.provider = p.clone();
                         }
                         if let Some(ref t) = patch.thinking {
                             meta.thinking = t.clone();
@@ -589,6 +595,7 @@ impl PeerRegistry {
                         }
                         let after = (
                             meta.model.clone(),
+                            meta.provider.clone(),
                             meta.thinking.clone(),
                             meta.working,
                             meta.waiting_for_input,
@@ -613,6 +620,7 @@ impl PeerRegistry {
                         previous_working,
                         previous_waiting_for_input,
                         head.1.model.clone(),
+                        head.1.provider.clone(),
                         head.1.thinking.clone(),
                         head.1.working,
                         head.1.waiting_for_input,
@@ -677,6 +685,11 @@ impl PeerRegistry {
             let mut meta_obj = serde_json::Map::new();
             if let Some(m) = &current_model {
                 meta_obj.insert("model".to_string(), serde_json::Value::String(m.clone()));
+            }
+            // Plan/161 — provider slug rides along when known (absent =
+            // the Pi never reported one; patch semantics preserve).
+            if let Some(p) = &current_provider {
+                meta_obj.insert("provider".to_string(), serde_json::Value::String(p.clone()));
             }
             if let Some(t) = &current_thinking {
                 meta_obj.insert("thinking".to_string(), serde_json::Value::String(t.clone()));
@@ -822,6 +835,7 @@ mod tests {
             name: None,
             cwd: None,
             model: None,
+            provider: None,
             thinking: None,
             working: false,
             waiting_for_input: false,
@@ -1348,6 +1362,69 @@ mod tests {
         assert_eq!(
             v["meta"]["working"], true,
             "absent `working` in a patch must not clear it"
+        );
+    }
+
+    /// Plan/161 — the provider slug rides the broadcast next to `model`, a
+    /// patch that omits it preserves the stored value (same merge-patch
+    /// semantics as `model`), and a provider switch updates it live.
+    #[tokio::test]
+    async fn provider_patch_broadcasts_and_absent_preserves() {
+        let (reg, _metrics, pi, mut rx_app) = meta_fixture().await;
+
+        // Model + provider set together (the Pi's `model_select` shape).
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    model: Some(Some("GLM 4.7".into())),
+                    provider: Some(Some("zai".into())),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        let v = recv_meta(&mut rx_app);
+        assert_eq!(v["meta"]["model"], "GLM 4.7");
+        assert_eq!(v["meta"]["provider"], "zai");
+
+        // Provider-absent patch preserves the stored slug and re-carries it.
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    working: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        let v = recv_meta(&mut rx_app);
+        assert_eq!(
+            v["meta"]["provider"], "zai",
+            "absent `provider` in a patch must be re-carried"
+        );
+
+        // A provider switch updates the slug so the app re-groups live;
+        // the model is untouched.
+        assert!(
+            reg.update_room_meta(
+                &pi,
+                "main",
+                RoomMetaPatch {
+                    provider: Some(Some("kimi-coding".into())),
+                    ..Default::default()
+                },
+            )
+            .await
+        );
+        let v = recv_meta(&mut rx_app);
+        assert_eq!(v["meta"]["provider"], "kimi-coding");
+        assert_eq!(
+            v["meta"]["model"], "GLM 4.7",
+            "model preserved across a provider-only patch"
         );
     }
 
