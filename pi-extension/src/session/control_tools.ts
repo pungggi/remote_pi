@@ -35,6 +35,7 @@ import type {
   ServerMessage,
   SessionActionMessage,
 } from "../protocol/types.js";
+import { SAFE_MODEL_TOKEN } from "../protocol/types.js";
 
 const jsonSchema = (s: object) => s as unknown as never;
 
@@ -45,12 +46,6 @@ const REMOTE_TIMEOUT_MS = 30_000;
  *  calls inside the same millisecond must not share an id (ai-review #107:
  *  the id lands in session_history/logs and must stay unambiguous). */
 const newControlId = (): string => `ctl-${crypto.randomUUID()}`;
-
-/** Mirror of main.ts SAFE_MODEL_TOKEN (ai-review #107 r2: pre-check the
- *  remote spawn payload client-side so a bad token fails fast here instead
- *  of as a generic ok:false from the target — the target still validates
- *  authoritatively). Keep the two regexes in sync. */
-const SAFE_MODEL_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
 
 /** Structural peer surface the remote path needs (matches SessionPeer). */
 interface ControlPeer {
@@ -157,7 +152,12 @@ async function _remoteControl(
 }
 
 /** Resolve the target: self-address is refused (omit target instead),
- *  remote requires the mesh. Returns null for local execution. */
+ *  remote requires the mesh. Returns null for local execution.
+ *
+ *  Local execution does NOT require a mesh peer (ai-review #107 r4): these
+ *  tools only exist inside a running Pi session, and a local spawn's
+ *  terminal joins per its own local config (auto_join_local /
+ *  auto_start_relay) — same as the app's spawn path. */
 function _resolveTarget(
   peer: ControlPeer | null,
   target: string | undefined,

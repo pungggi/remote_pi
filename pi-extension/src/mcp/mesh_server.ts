@@ -22,6 +22,7 @@ import { z } from "zod";
 import { MeshNode } from "../session/mesh_node.js";
 import { loadLocalConfig, defaultAgentName, localConfigExists } from "../session/local_config.js";
 import { formatMeshAckResult } from "./mesh_result.js";
+import { SAFE_MODEL_TOKEN } from "../protocol/types.js";
 import {
   DEFAULT_WAIT_TIMEOUT_MS,
   MAX_WAIT_TIMEOUT_MS,
@@ -356,6 +357,17 @@ async function controlRequest(target: string, ctrl: Record<string, unknown>) {
         type: "text" as const,
         text: "You have no Pi session of your own — target a Pi peer from list_peers.",
       }],
+      isError: true,
+    };
+  }
+  // ai-review #107 r4: same client-side token pre-check as the Pi tools —
+  // a bad identifier fails fast here instead of as a generic ok:false from
+  // the target (the target still validates authoritatively).
+  const mp = typeof ctrl.provider === "string" ? ctrl.provider : "";
+  const mi = typeof ctrl.model_id === "string" ? ctrl.model_id : "";
+  if ((mp !== "" || mi !== "") && (!SAFE_MODEL_TOKEN.test(mp) || !SAFE_MODEL_TOKEN.test(mi))) {
+    return {
+      content: [{ type: "text" as const, text: `invalid model identifier: ${mp}/${mi}` }],
       isError: true,
     };
   }

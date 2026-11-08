@@ -97,6 +97,16 @@ describe("plan/161 $rp_control receiving side", () => {
     expect(String(r.body.rp_control_result.error)).toContain("allow_remote_session_control");
   });
 
+  test("self-addressed envelope → refused with typed error (ai-review #107 r4)", async () => {
+    main._setPiForTest({ stub: true });
+    const base = makeFakePeer();
+    const peer = { ...base, address: () => ENV.from, name: () => "pc2:C:\\proj@lead" };
+    await main._handleControlEnvelope(peer as never, ENV, { op: "session_compact" } as never, cwd);
+    const r = lastReply(peer);
+    expect(r.body.rp_control_result.ok).toBe(false);
+    expect(String(r.body.rp_control_result.error)).toContain("self-addressed");
+  });
+
   test("no active Pi session → explicit error, not silence", async () => {
     main._setPiForTest(null);
     const peer = await run({ op: "session_compact" });

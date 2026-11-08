@@ -771,6 +771,13 @@ export interface RpControlResult {
   };
 }
 
+/** Model token guard (plan/161): charset-safe provider/model ids that may
+ *  be interpolated into `pi --model <provider>/<id>` command lines and mesh
+ *  envelopes. Single source — main.ts (spawn), session/control_tools.ts
+ *  (client-side pre-check) and mcp/mesh_server.ts (MCP pre-check) all
+ *  import it; nothing may grow a local copy (ai-review #107 r4). */
+export const SAFE_MODEL_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
+
 /**
  * Plan/28 — Mirror of the SDK's `ThinkingLevel` (defined in
  * `@earendil-works/pi-agent-core/types`). Re-declared locally so the wire

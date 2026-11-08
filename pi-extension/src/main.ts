@@ -126,6 +126,7 @@ import {
 } from "./actions/handlers.js";
 import { handleGitStatus, getGitStatus } from "./actions/git_status.js";
 import type { WireGhRef, WireGitStatus, WireSessionStats } from "./protocol/types.js";
+import { SAFE_MODEL_TOKEN } from "./protocol/types.js";
 import { handleOpenTerminal, handleListWorktrees, handleRemoveWorktree, createWorktree, openTerminalTab } from "./actions/open_terminal.js";
 import { handleForgetRoom } from "./actions/forget_room.js";
 import { handleStartSession } from "./actions/start_session.js";
@@ -5418,12 +5419,6 @@ export function _dispatchSessionAction(
  *  path (peer.request default) gets. */
 const SESSION_ACTION_REPLY_TIMEOUT_MS = 30_000;
 
-/** Safe model identifier charset for composing the standard pi
- *  `--model <provider>/<id>` flag. The value is interpolated into a shell
- *  command line in openTerminalTab, so anything outside this set is
- *  rejected outright (typed pair from the caller, never free-form). */
-const SAFE_MODEL_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
-
 /**
  * Run one typed session action LOCALLY (self) and resolve with the single
  * ServerMessage reply the handlers emit (`action_ok` / `action_error` /
@@ -5518,9 +5513,13 @@ interface ControlEnvelopeLike {
   body?: unknown;
 }
 
-/** Structural peer surface for replying to a control envelope. */
+/** Structural peer surface for replying to a control envelope. The
+ *  identity methods are optional so test fakes stay minimal; the real mesh
+ *  peer provides both, enabling the self-address guard. */
 interface ControlReplyPeer {
   send(to: string | string[], body: unknown, re?: string | null): Promise<void> | void;
+  address?(): string;
+  name?(): string;
 }
 
 /** Build the plan/28 ClientMessage variant for a control op, or null when
@@ -5591,6 +5590,21 @@ async function _handleControlEnvelopeInner(
       ok: false,
       action: ctrl.op,
       error: "remote session control disabled on this peer (allow_remote_session_control:false)",
+    });
+    return;
+  }
+  // Self-address guard (ai-review #107 r4): a control envelope whose sender
+  // is this peer must never execute here. The Pi tools refuse self-targets
+  // client-side, so this catches MCP/foreign senders that missed that check
+  // — refuse with a typed error instead of executing (or answering a
+  // misleading "no active Pi session" from the !ext.pi branch below).
+  const selfAddr = typeof _peer.address === "function" ? _peer.address() : null;
+  const selfName = typeof _peer.name === "function" ? _peer.name() : null;
+  if ((selfAddr !== null && _env.from === selfAddr) || (selfName !== null && _env.from === selfName)) {
+    reply({
+      ok: false,
+      action: ctrl.op,
+      error: "self-addressed control refused — omit the target to control the local session",
     });
     return;
   }
