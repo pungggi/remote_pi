@@ -319,6 +319,14 @@ impl PeerRegistry {
     /// Returns one `RoomMeta` per distinct room of `peer_id`.
     /// Multiple conns at the same room collapse to a single entry (using
     /// the most recently registered meta for stability).
+    ///
+    /// Plan/164 fix — the result is SORTED by room_id. `HashMap` iteration
+    /// order is randomized per call, so an unsorted Vec serialized
+    /// differently on every `rooms_check` reply even with identical
+    /// content: the peer-handler's byte-identical dedup (and the phone's
+    /// snapshot equality check) could NEVER match, every reply was sent
+    /// in full, and the app re-polled "changed" snapshots in a ~60 Hz
+    /// feedback loop that starved `agent_chunk` on the same socket.
     pub fn rooms_of(&self, peer_id: &str) -> Vec<RoomMeta> {
         let lock = self.senders.lock().unwrap();
         let mut by_room: HashMap<String, RoomMeta> = HashMap::new();
@@ -329,7 +337,9 @@ impl PeerRegistry {
                 by_room.insert(meta.room_id.clone(), meta.clone());
             }
         }
-        by_room.into_values().collect()
+        let mut rooms: Vec<RoomMeta> = by_room.into_values().collect();
+        rooms.sort_by(|a, b| a.room_id.cmp(&b.room_id));
+        rooms
     }
 
     /// Broadcasts `msg` to every live connection at `(dest_peer, dest_room)`
