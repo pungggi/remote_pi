@@ -103,6 +103,18 @@ describe("plan/161 session-control tools — local path", () => {
     );
   });
 
+  test("model_set with invalid tokens is refused before dispatch (ai-review #107 r11)", async () => {
+    const { pi, tools } = makeMockPi();
+    const deps = makeDeps();
+    registerSessionControlTools(pi, deps);
+    // Path-like id: passes the charset but trips the `..` lookahead (r6);
+    // the r7 guard must refuse client-side without touching dispatchLocal.
+    const r = await call(tools.get("model_set")!, { provider: "a/../../x", model_id: "m" });
+    const text = (r.content as { text: string }[])[0].text;
+    expect(text).toContain("invalid model identifier");
+    expect(deps.dispatchLocal).not.toHaveBeenCalled();
+  });
+
   test("spawn_worktree local returns path/branch + mesh hint", async () => {
     const { pi, tools } = makeMockPi();
     const deps = makeDeps();
