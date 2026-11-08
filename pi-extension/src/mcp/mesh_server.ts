@@ -454,13 +454,26 @@ mcp.registerTool("spawn_worktree", {
     provider: z.string().optional().describe("Optional model provider for the spawned session"),
     model_id: z.string().optional().describe("Optional model id — requires provider"),
   },
-}, async ({ target, branch, base, provider, model_id }) =>
-  controlRequest(target, {
+}, async ({ target, branch, base, provider, model_id }) => {
+  // ai-review #107 r5: both-or-neither, same rule as the Pi tool. Without
+  // this guard a provider-only call would silently DROP the model and
+  // spawn with the default — worse than an error.
+  if ((provider && !model_id) || (!provider && model_id)) {
+    return {
+      content: [{
+        type: "text" as const,
+        text: "spawn_worktree requires both provider and model_id (or neither).",
+      }],
+      isError: true,
+    };
+  }
+  return controlRequest(target, {
     op: "spawn_worktree",
     ...(branch ? { branch } : {}),
     ...(base ? { base } : {}),
     ...(provider && model_id ? { provider, model_id } : {}),
-  }));
+  });
+});
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 

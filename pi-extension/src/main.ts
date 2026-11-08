@@ -5288,7 +5288,11 @@ export function _dispatchSessionAction(
       const restartFresh = () => {
         sender.send({ type: "action_ok", in_reply_to: msg.id, action: "session_new" });
         _resetSessionForNew(msg.id);
-        setTimeout(() => process.exit(EXIT_DAEMON_FRESH_SESSION), 100);
+        // 500ms (ai-review #107 r5): this action_ok may travel a network hop
+        // (mesh control envelope remote-reset) — 100ms could abort the send
+        // mid-flush and leave the remote caller timing out on a reset that
+        // actually succeeded.
+        setTimeout(() => process.exit(EXIT_DAEMON_FRESH_SESSION), 500);
       };
       if (!actionCtx?.newSession) {
         if (daemonMode) {
