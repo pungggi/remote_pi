@@ -5083,7 +5083,22 @@ async function _cmdJoin(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<void
     const ctrlBody = env.body as RpControlRequest | null;
     const ctrl = ctrlBody?.$rp_control;
     if (ctrl && typeof ctrl === "object" && typeof ctrl.op === "string") {
-      void _handleControlEnvelope(peer, env, ctrl, canonCwd);
+      // Fire-and-forget WITH a rejection answer (ai-review #107): a throw
+      // inside the handler must still reply — the sender's peer.request()
+      // is otherwise left to its 30s timeout with no diagnostics.
+      void _handleControlEnvelope(peer, env, ctrl, canonCwd).catch((e) => {
+        void peer.send(
+          env.from,
+          {
+            rp_control_result: {
+              ok: false,
+              action: ctrl.op as RpControlOp,
+              error: String(e),
+            },
+          },
+          env.id,
+        );
+      });
       return;
     }
 
@@ -5222,16 +5237,15 @@ async function _resolveRegistry(ctx: ActionCtx | null): Promise<ActionModelRegis
 }
 
 /** Union of the plan/28 typed-action ClientMessage variants that
- *  `_dispatchSessionAction` executes. The plan/161 mesh control path
- *  synthesizes members of this union (fresh `id` from the control
- *  envelope) and reuses the exact same dispatch. */
+ *  `_dispatchSessionAction` executes: the four mesh-controllable ops
+ *  (`SessionActionMessage` — the SAME type the wire protocol exports) plus
+ *  the two app-only ops (shutdown, thinking). Derived, not duplicated, so
+ *  the wire subset and the dispatch set have one source. The plan/161 mesh
+ *  control path synthesizes members of `SessionActionMessage` with a fresh
+ *  `id` from the control envelope. */
 type SessionActionMsg =
-  | Extract<ClientMessage, { type: "session_compact" }>
-  | Extract<ClientMessage, { type: "session_new" }>
-  | Extract<ClientMessage, { type: "session_shutdown" }>
-  | Extract<ClientMessage, { type: "model_set" }>
-  | Extract<ClientMessage, { type: "thinking_set" }>
-  | Extract<ClientMessage, { type: "list_models" }>;
+  | SessionActionMessage
+  | Extract<ClientMessage, { type: "session_shutdown" | "thinking_set" }>;
 
 /**
  * Plan/28 Wave B + plan/161 — the ONE dispatch for typed session actions.
@@ -5596,8 +5610,12 @@ export async function _handleControlEnvelope(
             });
           } else if (sm.type === "error") {
             reply({ ok: false, action: ctrl.op, error: sm.message });
+          } else {
+            // Defensive (ai-review #107): never swallow an unexpected reply
+            // shape — the sender's peer.request() must get an answer, not a
+            // silent 30s timeout.
+            reply({ ok: false, action: ctrl.op, error: `unexpected reply shape: ${sm.type}` });
           }
-          // No other ServerMessage shape is emitted by these ops.
         },
       };
       _dispatchSessionAction(sink, msg);

@@ -41,6 +41,11 @@ const jsonSchema = (s: object) => s as unknown as never;
 const NOT_IN_SESSION = "Not in a session. Run /remote-pi join first";
 const REMOTE_TIMEOUT_MS = 30_000;
 
+/** Correlation id for local dispatches. UUID, not a timestamp — two tool
+ *  calls inside the same millisecond must not share an id (ai-review #107:
+ *  the id lands in session_history/logs and must stay unambiguous). */
+const newControlId = (): string => `ctl-${crypto.randomUUID()}`;
+
 /** Structural peer surface the remote path needs (matches SessionPeer). */
 interface ControlPeer {
   address(): string;
@@ -189,7 +194,7 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
       if (t && "error" in t) return { content: [{ type: "text", text: t.error }], details: { ok: false } };
       const out = t && "target" in t
         ? await _remoteControl(peer!, t.target, { op: "session_compact" })
-        : _formatLocalReply(await deps.dispatchLocal({ type: "session_compact", id: `ctl-${Date.now()}` }));
+        : _formatLocalReply(await deps.dispatchLocal({ type: "session_compact", id: newControlId() }));
       return { content: [{ type: "text", text: out.text }], details: { ok: out.ok } };
     },
   });
@@ -218,7 +223,7 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
       if (t && "error" in t) return { content: [{ type: "text", text: t.error }], details: { ok: false } };
       const out = t && "target" in t
         ? await _remoteControl(peer!, t.target, { op: "session_new" })
-        : _formatLocalReply(await deps.dispatchLocal({ type: "session_new", id: `ctl-${Date.now()}` }));
+        : _formatLocalReply(await deps.dispatchLocal({ type: "session_new", id: newControlId() }));
       return { content: [{ type: "text", text: out.text }], details: { ok: out.ok } };
     },
   });
@@ -255,7 +260,7 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
       const ctrl: RpControlRequest["$rp_control"] = { op: "model_set", provider, model_id };
       const out = t && "target" in t
         ? await _remoteControl(peer!, t.target, ctrl)
-        : _formatLocalReply(await deps.dispatchLocal({ type: "model_set", id: `ctl-${Date.now()}`, provider, model_id }));
+        : _formatLocalReply(await deps.dispatchLocal({ type: "model_set", id: newControlId(), provider, model_id }));
       return { content: [{ type: "text", text: out.text }], details: { ok: out.ok } };
     },
   });
@@ -281,7 +286,7 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
       if (t && "error" in t) return { content: [{ type: "text", text: t.error }], details: { ok: false } };
       const out = t && "target" in t
         ? await _remoteControl(peer!, t.target, { op: "list_models" })
-        : _formatLocalReply(await deps.dispatchLocal({ type: "list_models", id: `ctl-${Date.now()}` }));
+        : _formatLocalReply(await deps.dispatchLocal({ type: "list_models", id: newControlId() }));
       return { content: [{ type: "text", text: out.text }], details: { ok: out.ok } };
     },
   });
