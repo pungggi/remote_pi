@@ -124,9 +124,11 @@ function parseLocalConfig(raw: string): LocalConfig | null {
   if (typeof arsc === "boolean") {
     cfg.allow_remote_session_control = arsc;
   } else if (arsc !== undefined && arsc !== null) {
+    // ai-review #107 r10: log the TYPE, never the raw value — a mistyped
+    // value could be anything (including a pasted secret); "no secrets in
+    // logs" starts here too.
     console.warn(
-      "[remote-pi] allow_remote_session_control must be a boolean — treating as false:",
-      arsc,
+      `[remote-pi] allow_remote_session_control must be a boolean — treating as false (got ${typeof arsc})`,
     );
     cfg.allow_remote_session_control = false;
   }
