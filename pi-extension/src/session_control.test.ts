@@ -97,6 +97,15 @@ describe("plan/161 $rp_control receiving side", () => {
     expect(String(r.body.rp_control_result.error)).toContain("allow_remote_session_control");
   });
 
+  test("kill-switch off also refuses spawn_worktree — gate precedes the op switch (ai-review #107 r6)", async () => {
+    main._setPiForTest({ stub: true });
+    saveLocalConfig(cwd, { allow_remote_session_control: false });
+    const peer = await run({ op: "spawn_worktree", branch: "work/probe" });
+    const r = lastReply(peer);
+    expect(r.body.rp_control_result.ok).toBe(false);
+    expect(String(r.body.rp_control_result.error)).toContain("allow_remote_session_control");
+  });
+
   test("self-addressed envelope → refused with typed error (ai-review #107 r4)", async () => {
     main._setPiForTest({ stub: true });
     const base = makeFakePeer();

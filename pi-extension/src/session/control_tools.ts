@@ -162,14 +162,17 @@ function _resolveTarget(
   peer: ControlPeer | null,
   target: string | undefined,
 ): { error: string } | { target: string } | null {
-  if (target === undefined || target === null || target === "") return null; // local
+  // ai-review #107 r6: whitespace-only targets are LOCAL (omit-target
+  // semantics), not an address that would ride the 30s request timeout.
+  const t = typeof target === "string" ? target.trim() : target;
+  if (t === undefined || t === null || t === "") return null; // local
   if (!peer) return { error: NOT_IN_SESSION };
-  if (target === peer.address() || target === peer.name()) {
+  if (t === peer.address() || t === peer.name()) {
     return {
-      error: `Refused: "${target}" is your own address — omit \`target\` to act on your own session.`,
+      error: `Refused: "${t}" is your own address — omit \`target\` to act on your own session.`,
     };
   }
-  return { target };
+  return { target: t };
 }
 
 export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionControlDeps): void {

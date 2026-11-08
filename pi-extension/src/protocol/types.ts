@@ -775,8 +775,10 @@ export interface RpControlResult {
  *  be interpolated into `pi --model <provider>/<id>` command lines and mesh
  *  envelopes. Single source — main.ts (spawn), session/control_tools.ts
  *  (client-side pre-check) and mcp/mesh_server.ts (MCP pre-check) all
- *  import it; nothing may grow a local copy (ai-review #107 r4). */
-export const SAFE_MODEL_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
+ *  import it; nothing may grow a local copy (ai-review #107 r4). The
+ *  lookahead rejects `..` segments so no path-like id (e.g. `a/../../x`)
+ *  reaches a CLI flag (ai-review #107 r6). */
+export const SAFE_MODEL_TOKEN = /^(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
 
 /**
  * Plan/28 — Mirror of the SDK's `ThinkingLevel` (defined in

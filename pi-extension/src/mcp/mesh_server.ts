@@ -351,12 +351,25 @@ interface ControlResultBody {
  *  plan/28 handlers the mobile app drives, and replies `re`-correlated. */
 async function controlRequest(target: string, ctrl: Record<string, unknown>) {
   if (!meshReady || !_mesh) return notReady();
+  // Self-address check (fast client-side catch). Asymmetric BY DESIGN with
+  // the receiver-side guard in _handleControlEnvelopeInner (ai-review #107
+  // r6): here we compare the TARGET against our own identity (an MCP runtime
+  // has no Pi session of its own to control); there, the actual sender
+  // identity `env.from` is checked — the authoritative backstop.
   if (target === _mesh.address() || target === _mesh.name()) {
     return {
       content: [{
         type: "text" as const,
         text: "You have no Pi session of your own — target a Pi peer from list_peers.",
       }],
+      isError: true,
+    };
+  }
+  // ai-review #107 r6: whitespace-only targets fail fast instead of riding
+  // the 30s request timeout on an unroutable address.
+  if (target.trim() === "") {
+    return {
+      content: [{ type: "text" as const, text: "target must be a peer address from list_peers." }],
       isError: true,
     };
   }
