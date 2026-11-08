@@ -116,6 +116,20 @@ describe("plan/161 $rp_control receiving side", () => {
     expect(String(r.body.rp_control_result.error)).toContain("self-addressed");
   });
 
+  test("dead peer on reply (remote reset rebuilt it) → no crash, no unhandled rejection (live-run PR #107)", async () => {
+    main._setPiForTest({ stub: true });
+    // LIVE-RUN regression: remote session_reset tears down the mesh peer
+    // before the deferred action_ok; peer.send then throws SYNCHRONOUSLY.
+    // void does not catch sync throws — before the fix this crashed pi.
+    const peer = makeFakePeer();
+    peer.send = vi.fn(() => {
+      throw new Error("session peer not connected");
+    });
+    // Must resolve instead of throwing/rejecting.
+    await expect(main._handleControlEnvelope(peer, ENV, { op: "session_compact" } as never, cwd))
+      .resolves.toBeUndefined();
+  });
+
   test("no active Pi session → explicit error, not silence", async () => {
     main._setPiForTest(null);
     const peer = await run({ op: "session_compact" });

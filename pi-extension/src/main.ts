@@ -5576,7 +5576,21 @@ export async function _handleControlEnvelope(
   const reply = (body: RpControlResult["rp_control_result"]) => {
     if (replied) return;
     replied = true;
-    void peer.send(env.from, { rp_control_result: body }, env.id);
+    // LIVE-RUN finding (PR #107 e2e): a remote session_reset rebuilds the
+    // target's mesh peer MID-FLIGHT — the deferred action_ok then hit the
+    // TORN-DOWN peer, whose send() threw SYNCHRONOUSLY ("session peer not
+    // connected"), and `void` does not catch sync throws → unhandled → the
+    // target's pi CRASHED. A reply must never take the process down: sync
+    // throws are swallowed, async rejections are detached, and the sender
+    // simply hits its 30s request timeout while the reset itself succeeds.
+    try {
+      const p = peer.send(env.from, { rp_control_result: body }, env.id);
+      if (p && typeof p.catch === "function") p.catch(() => {});
+    } catch {
+      // Peer gone (torn down by the very action we executed). Nothing to
+      // rescue through the same broken pipe — log and stand down.
+      console.error("[remote-pi] control reply dropped: peer disconnected");
+    }
   };
   try {
     await _handleControlEnvelopeInner(peer, env, ctrl, cwd, reply);
