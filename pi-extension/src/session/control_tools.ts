@@ -154,6 +154,11 @@ async function _remoteControl(
 /** Resolve the target: self-address is refused (omit target instead),
  *  remote requires the mesh. Returns null for local execution.
  *
+ *  A PRESENT-but-blank target ("" or whitespace) is an ERROR, never
+ *  silently local (ai-review #107 r7) — an accidental " " would otherwise
+ *  self-compact/reset, and session_reset is destructive. Matches the MCP
+ *  side: same input, same semantics everywhere.
+ *
  *  Local execution does NOT require a mesh peer (ai-review #107 r4): these
  *  tools only exist inside a running Pi session, and a local spawn's
  *  terminal joins per its own local config (auto_join_local /
@@ -162,10 +167,13 @@ function _resolveTarget(
   peer: ControlPeer | null,
   target: string | undefined,
 ): { error: string } | { target: string } | null {
-  // ai-review #107 r6: whitespace-only targets are LOCAL (omit-target
-  // semantics), not an address that would ride the 30s request timeout.
-  const t = typeof target === "string" ? target.trim() : target;
-  if (t === undefined || t === null || t === "") return null; // local
+  if (target === undefined || target === null) return null; // local
+  const t = target.trim();
+  if (t === "") {
+    return {
+      error: "target must be a peer address from list_peers (omit it entirely to act on your own session).",
+    };
+  }
   if (!peer) return { error: NOT_IN_SESSION };
   if (t === peer.address() || t === peer.name()) {
     return {
@@ -266,6 +274,13 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
       const peer = deps.getPeer();
       const t = _resolveTarget(peer, target);
       if (t && "error" in t) return { content: [{ type: "text", text: t.error }], details: { ok: false } };
+      // ai-review #107 r7: same pre-check as spawn_worktree — fail fast on
+      // malformed ids (local AND remote) instead of a generic registry
+      // error from dispatch or the target.
+      if (!SAFE_MODEL_TOKEN.test(provider) || !SAFE_MODEL_TOKEN.test(model_id)) {
+        const msg = `invalid model identifier: ${provider}/${model_id}`;
+        return { content: [{ type: "text", text: msg }], details: { ok: false } };
+      }
       const ctrl: RpControlRequest["$rp_control"] = { op: "model_set", provider, model_id };
       const out = t && "target" in t
         ? await _remoteControl(peer!, t.target, ctrl)
