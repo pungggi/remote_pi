@@ -46,6 +46,12 @@ const REMOTE_TIMEOUT_MS = 30_000;
  *  the id lands in session_history/logs and must stay unambiguous). */
 const newControlId = (): string => `ctl-${crypto.randomUUID()}`;
 
+/** Mirror of main.ts SAFE_MODEL_TOKEN (ai-review #107 r2: pre-check the
+ *  remote spawn payload client-side so a bad token fails fast here instead
+ *  of as a generic ok:false from the target — the target still validates
+ *  authoritatively). Keep the two regexes in sync. */
+const SAFE_MODEL_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
+
 /** Structural peer surface the remote path needs (matches SessionPeer). */
 interface ControlPeer {
   address(): string;
@@ -333,6 +339,10 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
       if (t && "error" in t) return { content: [{ type: "text", text: t.error }], details: { ok: false } };
       if ((provider && !model_id) || (!provider && model_id)) {
         const msg = "spawn_worktree requires both provider and model_id (or neither).";
+        return { content: [{ type: "text", text: msg }], details: { ok: false } };
+      }
+      if (provider && model_id && (!SAFE_MODEL_TOKEN.test(provider) || !SAFE_MODEL_TOKEN.test(model_id))) {
+        const msg = `invalid model identifier: ${provider}/${model_id}`;
         return { content: [{ type: "text", text: msg }], details: { ok: false } };
       }
       if (t && "target" in t) {

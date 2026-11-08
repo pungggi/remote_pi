@@ -5083,21 +5083,12 @@ async function _cmdJoin(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<void
     const ctrlBody = env.body as RpControlRequest | null;
     const ctrl = ctrlBody?.$rp_control;
     if (ctrl && typeof ctrl === "object" && typeof ctrl.op === "string") {
-      // Fire-and-forget WITH a rejection answer (ai-review #107): a throw
-      // inside the handler must still reply — the sender's peer.request()
-      // is otherwise left to its 30s timeout with no diagnostics.
+      // Fire-and-forget (ai-review #107): the handler owns its error replies —
+      // internal try/catch guarantees exactly one reply even on a throw. This
+      // backstop only LOGS (never a second envelope; a reply that failed to
+      // transmit can't be rescued by sending another through the same pipe).
       void _handleControlEnvelope(peer, env, ctrl, canonCwd).catch((e) => {
-        void peer.send(
-          env.from,
-          {
-            rp_control_result: {
-              ok: false,
-              action: ctrl.op as RpControlOp,
-              error: String(e),
-            },
-          },
-          env.id,
-        );
+        console.error("[remote-pi] control envelope handler failed:", e);
       });
       return;
     }
@@ -5495,6 +5486,11 @@ export async function _spawnWorktreeSession(opts: {
   model_id?: string | null;
 }): Promise<{ ok: boolean; message: string; path?: string; branch?: string }> {
   const base = opts.base && opts.base.trim() ? opts.base.trim() : (ext.myRoomMeta?.cwd ?? process.cwd());
+  // ai-review #107 r2: `base` from a remote caller is an arbitrary path BY
+  // DESIGN (ungated trust decision, 2026-11-08). It is not a shell-injection
+  // vector (createWorktree uses array-args execFileSync) and createWorktree
+  // rejects non-git bases (`git rev-parse --is-inside-work-tree`) — the same
+  // guard the app's open_terminal path relies on.
   if (opts.provider !== undefined || opts.model_id !== undefined) {
     // Both-or-neither: a lone half can't compose a valid --model flag.
     if (!opts.provider || !opts.model_id) {
@@ -5565,9 +5561,31 @@ export async function _handleControlEnvelope(
   ctrl: RpControlRequest["$rp_control"],
   cwd: string,
 ): Promise<void> {
+  // ai-review #107 r2: exactly ONE correlated reply per request — a throw
+  // AFTER a successful reply must never emit a second `rp_control_result`
+  // (the sender's pending map resolved on the first).
+  let replied = false;
   const reply = (body: RpControlResult["rp_control_result"]) => {
+    if (replied) return;
+    replied = true;
     void peer.send(env.from, { rp_control_result: body }, env.id);
   };
+  try {
+    await _handleControlEnvelopeInner(peer, env, ctrl, cwd, reply);
+  } catch (e) {
+    // Before a reply this is the only error answer the sender ever gets;
+    // after one, `replied` keeps this a no-op.
+    reply({ ok: false, action: ctrl.op, error: `internal error: ${String(e)}` });
+  }
+}
+
+async function _handleControlEnvelopeInner(
+  _peer: ControlReplyPeer,
+  _env: ControlEnvelopeLike,
+  ctrl: RpControlRequest["$rp_control"],
+  cwd: string,
+  reply: (body: RpControlResult["rp_control_result"]) => void,
+): Promise<void> {
   if (loadLocalConfig(cwd).allow_remote_session_control === false) {
     reply({
       ok: false,
@@ -5588,7 +5606,7 @@ export async function _handleControlEnvelope(
     case "session_new":
     case "model_set":
     case "list_models": {
-      const msg = _synthesizeSessionAction(ctrl, env.id);
+      const msg = _synthesizeSessionAction(ctrl, _env.id);
       if (!msg) {
         reply({ ok: false, action: ctrl.op, error: "model_set requires provider and model_id" });
         return;

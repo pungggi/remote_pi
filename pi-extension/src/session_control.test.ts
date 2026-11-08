@@ -64,7 +64,10 @@ async function run(ctrl: unknown, peer = makeFakePeer()) {
 }
 
 function lastReply(peer: { sent: SentCall[] }) {
-  expect(peer.sent.length).toBeGreaterThan(0);
+  // Single-reply invariant (ai-review #107 r2): every control request must
+  // produce EXACTLY one correlated envelope — a second would confuse the
+  // sender's pending map.
+  expect(peer.sent.length).toBe(1);
   const last = peer.sent[peer.sent.length - 1]!;
   return { to: last.to, re: last.re, body: last.body as { rp_control_result: Record<string, unknown> } };
 }
