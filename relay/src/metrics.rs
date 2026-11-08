@@ -35,6 +35,9 @@ pub struct FirehoseMetrics {
     /// (phone app, cockpit, keeper, …) so a firehose flood has a name.
     rooms_poll_by_conn: Mutex<HashMap<String, u64>>,
     /// Plan/164 measurement — `rooms` replies sent, keyed by RECEIVING conn.
+    /// Counted per (conn, target): a multi-target `rooms_check` frame makes
+    /// `rooms_sent` exceed `rooms_poll` (which counts frames) — keep that in
+    /// mind when reading the ratio in the window line.
     rooms_sent_by_conn: Mutex<HashMap<String, u64>>,
     /// Plan/164 measurement — `rooms` replies sent, keyed by TARGET peer.
     rooms_sent_by_target: Mutex<HashMap<String, u64>>,
@@ -53,7 +56,7 @@ fn drain_top3(map: &Mutex<HashMap<String, u64>>) -> String {
     entries
         .into_iter()
         .take(3)
-        .map(|(k, v)| format!("{}={}", &k[..k.len().min(8)], v))
+        .map(|(k, v)| format!("{}={}", k.chars().take(8).collect::<String>(), v))
         .collect::<Vec<_>>()
         .join(",")
 }
