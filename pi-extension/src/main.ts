@@ -5248,8 +5248,8 @@ type SessionActionMsg =
  * Extracted verbatim from the `_routeClientMessageFrom` switch so the app
  * path (PlainPeerChannel sender) and the agent mesh control path (plan/161
  * `$rp_control` envelope with a synthetic envelope-reply sender) execute
- * identical code with identical side effects (`_resetSessionForNew` fan-out,
- * `_goIdle`, daemon fresh-session recovery). Each case delegates to the
+ * identical code with identical side effects (`_resetSessionForNew` fan-out
+ * to attached app clients, `_goIdle`, daemon fresh-session recovery). Each case delegates to the
  * pure handler in `actions/handlers.ts`; this layer only unifies the dep
  * injection (sender, ext.pi, ext.lastEventCtx/ext.lastCtx, registry).
  * `ext.lastCtx` may be null or a narrower Pick than the handlers want, so
@@ -5295,6 +5295,8 @@ export function _dispatchSessionAction(
         // (mesh control envelope remote-reset) — 100ms could abort the send
         // mid-flush and leave the remote caller timing out on a reset that
         // actually succeeded.
+        // (ai-review #107 r9: `_resetSessionForNew` below is SYNCHRONOUS — the
+        // timer cannot cut it mid-run; it only bounds the reply flush window.)
         setTimeout(() => process.exit(EXIT_DAEMON_FRESH_SESSION), 500);
       };
       if (!actionCtx?.newSession) {

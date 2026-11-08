@@ -297,7 +297,7 @@ handlers são os mesmos, só muda o transporte. Cada tool aceita `target` opcion
 | Tool | Op no envelope | Handler no alvo |
 |---|---|---|
 | `session_compact {target?}` | `session_compact` | `ctx.compact()` |
-| `session_reset {target?}` | `session_new` | `ctx.newSession()` (contexto novo, MESMO processo) |
+| `session_reset {target?}` | `session_new` (nome do op no wire — difere do nome da ferramenta) | `ctx.newSession()` (contexto novo, MESMO processo) |
 | `model_set {provider, model_id, target?}` | `model_set` | registry + `pi.setModel()` + persist |
 | `list_models {target?}` | `list_models` | registry + `scopedModels` |
 | `spawn_worktree {branch?, base?, provider?, model_id?, target?}` | `spawn_worktree` | `createWorktree()` (plan/108) + `openTerminalTab` rodando `pi` (`--model provider/id` opcional — flag padrão da CLI) |
