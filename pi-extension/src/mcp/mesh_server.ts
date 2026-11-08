@@ -351,12 +351,16 @@ interface ControlResultBody {
  *  plan/28 handlers the mobile app drives, and replies `re`-correlated. */
 async function controlRequest(target: string, ctrl: Record<string, unknown>) {
   if (!meshReady || !_mesh) return notReady();
+  // ai-review #107 r8: normalize once — a padded target (" pc2:x@y") must
+  // hit the self-check and the empty-check, and the request must carry the
+  // trimmed key (addresses are opaque; the broker matches exact strings).
+  const t = target.trim();
   // Self-address check (fast client-side catch). Asymmetric BY DESIGN with
   // the receiver-side guard in _handleControlEnvelopeInner (ai-review #107
   // r6): here we compare the TARGET against our own identity (an MCP runtime
   // has no Pi session of its own to control); there, the actual sender
   // identity `env.from` is checked — the authoritative backstop.
-  if (target === _mesh.address() || target === _mesh.name()) {
+  if (t === _mesh.address() || t === _mesh.name()) {
     return {
       content: [{
         type: "text" as const,
@@ -367,7 +371,7 @@ async function controlRequest(target: string, ctrl: Record<string, unknown>) {
   }
   // ai-review #107 r6: whitespace-only targets fail fast instead of riding
   // the 30s request timeout on an unroutable address.
-  if (target.trim() === "") {
+  if (t === "") {
     return {
       content: [{ type: "text" as const, text: "target must be a peer address from list_peers." }],
       isError: true,
@@ -386,7 +390,7 @@ async function controlRequest(target: string, ctrl: Record<string, unknown>) {
   }
   let replyBody: unknown;
   try {
-    const reply = await _mesh.request(target, { $rp_control: ctrl }, CONTROL_TIMEOUT_MS);
+    const reply = await _mesh.request(t, { $rp_control: ctrl }, CONTROL_TIMEOUT_MS);
     replyBody = reply.body;
   } catch (e) {
     return {
@@ -406,7 +410,7 @@ async function controlRequest(target: string, ctrl: Record<string, unknown>) {
   }
   if (!res.ok) {
     return {
-      content: [{ type: "text" as const, text: `FAILED on "${target}": ${res.error ?? "unknown error"}` }],
+      content: [{ type: "text" as const, text: `FAILED on "${t}": ${res.error ?? "unknown error"}` }],
       isError: true,
     };
   }

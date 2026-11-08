@@ -5084,10 +5084,13 @@ async function _cmdJoin(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<void
     const ctrlBody = env.body as RpControlRequest | null;
     const ctrl = ctrlBody?.$rp_control;
     if (ctrl && typeof ctrl === "object" && typeof ctrl.op === "string") {
-      // Fire-and-forget (ai-review #107): the handler owns its error replies —
-      // internal try/catch guarantees exactly one reply even on a throw. This
-      // backstop only LOGS (never a second envelope; a reply that failed to
-      // transmit can't be rescued by sending another through the same pipe).
+      // Fire-and-forget backstop (ai-review #107 r8, wording): the handler
+      // owns error replies — its internal try/catch answers any throw while
+      // `replied` is still false. This outer catch therefore only fires when
+      // that internal reply() itself failed to send, in which case logging
+      // is the only honest option: a second envelope through the same
+      // broken pipe cannot rescue the first, and must never duplicate a
+      // successfully sent one.
       void _handleControlEnvelope(peer, env, ctrl, canonCwd).catch((e) => {
         console.error("[remote-pi] control envelope handler failed:", e);
       });
