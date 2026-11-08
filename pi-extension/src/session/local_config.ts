@@ -116,18 +116,19 @@ function parseLocalConfig(raw: string): LocalConfig | null {
   }
   if (typeof src["auto_start_relay"] === "boolean") cfg.auto_start_relay = src["auto_start_relay"];
   if (typeof src["room_id"] === "string" && src["room_id"].length > 0) cfg.room_id = src["room_id"];
-  // ai-review #107: fail-open only for an ABSENT key (documented default).
-  // A PRESENT key with the wrong type (e.g. the string "false") must not
-  // silently re-enable remote control — warn loudly so the misconfiguration
-  // is visible instead of honored-by-accident.
+  // ai-review #107 r3 — fail-CLOSED: a present-but-mistyped value on a
+  // kill-switch must DISABLE, not silently re-enable. The operator who
+  // wrote any explicit value here intended control over the default
+  // (e.g. the string "false" must not leave remote control on).
   const arsc = src["allow_remote_session_control"];
   if (typeof arsc === "boolean") {
     cfg.allow_remote_session_control = arsc;
-  } else if (arsc !== undefined) {
+  } else if (arsc !== undefined && arsc !== null) {
     console.warn(
-      "[remote-pi] allow_remote_session_control must be a boolean — ignoring value:",
+      "[remote-pi] allow_remote_session_control must be a boolean — treating as false:",
       arsc,
     );
+    cfg.allow_remote_session_control = false;
   }
   return cfg;
 }

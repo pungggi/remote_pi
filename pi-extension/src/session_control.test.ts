@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { saveLocalConfig } from "./session/local_config.js";
+import { loadLocalConfig, saveLocalConfig } from "./session/local_config.js";
 
 /**
  * Plan/161 — receiving side of the `$rp_control` mesh envelopes:
@@ -80,6 +80,19 @@ describe("plan/161 $rp_control receiving side", () => {
     const r = lastReply(peer);
     expect(r.to).toBe(ENV.from);
     expect(r.re).toBe(ENV.id);
+    expect(r.body.rp_control_result.ok).toBe(false);
+    expect(String(r.body.rp_control_result.error)).toContain("allow_remote_session_control");
+  });
+
+  test("kill-switch present but mistyped → fails CLOSED (disabled), ai-review #107 r3", async () => {
+    main._setPiForTest({ stub: true });
+    const dir = join(cwd, ".pi", "remote-pi");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ allow_remote_session_control: "false" }));
+    expect(loadLocalConfig(cwd).allow_remote_session_control).toBe(false);
+    // And the envelope path honors it (refused, not just parse-level):
+    const peer = await run({ op: "session_compact" });
+    const r = lastReply(peer);
     expect(r.body.rp_control_result.ok).toBe(false);
     expect(String(r.body.rp_control_result.error)).toContain("allow_remote_session_control");
   });
