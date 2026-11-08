@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
+## [Unreleased]
+
+### Added
+
+- **Agent mesh session control (plan/161)**: mesh agents can now manage
+  sessions with five tools — `session_compact`, `session_reset` (fresh
+  context, same process), `model_set`, `list_models`, and `spawn_worktree`
+  (git worktree + fresh `pi` terminal that auto-joins the mesh). Omit
+  `target` to act on your own session (Pi); pass a `list_peers` address to
+  control a remote peer via `$rp_control` envelopes intercepted before the
+  target's LLM turn. Claude/Agy get the same verbs as MCP tools (remote
+  only). Execution reuses the plan/28 typed-action handlers and the
+  plan/108 worktree machinery unchanged. Kill-switch:
+  `allow_remote_session_control: false` in the target's
+  `.pi/remote-pi/config.json` (default on, per the 2026-11-08 ungated
+  decision).
+
+---
 ## [1.6.1] - 2026-11-07
 
 ### Added

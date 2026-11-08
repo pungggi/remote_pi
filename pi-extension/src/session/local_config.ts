@@ -31,6 +31,16 @@ export interface LocalConfig {
    * requests from the phone. Absent → current behaviour (cwd-derived room).
    */
   room_id?: string;
+  /**
+   * Plan/161 — when explicitly `false`, this peer refuses incoming
+   * `$rp_control` mesh envelopes (remote session control) with a typed
+   * error reply. Default (absent/true) allows them: the mesh trust domain
+   * already lets any peer steer another via ordinary messages, so session
+   * control adds no new attacker. This is an opt-out kill-switch, not a
+   * permission system (the ungated model was a deliberate user decision,
+   * 2026-11-08).
+   */
+  allow_remote_session_control?: boolean;
   // `workspace?`/`worktree?` were removed (plan/38, reescrito 2026-06-08): the
   // mesh identity is `(cwd, nome)`, with `cwd` subsuming folder + worktree
   // disambiguation. Neither axis is derived anymore, so the config fields are
@@ -106,6 +116,9 @@ function parseLocalConfig(raw: string): LocalConfig | null {
   }
   if (typeof src["auto_start_relay"] === "boolean") cfg.auto_start_relay = src["auto_start_relay"];
   if (typeof src["room_id"] === "string" && src["room_id"].length > 0) cfg.room_id = src["room_id"];
+  if (typeof src["allow_remote_session_control"] === "boolean") {
+    cfg.allow_remote_session_control = src["allow_remote_session_control"];
+  }
   return cfg;
 }
 

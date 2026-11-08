@@ -76,10 +76,15 @@ import type {
   ClientMessage,
   JournaledFrame,
   PairErrorCode,
+  RpControlOp,
+  RpControlRequest,
+  RpControlResult,
   ServerMessage,
+  SessionActionMessage,
   SessionHistoryEvent,
   ThinkingLevel,
   WireImage,
+  WireModel,
   QueuedMessageItem,
 } from "./protocol/types.js";
 import { RelayClient, RoomAlreadyOpenError } from "./transport/relay_client.js";
@@ -121,7 +126,7 @@ import {
 } from "./actions/handlers.js";
 import { handleGitStatus, getGitStatus } from "./actions/git_status.js";
 import type { WireGhRef, WireGitStatus, WireSessionStats } from "./protocol/types.js";
-import { handleOpenTerminal, handleListWorktrees, handleRemoveWorktree } from "./actions/open_terminal.js";
+import { handleOpenTerminal, handleListWorktrees, handleRemoveWorktree, createWorktree, openTerminalTab } from "./actions/open_terminal.js";
 import { handleForgetRoom } from "./actions/forget_room.js";
 import { handleStartSession } from "./actions/start_session.js";
 import { handleListProjects } from "./projects/handlers.js";
@@ -5070,6 +5075,18 @@ async function _cmdJoin(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<void
     }
     if (env.from === "broker") return;  // other broker control messages — ignore
 
+    // Plan/161 — session-control envelopes: intercepted and executed here,
+    // BEFORE the conversational fall-through, so a control request never
+    // enters this agent's LLM context. The reply rides a normal envelope
+    // with re=<env.id>, which a sender's peer.request() correlates. Failures
+    // inside the handler are contained (it replies with ok:false itself).
+    const ctrlBody = env.body as RpControlRequest | null;
+    const ctrl = ctrlBody?.$rp_control;
+    if (ctrl && typeof ctrl === "object" && typeof ctrl.op === "string") {
+      void _handleControlEnvelope(peer, env, ctrl, canonCwd);
+      return;
+    }
+
     // Real agent-to-agent message (SessionPeer already correlated replies via
     // env.re before this point). Show it in the app's TOOL timeline and wake
     // the agent as a CUSTOM message — never as the user's own message.
@@ -5202,6 +5219,410 @@ function _abortCurrentTurn(
  */
 async function _resolveRegistry(ctx: ActionCtx | null): Promise<ActionModelRegistry> {
   return ctx?.modelRegistry ?? (await ensureModelRegistry());
+}
+
+/** Union of the plan/28 typed-action ClientMessage variants that
+ *  `_dispatchSessionAction` executes. The plan/161 mesh control path
+ *  synthesizes members of this union (fresh `id` from the control
+ *  envelope) and reuses the exact same dispatch. */
+type SessionActionMsg =
+  | Extract<ClientMessage, { type: "session_compact" }>
+  | Extract<ClientMessage, { type: "session_new" }>
+  | Extract<ClientMessage, { type: "session_shutdown" }>
+  | Extract<ClientMessage, { type: "model_set" }>
+  | Extract<ClientMessage, { type: "thinking_set" }>
+  | Extract<ClientMessage, { type: "list_models" }>;
+
+/**
+ * Plan/28 Wave B + plan/161 — the ONE dispatch for typed session actions.
+ *
+ * Extracted verbatim from the `_routeClientMessageFrom` switch so the app
+ * path (PlainPeerChannel sender) and the agent mesh control path (plan/161
+ * `$rp_control` envelope with a synthetic envelope-reply sender) execute
+ * identical code with identical side effects (`_resetSessionForNew` fan-out,
+ * `_goIdle`, daemon fresh-session recovery). Each case delegates to the
+ * pure handler in `actions/handlers.ts`; this layer only unifies the dep
+ * injection (sender, ext.pi, ext.lastEventCtx/ext.lastCtx, registry).
+ * `ext.lastCtx` may be null or a narrower Pick than the handlers want, so
+ * we cast to `ActionCtx` — fields that aren't present at runtime surface as
+ * `action_error` by the handlers, not as a TypeError.
+ *
+ * `sender` is the handlers' `ActionReplySender` (structural `.send`), NOT
+ * the router's `PlainPeerChannel`, so the mesh control path can pass a
+ * reply sink that converts `action_ok`/`action_error`/`models_list` into a
+ * normal reply envelope (`re` = request id).
+ */
+export function _dispatchSessionAction(
+  sender: ActionReplySender,
+  msg: SessionActionMsg,
+): void {
+  // Same guard the router enforced ahead of the switch for these actions —
+  // kept here so the mesh control path gets identical no-Pi semantics.
+  if (!ext.pi) return;
+  switch (msg.type) {
+    case "session_compact":
+      // Route through ext.lastEventCtx (refreshed on every session_start), NOT the
+      // capturable-stale ext.lastCtx — compact must never hit a ctx left stale by
+      // a prior New session. compact() is a base-ctx method, so the
+      // session_start ctx suffices. Fall back to ext.lastCtx defensively if no
+      // session_start has landed yet (keeps the pre-replacement happy path).
+      handleSessionCompact((ext.lastEventCtx ?? ext.lastCtx) as ActionCtx | null, sender, msg);
+      break;
+    case "session_new": {
+      const actionCtx = ext.lastCtx as ActionCtx | null;
+      const daemonMode = process.env["REMOTE_PI_DAEMON"] === "1";
+      // Fresh Pi session via the supervisor: ack, clear remote-pi's mirror, then
+      // exit with the private code so the supervisor relaunches without
+      // --continue → a genuinely fresh session. Used when there's NO command ctx
+      // AND as recovery when the captured ext.lastCtx has gone STALE after an
+      // external session replacement (compact, a /new typed in the TUI,
+      // reload/resume). Reusing a stale ctx throws "stale after session
+      // replacement", which previously surfaced to the app as a hard failure
+      // ("session_new failed") and left New Context wedged.
+      const restartFresh = () => {
+        sender.send({ type: "action_ok", in_reply_to: msg.id, action: "session_new" });
+        _resetSessionForNew(msg.id);
+        setTimeout(() => process.exit(EXIT_DAEMON_FRESH_SESSION), 100);
+      };
+      if (!actionCtx?.newSession) {
+        if (daemonMode) {
+          restartFresh();
+          break;
+        }
+        sender.send({
+          type: "action_error",
+          in_reply_to: msg.id,
+          action: "session_new",
+          error: "newSession unavailable (no command ctx yet)",
+        });
+        break;
+      }
+      // Fast path: drive newSession in-process on the (hopefully fresh) command
+      // ctx, re-capturing the replacement ctx via withSession so later command
+      // ops target the current session. If the ctx turns out stale, recover by
+      // restarting fresh (daemon) instead of failing the action.
+      // Capture the method past the guard above: TS drops the `!actionCtx?.newSession`
+      // narrowing inside the async closure, so bind it to a local const first.
+      const newSession = actionCtx.newSession;
+      void (async () => {
+        try {
+          const result = await newSession({
+            withSession: async (freshCtx) => {
+              ext.lastCtx = freshCtx as unknown as typeof ext.lastCtx;
+            },
+          });
+          if (result?.cancelled) {
+            sender.send({
+              type: "action_error",
+              in_reply_to: msg.id,
+              action: "session_new",
+              error: "cancelled by extension hook",
+            });
+            return;
+          }
+          sender.send({ type: "action_ok", in_reply_to: msg.id, action: "session_new" });
+          _resetSessionForNew(msg.id);
+        } catch (e) {
+          const emsg = String((e as Error)?.message ?? e ?? "");
+          const stale = /stale|session replacement or reload/i.test(emsg);
+          if (daemonMode && stale) {
+            restartFresh();
+            return;
+          }
+          sender.send({
+            type: "action_error",
+            in_reply_to: msg.id,
+            action: "session_new",
+            error: emsg || "session_new failed",
+          });
+        }
+      })();
+      break;
+    }
+    case "session_shutdown": {
+      // shutdown() is a base-context action, so prefer the always-fresh
+      // session_start context over a potentially stale captured command ctx.
+      const actionCtx = (ext.lastEventCtx ?? ext.lastCtx) as ActionCtx | null;
+      const accepted = handleSessionShutdown(actionCtx, sender, msg);
+      if (accepted) {
+        // The ack is already queued ahead of this frame: tell every attached
+        // app immediately that this room is going offline, then close relay.
+        _goIdle("shutdown");
+        if (process.env["REMOTE_PI_DAEMON"] === "1") {
+          // RPC only observes ctx.shutdown() after another RPC command or an
+          // agent-settled event. An idle daemon may have neither, so retain a
+          // clean-exit fallback. If SDK teardown starts first, ext.disposed
+          // stands the fallback down and RPC finishes runtimeHost.dispose()
+          // before exiting. A newly active turn likewise owns the wait via
+          // agent_settled; never kill either lifecycle after a fixed delay.
+          setTimeout(() => {
+            if (ext.disposed || ext.agentRunActive) return;
+            process.exit(0);
+          }, 1000);
+        }
+      }
+      break;
+    }
+    case "model_set": {
+      const msCtx = (ext.lastEventCtx ?? ext.lastCtx) as ActionCtx | null;
+      // Capture the guard-narrowed ext.pi into a const: the narrowing from
+      // `if (!ext.pi) return` above does NOT survive into the `.then` closure
+      // (mutable module-level let), but a const does.
+      const pi = ext.pi;
+      void _resolveRegistry(msCtx)
+        .then((reg) => handleModelSet(pi, msCtx, reg, sender, msg, _persistModelDefault))
+        .catch((err) => {
+          // _resolveRegistry() rejected (e.g. ensureModelRegistry() failure).
+          // Reply so the client isn't left waiting and the promise can't
+          // reject unhandled — mirror handleModelSet's action_error shape.
+          sender.send({
+            type: "action_error",
+            in_reply_to: msg.id,
+            action: "model_set",
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      break;
+    }
+    case "thinking_set":
+      handleThinkingSet(ext.pi, sender, msg);
+      break;
+    case "list_models": {
+      const lmCtx = (ext.lastEventCtx ?? ext.lastCtx) as ActionCtx | null;
+      void _resolveRegistry(lmCtx)
+        .then((reg) => handleListModels(lmCtx, reg, sender, msg))
+        .catch((err) => {
+          // Mirror handleListModels' error envelope on registry-resolution
+          // failure so the client gets a reply (no unhandled rejection).
+          sender.send({
+            type: "error",
+            in_reply_to: msg.id,
+            code: "internal_error",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        });
+      break;
+    }
+  }
+}
+
+// ── Plan/161 — agent mesh session control ─────────────────────────────────────
+
+/** Reply budget for the local dispatch collector. model_set/list_models
+ *  refresh the registry from disk, so they get the same 30s the remote
+ *  path (peer.request default) gets. */
+const SESSION_ACTION_REPLY_TIMEOUT_MS = 30_000;
+
+/** Safe model identifier charset for composing the standard pi
+ *  `--model <provider>/<id>` flag. The value is interpolated into a shell
+ *  command line in openTerminalTab, so anything outside this set is
+ *  rejected outright (typed pair from the caller, never free-form). */
+const SAFE_MODEL_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
+
+/**
+ * Run one typed session action LOCALLY (self) and resolve with the single
+ * ServerMessage reply the handlers emit (`action_ok` / `action_error` /
+ * `models_list` / `error`). This is the bridge the plan/161 agent tools
+ * use: index.ts wires it into `registerSessionControlTools` through the
+ * lazy runtime, so a tool call executes the exact same
+ * `_dispatchSessionAction` the mobile app's ClientMessages drive.
+ *
+ * Resolves with a synthetic `error` ServerMessage if no reply lands in
+ * time (handlers reply exactly once per op; the timeout only guards a
+ * pathological path that forgot to — e.g. the no-Pi guard below).
+ */
+export function _runSessionAction(msg: SessionActionMessage): Promise<ServerMessage> {
+  return new Promise<ServerMessage>((resolve) => {
+    if (!ext.pi) {
+      resolve({
+        type: "error",
+        in_reply_to: msg.id,
+        code: "internal_error",
+        message: "session action unavailable (no active Pi session)",
+      });
+      return;
+    }
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({
+        type: "error",
+        in_reply_to: msg.id,
+        code: "internal_error",
+        message: `session action "${msg.type}" produced no reply within ${SESSION_ACTION_REPLY_TIMEOUT_MS}ms`,
+      });
+    }, SESSION_ACTION_REPLY_TIMEOUT_MS);
+    const sink: ActionReplySender = {
+      send(reply: ServerMessage) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(reply);
+      },
+    };
+    _dispatchSessionAction(sink, msg);
+  });
+}
+
+/**
+ * Plan/161 — spawn a fresh Pi session in a (new or reused) git worktree
+ * off `base` (default: this session's cwd) and open it in a visible
+ * terminal. Pure composition of the plan/108 machinery: `createWorktree`
+ * (branch validation, collision/reuse, `auto_start_relay` config so the
+ * new session joins the mesh as its own room) + `openTerminalTab` running
+ * `pi`, with the optional standard `--model <provider>/<id>` CLI flag.
+ * Never throws — resolves ok:false with a message on any failure.
+ */
+export async function _spawnWorktreeSession(opts: {
+  base?: string | null;
+  branch?: string | null;
+  provider?: string | null;
+  model_id?: string | null;
+}): Promise<{ ok: boolean; message: string; path?: string; branch?: string }> {
+  const base = opts.base && opts.base.trim() ? opts.base.trim() : (ext.myRoomMeta?.cwd ?? process.cwd());
+  if (opts.provider !== undefined || opts.model_id !== undefined) {
+    // Both-or-neither: a lone half can't compose a valid --model flag.
+    if (!opts.provider || !opts.model_id) {
+      return { ok: false, message: "spawn_worktree requires both provider and model_id (or neither)" };
+    }
+    if (!SAFE_MODEL_TOKEN.test(opts.provider) || !SAFE_MODEL_TOKEN.test(opts.model_id)) {
+      return { ok: false, message: `invalid model identifier: ${opts.provider}/${opts.model_id}` };
+    }
+  }
+  const wt = createWorktree(base, opts.branch ?? null);
+  if (!wt.ok || !wt.entry) return { ok: false, message: wt.message };
+  const modelFlag = opts.provider && opts.model_id ? ` --model ${opts.provider}/${opts.model_id}` : "";
+  const outcome = await openTerminalTab(wt.entry.path, `pi${modelFlag}`);
+  return {
+    ok: outcome.ok,
+    message: outcome.ok ? `${outcome.message} (${wt.message})` : outcome.message,
+    ...(outcome.ok ? { path: wt.entry.path, branch: wt.entry.branch } : {}),
+  };
+}
+
+/** Structural inbound-envelope surface `_handleControlEnvelope` needs. */
+interface ControlEnvelopeLike {
+  from: string;
+  id: string;
+  body?: unknown;
+}
+
+/** Structural peer surface for replying to a control envelope. */
+interface ControlReplyPeer {
+  send(to: string | string[], body: unknown, re?: string | null): Promise<void> | void;
+}
+
+/** Build the plan/28 ClientMessage variant for a control op, or null when
+ *  the payload is incomplete (model_set without provider/model_id). */
+function _synthesizeSessionAction(
+  ctrl: RpControlRequest["$rp_control"],
+  id: string,
+): SessionActionMessage | null {
+  switch (ctrl.op) {
+    case "session_compact":
+      return { type: "session_compact", id };
+    case "session_new":
+      return { type: "session_new", id };
+    case "list_models":
+      return { type: "list_models", id };
+    case "model_set":
+      if (!ctrl.provider || !ctrl.model_id) return null;
+      return { type: "model_set", id, provider: ctrl.provider, model_id: ctrl.model_id };
+    default:
+      return null;
+  }
+}
+
+/**
+ * Plan/161 — execute a `$rp_control` envelope on THIS peer and reply with
+ * an `rp_control_result` envelope (`re` = request id). Called from the
+ * `_cmdJoin` `peer.onMessage` interception BEFORE conversational delivery,
+ * so a control request never enters the agent's LLM context.
+ *
+ * Ungated by the 2026-11-08 user decision (the mesh trust domain already
+ * lets any peer steer another via ordinary messages);
+ * `allow_remote_session_control:false` in the local config is the opt-out
+ * kill-switch.
+ */
+export async function _handleControlEnvelope(
+  peer: ControlReplyPeer,
+  env: ControlEnvelopeLike,
+  ctrl: RpControlRequest["$rp_control"],
+  cwd: string,
+): Promise<void> {
+  const reply = (body: RpControlResult["rp_control_result"]) => {
+    void peer.send(env.from, { rp_control_result: body }, env.id);
+  };
+  if (loadLocalConfig(cwd).allow_remote_session_control === false) {
+    reply({
+      ok: false,
+      action: ctrl.op,
+      error: "remote session control disabled on this peer (allow_remote_session_control:false)",
+    });
+    return;
+  }
+  // Same no-Pi semantics as the router's guard: without a session there is
+  // nothing to control, and `_dispatchSessionAction` would return silently,
+  // leaving the sender to time out. Reply explicitly instead.
+  if (!ext.pi) {
+    reply({ ok: false, action: ctrl.op, error: "no active Pi session on this peer" });
+    return;
+  }
+  switch (ctrl.op) {
+    case "session_compact":
+    case "session_new":
+    case "model_set":
+    case "list_models": {
+      const msg = _synthesizeSessionAction(ctrl, env.id);
+      if (!msg) {
+        reply({ ok: false, action: ctrl.op, error: "model_set requires provider and model_id" });
+        return;
+      }
+      // Sink translates the plan/28 ServerMessage reply into the envelope
+      // body — the exact handlers the app path drives, no reimplementation.
+      const sink: ActionReplySender = {
+        send(sm: ServerMessage) {
+          if (sm.type === "action_ok") {
+            reply({ ok: true, action: ctrl.op });
+          } else if (sm.type === "action_error") {
+            reply({ ok: false, action: ctrl.op, error: sm.error });
+          } else if (sm.type === "models_list") {
+            reply({
+              ok: true,
+              action: ctrl.op,
+              models: sm.models as WireModel[],
+              ...(sm.current ? { current: sm.current as WireModel } : {}),
+            });
+          } else if (sm.type === "error") {
+            reply({ ok: false, action: ctrl.op, error: sm.message });
+          }
+          // No other ServerMessage shape is emitted by these ops.
+        },
+      };
+      _dispatchSessionAction(sink, msg);
+      return;
+    }
+    case "spawn_worktree": {
+      const r = await _spawnWorktreeSession({
+        base: ctrl.base ?? null,
+        branch: ctrl.branch ?? null,
+        provider: ctrl.provider ?? null,
+        model_id: ctrl.model_id ?? null,
+      });
+      reply({
+        ok: r.ok,
+        action: "spawn_worktree",
+        message: r.message,
+        ...(r.ok && r.path ? { path: r.path } : {}),
+        ...(r.ok && r.branch ? { branch: r.branch } : {}),
+        ...(!r.ok ? { error: r.message } : {}),
+      });
+      return;
+    }
+    default:
+      reply({ ok: false, action: ctrl.op as RpControlOp, error: `unknown op "${String((ctrl as { op?: unknown }).op)}"` });
+  }
 }
 
 export function _routeClientMessageFrom(
@@ -5389,155 +5810,19 @@ export function _routeClientMessageFrom(
       // Already paired — ignore subsequent pair_request to maintain idempotency.
       // (Token is already consumed and peer is in peers.json.)
       break;
-    // Plan/28 — Typed app actions. Each delegates to the pure handler in
-    // `actions/handlers.ts`; the only thing this layer does is unify the
-    // dep injection (sender, ext.pi, ext.lastCtx, registry). `ext.lastCtx` may be
-    // null or a narrower Pick than the handlers want, so we cast to
-    // `ActionCtx` — fields that aren't present at runtime are surfaced
-    // as `action_error` by the handlers, not as a TypeError.
+    // Plan/28 + plan/161 — typed session actions. The whole dispatch (dep
+    // injection: sender, ext.pi, ext.lastEventCtx/lastCtx, registry, daemon
+    // recovery) lives in `_dispatchSessionAction` so the app path (this
+    // router) and the agent mesh control path (plan/161 `$rp_control`
+    // envelopes) execute IDENTICAL code with identical side effects.
     case "session_compact":
-      // Route through ext.lastEventCtx (refreshed on every session_start), NOT the
-      // capturable-stale ext.lastCtx — compact must never hit a ctx left stale by
-      // a prior New session. compact() is a base-ctx method, so the
-      // session_start ctx suffices. Fall back to ext.lastCtx defensively if no
-      // session_start has landed yet (keeps the pre-replacement happy path).
-      handleSessionCompact((ext.lastEventCtx ?? ext.lastCtx) as ActionCtx | null, sender, msg);
-      break;
-    case "session_new": {
-      const actionCtx = ext.lastCtx as ActionCtx | null;
-      const daemonMode = process.env["REMOTE_PI_DAEMON"] === "1";
-      // Fresh Pi session via the supervisor: ack, clear remote-pi's mirror, then
-      // exit with the private code so the supervisor relaunches without
-      // --continue → a genuinely fresh session. Used when there's NO command ctx
-      // AND as recovery when the captured ext.lastCtx has gone STALE after an
-      // external session replacement (compact, a /new typed in the TUI,
-      // reload/resume). Reusing a stale ctx throws "stale after session
-      // replacement", which previously surfaced to the app as a hard failure
-      // ("session_new failed") and left New Context wedged.
-      const restartFresh = () => {
-        sender.send({ type: "action_ok", in_reply_to: msg.id, action: "session_new" });
-        _resetSessionForNew(msg.id);
-        setTimeout(() => process.exit(EXIT_DAEMON_FRESH_SESSION), 100);
-      };
-      if (!actionCtx?.newSession) {
-        if (daemonMode) {
-          restartFresh();
-          break;
-        }
-        sender.send({
-          type: "action_error",
-          in_reply_to: msg.id,
-          action: "session_new",
-          error: "newSession unavailable (no command ctx yet)",
-        });
-        break;
-      }
-      // Fast path: drive newSession in-process on the (hopefully fresh) command
-      // ctx, re-capturing the replacement ctx via withSession so later command
-      // ops target the current session. If the ctx turns out stale, recover by
-      // restarting fresh (daemon) instead of failing the action.
-      // Capture the method past the guard above: TS drops the `!actionCtx?.newSession`
-      // narrowing inside the async closure, so bind it to a local const first.
-      const newSession = actionCtx.newSession;
-      void (async () => {
-        try {
-          const result = await newSession({
-            withSession: async (freshCtx) => {
-              ext.lastCtx = freshCtx as unknown as typeof ext.lastCtx;
-            },
-          });
-          if (result?.cancelled) {
-            sender.send({
-              type: "action_error",
-              in_reply_to: msg.id,
-              action: "session_new",
-              error: "cancelled by extension hook",
-            });
-            return;
-          }
-          sender.send({ type: "action_ok", in_reply_to: msg.id, action: "session_new" });
-          _resetSessionForNew(msg.id);
-        } catch (e) {
-          const emsg = String((e as Error)?.message ?? e ?? "");
-          const stale = /stale|session replacement or reload/i.test(emsg);
-          if (daemonMode && stale) {
-            restartFresh();
-            return;
-          }
-          sender.send({
-            type: "action_error",
-            in_reply_to: msg.id,
-            action: "session_new",
-            error: emsg || "session_new failed",
-          });
-        }
-      })();
-      break;
-    }
-    case "session_shutdown": {
-      // shutdown() is a base-context action, so prefer the always-fresh
-      // session_start context over a potentially stale captured command ctx.
-      const actionCtx = (ext.lastEventCtx ?? ext.lastCtx) as ActionCtx | null;
-      const accepted = handleSessionShutdown(actionCtx, sender, msg);
-      if (accepted) {
-        // The ack is already queued ahead of this frame: tell every attached
-        // app immediately that this room is going offline, then close relay.
-        _goIdle("shutdown");
-        if (process.env["REMOTE_PI_DAEMON"] === "1") {
-          // RPC only observes ctx.shutdown() after another RPC command or an
-          // agent-settled event. An idle daemon may have neither, so retain a
-          // clean-exit fallback. If SDK teardown starts first, ext.disposed
-          // stands the fallback down and RPC finishes runtimeHost.dispose()
-          // before exiting. A newly active turn likewise owns the wait via
-          // agent_settled; never kill either lifecycle after a fixed delay.
-          setTimeout(() => {
-            if (ext.disposed || ext.agentRunActive) return;
-            process.exit(0);
-          }, 1000);
-        }
-      }
-      break;
-    }
-    case "model_set": {
-      const msCtx = (ext.lastEventCtx ?? ext.lastCtx) as ActionCtx | null;
-      // Capture the guard-narrowed ext.pi into a const: the narrowing from
-      // `if (!ext.pi) return` above does NOT survive into the `.then` closure
-      // (mutable module-level let), but a const does.
-      const pi = ext.pi;
-      void _resolveRegistry(msCtx)
-        .then((reg) => handleModelSet(pi, msCtx, reg, sender, msg, _persistModelDefault))
-        .catch((err) => {
-          // _resolveRegistry() rejected (e.g. ensureModelRegistry() failure).
-          // Reply so the client isn't left waiting and the promise can't
-          // reject unhandled — mirror handleModelSet's action_error shape.
-          sender.send({
-            type: "action_error",
-            in_reply_to: msg.id,
-            action: "model_set",
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
-      break;
-    }
+    case "session_new":
+    case "session_shutdown":
+    case "model_set":
     case "thinking_set":
-      handleThinkingSet(ext.pi, sender, msg);
+    case "list_models":
+      _dispatchSessionAction(sender, msg);
       break;
-    case "list_models": {
-      const lmCtx = (ext.lastEventCtx ?? ext.lastCtx) as ActionCtx | null;
-      void _resolveRegistry(lmCtx)
-        .then((reg) => handleListModels(lmCtx, reg, sender, msg))
-        .catch((err) => {
-          // Mirror handleListModels' error envelope on registry-resolution
-          // failure so the client gets a reply (no unhandled rejection).
-          sender.send({
-            type: "error",
-            in_reply_to: msg.id,
-            code: "internal_error",
-            message: err instanceof Error ? err.message : String(err),
-          });
-        });
-      break;
-    }
     // Plan/107 — on-demand git status snapshot. Runs `git status` in the
     // session cwd (the one already reported in room_meta) and replies with
     // git_status_result; the relay forwards it verbatim (no relay change).

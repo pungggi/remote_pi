@@ -204,6 +204,7 @@ const mcp = new McpServer(
       "Use list_peers to discover available agents and mesh_status to inspect your own canonical mesh address.",
       "Use agent_send to send messages — pass the exact address returned by list_peers (form `<cwd>@<name>`, `<pc>:` prefix cross-PC) VERBATIM; never build one by hand.",
       "Use wait_for_message when you have sent a request to another agent and want to block until their reply arrives.",
+      "Use the session-control tools (session_compact, session_reset, model_set, list_models, spawn_worktree) to manage a Pi peer's session by address — every one takes a required `target`.",
       'Use "broadcast" as the target to send to all peers in your folder (cwd) at once.',
       "Follow the agent-network protocol for ACK statuses, replies via re, `<cwd>@<name>` addresses, and cross-PC `<pc>:` prefixes.",
     ].join("\n"),
@@ -328,6 +329,126 @@ mcp.registerTool("wait_for_message", {
     content: [{ type: "text" as const, text: formatIncomingMessages(res.messages) }],
   };
 });
+
+// ── Plan/161 — session control over remote Pi peers ──────────────────────────
+
+const CONTROL_TIMEOUT_MS = 30_000;
+
+interface ControlResultBody {
+  ok: boolean;
+  action: string;
+  error?: string;
+  models?: Array<{ id: string; name: string; provider: string }>;
+  current?: { id: string; provider: string };
+  message?: string;
+  path?: string;
+  branch?: string;
+}
+
+/** Shared sender for `$rp_control` envelopes (plan/161). The TARGET's Pi
+ *  extension intercepts the envelope before its LLM turn, executes the same
+ *  plan/28 handlers the mobile app drives, and replies `re`-correlated. */
+async function controlRequest(target: string, ctrl: Record<string, unknown>) {
+  if (!meshReady || !_mesh) return notReady();
+  if (target === _mesh.address() || target === _mesh.name()) {
+    return {
+      content: [{
+        type: "text" as const,
+        text: "You have no Pi session of your own — target a Pi peer from list_peers.",
+      }],
+      isError: true,
+    };
+  }
+  let replyBody: unknown;
+  try {
+    const reply = await _mesh.request(target, { $rp_control: ctrl }, CONTROL_TIMEOUT_MS);
+    replyBody = reply.body;
+  } catch (e) {
+    return {
+      content: [{ type: "text" as const, text: `Remote control failed: ${String(e)}` }],
+      isError: true,
+    };
+  }
+  const res = (replyBody as { rp_control_result?: ControlResultBody } | null)?.rp_control_result;
+  if (!res) {
+    return {
+      content: [{
+        type: "text" as const,
+        text: "Peer replied without a control result — likely an out-of-date remote-pi build.",
+      }],
+      isError: true,
+    };
+  }
+  if (!res.ok) {
+    return {
+      content: [{ type: "text" as const, text: `FAILED on "${target}": ${res.error ?? "unknown error"}` }],
+      isError: true,
+    };
+  }
+  if (res.action === "list_models") {
+    const lines = (res.models ?? []).map((m) => {
+      const cur = res.current && res.current.provider === m.provider && res.current.id === m.id ? "  ← current" : "";
+      return `- ${m.provider}/${m.id} — ${m.name}${cur}`;
+    });
+    return { content: [{ type: "text" as const, text: lines.length > 0 ? lines.join("\n") : "(no models available)" }] };
+  }
+  if (res.action === "spawn_worktree") {
+    return {
+      content: [{
+        type: "text" as const,
+        text: `${res.message ?? "spawned"}\npath: ${res.path ?? "?"}\nbranch: ${res.branch ?? "?"}\nThe new session auto-joins the mesh — watch list_peers, then agent_send it a task.`,
+      }],
+    };
+  }
+  return { content: [{ type: "text" as const, text: `OK on "${target}": "${res.action}" dispatched.` }] };
+}
+
+mcp.registerTool("session_compact", {
+  description: "Compact (summarize + truncate) a remote Pi peer's context. Takes the peer address from list_peers.",
+  inputSchema: {
+    target: z.string().describe("Peer address from list_peers, echoed verbatim"),
+  },
+}, async ({ target }) => controlRequest(target, { op: "session_compact" }));
+
+mcp.registerTool("session_reset", {
+  description: "Reset a remote Pi peer to a fresh context in the same process (the app's 'New session'). Destructive to that conversation.",
+  inputSchema: {
+    target: z.string().describe("Peer address from list_peers, echoed verbatim"),
+  },
+}, async ({ target }) => controlRequest(target, { op: "session_new" }));
+
+mcp.registerTool("model_set", {
+  description: "Switch a remote Pi peer's model (live + persisted default). Use list_models on that peer first.",
+  inputSchema: {
+    target: z.string().describe("Peer address from list_peers, echoed verbatim"),
+    provider: z.string().describe("Model provider, e.g. 'anthropic'"),
+    model_id: z.string().describe("Model id from that peer's list_models"),
+  },
+}, async ({ target, provider, model_id }) => controlRequest(target, { op: "model_set", provider, model_id }));
+
+mcp.registerTool("list_models", {
+  description: "List the models available to a remote Pi peer (its OWN registry) plus its current model.",
+  inputSchema: {
+    target: z.string().describe("Peer address from list_peers, echoed verbatim"),
+  },
+}, async ({ target }) => controlRequest(target, { op: "list_models" }));
+
+mcp.registerTool("spawn_worktree", {
+  description: "Create a git worktree on a remote peer's machine and start a fresh `pi` session there (visible terminal, auto-joins the mesh). Optional model via the standard --model flag.",
+  inputSchema: {
+    target: z.string().describe("Peer address from list_peers, echoed verbatim"),
+    branch: z.string().optional().describe("Branch to create (default work/<timestamp>)"),
+    base: z.string().optional().describe("Base repo path on the target (default: its session cwd)"),
+    provider: z.string().optional().describe("Optional model provider for the spawned session"),
+    model_id: z.string().optional().describe("Optional model id — requires provider"),
+  },
+}, async ({ target, branch, base, provider, model_id }) =>
+  controlRequest(target, {
+    op: "spawn_worktree",
+    ...(branch ? { branch } : {}),
+    ...(base ? { base } : {}),
+    ...(provider && model_id ? { provider, model_id } : {}),
+  }));
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 

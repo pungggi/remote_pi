@@ -279,6 +279,48 @@ O SDK `@mariozechner/pi-coding-agent` não expõe API genérica de invocação d
 
 Detalhes em `plan/28-pi-commands.md`.
 
+## Agent mesh session control (plan/161)
+
+Agents da mesh (Pi via tools da extensão; Claude/Agy via MCP `remote-pi-mesh`)
+controlam sessões com o MESMO vocabulário tipado das App actions acima — os
+handlers são os mesmos, só muda o transporte. Cada tool aceita `target` opcional:
+
+- **`target` omitido** (Pi only) → execução LOCAL contra a própria sessão via
+  `_runSessionAction` → `_dispatchSessionAction` (o mesmo código do path do
+  app; a tool resolve com o reply `action_ok`/`action_error`/`models_list`).
+- **`target` = address do `list_peers`** → envelope `$rp_control` enviado por
+  `peer.request()` (30s). A extensão do ALVO intercepta em `peer.onMessage`
+  ANTES da entrega conversacional — a requisição nunca entra no contexto LLM
+  do alvo — executa os mesmos handlers e responde com envelope normal
+  `re=<id>` carregando `rp_control_result`.
+
+| Tool | Op no envelope | Handler no alvo |
+|---|---|---|
+| `session_compact {target?}` | `session_compact` | `ctx.compact()` |
+| `session_reset {target?}` | `session_new` | `ctx.newSession()` (contexto novo, MESMO processo) |
+| `model_set {provider, model_id, target?}` | `model_set` | registry + `pi.setModel()` + persist |
+| `list_models {target?}` | `list_models` | registry + `scopedModels` |
+| `spawn_worktree {branch?, base?, provider?, model_id?, target?}` | `spawn_worktree` | `createWorktree()` (plan/108) + `openTerminalTab` rodando `pi` (`--model provider/id` opcional — flag padrão da CLI) |
+
+Regras:
+
+- **Self-address é recusado** (omita `target` para agir em si mesmo); em MCP
+  runtimes o `target` é obrigatório (Claude/Agy não têm sessão Pi própria).
+- **`spawn_worktree` reusa a lógica plan/108/112**: validação de branch, reuso
+  de worktree existente, config `auto_start_relay` — a sessão nova entra na
+  mesh como peer próprio (aparece no `list_peers`; mande a tarefa via
+  `agent_send`).
+- **Kill-switch**: `allow_remote_session_control: false` no
+  `<cwd>/.pi/remote-pi/config.json` do alvo recusa envelopes com erro tipado.
+  Default LIGADO (decisão 2026-11-08: mesh ungated — qualquer peer já pode
+  steer outro via mensagens comuns; controle de sessão não adiciona atacante).
+- Wire shapes: `RpControlRequest` / `RpControlResult` / `SessionActionMessage`
+  em `pi-extension/src/protocol/types.ts`.
+- `session_shutdown` e `thinking_set` ficam FORA do vocabulário da mesh por
+  escopo (app-only); ver Next plans do plan/161.
+
+Detalhes em `plan/161-agent-session-control.md`.
+
 ---
 
 ## Imagens (plan/30)

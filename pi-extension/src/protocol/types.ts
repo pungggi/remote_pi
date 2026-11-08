@@ -704,6 +704,73 @@ export type ActionName =
   | "model_set"
   | "thinking_set";
 
+// ── Plan/161 — agent mesh session control ────────────────────────────────────
+
+/**
+ * Plan/161 — the plan/28 typed-action ClientMessage variants the mesh
+ * control path can execute on a peer (everything except `session_shutdown`
+ * and `thinking_set`, which stay app-only by scope decision). The Pi-side
+ * dispatch (`_dispatchSessionAction` in main.ts) synthesizes members of
+ * this union with a fresh `id` taken from the control envelope, so the
+ * app path and the agent path run IDENTICAL code.
+ */
+export type SessionActionMessage =
+  | Extract<ClientMessage, { type: "session_new" }>
+  | Extract<ClientMessage, { type: "session_compact" }>
+  | Extract<ClientMessage, { type: "model_set" }>
+  | Extract<ClientMessage, { type: "list_models" }>;
+
+/** Ops a `$rp_control` envelope may request (plan/161). The four session ops
+ *  map 1:1 onto `SessionActionMessage` variants; `spawn_worktree` reuses the
+ *  plan/108 worktree machinery and has no ClientMessage counterpart. */
+export type RpControlOp =
+  | "session_compact"
+  | "session_new"
+  | "model_set"
+  | "list_models"
+  | "spawn_worktree";
+
+/** Envelope body an agent sends to control another peer's session. Carried
+ *  by ordinary `agent_send`/`peer.request`; the TARGET's extension
+ *  intercepts it in `peer.onMessage` BEFORE conversational delivery — a
+ *  control envelope never enters the target's LLM context. */
+export interface RpControlRequest {
+  $rp_control: {
+    op: RpControlOp;
+    /** model_set only. */
+    provider?: string;
+    /** model_set only. */
+    model_id?: string;
+    /** spawn_worktree only: branch to create (default `work/<stamp>`). */
+    branch?: string;
+    /** spawn_worktree only: base repo (default: the target's session cwd). */
+    base?: string;
+  };
+}
+
+/** Reply body for a `$rp_control` request, sent as a normal envelope with
+ *  `re=<request-id>`. Mirrors `action_ok`/`action_error`/`models_list`
+ *  semantics; `path`/`branch`/`message` carry the spawn result. Tagged with
+ *  `rp_control_result` so it can never be confused with conversational
+ *  content. */
+export interface RpControlResult {
+  rp_control_result: {
+    ok: boolean;
+    action: RpControlOp;
+    error?: string;
+    /** list_models only. */
+    models?: WireModel[];
+    /** list_models only. */
+    current?: WireModel;
+    /** spawn_worktree only. */
+    message?: string;
+    /** spawn_worktree only: the worktree path (terminal runs `pi` there). */
+    path?: string;
+    /** spawn_worktree only: the branch created/reused. */
+    branch?: string;
+  };
+}
+
 /**
  * Plan/28 — Mirror of the SDK's `ThinkingLevel` (defined in
  * `@earendil-works/pi-agent-core/types`). Re-declared locally so the wire

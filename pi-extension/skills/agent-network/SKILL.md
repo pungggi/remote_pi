@@ -1,6 +1,6 @@
 ---
 name: agent-network
-description: Use when the remote-pi mesh tools (`list_peers`, `agent_send`, and — on Claude / Antigravity `agy` — `get_messages`, `wait_for_message`, `mesh_status`) are available. You are an agent (a Pi coding agent, a Claude Code session, or a Google Antigravity `agy` session) connected to the remote-pi agent mesh over a local broker. This skill teaches how to discover who's online (`list_peers`), how to inspect your own address (`mesh_status`), how to send messages with a delivery ACK (`agent_send`), how incoming messages reach you (via `get_messages` / `wait_for_message`, lifecycle hooks, and sidecar `agentapi` wakeups on Agy/Claude, or delivered into your turn on Pi), how to reply (echo `re`), and how to treat every peer address as an opaque routing key that must be echoed verbatim.
+description: Use when the remote-pi mesh tools (`list_peers`, `agent_send`, and — on Claude / Antigravity `agy` — `get_messages`, `wait_for_message`, `mesh_status`, plus the plan/161 session-control tools `session_compact`, `session_reset`, `model_set`, `list_models`, `spawn_worktree`) are available. You are an agent (a Pi coding agent, a Claude Code session, or a Google Antigravity `agy` session) connected to the remote-pi agent mesh over a local broker. This skill teaches how to discover who's online (`list_peers`), how to inspect your own address (`mesh_status`), how to send messages with a delivery ACK (`agent_send`), how incoming messages reach you (via `get_messages` / `wait_for_message`, lifecycle hooks, and sidecar `agentapi` wakeups on Agy/Claude, or delivered into your turn on Pi), how to reply (echo `re`), how to manage sessions (compact / reset / model / spawn-worktree, self or by peer address), and how to treat every peer address as an opaque routing key that must be echoed verbatim.
 ---
 
 # Agent Network (remote-pi mesh)
@@ -13,9 +13,13 @@ send you messages, and you can send messages to them.
 Read this to the end before acting. The protocol is **event-driven**, not
 request/reply. Getting the receive model wrong leaves coordination broken.
 
-**Your tools:** `list_peers` and `agent_send` always. On Antigravity (`agy`) and
-Claude (MCP), you also have `get_messages`, `wait_for_message`, and `mesh_status`
-(a Pi agent receives messages directly into its turn instead — see below).
+**Your tools:** `list_peers` and `agent_send` always, plus the session-control
+set (`session_compact`, `session_reset`, `model_set`, `list_models`,
+`spawn_worktree`). On Antigravity (`agy`) and Claude (MCP), you also have
+`get_messages`, `wait_for_message`, and `mesh_status` (a Pi agent receives
+messages directly into its turn instead — see below). On MCP runtimes the
+session-control tools take a REQUIRED `target` address (you have no Pi
+session of your own).
 
 ---
 
@@ -279,6 +283,36 @@ internally, not as inbox replies.
 
 ---
 
+## Session control (plan/161): compact, reset, model, spawn
+
+Five tools manage sessions — your own (omit `target`, Pi only) or another
+agent's (pass a `list_peers` address verbatim):
+
+| Tool | What it does |
+|---|---|
+| `session_compact {target?}` | Compacts the target's context (summarize + truncate). |
+| `session_reset {target?}` | Fresh context in the SAME process — wipes the conversation. Destructive; deliberate use only. |
+| `model_set {provider, model_id, target?}` | Switches the target's model (live + persisted default). `list_models` first — each peer has its OWN registry. |
+| `list_models {target?}` | Lists a peer's available models + its current one. |
+| `spawn_worktree {branch?, base?, provider?, model_id?, target?}` | Creates a git worktree and starts a fresh `pi` session there (visible terminal, optional `--model provider/model_id`). |
+
+Protocol notes:
+
+- **Remote ops are envelopes, not chat.** A remote call sends a
+  `{"$rp_control":{"op":…}}` body; the target's extension intercepts it
+  BEFORE its LLM turn and replies `re`-correlated. The target's conversation
+  is never touched, and the target LLM never sees the request.
+- **Self-address is refused.** Omit `target` to act on your own session.
+- **Spawned sessions join the mesh.** `spawn_worktree` returns when the
+  terminal opens; poll `list_peers` for the new peer, then `agent_send` it
+  its task. The worktree config auto-connects it.
+- **Resetting YOUR OWN session mid-turn wipes the conversation you are in.**
+  Reset others freely; reset yourself only at a deliberate boundary.
+- A peer may refuse remote control (`allow_remote_session_control:false` in
+  its local config) — you'll get a typed error back.
+
+---
+
 ## Legacy: `agent_request` (Pi only, deprecated)
 
 On Pi you may see a tool called `agent_request` that takes a target + body and
@@ -306,7 +340,9 @@ and optionally `wait_for_message`.)
 5. **Broadcast/multicast**: status `sent`. Fire-and-forget.
 6. **Reply**: set `re` to their `id`, `to` to their `from` (the full address,
    prefix and all). `re` is correlation only.
-7. You never receive your own messages.
+7. **Control sessions** (plan/161): compact / reset / model / spawn via the
+   five control tools; `target` omitted = yourself (Pi), address = that peer.
+8. You never receive your own messages.
 
 Re-read when in doubt.
 

@@ -44,6 +44,7 @@ import { ext, CTRL_PREFIX } from "./extension-state.js";
 export type { RemoteState, RelayConnectivity } from "./extension-state.js";
 import type { BufferMsg, ExtensionState } from "./extension-state.js";
 import { registerAgentTools } from "./session/tools.js";
+import { registerSessionControlTools } from "./session/control_tools.js";
 import { ensureGlobalDirs, skillsDir } from "./session/global_config.js";
 import { effectiveAutoStartRelay, loadLocalConfig, localConfigExists } from "./session/local_config.js";
 import { isPiSubagentChildProcess } from "./session/pi_subagent.js";
@@ -425,6 +426,16 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
   // tool always sees the current state. The tool module is thin (plain JSON
   // Schema literals + type-only imports — no typebox), so it stays static.
   registerAgentTools(pi, () => ext.meshNode?.peer() ?? null);
+
+  // Plan/161 — session-control tools (compact / reset / model / spawn),
+  //  local (self) + remote (peer target via $rp_control envelopes).
+  //  dispatchLocal/spawnWorktreeLocal trampoline into the lazy runtime so
+  //  the thin entry's static graph stays light (plan/143).
+  registerSessionControlTools(pi, {
+    getPeer: () => ext.meshNode?.peer() ?? null,
+    dispatchLocal: (msg) => getMain().then((m) => m._runSessionAction(msg)),
+    spawnWorktreeLocal: (opts) => getMain().then((m) => m._spawnWorktreeSession(opts)),
+  });
 
   // Inject the two cross-cutting concerns the image pipeline needs from the
   // host (broadcasting to owners + "any peer active?") so the pipeline module
