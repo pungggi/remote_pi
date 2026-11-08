@@ -435,6 +435,10 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                 }
                                 "rooms_check" => {
                                     let peers = authorize_targets(peers).await;
+                                    // Plan/164 measurement: attribute the poll
+                                    // (and each reply below) to this conn so the
+                                    // 10s window names who drives rooms traffic.
+                                    metrics.note_rooms_poll(&peer_id);
                                     for target_peer in &peers {
                                         let active_rooms = registry.rooms_of(target_peer);
                                         let resp = serde_json::json!({
@@ -474,6 +478,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                             break 'routing;
                                         }
                                         metrics.inc_rooms_emitted(1);
+                                        metrics.note_rooms_sent(&peer_id, target_peer);
                                     }
                                 }
 

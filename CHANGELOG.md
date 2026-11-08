@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
+## [Unreleased]
+
+### Fixed
+
+- **Relay: deterministic `rooms` snapshot ordering** (plan/164). `rooms_of` returned `HashMap::into_values()`, so the snapshot serialized in a different order on every call: the per-conn byte-identical dedup could never suppress `rooms_check` replies, the phone app saw every reply as "changed", and the resulting re-poll loop pushed ~60 full snapshots/s onto the same WebSocket that carries `agent_chunk` — starving response streaming. Snapshots are now sorted by `room_id`; regression test covers multi-room suppression (single-room tests could never catch the ordering bug). The firehose 10s window log now also attributes rooms traffic (`rooms_poll_top`, `rooms_sent_conn_top`, `rooms_sent_target_top`). Measured: 623 replies/10s → 3.
+
 ## [1.6.2] - 2026-11-08
 
 ### Changed
