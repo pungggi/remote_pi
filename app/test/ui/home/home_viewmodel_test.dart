@@ -759,6 +759,60 @@ void main() {
       conn.dispose();
     });
 
+    test('plan/161: visibleProviderSections nest models; usage is section-scoped', () async {
+      final storage = _FakeStorage([_peerA]);
+      await storage.saveRooms('epk_A', const [
+        PersistedRoom(
+          roomId: 'glm47',
+          startedAt: 1,
+          model: 'GLM 4.7',
+          provider: 'zai',
+        ),
+        PersistedRoom(
+          roomId: 'glm46',
+          startedAt: 2,
+          model: 'GLM 4.6',
+          provider: 'zai',
+        ),
+        PersistedRoom(roomId: 'legacy', startedAt: 3, model: 'GLM 4.7'),
+      ]);
+      final conn = ConnectionManager(
+        factory: (_, _) async => _channel(),
+        storage: storage,
+        emitDebounce: Duration.zero,
+      );
+      await conn.boot();
+      final prefs = Preferences(_FakeSecureStorage());
+      // Default grouping is provider since plan/161 — no explicit set.
+      final vm = HomeViewModel(
+        storage,
+        prefs,
+        conn,
+        _fakeActions(),
+        _stubCompletion(),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      final sections = vm.visibleProviderSections;
+      expect(sections.map((s) => s.label), ['z.ai', 'Unknown provider'],
+          reason: 'pretty name first, fallback last');
+      final zai = sections.first;
+      expect(zai.models.map((m) => m.label), ['GLM 4.6', 'GLM 4.7']);
+      expect(zai.itemCount, 2);
+      expect(
+        sections.last.models.single.items.single.room.roomId,
+        'legacy',
+        reason: 'no-provider room lands in the fallback section',
+      );
+
+      // All rooms cached/offline → plan/156 gating hides the usage line.
+      expect(vm.planUsageForSection(zai), isNull);
+
+      vm.dispose();
+      await conn.disconnect();
+      conn.dispose();
+    });
+
     test(
       'plan/120 — the device room is filtered from the combined list',
       () async {

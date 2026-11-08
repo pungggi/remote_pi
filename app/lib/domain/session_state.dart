@@ -169,7 +169,7 @@ class AgentImageMsg extends ChatMessage {
 ///   `agent_file_fetch` key, [name] the announced basename and [bytes] the
 ///   declared size. The bubble fetches bytes when the user opens/saves/shares.
 class AgentFileMsg extends ChatMessage {
-  final String kind; // markdown | text | pdf | html | mermaid
+  final String kind; // markdown | text | pdf | html | mermaid | file
   final String? data; // base64 raw file bytes (null on plan/158 refs)
   final String? mime;
   final String? path; // legacy inline: repo path (viewer title)

@@ -49,7 +49,7 @@ class HomeViewModel extends ViewModel<HomeState> {
   StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
   StreamSubscription<ConnectionStatus>? _statusSub;
   bool _relayConnected = false;
-  HomeGroupBy _homeGroupBy = HomeGroupBy.model;
+  HomeGroupBy _homeGroupBy = HomeGroupBy.provider;
 
   /// Security fix 2026-08 (H2) — Online over a non-confidential transport
   /// (`ws://` to a non-loopback host). Drives the persistent banner.
@@ -447,12 +447,14 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// Keeper mirrors always count as offline, including for the status color.
   bool isRoomOnline(HomeItem it) => _roomOnline(it.peer.remoteEpk, it.room);
 
-  /// Plan/156 — subscription usage for a model group's header: the first
-  /// ONLINE session's provider plan usage. Null when every session in the
-  /// group is offline (stale quota must never read as live) or the
-  /// provider has no usage probe. Only meaningful for model grouping.
-  PlanUsage? planUsageForGroup(HomeGroup group) =>
-      firstOnlinePlanUsage(group, isRoomOnline);
+  /// Plan/156 + Plan/161 — subscription usage for a PROVIDER section's
+  /// header: the first ONLINE session's plan usage across the whole
+  /// section (the quota is account-scoped, so ANY online session of that
+  /// provider speaks for all of them). Null when every session is offline
+  /// (stale quota must never read as live) or the provider has no usage
+  /// probe. Only meaningful for provider grouping.
+  PlanUsage? planUsageForSection(HomeProviderSection section) =>
+      firstOnlinePlanUsage(section.items, isRoomOnline);
 
   /// Plan/140 C — a keeper-held room is a durable-history mirror, not a live
   /// agent: it counts as offline for status and plan/148 cleanup gating.
@@ -477,6 +479,21 @@ class HomeViewModel extends ViewModel<HomeState> {
     return groupHomeItems(
       visibleItems,
       groupBy,
+      gitFor: (item) {
+        if (s is! HomeList) return item.room.git;
+        final key = '${toStandardB64(item.peer.remoteEpk)}|${item.room.roomId}';
+        return item.room.git ?? s.gitByKey[key];
+      },
+    );
+  }
+
+  /// Plan/161 — the provider ▸ model projection for provider grouping:
+  /// one section per provider slug (fallback section last), model groups
+  /// nested inside. Same git fallback as [visibleGroups].
+  List<HomeProviderSection> get visibleProviderSections {
+    final s = state;
+    return groupHomeItemsByProvider(
+      visibleItems,
       gitFor: (item) {
         if (s is! HomeList) return item.room.git;
         final key = '${toStandardB64(item.peer.remoteEpk)}|${item.room.roomId}';

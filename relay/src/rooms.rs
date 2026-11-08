@@ -14,6 +14,12 @@ pub struct RoomMeta {
     /// Active Claude model for this room (plano 18). None = not reported yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Plan/161 — provider id slug of the active model ("zai", "anthropic",
+    /// …). Rides `room_meta` alongside `model` with the same merge-patch
+    /// semantics (absent = preserve). Lets the app group sessions by
+    /// provider. None = not reported yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     /// Active thinking level for this room (plano 28). Opaque string from the
     /// Pi's perspective (e.g. `"high"`, `"medium"`, `"none"`) — the relay
     /// never interprets it. None = not reported yet.
@@ -98,6 +104,10 @@ pub struct RoomMeta {
 #[derive(Debug, Default, Clone)]
 pub struct RoomMetaPatch {
     pub model: Option<Option<String>>,
+    /// Plan/161 — provider slug patch; same `Option<Option<_>>` semantics
+    /// as `model` (a provider switch is always a new value, so the inner
+    /// clear never occurs in practice, but the shape stays uniform).
+    pub provider: Option<Option<String>>,
     pub thinking: Option<Option<String>>,
     /// `working` is a non-nullable bool, so the patch is a single `Option`:
     /// `None` = field absent (leave current), `Some(b)` = set to `b`. There is
@@ -142,6 +152,7 @@ impl RoomMetaPatch {
     /// `meta: {}`.
     pub fn is_empty(&self) -> bool {
         self.model.is_none()
+            && self.provider.is_none()
             && self.thinking.is_none()
             && self.working.is_none()
             && self.waiting_for_input.is_none()

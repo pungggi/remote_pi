@@ -193,6 +193,7 @@ fn room_meta(room_id: &str) -> RoomMeta {
         name: None,
         cwd: None,
         model: None,
+        provider: None,
         thinking: None,
         working: false,
         waiting_for_input: false,

@@ -225,6 +225,54 @@ void main() {
       expect(find.text("Couldn't decode this file"), findsOneWidget);
     });
   });
+
+  group('binary file kind (plan/162)', () {
+    // Raw zip bytes: PK\x03\x04 magic — NOT valid UTF-8, which is exactly
+    // the payload the text kinds reject and kind=file must carry through.
+    final jwlBytes = Uint8List.fromList(
+      [...'PK\u0003\u0004'.codeUnits, ...'rest-of-archive'.codeUnits],
+    );
+
+    AgentFileMsg jwlRef() => AgentFileMsg(
+          id: 'af_jwl',
+          kind: 'file',
+          data: null,
+          fileId: 'af_jwl',
+          name: 'backup.jwlibrary',
+          bytes: jwlBytes.length,
+          caption: '',
+        );
+
+    testWidgets('ref card shows File pill + size, fetch opens save/share page',
+        (tester) async {
+      Future<Uint8List> fetch(
+        String fileId, {
+        void Function(int received, int total)? onProgress,
+      }) async {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        return jwlBytes;
+      }
+
+      await pump(tester, jwlRef(), fetch);
+      await tester.pump();
+      expect(find.text('backup.jwlibrary'), findsOneWidget);
+      expect(find.text('File'), findsOneWidget);
+      expect(find.text('tap to download'), findsOneWidget);
+
+      await tester.tap(find.text('backup.jwlibrary'));
+      await tester.pumpAndSettle();
+
+      final viewer = tester.widget<DocViewerPage>(find.byType(DocViewerPage));
+      expect(viewer.kind, 'file');
+      expect(viewer.bytes, jwlBytes);
+      // The binary body explains there is no preview and points at the
+      // save/share actions instead of a renderer.
+      expect(find.textContaining('No preview for this file type'),
+          findsOneWidget);
+      expect(find.text('Save'), findsOneWidget);
+      expect(find.text('Share'), findsOneWidget);
+    });
+  });
 }
 
 /// Local alias mirroring the widget's fetcher signature (keeps the test

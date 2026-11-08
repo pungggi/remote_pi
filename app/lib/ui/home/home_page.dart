@@ -336,41 +336,68 @@ class HomePage extends StatelessWidget {
       );
     }
 
-    // One combined list, sectioned by the selected model/repository mode.
-    // Each section is [header, tile, tile, …]. Cross-device sections keep a
-    // device label on every tile so identical room names stay unambiguous.
+    // One combined list, sectioned by the selected provider/repository
+    // mode. Each section is [header, tile, tile, …]. Cross-device sections
+    // keep a device label on every tile so identical room names stay
+    // unambiguous.
     final showDeviceLabels =
         visible.map((item) => item.peer.remoteEpk).toSet().length > 1;
     final children = <Widget>[];
-    for (final group in vm.visibleGroups) {
-      final groupUsage = vm.groupBy == HomeGroupBy.model
-          ? vm.planUsageForGroup(group)
-          : null;
-      children.add(
-        SessionGroupHeader(
-          label: group.label,
-          count: group.items.length,
-          // Plan/156 — quota text + bar, only in model grouping and only
-          // when an online session in the group published one.
-          usage: groupUsage,
-          // Plan/157 — 🔄×N chip; confirm dialog + send live here (the
-          // header only reports the tap and renders per the usage rules).
-          onRedeemResetCard:
-              vm.groupBy == HomeGroupBy.model && groupUsage != null
-              ? (kind) => _confirmRedeemResetCard(context, vm, kind, groupUsage)
-              : null,
-        ),
-      );
-      for (final item in group.items) {
+    if (vm.groupBy == HomeGroupBy.provider) {
+      // Plan/161 — provider ▸ model nesting: the provider header carries
+      // the subscription usage ONCE (account-scoped), the model rows are
+      // compact sub-labels.
+      for (final section in vm.visibleProviderSections) {
+        final sectionUsage = vm.planUsageForSection(section);
         children.add(
-          _buildItemRowAt(
-            context,
-            vm,
-            state,
-            item,
-            showDeviceLabel: showDeviceLabels,
+          SessionGroupHeader(
+            label: section.label,
+            count: section.itemCount,
+            // Plan/156 — quota text + bar, only when an online session of
+            // this provider published one.
+            usage: sectionUsage,
+            // Plan/157 — 🔄×N chip; confirm dialog + send live here (the
+            // header only reports the tap and renders per the usage rules).
+            onRedeemResetCard: sectionUsage != null
+                ? (kind) =>
+                    _confirmRedeemResetCard(context, vm, kind, sectionUsage)
+                : null,
           ),
         );
+        for (final model in section.models) {
+          children.add(ModelGroupLabel(label: model.label, count: model.items.length));
+          for (final item in model.items) {
+            children.add(
+              _buildItemRowAt(
+                context,
+                vm,
+                state,
+                item,
+                showDeviceLabel: showDeviceLabels,
+              ),
+            );
+          }
+        }
+      }
+    } else {
+      for (final group in vm.visibleGroups) {
+        children.add(
+          SessionGroupHeader(
+            label: group.label,
+            count: group.items.length,
+          ),
+        );
+        for (final item in group.items) {
+          children.add(
+            _buildItemRowAt(
+              context,
+              vm,
+              state,
+              item,
+              showDeviceLabel: showDeviceLabels,
+            ),
+          );
+        }
       }
     }
     return SliverPadding(

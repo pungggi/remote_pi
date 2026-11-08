@@ -366,6 +366,10 @@ function _setCurrentModel(name: string, provider?: string | null): void {
   ext.currentModel = name;
   if (ext.myRoomMeta) {
     const next = { ...ext.myRoomMeta, model: name };
+    // Plan/161 — cache the provider slug next to the model so the hello
+    // replay carries it and the app can group by provider. Only a known
+    // non-empty provider overwrites; undefined = unknown, preserve.
+    if (typeof provider === "string" && provider) next.provider = provider;
     if (modelChanged) delete next.context_usage;
     if (providerChanged) {
       delete next.plan_usage;
@@ -380,6 +384,10 @@ function _setCurrentModel(name: string, provider?: string | null): void {
   }
   if (ext.relay && ext.myRoomId) {
     const meta: Record<string, unknown> = { model: name };
+    // Plan/161 — the provider rides every model update (same semantics as
+    // `model`: present = set). The relay absorbs unchanged fields, so a
+    // steady provider adds no broadcast churn.
+    if (typeof provider === "string" && provider) meta["provider"] = provider;
     if (modelChanged) meta["context_usage"] = null;
     if (providerChanged) meta["plan_usage"] = null;
     ext.relay.sendControl({
@@ -839,6 +847,9 @@ function _republishRoomMeta(): void {
     provider_error: ext.myRoomMeta.provider_error ?? false,
   };
   if (ext.myRoomMeta.model) meta.model = ext.myRoomMeta.model;
+  // Plan/161 — provider rides the re-sync so reconnecting apps re-group
+  // even when they missed the model update that carried it.
+  if (ext.myRoomMeta.provider) meta.provider = ext.myRoomMeta.provider;
   if (ext.myRoomMeta.thinking !== undefined) meta.thinking = ext.myRoomMeta.thinking;
   if (ext.myRoomMeta.git !== undefined) meta.git = ext.myRoomMeta.git;
   if (ext.myRoomMeta.context_usage !== undefined) meta.context_usage = ext.myRoomMeta.context_usage;
@@ -1525,7 +1536,7 @@ async function _handleAgentFileFetch(
 ): Promise<void> {
   const fail = (code: "not_found" | "gone" | "changed" | "busy") => {
     try {
-      sender.send({ type: "agent_file_error", in_reply_to: msg.id, fileId: msg.fileId, code });
+      sender.send({ type: "agent_file_error", in_reply_to: msg.id, file_id: msg.file_id, code });
     } catch { /* best-effort — channel may be closing */ }
   };
 
@@ -1537,7 +1548,7 @@ async function _handleAgentFileFetch(
   try {
     const entry: AgentFileRegistryEntry | undefined = loadRegistryEntries(
       registryTargetForCwd(process.cwd()),
-    ).find((e) => e.fileId === msg.fileId);
+    ).find((e) => e.fileId === msg.file_id);
     if (!entry) {
       fail("not_found");
       return;
@@ -1586,7 +1597,7 @@ async function _handleAgentFileFetch(
       sender.send({
         type: "agent_file_payload",
         in_reply_to: msg.id,
-        fileId: msg.fileId,
+        file_id: msg.file_id,
         offset,
         total: st.size,
         data: buf.toString("base64"),
@@ -4068,9 +4079,12 @@ async function _cmdStart(ctx: Pick<ExtensionContext, "ui" | "cwd">): Promise<voi
   // activity counters resume instead of restarting from zero.
   const seededGhRef = _seedSessionSlotFromRegistry(roomId);
 
-  const roomMeta: { name: string; cwd: string; model?: string; thinking?: ThinkingLevel; git?: WireGitStatus | null; context_usage?: WireContextUsage | null; gh_ref?: WireGhRef | null; stats?: WireSessionStats | null; plan_usage?: PlanUsage | null } = { name: sessionName, cwd };
+  const roomMeta: { name: string; cwd: string; model?: string; provider?: string; thinking?: ThinkingLevel; git?: WireGitStatus | null; context_usage?: WireContextUsage | null; gh_ref?: WireGhRef | null; stats?: WireSessionStats | null; plan_usage?: PlanUsage | null } = { name: sessionName, cwd };
   const modelName = _currentModelName();
   if (modelName) roomMeta.model = modelName;
+  // Plan/161 — the provider slug rides the hello so the app can group by
+  // provider from the very first announce (before any model update fires).
+  if (ext.currentProvider) roomMeta.provider = ext.currentProvider;
   if (ext.currentThinking) roomMeta.thinking = ext.currentThinking;
   // Plan/107b — seed the git snapshot into the hello so room_announced
   // already carries it (apps render the Home-list git line immediately).
@@ -4884,7 +4898,9 @@ async function _sendWithModelOverride(
   // setModel (the normal picker works because its setModel is a user action
   // that does fire the event), so call _setCurrentModel directly rather than
   // rely on the event. plan/109. (If model_select DOES fire, it's idempotent.)
-  _setCurrentModel(chosen.name);
+  // Plan/161 — the override's provider rides along, so a cross-provider
+  // one-shot override re-groups the tile AND tombstones plan_usage.
+  _setCurrentModel(chosen.name, chosen.provider);
   // Remember the original to restore at turn_end (only the first override in
   // a turn sets the target — later overrides share the same revert).
   if (ext.pendingModelRevert === null && orig) ext.pendingModelRevert = orig as FullSdkModel;
@@ -5230,7 +5246,7 @@ export function _routeClientMessageFrom(
       // `not_found` so the app's spinner always resolves.
       console.error(`[remote-pi] agent_file_fetch failed: ${err instanceof Error ? err.message : String(err)}`);
       try {
-        sender.send({ type: "agent_file_error", in_reply_to: msg.id, fileId: msg.fileId, code: "not_found" });
+        sender.send({ type: "agent_file_error", in_reply_to: msg.id, file_id: msg.file_id, code: "not_found" });
       } catch { /* channel closing */ }
     });
     return;
@@ -5947,8 +5963,8 @@ async function _pageHistory(
       refEvents.push({
         ts: e.ts,
         type: "agent_file_ref",
-        fileId: e.fileId,
-        kind: e.kind as "markdown" | "text" | "pdf" | "html" | "mermaid",
+        file_id: e.fileId,
+        kind: e.kind as "markdown" | "text" | "pdf" | "html" | "mermaid" | "file",
         ...(e.mime ? { mime: e.mime } : {}),
         ...(e.name ? { name: e.name } : {}),
         ...(e.bytes ? { bytes: e.bytes } : {}),

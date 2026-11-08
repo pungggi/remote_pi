@@ -68,6 +68,7 @@ fn test_room_meta() -> RoomMeta {
         name: None,
         cwd: None,
         model: None,
+        provider: None,
         thinking: None,
         working: false,
         waiting_for_input: false,

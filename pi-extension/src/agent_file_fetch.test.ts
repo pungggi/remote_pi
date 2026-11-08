@@ -48,7 +48,8 @@ function route(sender: PlainPeerChannel, msg: ClientMessage): void {
 }
 
 function fetchMsg(fileId: string, offset: number, id = `f_${offset}`): ClientMessage {
-  return { type: "agent_file_fetch", id, fileId, offset };
+  // PROTOCOL.md wire key: `file_id` (snake) — matches the app's toJson.
+  return { type: "agent_file_fetch", id, file_id: fileId, offset };
 }
 
 // ── sandboxed agent dir (fresh sessions tree per test) ──────────────────────
@@ -117,12 +118,12 @@ describe("agent_file_fetch (plan/158)", () => {
     route(peer.ch, fetchMsg("doc_a", 0));
     await vi.waitFor(() => expect(peer.sent).toHaveLength(1));
     const first = peer.sent[0] as {
-      type: string; in_reply_to: string; fileId: string; offset: number;
+      type: string; in_reply_to: string; file_id: string; offset: number;
       total: number; data: string; more: boolean; seq?: number; epoch?: number;
     };
     expect(first.type).toBe("agent_file_payload");
     expect(first.in_reply_to).toBe("f_0");
-    expect(first.fileId).toBe("doc_a");
+    expect(first.file_id).toBe("doc_a");
     expect(first.offset).toBe(0);
     expect(first.total).toBe(bytes.length);
     expect(first.more).toBe(true);
@@ -145,7 +146,7 @@ describe("agent_file_fetch (plan/158)", () => {
     const peer = fakePeer();
     route(peer.ch, fetchMsg("doc_missing", 0));
     await vi.waitFor(() => expect(peer.sent).toHaveLength(1));
-    expect(peer.sent[0]).toMatchObject({ type: "agent_file_error", code: "not_found", fileId: "doc_missing" });
+    expect(peer.sent[0]).toMatchObject({ type: "agent_file_error", code: "not_found", file_id: "doc_missing" });
   });
 
   test("deleted file → gone", async () => {
@@ -236,7 +237,7 @@ describe("agent_file_ref ledger + history merge (plan/158)", () => {
       type: "agent_file_ref",
       id: "doc_x",
       in_reply_to: "",
-      fileId: "doc_x",
+      file_id: "doc_x",
       ts: 1700000000000,
       kind: "markdown",
       name: "a.md",
@@ -268,7 +269,7 @@ describe("agent_file_ref ledger + history merge (plan/158)", () => {
     const kinds = reply.events.map((e) => e.type);
     expect(kinds).toEqual(["user_input", "agent_file_ref", "agent_message", "agent_file_ref"]);
     const ref1 = reply.events[1] as Record<string, unknown>;
-    expect(ref1.fileId).toBe("doc_r1");
+    expect(ref1.file_id).toBe("doc_r1");
     expect(ref1.name).toBe("doc_r1.pdf");
     expect(ref1.bytes).toBe(100);
     // No base64 payload anywhere in any history event (plan/158 invariant).

@@ -182,6 +182,12 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             .and_then(|m| m.get("model"))
             .and_then(|v| v.as_str())
             .map(String::from);
+        // Plan/161 — provider slug of the active model (grouping key for
+        // the app's Home list). Same shape as `model`.
+        let provider = room_meta_val
+            .and_then(|m| m.get("provider"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
         let thinking = room_meta_val
             .and_then(|m| m.get("thinking"))
             .and_then(|v| v.as_str())
@@ -226,6 +232,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
             name,
             cwd,
             model,
+            provider,
             thinking,
             working,
             waiting_for_input,
@@ -600,6 +607,9 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     if let Some(Some(m)) = &model_patch {
                                         info!(peer = %peer_short, room = %target_room, model = %m, "room_meta_update (model patch)");
                                     }
+                                    let provider_patch = meta_obj
+                                        .and_then(|m| m.get("provider"))
+                                        .map(|v| v.as_str().map(String::from));
                                     let thinking_patch = meta_obj
                                         .and_then(|m| m.get("thinking"))
                                         .map(|v| v.as_str().map(String::from));
@@ -661,6 +671,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                         meta_obj.and_then(|m| m.get("run_done")).cloned();
                                     let patch = RoomMetaPatch {
                                         model: model_patch,
+                                        provider: provider_patch,
                                         thinking: thinking_patch,
                                         working: working_patch,
                                         waiting_for_input: waiting_for_input_patch,
