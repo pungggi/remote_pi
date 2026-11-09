@@ -814,6 +814,69 @@ void main() {
     });
 
     test(
+      'plan/161: the Unknown-provider fallback section shows NO usage even online',
+      () async {
+        const legacyUsage = PlanUsage(
+          provider: 'zai',
+          fetchedAt: 1,
+          windows: [
+            PlanUsageWindow(kind: 'time', label: '5h', percent: 10, minutes: 300),
+          ],
+        );
+        final ch = _ControllableChannel();
+        final storage = _FakeStorage([_peerA]);
+        final conn = ConnectionManager(
+          factory: (_, _) async => ch,
+          storage: storage,
+          emitDebounce: Duration.zero,
+        );
+        final prefs = Preferences(_FakeSecureStorage());
+        final vm = HomeViewModel(
+          storage,
+          prefs,
+          conn,
+          _fakeActions(),
+          _stubCompletion(),
+        );
+        await conn.connectTo(_peerA);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        ch.pushControl(
+          const RoomAnnounced(
+            peer: 'epk_A',
+            roomId: 'zai1',
+            startedAt: 1,
+            model: 'GLM 4.6',
+            provider: 'zai',
+            planUsage: legacyUsage,
+          ),
+        );
+        ch.pushControl(
+          const RoomAnnounced(
+            peer: 'epk_A',
+            roomId: 'legacy',
+            startedAt: 2,
+            model: 'GLM 4.7',
+            // Online AND carrying a quota — but its provider is unknown,
+            // so it must NOT light up the fallback section's header.
+            planUsage: legacyUsage,
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        final sections = vm.visibleProviderSections;
+        expect(sections.map((s) => s.label), ['z.ai', 'Unknown provider']);
+        expect(vm.planUsageForSection(sections.first)?.provider, 'zai');
+        // The fix: the fallback header stays dark despite an online,
+        // usage-bearing item inside it.
+        expect(vm.planUsageForSection(sections.last), isNull);
+
+        vm.dispose();
+        await conn.disconnect();
+        conn.dispose();
+      },
+    );
+
+    test(
       'plan/120 — the device room is filtered from the combined list',
       () async {
         final ch = _ControllableChannel();

@@ -452,9 +452,14 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// section (the quota is account-scoped, so ANY online session of that
   /// provider speaks for all of them). Null when every session is offline
   /// (stale quota must never read as live) or the provider has no usage
-  /// probe. Only meaningful for provider grouping.
+  /// probe. The fallback section (sessions from pre-161 extensions that
+  /// publish no provider) never shows usage: it mixes providers, so no
+  /// single account quota can be attributed to its header. Only
+  /// meaningful for provider grouping.
   PlanUsage? planUsageForSection(HomeProviderSection section) =>
-      firstOnlinePlanUsage(section.items, isRoomOnline);
+      section.isFallback
+          ? null
+          : firstOnlinePlanUsage(section.items, isRoomOnline);
 
   /// Plan/140 C — a keeper-held room is a durable-history mirror, not a live
   /// agent: it counts as offline for status and plan/148 cleanup gating.
