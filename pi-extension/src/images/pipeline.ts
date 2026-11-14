@@ -50,6 +50,11 @@ const SHOW_FILE_TEXT_MAX_BYTES = 1 * 1024 * 1024;
 // Plan/158 — raised from 10 MiB (user decision). With the metadata-only flip
 // the bytes never cross the live envelope, so the cap only gates fetchability.
 const SHOW_FILE_PDF_MAX_BYTES = 20 * 1024 * 1024;
+// Plan/162 — generic binary kind (`file`): save/share-only card, no viewer.
+// Same reasoning as the PDF cap: chunked fetch serves from disk, the cap
+// only bounds how much a phone pull can cost. Covers .jwlibrary backups
+// (the jwl workflow) and zip/apk/office documents.
+const SHOW_FILE_BINARY_MAX_BYTES = 50 * 1024 * 1024;
 const IMAGE_CACHE_PREFIX = "pi-app-";
 export type ReceivedImagePreviewDelivery = "immediate" | "defer";
 
@@ -430,7 +435,7 @@ export function registerShowImageTool(pi: ExtensionAPI, deps: ImagePipelineDeps)
 // flag so the app knows whether the WebView sandbox should permit remote
 // resources (default: blocked).
 
-type ShowFileKind = "markdown" | "text" | "pdf" | "html" | "mermaid";
+type ShowFileKind = "markdown" | "text" | "pdf" | "html" | "mermaid" | "file";
 
 interface ShowFileResult {
   shown: boolean;
@@ -457,6 +462,17 @@ const SHOW_FILE_TEXT_EXTENSIONS = new Set<string>([
   "css", "less", "vue", "svelte", "proto", "makefile", "dockerfile",
 ]);
 
+/** Extensions auto-detected as the generic `file` kind (plan/162): binary
+ *  payloads with no in-app viewer — the card offers save/share only. Anything
+ *  else unknown still requires an explicit `kind: "file"` from the agent. */
+const SHOW_FILE_BINARY_EXTENSIONS = new Set<string>([
+  "jwlibrary", // JW Library backup (zip-based) — the jwl skill workflow
+  "zip", "7z", "rar", "tar", "gz", "bz2", "xz",
+  "apk", "epub", "mobi",
+  "docx", "xlsx", "pptx", "doc", "xls", "ppt",
+  "sqlite", "db", "bak",
+]);
+
 /** Basenames treated as text when there's no extension (case-insensitive). */
 const SHOW_FILE_TEXT_BASENAMES = new Set<string>([
   "readme", "license", "licence", "authors", "contributors", "changelog",
@@ -479,6 +495,7 @@ function mimeForFileKind(kind: ShowFileKind): string {
     case "html": return "text/html";
     case "pdf": return "application/pdf";
     case "mermaid": return "text/vnd.mermaid";
+    case "file": return "application/octet-stream";
   }
 }
 
@@ -496,6 +513,7 @@ function detectFileKind(absPath: string): ShowFileKind | undefined {
   if (ext === "html" || ext === "htm" || ext === "xhtml") return "html";
   if (ext === "pdf") return "pdf";
   if (ext === "mmd" || ext === "mermaid") return "mermaid";
+  if (SHOW_FILE_BINARY_EXTENSIONS.has(ext)) return "file";
   if (SHOW_FILE_TEXT_EXTENSIONS.has(ext)) return "text";
   const base = (absPath.toLowerCase().split(/[\\/]/).pop() ?? "");
   // Dotfiles have an empty extension — strip the leading dot and match the
@@ -598,9 +616,12 @@ function handleShowFile(
     );
   }
 
-  // Per-kind size cap (PDF may be large; text-y kinds small). Checked from
-  // stat size — an oversized file is rejected without ever being loaded.
-  const cap = kind === "pdf" ? SHOW_FILE_PDF_MAX_BYTES : SHOW_FILE_TEXT_MAX_BYTES;
+  // Per-kind size cap (binary/PDF may be large; text-y kinds small).
+  // Checked from stat size — an oversized file is rejected without ever
+  // being loaded.
+  const cap = kind === "pdf" ? SHOW_FILE_PDF_MAX_BYTES
+    : kind === "file" ? SHOW_FILE_BINARY_MAX_BYTES
+    : SHOW_FILE_TEXT_MAX_BYTES;
   if (size > cap) {
     return showFileError(
       `file too large (${size} bytes; max ${cap} for kind ${kind})`,
@@ -609,10 +630,10 @@ function handleShowFile(
   }
 
   // Plan/158 — text-y kinds are read ONLY to validate UTF-8 (reject binary
-  // pushed as text; the viewer would show garbage). PDFs skip the read
-  // entirely: bytes are served by the fetch handler straight from disk, so a
-  // 20 MiB push costs one stat, not 20 MiB of I/O.
-  if (kind !== "pdf") {
+  // pushed as text; the viewer would show garbage). PDFs and the generic
+  // `file` kind skip the read entirely: bytes are served by the fetch handler
+  // straight from disk, so a 50 MiB push costs one stat, not 50 MiB of I/O.
+  if (kind !== "pdf" && kind !== "file") {
     let bytes: Buffer;
     try {
       bytes = readFileSync(absPath);
@@ -656,13 +677,16 @@ function handleShowFile(
 
   // Broadcast to every connected owner — METADATA ONLY (plan/158). The app
   // shows a reference bubble and pulls bytes via agent_file_fetch when the
-  // user opens/saves/shares. `id` == `fileId` so journal replay + history
-  // merge dedupe naturally. `allow_network` is carried only for HTML.
+  // user opens/saves/shares. `id` == `file_id` (stable dedupe key across live
+  // + journal replay + history merge). `allow_network` is carried only for HTML.
+  // Wire key MUST be `file_id` (PROTOCOL.md): the app's AgentFileRef.fromJson
+  // reads j['file_id'] strictly — a camelCase key throws at decode and the
+  // card silently never renders (regression found 2026-11-07, plan/162).
   deps.broadcast({
     type: "agent_file_ref",
     id: fileId,
     in_reply_to: ext.currentTurnId ?? "",
-    fileId,
+    file_id: fileId,
     ts,
     kind,
     mime,
@@ -697,8 +721,9 @@ export function registerShowFileTool(pi: ExtensionAPI, deps: ImagePipelineDeps):
         description:
           "Path to a file in the repo, relative to the session cwd (or absolute). " +
           "Markdown (.md/.markdown), plain text or code (.txt/.json/.yaml/.dart/.ts/.py/...), " +
-          "PDF (.pdf), HTML (.html/.htm), or a Mermaid diagram source (.mmd/.mermaid). " +
-          "Size caps: 1 MiB for text/markdown/html/mermaid, 20 MiB for PDF.",
+          "PDF (.pdf), HTML (.html/.htm), Mermaid (.mmd/.mermaid), or any binary file " +
+          ".jwlibrary/.zip/.apk/.docx/... — auto-detected as a save/share-only card. " +
+          "Size caps: 1 MiB for text/markdown/html/mermaid, 20 MiB for PDF, 50 MiB for binaries.",
       },
       caption: {
         type: "string",
@@ -707,8 +732,11 @@ export function registerShowFileTool(pi: ExtensionAPI, deps: ImagePipelineDeps):
       },
       kind: {
         type: "string",
-        enum: ["markdown", "text", "pdf", "html", "mermaid"],
-        description: "Override auto-detection and force this viewer kind.",
+        enum: ["markdown", "text", "pdf", "html", "mermaid", "file"],
+        description:
+          "Override auto-detection and force this viewer kind. Use kind=file for " +
+          "binary files (archives, .jwlibrary backups, office docs): no preview, the " +
+          "user gets a card with Save/Share to pull the raw bytes to their phone.",
       },
       allowNetwork: {
         type: "boolean",
@@ -726,17 +754,20 @@ export function registerShowFileTool(pi: ExtensionAPI, deps: ImagePipelineDeps):
     label: "Show file to user",
     description:
       "Display a document file from the repo to the user on their paired mobile app — " +
-      "Markdown, plain text/code, PDF, HTML (with JavaScript), or a Mermaid diagram. Each opens " +
-      "full-screen viewer. Use when the user asks to see/read/open a file that is not an " +
+      "Markdown, plain text/code, PDF, HTML (with JavaScript), or a Mermaid diagram, each opening " +
+      "a full-screen viewer. Binary files (.jwlibrary, .zip, .apk, office docs, ...) render a " +
+      "save/share-only card: kind is auto-detected from the extension, or force it with kind=file. " +
+      "Use when the user asks to see/read/open/send a file that is not an " +
       "image (use show_image for images). Only METADATA is broadcast (kind, name, mime, size); " +
       "the app downloads the bytes on demand when the user opens/saves/shares the file, so " +
-      "large PDFs work. Returns only metadata (kind, path, mime, size) — never the content — " +
+      "large files work. Returns only metadata (kind, path, mime, size) — never the content — " +
       "so it does not bloat the model context. For HTML, JavaScript always runs; network is " +
       "blocked unless you pass allowNetwork:true. Mermaid renders offline from a bundled renderer.",
     promptSnippet:
       "show_file({path, caption?, kind?, allowNetwork?}): display a Markdown/text/PDF/HTML/Mermaid file " +
       "from disk to the user on their phone (full-screen viewer; bytes download on demand). HTML runs JS; " +
-      "network blocked unless allowNetwork. Mermaid (.mmd) renders offline. Returns metadata only.",
+      "network blocked unless allowNetwork. Mermaid (.mmd) renders offline. Binary files (kind=file: " +
+      ".jwlibrary, .zip, .docx, ...) show a save/share card. Returns metadata only.",
     parameters: ShowFileParams,
     execute: async (_toolCallId, params) =>
       handleShowFile(params as {

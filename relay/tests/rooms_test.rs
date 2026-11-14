@@ -413,6 +413,68 @@ async fn rooms_check_dedup_suppresses_identical_responses() {
     );
 }
 
+/// Plan/164 regression — with MULTIPLE rooms the snapshot must serialize
+/// deterministically (sorted by room_id). `rooms_of` used to return
+/// `HashMap::into_values()`: the randomized per-call order made every
+/// reply byte-different even with identical content, so the dedup could
+/// never suppress, every poll was answered in full, and the app re-polled
+/// "changed" snapshots at wire speed (measured ~60 rooms_check/s while the
+/// phone app was open). The single-room test above can never catch this.
+#[tokio::test]
+async fn rooms_check_dedup_suppresses_identical_multi_room_responses() {
+    let port = start_relay().await;
+    let sk_pi = random_key();
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
+
+    // Three live rooms on the same peer (conn handles stay bound → live).
+    let (_w1, _) = connect_and_auth_with_room(port, &sk_pi, "work").await;
+    let (_w2, _) = connect_and_auth_with_room(port, &sk_pi, "side").await;
+    let (_w3, _) = connect_and_auth_with_room(port, &sk_pi, "labs").await;
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    // Security fix 2026-08 — cross-peer rooms/presence requires mesh membership.
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
+
+    ws_app
+        .send(Message::text(
+            json!({"type": "rooms_check", "peers": [&peer_pi]}).to_string(),
+        ))
+        .await
+        .unwrap();
+    let first = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_app.next())
+        .await
+        .expect("timed out on first multi-room rooms reply")
+        .unwrap()
+        .unwrap();
+    let v1: serde_json::Value = serde_json::from_str(first.to_text().unwrap()).unwrap();
+    assert_eq!(v1["type"], "rooms");
+    let ids: Vec<&str> = v1["rooms"]
+        .as_array()
+        .expect("rooms array")
+        .iter()
+        .map(|r| r["room_id"].as_str().expect("room_id"))
+        .collect();
+    assert_eq!(ids.len(), 3, "3 live rooms expected, got: {:?}", ids);
+    // Deterministic order: sorted by room_id.
+    assert_eq!(ids, vec!["labs", "side", "work"]);
+
+    // Identical follow-up — MUST be suppressed now that order is stable.
+    ws_app
+        .send(Message::text(
+            json!({"type": "rooms_check", "peers": [&peer_pi]}).to_string(),
+        ))
+        .await
+        .unwrap();
+    let dup = tokio::time::timeout(tokio::time::Duration::from_millis(250), ws_app.next()).await;
+    assert!(
+        dup.is_err(),
+        "identical multi-room reply must be suppressed, got: {:?}",
+        dup.ok()
+            .and_then(|m| m.and_then(|r| r.ok()))
+            .map(|m| m.into_text())
+    );
+}
+
 /// PR #48 review #1 — suppression is TTL-bounded, not forever. A client
 /// polling `rooms_check` on a cadence slower than the dedup TTL must get
 /// EVERY reply, even byte-identical ones: the app's false-offline
@@ -1157,4 +1219,132 @@ async fn rooms_check_reflects_updated_model() {
         rooms[0]["model"], "claude-sonnet-4-6",
         "rooms_check must show updated model"
     );
+}
+
+/// Plan/161 — the provider slug rides the hello announce next to `model`,
+/// survives provider-absent patches, and a provider switch broadcasts the
+/// new slug (the app re-groups its Home list live).
+#[tokio::test]
+async fn provider_rides_hello_announce_updates_and_snapshot() {
+    let port = start_relay().await;
+    let sk_pi = random_key();
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    use ed25519_dalek::Signer;
+    let peer_pi = B64.encode(sk_pi.verifying_key().to_bytes());
+
+    // App subscribes first so it catches room_announced.
+    let (mut ws_app, peer_app) = connect_and_auth(port).await;
+    make_mesh_siblings(port, &[peer_pi.clone(), peer_app]).await;
+    ws_app
+        .send(Message::text(
+            json!({"type": "subscribe_rooms", "peers": [&peer_pi]}).to_string(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+    // Hello carries model + provider together (the extension's connect
+    // shape).
+    let url = format!("ws://127.0.0.1:{port}");
+    let (mut ws_pi, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let vk = sk_pi.verifying_key();
+    ws_pi
+        .send(Message::text(
+            json!({
+                "type": "hello",
+                "pubkey": B64.encode(vk.to_bytes()),
+                "room_id": "main",
+                "room_meta": {
+                    "name": "zai-room",
+                    "model": "GLM 4.7",
+                    "provider": "zai",
+                },
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    let challenge_msg = ws_pi.next().await.unwrap().unwrap();
+    let cj: serde_json::Value = serde_json::from_str(challenge_msg.to_text().unwrap()).unwrap();
+    let nonce_arr: [u8; 32] = B64
+        .decode(cj["nonce"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let sig = sk_pi.sign(&nonce_arr);
+    ws_pi
+        .send(Message::text(
+            json!({"type": "auth", "sig": B64.encode(sig.to_bytes())}).to_string(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+
+    let msg = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_app.next())
+        .await
+        .expect("timed out waiting for room_announced")
+        .unwrap()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+    assert_eq!(v["type"], "room_announced", "got: {v}");
+    assert_eq!(v["model"], "GLM 4.7");
+    assert_eq!(v["provider"], "zai", "provider on room_announced: {v}");
+
+    // Provider-absent patch preserves the slug and re-carries it.
+    ws_pi
+        .send(Message::text(
+            json!({
+                "type": "room_meta_update",
+                "room_id": "main",
+                "meta": {"working": true},
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    let upd = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_app.next())
+        .await
+        .expect("timed out on room_meta_updated")
+        .unwrap()
+        .unwrap();
+    let u: serde_json::Value = serde_json::from_str(upd.to_text().unwrap()).unwrap();
+    assert_eq!(u["meta"]["provider"], "zai", "preserved: {u}");
+
+    // Provider switch (model override from another provider).
+    ws_pi
+        .send(Message::text(
+            json!({
+                "type": "room_meta_update",
+                "room_id": "main",
+                "meta": {"model": "Kimi K3.1", "provider": "kimi-coding"},
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+    let sw = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_app.next())
+        .await
+        .expect("timed out on provider switch")
+        .unwrap()
+        .unwrap();
+    let s: serde_json::Value = serde_json::from_str(sw.to_text().unwrap()).unwrap();
+    assert_eq!(s["meta"]["provider"], "kimi-coding", "switch: {s}");
+    assert_eq!(s["meta"]["model"], "Kimi K3.1");
+
+    // rooms_check reflects the updated provider too.
+    ws_app
+        .send(Message::text(
+            json!({"type": "rooms_check", "peers": [&peer_pi]}).to_string(),
+        ))
+        .await
+        .unwrap();
+    let snap = tokio::time::timeout(tokio::time::Duration::from_secs(1), ws_app.next())
+        .await
+        .expect("timed out on rooms snapshot")
+        .unwrap()
+        .unwrap();
+    let sn: serde_json::Value = serde_json::from_str(snap.to_text().unwrap()).unwrap();
+    assert_eq!(sn["type"], "rooms");
+    let rooms = sn["rooms"].as_array().unwrap();
+    assert_eq!(rooms[0]["provider"], "kimi-coding", "snapshot: {sn}");
 }

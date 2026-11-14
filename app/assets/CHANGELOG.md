@@ -8,6 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
+## [1.6.2] - 2026-11-08
+
+### Fixed
+
+- **File cards could never appear (plan/162)**: the PC pushed file
+  references under the wrong wire key (`fileId` instead of `file_id`), so
+  the app silently dropped every reference — no card, no download, ever.
+  The PC now speaks the correct key; the app also accepts the old one, so
+  new app + not-yet-updated PC still works. Re-send a file after both
+  ends updated (restart the Pi session on the PC).
+
+### Added
+
+- **Binary file cards (plan/162)**: agents can now send ANY file to your
+  phone, not just viewable documents — `.jwlibrary` backups, zip archives,
+  APKs, office docs up to 50 MiB. The chat shows a File card; opening it
+  offers **Save** (Downloads) and **Share** (e.g. share a `.jwlibrary`
+  backup directly into JW Library). No preview, by design.
+- **Open after save (plan/163)**: after saving a file to Downloads the
+  viewer now also offers **Open** — hands the file to the right Android app
+  for its type (document viewer, ZIP manager, JW Library, …). If no app
+  can open it, a toast says so and the file stays in Downloads.
+
+### Changed
+
+- **Provider-grouped Home (plan/161)**: sessions now group by provider
+  first and model second — `GROUP BY` offers `Provider | Repo`. Your
+  subscription usage (line, bar, reset chip) now shows ONCE on the
+  provider header instead of repeating under every model. If a Pi runs
+  an older extension that does not report providers, its sessions fall
+  into an "Unknown provider" section at the end of the list. Your saved
+  "group by model" choice carries over to the new provider view.
+
 ## [1.6.0] - 2026-11-07
 
 ### Added

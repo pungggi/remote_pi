@@ -136,6 +136,10 @@ export interface ExtensionState {
     name: string;
     cwd: string;
     model?: string;
+    /** Plan/161 — provider id slug of the current model ("zai", "anthropic",
+     *  …). Rides room_meta alongside `model` so the app can group sessions
+     *  by provider; absent when the SDK hasn't resolved one yet. */
+    provider?: string;
     thinking?: ThinkingLevel;
     working?: boolean;
     /** Plan/134 — true while a blocking user-facing ctx.ui prompt (any

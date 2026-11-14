@@ -1012,6 +1012,7 @@ class ConnectionManager extends Service {
         :final cwd,
         :final startedAt,
         :final model,
+        :final provider,
         :final thinking,
         :final working,
         :final waitingForInput,
@@ -1043,6 +1044,7 @@ class ConnectionManager extends Service {
         // Plan/134 — same preserve convention for the blocking-prompt flag.
         var preservedWaitingForInput = false;
         var preservedProviderError = false;
+        String? preservedProvider;
         GitStatus? preservedGit;
         ContextUsage? preservedContextUsage;
         PlanUsage? preservedPlanUsage;
@@ -1053,6 +1055,7 @@ class ConnectionManager extends Service {
           preservedWorking = list[existingIdx].working;
           preservedWaitingForInput = list[existingIdx].waitingForInput;
           preservedProviderError = list[existingIdx].providerError;
+          preservedProvider = list[existingIdx].provider;
           preservedGit = list[existingIdx].git;
           preservedContextUsage = list[existingIdx].contextUsage;
           preservedPlanUsage = list[existingIdx].planUsage;
@@ -1063,6 +1066,9 @@ class ConnectionManager extends Service {
           cwd: cwd,
           startedAt: startedAt,
           model: model,
+          // Plan/161 — provider: wire wins, preserved when an older
+          // extension's announce omits it (same convention as thinking).
+          provider: provider ?? preservedProvider,
           thinking: thinking ?? preservedThinking,
           working: working ?? preservedWorking,
           waitingForInput: waitingForInput ?? preservedWaitingForInput,
@@ -1155,12 +1161,14 @@ class ConnectionManager extends Service {
         :final peer,
         :final roomId,
         :final model,
+        :final provider,
         :final thinking,
         :final working,
         :final waitingForInput,
         :final providerError,
         :final git,
         :final hasModel,
+        :final hasProvider,
         :final hasThinking,
         :final hasGit,
         :final contextUsage,
@@ -1241,6 +1249,10 @@ class ConnectionManager extends Service {
         // (overwrite with null). Without this, a thinking-only update
         // would clobber the previously cached model with null.
         final nextModel = hasModel ? model : current.model;
+        // Plan/161 — provider slug patch: same has-flag convention as the
+        // model (absent preserves; a provider switch rides the same frame
+        // as the model and lands here).
+        final nextProvider = hasProvider ? provider : current.provider;
         final nextThinking = hasThinking ? thinking : current.thinking;
         // Plan/32 — `working` is nullable-as-absent: null preserves the
         // cached value (e.g. a model-only update must not flip the dot),
@@ -1279,6 +1291,7 @@ class ConnectionManager extends Service {
             : current.ghSuggestion;
         final nextStats = hasStats ? stats : current.stats;
         if (current.model == nextModel &&
+            current.provider == nextProvider &&
             current.thinking == nextThinking &&
             current.working == nextWorking &&
             current.waitingForInput == nextWaitingFlag &&
@@ -1293,6 +1306,7 @@ class ConnectionManager extends Service {
         }
         list[idx] = current.copyWith(
           model: nextModel,
+          provider: nextProvider,
           thinking: nextThinking,
           working: nextWorking,
           waitingForInput: nextWaitingFlag,
@@ -1317,6 +1331,9 @@ class ConnectionManager extends Service {
         for (final r in rooms) {
           final preservedName = byId[r.roomId]?.name ?? r.name;
           final preservedModel = r.model ?? byId[r.roomId]?.model;
+          // Plan/161 — preserve the provider slug like the model (older
+          // relay snapshots don't carry it yet).
+          final preservedProvider = r.provider ?? byId[r.roomId]?.provider;
           // PR #67 review — the locally cached usage may only survive a
           // snapshot that omits it when it belongs to the model we're
           // about to display: a snapshot carrying a DIFFERENT model (the
@@ -1344,6 +1361,7 @@ class ConnectionManager extends Service {
             cwd: r.cwd,
             startedAt: r.startedAt,
             model: preservedModel,
+            provider: preservedProvider,
             thinking: preservedThinking,
             git: preservedGit,
             // Plan/32 — the snapshot is authoritative for live state:
@@ -1595,6 +1613,7 @@ class ConnectionManager extends Service {
               cwd: c.cwd,
               startedAt: c.startedAt,
               model: c.model,
+              provider: c.provider,
               git: c.git,
               // Plan/149 — durable session-slot state from the cache
               // (offline tiles keep their ref + counters). Suggestions
@@ -1641,6 +1660,7 @@ class ConnectionManager extends Service {
             startedAt: r.startedAt,
             localName: localById[r.roomId],
             model: r.model,
+            provider: r.provider,
             git: r.git,
             ghRef: r.ghRef,
             stats: r.stats,

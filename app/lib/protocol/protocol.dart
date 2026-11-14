@@ -66,6 +66,7 @@ sealed class ControlInbound {
           cwd: j['cwd'] as String?,
           startedAt: (j['started_at'] as num).toInt(),
           model: j['model'] as String?,
+          provider: (j['provider'] as String?) ?? (metaJson?['provider'] as String?),
           thinking: rawThinking != null
               ? ThinkingLevel.fromWire(rawThinking)
               : null,
@@ -137,6 +138,7 @@ sealed class ControlInbound {
       'room_meta_updated' => () {
         final meta = j['meta'] as Map<String, dynamic>?;
         final hasModel = meta?.containsKey('model') ?? false;
+        final hasProvider = meta?.containsKey('provider') ?? false;
         final hasThinking = meta?.containsKey('thinking') ?? false;
         final hasGit = meta?.containsKey('git') ?? false;
         final hasContextUsage = meta?.containsKey('context_usage') ?? false;
@@ -158,6 +160,7 @@ sealed class ControlInbound {
           peer: j['peer'] as String,
           roomId: j['room_id'] as String,
           model: meta?['model'] as String?,
+          provider: meta?['provider'] as String?,
           thinking: rawThinking != null
               ? ThinkingLevel.fromWire(rawThinking)
               : null,
@@ -191,6 +194,7 @@ sealed class ControlInbound {
               ? PlanUsage.fromJson(rawPlanUsage)
               : null,
           hasModel: hasModel,
+          hasProvider: hasProvider,
           hasThinking: hasThinking,
           hasGit: hasGit,
           hasContextUsage: hasContextUsage,
@@ -399,6 +403,11 @@ class RoomInfo {
   /// the app falls back to `last paired` in the subtitle.
   final String? model;
 
+  /// Plan/161 — provider id slug of [model] ("zai", "anthropic", …).
+  /// Optional like `model`; drives the provider ▸ model grouping on Home.
+  /// `null` = not reported (older extension / unresolved yet).
+  final String? provider;
+
   /// Plan/28 Wave D — current thinking level the Pi-extension session
   /// is running with. Optional; Pi-ext may omit when it cannot resolve
   /// it from the SDK, and legacy Pis don't publish this field at all.
@@ -466,6 +475,7 @@ class RoomInfo {
     this.name,
     this.cwd,
     this.model,
+    this.provider,
     this.thinking,
     this.working = false,
     this.waitingForInput = false,
@@ -487,6 +497,7 @@ class RoomInfo {
       cwd: j['cwd'] as String?,
       startedAt: (j['started_at'] as num).toInt(),
       model: j['model'] as String?,
+      provider: j['provider'] as String?,
       thinking: rawThinking != null
           ? ThinkingLevel.fromWire(rawThinking)
           : null,
@@ -521,6 +532,7 @@ class RoomInfo {
     'cwd': cwd,
     'started_at': startedAt,
     'model': model,
+    if (provider != null) 'provider': provider,
     if (thinking != null) 'thinking': thinking!.wire,
     'working': working,
     'waiting_for_input': waitingForInput,
@@ -538,6 +550,7 @@ class RoomInfo {
     String? cwd,
     int? startedAt,
     Object? model = _kRoomInfoUnset,
+    Object? provider = _kRoomInfoUnset,
     Object? thinking = _kRoomInfoUnset,
     bool? working,
     bool? waitingForInput,
@@ -554,6 +567,9 @@ class RoomInfo {
     cwd: cwd ?? this.cwd,
     startedAt: startedAt ?? this.startedAt,
     model: identical(model, _kRoomInfoUnset) ? this.model : model as String?,
+    provider: identical(provider, _kRoomInfoUnset)
+        ? this.provider
+        : provider as String?,
     thinking: identical(thinking, _kRoomInfoUnset)
         ? this.thinking
         : thinking as ThinkingLevel?,
@@ -584,6 +600,7 @@ class RoomInfo {
       other.cwd == cwd &&
       other.startedAt == startedAt &&
       other.model == model &&
+      other.provider == provider &&
       other.thinking == thinking &&
       other.working == working &&
       other.waitingForInput == waitingForInput &&
@@ -602,6 +619,7 @@ class RoomInfo {
     cwd,
     startedAt,
     model,
+    provider,
     thinking,
     working,
     waitingForInput,
@@ -624,6 +642,10 @@ class RoomAnnounced extends ControlInbound {
 
   /// Plan 18 — display model the Pi-extension is running with.
   final String? model;
+
+  /// Plan/161 — provider id slug of [model], same both-places read as
+  /// the other announce fields. Nullable preserve convention as `model`.
+  final String? provider;
 
   /// Plan/28 Wave D — current thinking level the Pi seeds at
   /// session start. Parsed from `meta.thinking` or top-level
@@ -674,6 +696,7 @@ class RoomAnnounced extends ControlInbound {
     this.name,
     this.cwd,
     this.model,
+    this.provider,
     this.thinking,
     this.working,
     this.waitingForInput,
@@ -728,6 +751,12 @@ class RoomMetaUpdated extends ControlInbound {
   final String peer;
   final String roomId;
   final String? model;
+
+  /// Plan/161 — provider id slug patch from `meta.provider`
+  /// (nullable-as-absent like `model`; [hasProvider] distinguishes "key
+  /// absent" from "explicitly cleared").
+  final String? provider;
+  final bool hasProvider;
 
   /// Plan/28 Wave D — current thinking level, parsed from
   /// `meta.thinking`. Null when the Pi only published a model change.
@@ -812,6 +841,7 @@ class RoomMetaUpdated extends ControlInbound {
     required this.peer,
     required this.roomId,
     this.model,
+    this.provider,
     this.thinking,
     this.working,
     this.waitingForInput,
@@ -824,6 +854,7 @@ class RoomMetaUpdated extends ControlInbound {
     this.ghSuggestion,
     this.stats,
     this.hasModel = true,
+    this.hasProvider = true,
     this.hasThinking = true,
     this.hasGit = true,
     this.hasContextUsage = true,
@@ -2325,7 +2356,7 @@ class AgentImage extends ServerMessage {
 class AgentFile extends ServerMessage {
   final String id;
   final String inReplyTo;
-  final String kind; // markdown | text | pdf | html | mermaid
+  final String kind; // markdown | text | pdf | html | mermaid | file
   final String? data; // base64 (legacy inline bytes; null when absent)
   final String? mime;
   final String? path;
@@ -2368,7 +2399,7 @@ class AgentFileRef extends ServerMessage {
   final String inReplyTo;
   final String fileId;
   final int? ts; // epoch millis
-  final String kind; // markdown | text | pdf | html | mermaid
+  final String kind; // markdown | text | pdf | html | mermaid | file
   final String? mime;
   final String? name; // display basename
   final int? bytes; // declared size (for the progress bar)
@@ -2389,9 +2420,13 @@ class AgentFileRef extends ServerMessage {
   });
 
   factory AgentFileRef.fromJson(Map<String, dynamic> j) => AgentFileRef(
-    id: (j['id'] as String?) ?? (j['file_id'] as String?) ?? '',
+    // Wire key is `file_id` (PROTOCOL.md). The camelCase `fileId` fallback
+    // covers extensions built before 2026-11-07 that shipped the wrong key
+    // (plan/162 investigation): still throws when NEITHER key exists.
+    id: (j['id'] as String?) ?? (j['file_id'] as String?) ??
+        (j['fileId'] as String?) ?? '',
     inReplyTo: (j['in_reply_to'] as String?) ?? '',
-    fileId: j['file_id'] as String,
+    fileId: (j['file_id'] ?? j['fileId']) as String,
     ts: (j['ts'] as num?)?.toInt(),
     kind: j['kind'] as String,
     mime: j['mime'] as String?,
@@ -2424,7 +2459,7 @@ class AgentFilePayload extends ServerMessage {
 
   factory AgentFilePayload.fromJson(Map<String, dynamic> j) => AgentFilePayload(
     inReplyTo: (j['in_reply_to'] as String?) ?? '',
-    fileId: j['file_id'] as String,
+    fileId: (j['file_id'] ?? j['fileId']) as String,
     offset: ((j['offset'] as num?) ?? 0).toInt(),
     total: ((j['total'] as num?) ?? 0).toInt(),
     data: j['data'] as String,
@@ -2449,7 +2484,7 @@ class AgentFileError extends ServerMessage {
 
   factory AgentFileError.fromJson(Map<String, dynamic> j) => AgentFileError(
     inReplyTo: (j['in_reply_to'] as String?) ?? '',
-    fileId: j['file_id'] as String,
+    fileId: (j['file_id'] ?? j['fileId']) as String,
     code: (j['code'] as String?) ?? 'unknown',
   );
 }
@@ -2602,7 +2637,7 @@ sealed class SessionHistoryEvent {
       // fetches bytes on demand; fields mirror the live `agent_file_ref`.
       'agent_file_ref' => AgentFileRefEvt(
         ts: ts,
-        fileId: j['file_id'] as String,
+        fileId: (j['file_id'] ?? j['fileId']) as String,
         kind: j['kind'] as String,
         mime: j['mime'] as String?,
         name: j['name'] as String?,
@@ -2687,7 +2722,7 @@ class CompactionEvt extends SessionHistoryEvent {
 /// (the Pi's ledger entry keys on [fileId], which doubles as the row id).
 class AgentFileRefEvt extends SessionHistoryEvent {
   final String fileId;
-  final String kind; // markdown | text | pdf | html | mermaid
+  final String kind; // markdown | text | pdf | html | mermaid | file
   final String? mime;
   final String? name;
   final int? bytes;

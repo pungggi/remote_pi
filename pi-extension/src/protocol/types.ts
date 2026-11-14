@@ -305,7 +305,8 @@ export type ClientMessage =
   // `agent_file_payload` per request (window = 1 — the app sends the next
   // fetch only after this reply), or one `agent_file_error`. `offset` is a
   // raw byte cursor; reply echoes it with `total` (current file size).
-  | { type: "agent_file_fetch"; id: string; fileId: string; offset: number }
+  // PROTOCOL.md wire key: `file_id` (snake — the app sends exactly this).
+  | { type: "agent_file_fetch"; id: string; file_id: string; offset: number }
   // Plan/100 — interactive extension prompt response (ask_user via pi-ask).
   // Mirrors RpcExtensionUIResponse; the optional `ask` envelope carries
   // pi-ask's structured answer so multi/preview/notes survive the round-trip.
@@ -381,12 +382,12 @@ export type SessionHistoryEvent =
   // file registry sidecar), merged into the history timeline by ts. The app
   // renders an agent_file bubble from metadata and fetches bytes on demand
   // via `agent_file_fetch`. NEVER carries payload data — history wire + app
-  // DB stay free of base64 file bytes.
+  // DB stay free of base64 file bytes. PROTOCOL.md wire key: `file_id`.
   | {
       ts: number;
       type: "agent_file_ref";
-      fileId: string;
-      kind: "markdown" | "text" | "pdf" | "html" | "mermaid";
+      file_id: string;
+      kind: "markdown" | "text" | "pdf" | "html" | "mermaid" | "file";
       mime?: string;
       name?: string;
       bytes?: number;
@@ -481,7 +482,7 @@ export type ServerMessage =
       type: "agent_file";
       id: string;
       in_reply_to: string;
-      kind: "markdown" | "text" | "pdf" | "html" | "mermaid";
+      kind: "markdown" | "text" | "pdf" | "html" | "mermaid" | "file";
       /** Base64-encoded raw file bytes. Text kinds are valid UTF-8. */
       data: string;
       /** Original MIME for display/save (text/markdown, text/plain, text/html,
@@ -502,15 +503,18 @@ export type ServerMessage =
   // the inline-base64 `agent_file` broadcast). The app renders the bubble
   // from metadata and fetches bytes on demand via `agent_file_fetch`.
   // Broadcast + ledger-stamped like every session frame, so journal replay
-  // re-delivers it to owners that attach mid-turn. `id` == `fileId` (stable
-  // dedupe key across live + journal replay + history merge).
+  // re-delivers it to owners that attach mid-turn. `id` == `file_id` (stable
+  // dedupe key across live + journal replay + history merge). PROTOCOL.md
+  // wire key: `file_id` — the app parses `j['file_id']` STRICTLY, so a
+  // camelCase `fileId` here throws at decode and the card never renders
+  // (plan/162 investigation, 2026-11-07).
   | {
       type: "agent_file_ref";
       id: string;
       in_reply_to: string;
-      fileId: string;
+      file_id: string;
       ts: number;
-      kind: "markdown" | "text" | "pdf" | "html" | "mermaid";
+      kind: "markdown" | "text" | "pdf" | "html" | "mermaid" | "file";
       mime?: string;
       /** Basename of the pushed path (display / save name). */
       name?: string;
@@ -527,7 +531,7 @@ export type ServerMessage =
   | {
       type: "agent_file_payload";
       in_reply_to: string;
-      fileId: string;
+      file_id: string;
       /** Raw byte offset this chunk serves (echoes the request). */
       offset: number;
       /** Current file size in bytes (progress total + change detection). */
@@ -545,7 +549,7 @@ export type ServerMessage =
   | {
       type: "agent_file_error";
       in_reply_to: string;
-      fileId: string;
+      file_id: string;
       code: "not_found" | "gone" | "changed" | "busy";
     }
   // Plan/32: pushed after a context compaction (live, and replayed on history

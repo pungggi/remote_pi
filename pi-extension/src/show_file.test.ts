@@ -331,4 +331,78 @@ describe("show_file tool (plan/126)", () => {
       rmSync(path, { force: true });
     }
   });
+
+  // Plan/162 — generic binary kind: save/share-only card, no viewer, no
+  // UTF-8 gate, 50 MiB cap. Motivated by the jwl workflow (.jwlibrary
+  // backups must reach the phone as raw bytes).
+  describe("file kind (plan/162)", () => {
+    const ZIPISH = Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]), // PK\x03\x04 zip magic
+      Buffer.from("rest-of-the-archive"),
+    ]);
+
+    test(".jwlibrary auto-detects kind file (binary bytes, no UTF-8 gate)", async () => {
+      const path = join(dir, "backup.jwlibrary");
+      writeFileSync(path, ZIPISH);
+
+      const tool = captureShowFileTool();
+      const result = await tool.execute("call-jwl", { path });
+
+      expect(result.details).toMatchObject({
+        shown: false, // no peer in this harness
+        kind: "file",
+        path,
+        mime: "application/octet-stream",
+        bytes: ZIPISH.length,
+      });
+      // Binary skips the UTF-8 read: no "not valid UTF-8" rejection.
+      expect(result.details?.error).toBeUndefined();
+      // Metadata-only discipline still holds for binaries.
+      assertNoBase64Payload(result, ZIPISH.toString("base64"));
+    });
+
+    test("archive/office extensions auto-detect kind file", async () => {
+      const tool = captureShowFileTool();
+      for (const name of ["pack.zip", "tool.apk", "sheet.xlsx", "book.epub"]) {
+        const path = join(dir, name);
+        writeFileSync(path, ZIPISH);
+        const result = await tool.execute(`bin-${name}`, { path });
+        expect(result.details?.kind).toBe("file");
+        expect(result.details?.mime).toBe("application/octet-stream");
+        rmSync(path, { force: true });
+      }
+    });
+
+    test("explicit kind=file forces the binary card on an unknown extension", async () => {
+      const path = join(dir, "payload.qtz");
+      writeFileSync(path, ZIPISH);
+
+      const tool = captureShowFileTool();
+      // Without override → unknown extension → rejected.
+      const noKind = await tool.execute("call-bin-a", { path });
+      expect(noKind.details?.shown).toBe(false);
+      expect(noKind.details?.error as string).toContain("unsupported/unknown");
+
+      // With override → accepted as file.
+      const forced = await tool.execute("call-bin-b", { path, kind: "file" });
+      expect(forced.details).toMatchObject({
+        kind: "file",
+        mime: "application/octet-stream",
+        bytes: ZIPISH.length,
+      });
+    });
+
+    test("binary over 50 MiB cap → shown:false 'too large'", async () => {
+      const path = join(dir, "huge.zip");
+      // 51 MiB of zeros — size check fires for kind=file before any read.
+      writeFileSync(path, Buffer.alloc(51 * 1024 * 1024));
+
+      const tool = captureShowFileTool();
+      const result = await tool.execute("call-bin-cap", { path });
+
+      expect(result.details?.shown).toBe(false);
+      expect(result.details?.error as string).toContain("too large");
+      rmSync(path, { force: true });
+    });
+  });
 });

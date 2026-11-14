@@ -105,6 +105,22 @@ class MainActivity : FlutterActivity() {
                             result.error("save_failed", e.message, null)
                         }
                     }
+                    // Plan/163 — open a previously saved Downloads file (content
+                    // URI returned by saveToDownloads) via ACTION_VIEW. Returns
+                    // false when no app handles the MIME type (Dart toasts);
+                    // throws only on unexpected failures.
+                    "openSavedFile" -> {
+                        val uri = call.argument<String>("uri")
+                        val mime = call.argument<String>("mime")
+                        if (uri.isNullOrBlank()) {
+                            result.error("bad_args", "uri required", null)
+                        } else try {
+                            result.success(openSavedFile(uri, mime))
+                        } catch (e: Exception) {
+                            Log.w(TAG, "open failed: ${e.javaClass.simpleName}: ${e.message}")
+                            result.error("open_failed", e.message, null)
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -388,10 +404,12 @@ class MainActivity : FlutterActivity() {
     }
 
     // Plan/158 — insert [bytes] into MediaStore Downloads under [name] (with
-    // [mime] when provided) and stream them in. Returns the stored display
-    // name (MediaStore auto-dedupes "report.pdf" → "report (1).pdf"). Throws
-    // on insertion/stream failure; the Dart side surfaces the error toast.
-    private fun saveToDownloads(name: String, mime: String?, bytes: ByteArray): String {
+    // [mime] when provided) and stream them in. Returns {name, uri}: the
+    // stored display name (MediaStore auto-dedupes "report.pdf" →
+    // "report (1).pdf") and the content URI so Dart can offer an Open link
+    // (plan/163). Throws on insertion/stream failure; the Dart side surfaces
+    // the error toast.
+    private fun saveToDownloads(name: String, mime: String?, bytes: ByteArray): Map<String, String> {
         val safe = name.substringAfterLast('/').substringAfterLast('\\')
             .trim().ifBlank { "file" }
         val values = android.content.ContentValues().apply {
@@ -410,7 +428,25 @@ class MainActivity : FlutterActivity() {
             .query(uri, arrayOf(android.provider.MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)
             ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
             ?: safe
-        Log.d(TAG, "saved $stored (${bytes.size} bytes) to Downloads")
-        return stored
+        Log.d(TAG, "saved $stored (${bytes.size} bytes) to Downloads: $uri")
+        return mapOf("name" to stored, "uri" to uri.toString())
+    }
+
+    // Plan/163 — VIEW the saved file. The app owns the MediaStore entry, so
+    // a temporary read grant is enough for the target activity. Returns
+    // false (not an error) when nothing handles the type — the file exists,
+    // there is just no viewer for it.
+    private fun openSavedFile(uri: String, mime: String?): Boolean {
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(Uri.parse(uri), mime ?: "*/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        return try {
+            startActivity(intent)
+            true
+        } catch (e: android.content.ActivityNotFoundException) {
+            Log.d(TAG, "no activity for $uri ($mime)")
+            false
+        }
     }
 }

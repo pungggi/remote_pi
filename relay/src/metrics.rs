@@ -7,7 +7,9 @@
 //! was identical to the previous one, or because the peer transition wasn't
 //! real). A periodic reporter task drains them every 10 s.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use tracing::info;
 
@@ -28,6 +30,35 @@ pub struct FirehoseMetrics {
     /// `rooms` snapshot frames suppressed because identical to the
     /// previous reply on the same (WS conn, target_peer) pair.
     rooms_suppressed: AtomicU64,
+    /// Plan/164 measurement — per-conn `rooms_check` poll counts, drained
+    /// every window. Attributes rooms traffic to the asking connection
+    /// (phone app, cockpit, keeper, …) so a firehose flood has a name.
+    rooms_poll_by_conn: Mutex<HashMap<String, u64>>,
+    /// Plan/164 measurement — `rooms` replies sent, keyed by RECEIVING conn.
+    /// Counted per (conn, target): a multi-target `rooms_check` frame makes
+    /// `rooms_sent` exceed `rooms_poll` (which counts frames) — keep that in
+    /// mind when reading the ratio in the window line.
+    rooms_sent_by_conn: Mutex<HashMap<String, u64>>,
+    /// Plan/164 measurement — `rooms` replies sent, keyed by TARGET peer.
+    rooms_sent_by_target: Mutex<HashMap<String, u64>>,
+}
+
+/// Plan/164 measurement — drains a per-key counter map and renders the top
+/// 3 entries as `id8=count, …` (peer ids truncated to 8 chars for greppable,
+/// compact log lines). Empty maps render as `-`.
+fn drain_top3(map: &Mutex<HashMap<String, u64>>) -> String {
+    let Ok(mut m) = map.lock() else { return "-".to_string() };
+    if m.is_empty() {
+        return "-".to_string();
+    }
+    let mut entries: Vec<(String, u64)> = m.drain().collect();
+    entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    entries
+        .into_iter()
+        .take(3)
+        .map(|(k, v)| format!("{}={}", k.chars().take(8).collect::<String>(), v))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 impl FirehoseMetrics {
@@ -59,6 +90,26 @@ impl FirehoseMetrics {
         self.rooms_suppressed.fetch_add(n, Ordering::Relaxed);
     }
 
+    /// Plan/164 measurement — one `rooms_check` control frame arrived on
+    /// the WS conn authenticated as `conn_peer` (counted once per frame,
+    /// NOT per target peer inside it).
+    pub fn note_rooms_poll(&self, conn_peer: &str) {
+        if let Ok(mut m) = self.rooms_poll_by_conn.lock() {
+            *m.entry(conn_peer.to_string()).or_insert(0) += 1;
+        }
+    }
+
+    /// Plan/164 measurement — one `rooms` reply frame actually sent to
+    /// `conn_peer` describing `target_peer`'s rooms.
+    pub fn note_rooms_sent(&self, conn_peer: &str, target_peer: &str) {
+        if let Ok(mut m) = self.rooms_sent_by_conn.lock() {
+            *m.entry(conn_peer.to_string()).or_insert(0) += 1;
+        }
+        if let Ok(mut m) = self.rooms_sent_by_target.lock() {
+            *m.entry(target_peer.to_string()).or_insert(0) += 1;
+        }
+    }
+
     /// Atomically drains every counter and, if anything happened in the
     /// window, emits a single structured `info!` line with the totals.
     /// Quiet windows are silent (no log spam when nothing's going on).
@@ -78,6 +129,9 @@ impl FirehoseMetrics {
         if total == 0 {
             return;
         }
+        let poll_top = drain_top3(&self.rooms_poll_by_conn);
+        let sent_conn_top = drain_top3(&self.rooms_sent_by_conn);
+        let sent_target_top = drain_top3(&self.rooms_sent_by_target);
         info!(
             target: "firehose",
             peer_online_emitted = peer_online_emit,
@@ -86,6 +140,9 @@ impl FirehoseMetrics {
             presence_suppressed = presence_supp,
             rooms_emitted = rooms_emit,
             rooms_suppressed = rooms_supp,
+            rooms_poll_top = %poll_top,
+            rooms_sent_conn_top = %sent_conn_top,
+            rooms_sent_target_top = %sent_target_top,
             "firehose 10s window"
         );
     }

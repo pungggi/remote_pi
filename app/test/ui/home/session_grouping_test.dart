@@ -37,7 +37,7 @@ void main() {
         MaterialApp(
           home: Scaffold(
             body: HomeGroupingControl(
-              value: HomeGroupBy.model,
+              value: HomeGroupBy.provider,
               onChanged: (value) => changed = value,
             ),
           ),
@@ -47,9 +47,9 @@ void main() {
       final control = tester.widget<SegmentedButton<HomeGroupBy>>(
         find.byType(SegmentedButton<HomeGroupBy>),
       );
-      expect(control.selected, {HomeGroupBy.model});
+      expect(control.selected, {HomeGroupBy.provider});
       expect(find.text('GROUP BY'), findsOneWidget);
-      expect(find.text('Model'), findsOneWidget);
+      expect(find.text('Provider'), findsOneWidget);
       expect(find.text('Repo'), findsOneWidget);
 
       await tester.tap(find.text('Repo'));
@@ -69,6 +69,27 @@ void main() {
 
       expect(find.text('pungggi/pi-reflex'), findsOneWidget);
       expect(find.text('2'), findsOneWidget);
+    });
+  });
+
+  group('ModelGroupLabel (plan/161)', () {
+    testWidgets('shows model name and count only — no usage, no bar',
+        (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: ModelGroupLabel(label: 'GLM 4.7', count: 2),
+          ),
+        ),
+      );
+
+      expect(find.text('GLM 4.7'), findsOneWidget);
+      expect(find.text('2'), findsOneWidget);
+      // The sub-header owns NO quota surface: usage lives once on the
+      // provider header.
+      expect(find.byType(LinearProgressIndicator), findsNothing);
+      expect(find.textContaining('5h'), findsNothing);
+      expect(find.textContaining('🔄'), findsNothing);
     });
   });
 
@@ -349,7 +370,7 @@ void main() {
 
     test('null when every session is offline (stale quota stays hidden)', () {
       final g = groupOf([item('a', usage: planUsageFixture), item('b')]);
-      expect(firstOnlinePlanUsage(g, (_) => false), isNull);
+      expect(firstOnlinePlanUsage(g.items, (_) => false), isNull);
     });
 
     test('first ONLINE session with usage wins', () {
@@ -357,20 +378,20 @@ void main() {
         item('offline-with-usage', usage: planUsageFixture),
         item('live'),
       ]);
-      expect(firstOnlinePlanUsage(g, (it) => it.room.roomId == 'live'), isNull,
+      expect(firstOnlinePlanUsage(g.items, (it) => it.room.roomId == 'live'), isNull,
           reason: 'the online room has no usage; offline data must not leak');
 
       final g2 = groupOf([
         item('a', usage: planUsageFixture),
         item('b', usage: planUsageFixture),
       ]);
-      final got = firstOnlinePlanUsage(g2, (it) => it.room.roomId == 'b');
+      final got = firstOnlinePlanUsage(g2.items, (it) => it.room.roomId == 'b');
       expect(got?.provider, 'zai');
     });
 
     test('no usage anywhere → null even when online', () {
       final g = groupOf([item('a'), item('b')]);
-      expect(firstOnlinePlanUsage(g, (_) => true), isNull);
+      expect(firstOnlinePlanUsage(g.items, (_) => true), isNull);
     });
   });
 

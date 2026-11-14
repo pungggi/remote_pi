@@ -126,6 +126,53 @@ void main() {
       expect(r.caption, isNull);
       expect(r.allowNetwork, isFalse);
     });
+
+    // Plan/162 regression (2026-11-07): extensions built before the fix
+    // broadcast camelCase `fileId` — the app must still parse (a strict
+    // file_id-only read made EVERY card decode-drop silently: no render,
+    // ledger hole, permanent replays). And with NEITHER key present the
+    // frame is a protocol violation: still throws (decode-drop + counter).
+    test('legacy camelCase fileId frame still parses (old extensions)', () {
+      final r = ServerMessage.fromJson({
+        'type': 'agent_file_ref',
+        'id': 'af_3',
+        'fileId': 'af_3',
+        'kind': 'file',
+        'name': 'backup.jwlibrary',
+        'bytes': 62367,
+      }) as AgentFileRef;
+      expect(r.fileId, 'af_3');
+      expect(r.id, 'af_3');
+      expect(r.kind, 'file');
+      expect(r.name, 'backup.jwlibrary');
+
+      // payload + error accept the camel key too.
+      final p = ServerMessage.fromJson({
+        'type': 'agent_file_payload',
+        'fileId': 'af_3',
+        'offset': 0,
+        'total': 10,
+        'data': 'AA==',
+        'more': false,
+      }) as AgentFilePayload;
+      expect(p.fileId, 'af_3');
+      final e = ServerMessage.fromJson({
+        'type': 'agent_file_error',
+        'fileId': 'af_3',
+        'code': 'gone',
+      }) as AgentFileError;
+      expect(e.fileId, 'af_3');
+    });
+
+    test('neither file_id nor fileId → still throws (protocol violation)', () {
+      expect(
+        () => ServerMessage.fromJson({
+          'type': 'agent_file_ref',
+          'kind': 'markdown',
+        }),
+        throwsA(isA<TypeError>()),
+      );
+    });
   });
 
   group('plan/158 agent_file_payload', () {

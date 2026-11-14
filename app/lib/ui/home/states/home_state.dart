@@ -63,6 +63,105 @@ class HomeGroup {
   });
 }
 
+/// Plan/161 — one provider section of the Home session list: a provider
+/// header (carrying the subscription usage ONCE — it is account-scoped)
+/// with model groups nested under it.
+class HomeProviderSection {
+  /// Display label (pretty provider name; 'Unknown provider' for the
+  /// fallback section).
+  final String label;
+
+  /// Wire slug ('zai', …); `null` for the fallback section.
+  final String? slug;
+
+  /// Model groups nested under this provider (each sorted as
+  /// [groupHomeItems] sorts them).
+  final List<HomeGroup> models;
+
+  final bool isFallback;
+
+  const HomeProviderSection({
+    required this.label,
+    required this.models,
+    this.slug,
+    this.isFallback = false,
+  });
+
+  /// Total session tiles across the section's model groups.
+  int get itemCount => models.fold(0, (n, g) => n + g.items.length);
+
+  /// Every item in the section, in display order.
+  Iterable<HomeItem> get items sync* {
+    for (final g in models) {
+      yield* g.items;
+    }
+  }
+}
+
+/// Plan/161 — pretty display names for provider slugs the app knows;
+/// unknown slugs fall back to the raw wire value (never a lie, never a
+/// crash on a new provider).
+String providerDisplayName(String slug) {
+  final key = slug.toLowerCase();
+  const names = <String, String>{
+    'zai': 'z.ai',
+    'anthropic': 'Anthropic',
+    'openai': 'OpenAI',
+    'google': 'Google',
+    'moonshot': 'Moonshot',
+    'kimi-coding': 'Kimi',
+    'openrouter': 'OpenRouter',
+    'groq': 'Groq',
+    'mistral': 'Mistral',
+    'xai': 'xAI',
+    'deepseek': 'DeepSeek',
+  };
+  return names[key] ?? slug;
+}
+
+/// Plan/161 — two-level projection: bucket sessions by the provider slug
+/// the room reports, then group each bucket by model. Providers sort
+/// alphabetically; the no-provider fallback section sorts last (offline
+/// caches from older extensions, keeper mirrors). Repo grouping is
+/// unaffected (see [groupHomeItems]).
+List<HomeProviderSection> groupHomeItemsByProvider(
+  Iterable<HomeItem> source, {
+  GitStatus? Function(HomeItem item)? gitFor,
+}) {
+  final bySlug = <String, List<HomeItem>>{};
+  final noProvider = <HomeItem>[];
+  for (final item in source) {
+    final slug = item.room.provider?.trim();
+    if (slug == null || slug.isEmpty) {
+      noProvider.add(item);
+    } else {
+      bySlug.putIfAbsent(slug.toLowerCase(), () => []).add(item);
+    }
+  }
+  final sections = <HomeProviderSection>[
+    for (final entry in bySlug.entries)
+      HomeProviderSection(
+        label: providerDisplayName(entry.key),
+        slug: entry.key,
+        models: groupHomeItems(entry.value, HomeGroupBy.provider),
+      ),
+  ];
+  if (noProvider.isNotEmpty) {
+    sections.add(
+      HomeProviderSection(
+        label: 'Unknown provider',
+        models: groupHomeItems(noProvider, HomeGroupBy.provider),
+        isFallback: true,
+      ),
+    );
+  }
+  sections.sort((a, b) {
+    if (a.isFallback != b.isFallback) return a.isFallback ? 1 : -1;
+    return a.label.toLowerCase().compareTo(b.label.toLowerCase());
+  });
+  return sections;
+}
+
 /// Groups sessions by model or repository while retaining their existing
 /// tiles and actions. Fallback sections sort last so known values stay
 /// prominent; keeper mirrors sort after live sessions within each section.
@@ -100,16 +199,16 @@ List<HomeGroup> groupHomeItems(
   return result;
 }
 
-/// Plan/156 — subscription usage to paint on a model group's header: the
+/// Plan/156 — subscription usage to paint on a group/section header: the
 /// first ONLINE session's provider plan usage. Null when every session in
-/// the group is offline (stale quota must never read as live) or the
+/// the scope is offline (stale quota must never read as live) or the
 /// provider has no usage probe. Pure so tests can drive it with a fake
 /// online predicate.
 PlanUsage? firstOnlinePlanUsage(
-  HomeGroup group,
+  Iterable<HomeItem> items,
   bool Function(HomeItem item) isOnline,
 ) {
-  for (final item in group.items) {
+  for (final item in items) {
     if (!isOnline(item)) continue;
     final usage = item.room.planUsage;
     if (usage != null) return usage;
@@ -132,7 +231,10 @@ class _ItemGrouping {
 
 _ItemGrouping _grouping(HomeItem item, HomeGroupBy groupBy, GitStatus? git) {
   switch (groupBy) {
-    case HomeGroupBy.model:
+    // Plan/161 — the provider value groups by MODEL at this level: the
+    // model nesting lives INSIDE a provider section (groupHomeItemsByProvider
+    // calls this per provider bucket); repo grouping stays flat.
+    case HomeGroupBy.provider:
       final model = item.room.model?.trim();
       final known = model != null && model.isNotEmpty;
       final label = known ? model : 'Unknown model';
@@ -216,7 +318,7 @@ class HomeList extends HomeState {
     required this.peers,
     this.statusByEpk = const {},
     this.roomsByPeer = const {},
-    this.groupBy = HomeGroupBy.model,
+    this.groupBy = HomeGroupBy.provider,
     this.gitByKey = const {},
     this.showReliabilityBanner = false,
     this.showInsecureTransportBanner = false,

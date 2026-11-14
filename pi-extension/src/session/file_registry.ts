@@ -27,7 +27,8 @@ export interface AgentFileRegistryEntry {
   fileId: string;
   /** Push time (ms) — orders the ref inside session history. */
   ts: number;
-  /** Viewer kind (markdown/text/pdf/html/mermaid). */
+  /** Viewer kind (markdown/text/pdf/html/mermaid) or save/share-only binary
+   *  (file, plan/162). */
   kind: string;
   mime?: string;
   /** Basename for display + save-as name on the phone. */

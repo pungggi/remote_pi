@@ -2080,13 +2080,13 @@ describe("multi-channel broadcast (W2D)", () => {
       .map(decodeSentCt)
       .filter((d) => d.inner.type === "agent_file_ref")
       .map((d) => d.inner as {
-        id: string; in_reply_to: string; fileId: string; ts: number;
+        id: string; in_reply_to: string; file_id: string; ts: number;
         kind: string; mime?: string; name?: string; bytes?: number;
         caption?: string; allow_network?: boolean; data?: string;
       });
     let docs = refFrames(sendsBefore);
     expect(docs).toHaveLength(2);
-    expect(docs[0]!.fileId).toBe(docs[1]!.fileId); // one push → one fileId, two owners
+    expect(docs[0]!.file_id).toBe(docs[1]!.file_id); // one push → one fileId, two owners
     const md = docs[0]!;
     expect(md.kind).toBe("markdown");
     expect(md.mime).toBe("text/markdown");
@@ -2096,7 +2096,7 @@ describe("multi-channel broadcast (W2D)", () => {
     expect(md.in_reply_to).toBe("");
     expect(md.allow_network).toBeUndefined();
     expect(typeof md.ts).toBe("number");
-    expect(md.id).toBe(md.fileId);
+    expect(md.id).toBe(md.file_id);
     // METADATA ONLY (plan/158): no base64 payload ever crosses the wire.
     expect(md.data).toBeUndefined();
     expect(JSON.stringify(docs)).not.toContain(Buffer.from(mdBody).toString("base64"));
@@ -7510,6 +7510,9 @@ describe("model meta", () => {
     expect(capturedOpts[0]!.roomMeta?.model).toBe("claude-sonnet-4.5");
     expect(capturedOpts[0]!.roomMeta?.name).toBeTruthy();
     expect(capturedOpts[0]!.roomMeta?.cwd).toBe("/tmp/remote-pi-model-test");
+    // Plan/161 — a model WITHOUT a provider must omit the key (absent =
+    // unknown), never publish a bogus slug.
+    expect(capturedOpts[0]!.roomMeta?.provider).toBeUndefined();
   });
 
   test("hello carries `model` from getModel() when ctx.model is absent (daemon path)", async () => {
@@ -7532,6 +7535,40 @@ describe("model meta", () => {
 
     expect(capturedOpts).toHaveLength(1);
     expect(capturedOpts[0]!.roomMeta?.model).toBe("claude-opus-4.8");
+  });
+
+  test("plan/161: the provider slug rides the hello and model updates", async () => {
+    const capturedOpts: Array<{ roomMeta?: { model?: string; provider?: string } }> = [];
+    _defaultConnectImpl = async (opts?: unknown) => {
+      capturedOpts.push(opts as { roomMeta?: { model?: string; provider?: string } });
+    };
+
+    captureHandler("remote-pi");
+    const ctx = {
+      ui: { notify: vi.fn() },
+      cwd: "/tmp/remote-pi-provider-wire",
+      abort: vi.fn(),
+      getModel: () => ({ id: "glm-4-7", name: "GLM 4.7", provider: "zai" }),
+    } as unknown as ReturnType<typeof makeMockCtx>;
+    await _connectForTest(ctx);
+
+    // Hello: the provider resolved at connect rides the announce, so the
+    // app can group by provider from the very first room_announced (before
+    // any model update fires).
+    expect(capturedOpts[0]!.roomMeta?.model).toBe("GLM 4.7");
+    expect(capturedOpts[0]!.roomMeta?.provider).toBe("zai");
+
+    // A model_select update carries the provider next to the model — a
+    // provider switch publishes the NEW slug so the app re-groups live.
+    const onModelSelect = captureEventHandler("model_select");
+    onModelSelect({ type: "model_select", model: { name: "Kimi K3.1", provider: "kimi-coding" } });
+    const updates = relayRef.current!.sendControl.mock.calls
+      .map((c) => c[0] as { type: string; meta?: { model?: string; provider?: string } })
+      .filter((f) => f.type === "room_meta_update" && f.meta?.model);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.meta?.provider).toBe("kimi-coding");
+    // The cached room_meta carries it too (reconnect hello must not lose it).
+    expect(ext.myRoomMeta?.provider).toBe("kimi-coding");
   });
 
   test("hello omits `model` when ctx has none AND no default is configured", async () => {

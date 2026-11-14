@@ -107,7 +107,9 @@ void main() {
         },
       );
 
-      final groups = groupHomeItems(list.items(), HomeGroupBy.model);
+      // Plan/161 — the provider enum value drives the MODEL level (the
+      // nesting inside a provider section).
+      final groups = groupHomeItems(list.items(), HomeGroupBy.provider);
       expect(groups.map((group) => group.label), [
         'GLH-5.3',
         'Kimi K3.1 Pro',
@@ -228,6 +230,101 @@ void main() {
       final groups = groupHomeItems(list.items(), HomeGroupBy.repository);
       expect(groups.single.label, 'local-repo');
       expect(groups.single.isFallback, isFalse);
+    });
+  });
+
+  group('groupHomeItemsByProvider() (plan/161)', () {
+    test('nests model groups under one provider section; usage scope is the section', () {
+      final list = HomeList(
+        peers: [_peer('A')],
+        roomsByPeer: {
+          'A': const [
+            RoomInfo(roomId: 'a', startedAt: 1, model: 'GLM 4.7', provider: 'zai'),
+            RoomInfo(roomId: 'b', startedAt: 2, model: 'GLM 4.7', provider: 'zai'),
+            RoomInfo(roomId: 'c', startedAt: 3, model: 'GLM 4.6', provider: 'zai'),
+            RoomInfo(roomId: 'd', startedAt: 4, model: 'Kimi K3.1', provider: 'kimi-coding'),
+          ],
+        },
+      );
+
+      final sections = groupHomeItemsByProvider(list.items());
+      expect(sections.map((s) => s.label), ['Kimi', 'z.ai'],
+          reason: 'pretty names, alphabetical, fallback last');
+
+      final zai = sections.singleWhere((s) => s.slug == 'zai');
+      expect(zai.models.map((m) => m.label), ['GLM 4.6', 'GLM 4.7'],
+          reason: 'model groups sorted inside the section');
+      expect(zai.itemCount, 3);
+      expect(
+        zai.models.first.items.map((i) => i.room.roomId),
+        ['c'],
+        reason: 'tiles keep their group ordering',
+      );
+      expect(zai.models.last.items.map((i) => i.room.roomId), ['a', 'b']);
+    });
+
+    test('rooms without a provider land in the fallback section, last', () {
+      final list = HomeList(
+        peers: [_peer('A')],
+        roomsByPeer: {
+          'A': const [
+            RoomInfo(roomId: 'old', startedAt: 1, model: 'GLM 4.7'),
+            RoomInfo(roomId: 'none', startedAt: 2),
+            RoomInfo(roomId: 'z', startedAt: 3, model: 'Kimi K3.1', provider: 'kimi-coding'),
+          ],
+        },
+      );
+
+      final sections = groupHomeItemsByProvider(list.items());
+      expect(sections.map((s) => s.label), ['Kimi', 'Unknown provider']);
+      final fallback = sections.last;
+      expect(fallback.isFallback, isTrue);
+      expect(fallback.slug, isNull);
+      expect(fallback.models.map((m) => m.label), ['GLM 4.7', 'Unknown model']);
+    });
+
+    test('unknown slugs display as the raw slug', () {
+      expect(providerDisplayName('zai'), 'z.ai');
+      expect(providerDisplayName('anthropic'), 'Anthropic');
+      expect(providerDisplayName('acme-llm'), 'acme-llm');
+    });
+
+    test('section-scoped usage: ANY online item of the provider supplies the header', () {
+      const usage = PlanUsage(provider: 'zai', fetchedAt: 1, windows: [
+        PlanUsageWindow(kind: 'time', label: '5h', percent: 10, minutes: 300),
+      ]);
+      final list = HomeList(
+        peers: [_peer('A')],
+        roomsByPeer: {
+          'A': const [
+            // Usage sits on the GLM 4.6 room. The header is section-scoped,
+            // so the quota must surface for the whole z.ai section even
+            // though a DIFFERENT model group's room carries it.
+            RoomInfo(
+              roomId: 'a',
+              startedAt: 1,
+              model: 'GLM 4.7',
+              provider: 'zai',
+            ),
+            RoomInfo(
+              roomId: 'b',
+              startedAt: 2,
+              model: 'GLM 4.6',
+              provider: 'zai',
+              planUsage: usage,
+            ),
+          ],
+        },
+      );
+
+      final zai = groupHomeItemsByProvider(list.items()).single;
+      final got = firstOnlinePlanUsage(
+        zai.items,
+        (it) => it.room.roomId == 'b',
+      );
+      expect(got?.provider, 'zai');
+      // All offline → hidden (plan/156 gating, now section-scoped).
+      expect(firstOnlinePlanUsage(zai.items, (_) => false), isNull);
     });
   });
 }

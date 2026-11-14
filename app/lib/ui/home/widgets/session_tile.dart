@@ -61,13 +61,15 @@ class SessionTile extends StatelessWidget {
   /// the git BRANCH where the folder/repo name used to sit — the group
   /// header already carries the repository, so the branch is what tells
   /// worktree sessions apart (an explicit room name still wins). **By
-  /// model**: the model never renders on the tile (the group header owns
-  /// it); the subtitle shows the last user prompt preview instead.
+  /// provider** (plan/161): the model never renders on the tile (the
+  /// model sub-label owns it); the subtitle shows the last user prompt
+  /// preview instead.
   final HomeGroupBy groupBy;
 
-  /// Grouped Home (by-model) — single-line preview of the session's last
-  /// user prompt (already collapsed + capped by the view model). `null`
-  /// when unknown; the subtitle then falls back to git / "Last paired".
+  /// Grouped Home (provider mode) — single-line preview of the session's
+  /// last user prompt (already collapsed + capped by the view model).
+  /// `null` when unknown; the subtitle then falls back to git / "Last
+  /// paired".
   final String? lastPrompt;
 
   /// Plan/160 — when the session's last agent response landed. Joins the
@@ -117,7 +119,7 @@ class SessionTile extends StatelessWidget {
     this.room,
     this.deviceLabel,
     this.git,
-    this.groupBy = HomeGroupBy.model,
+    this.groupBy = HomeGroupBy.provider,
     this.lastPrompt,
     this.isReconnecting = false,
     this.isWorking = false,
@@ -251,7 +253,7 @@ class SessionTile extends StatelessWidget {
   /// in sync with [_TitleBlock._buildSubtitle].
   int get _cyclableLines {
     final hasGit = git != null;
-    final hasSecondary = groupBy == HomeGroupBy.model
+    final hasSecondary = groupBy == HomeGroupBy.provider
         ? (lastPrompt?.trim().isNotEmpty ?? false)
         : (room?.model ?? '').isNotEmpty;
     return (hasGit ? 1 : 0) +
@@ -409,7 +411,7 @@ class _TitleBlock extends StatelessWidget {
     required this.room,
     this.git,
     this.deviceLabel,
-    this.groupBy = HomeGroupBy.model,
+    this.groupBy = HomeGroupBy.provider,
     this.lastPrompt,
     this.lastResponseAt,
     this.phase = 0,
@@ -571,9 +573,10 @@ class _TitleBlock extends StatelessWidget {
     );
 
     Widget? secondaryLine() {
-      // By-model: the prompt replaces the model phase entirely — the group
-      // header already names the model. By-repo keeps the model line.
-      if (groupBy == HomeGroupBy.model) {
+      // Provider-grouped (plan/161: the model sub-label owns the model
+      // name): the prompt replaces the model phase entirely. By-repo keeps
+      // the model line.
+      if (groupBy == HomeGroupBy.provider) {
         return hasPrompt ? promptLine() : null;
       }
       return hasModel ? modelLine() : null;

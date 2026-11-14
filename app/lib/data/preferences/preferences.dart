@@ -25,7 +25,11 @@ enum KeepAliveMode {
 }
 
 /// How the Home session list groups its tiles.
-enum HomeGroupBy { model, repository }
+///
+/// Plan/161 — the former `model` value became `provider` (the model view
+/// nests provider ▸ model). Stored `'model'` prefs migrate on read in
+/// [Preferences._load].
+enum HomeGroupBy { provider, repository }
 
 /// Plan 131 (upstream #114) — user font-size preference. Applied on top of
 /// the OS text scale by composing the ambient `TextScaler` (see
@@ -52,7 +56,7 @@ enum UiFontScale {
 class Preferences extends ChangeNotifier {
   final FlutterSecureStorage _store;
   bool _hideToolCalls = false;
-  HomeGroupBy _homeGroupBy = HomeGroupBy.model;
+  HomeGroupBy _homeGroupBy = HomeGroupBy.provider;
   String? _selectedPeerEpk;
   String? _relayUrl;
   // Plan 115 — LAN candidate URLs for the global relay, learned from the
@@ -166,9 +170,13 @@ class Preferences extends ChangeNotifier {
     }
 
     final groupByRaw = await _store.read(key: _kHomeGroupByKey);
+    // Plan/161 — the `model` value became `provider` (provider ▸ model
+    // nesting); migrate stored prefs so an upgrade keeps the user's
+    // "model-grouped" choice, just under its new name.
+    final migrated = groupByRaw == 'model' ? 'provider' : groupByRaw;
     final groupBy = HomeGroupBy.values.firstWhere(
-      (value) => value.name == groupByRaw,
-      orElse: () => HomeGroupBy.model,
+      (value) => value.name == migrated,
+      orElse: () => HomeGroupBy.provider,
     );
     if (groupBy != _homeGroupBy) {
       _homeGroupBy = groupBy;

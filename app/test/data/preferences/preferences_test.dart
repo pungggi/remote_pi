@@ -439,11 +439,11 @@ void main() {
     });
 
     group('homeGroupBy', () {
-      test('defaults to model and survives a cold start', () async {
+      test('defaults to provider and survives a cold start', () async {
         final store = _FakeSecureStorage();
         final prefs = Preferences(store);
         await prefs.load();
-        expect(prefs.homeGroupBy, HomeGroupBy.model);
+        expect(prefs.homeGroupBy, HomeGroupBy.provider);
 
         await prefs.setHomeGroupBy(HomeGroupBy.repository);
         expect(
@@ -456,12 +456,23 @@ void main() {
         expect(reloaded.homeGroupBy, HomeGroupBy.repository);
       });
 
-      test('unknown persisted values fall back to model', () async {
+      test('unknown persisted values fall back to provider', () async {
         final store = _FakeSecureStorage();
         await store.write(key: 'prefs.home_group_by', value: 'colour');
         final prefs = Preferences(store);
         await prefs.load();
-        expect(prefs.homeGroupBy, HomeGroupBy.model);
+        expect(prefs.homeGroupBy, HomeGroupBy.provider);
+      });
+
+      test("plan/161: a stored 'model' preference migrates to provider", () async {
+        // The enum's `model` value became `provider` (the model view nests
+        // provider ▸ model). A user who chose model grouping must land in
+        // the new view, not silently flip to a default.
+        final store = _FakeSecureStorage();
+        await store.write(key: 'prefs.home_group_by', value: 'model');
+        final prefs = Preferences(store);
+        await prefs.load();
+        expect(prefs.homeGroupBy, HomeGroupBy.provider);
       });
     });
   });
