@@ -113,6 +113,12 @@ export function formatModelLines(
 /** Format the single plan/28 ServerMessage reply into tool text. */
 function _formatLocalReply(sm: ServerMessage): LocalOutcome {
   if (sm.type === "action_ok") {
+    if (sm.action === "session_shutdown") {
+      return {
+        text: "OK: shutdown accepted. Finish your turn — the process exits when it settles.",
+        ok: true,
+      };
+    }
     return { text: `OK: "${sm.action}" dispatched. Effects arrive through the normal channels.`, ok: true };
   }
   if (sm.type === "action_error") {
@@ -156,6 +162,13 @@ async function _remoteControl(
   if (res.action === "list_models") {
     const lines = formatModelLines(res.models ?? [], res.current);
     return { text: lines.length > 0 ? lines.join("\n") : "(no models available)", ok: true, details: res };
+  }
+  if (res.action === "session_shutdown") {
+    return {
+      text: `OK on "${target}": shutdown accepted. The peer exits when its current turn settles and disappears from list_peers.`,
+      ok: true,
+      details: res,
+    };
   }
   if (res.action === "spawn_worktree") {
     const where = res.path ? `\npath: ${res.path}` : "";
@@ -259,6 +272,35 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
       const out = t && "target" in t
         ? await _remoteControl(peer!, t.target, { op: "session_new" })
         : _formatLocalReply(await deps.dispatchLocal({ type: "session_new", id: newControlId() }));
+      return { content: [{ type: "text", text: out.text }], details: { ok: out.ok } };
+    },
+  });
+
+  // ── session_shutdown ───────────────────────────────────────────────────────
+  pi.registerTool<never, { ok: boolean }>({
+    name: "session_shutdown",
+    label: "Session Shutdown",
+    description:
+      "Gracefully END a pi session's process — your own when `target` is omitted, " +
+      "or another agent's by address. Graceful: the reply goes out first, then the " +
+      "shutdown defers until the session's current turn settles — a busy session " +
+      "accepts it and exits when its turn finishes. Uncommitted work stays in the " +
+      "worktree; the visible terminal remains (exited pi). Use on workers that " +
+      "finished their task; prefer session_reset to keep the process alive.",
+    promptSnippet:
+      "session_shutdown({target?}): gracefully end a session's process — self or peer. Deferred until the current turn settles.",
+    parameters: jsonSchema({
+      type: "object",
+      properties: { target: TargetParam },
+    }),
+    execute: async (_id, params) => {
+      const { target } = params as { target?: string };
+      const peer = deps.getPeer();
+      const t = _resolveTarget(peer, target);
+      if (t && "error" in t) return { content: [{ type: "text", text: t.error }], details: { ok: false } };
+      const out = t && "target" in t
+        ? await _remoteControl(peer!, t.target, { op: "session_shutdown" })
+        : _formatLocalReply(await deps.dispatchLocal({ type: "session_shutdown", id: newControlId(), defer_if_busy: true }));
       return { content: [{ type: "text", text: out.text }], details: { ok: out.ok } };
     },
   });

@@ -206,7 +206,7 @@ const mcp = new McpServer(
       "Use list_peers to discover available agents and mesh_status to inspect your own canonical mesh address.",
       "Use agent_send to send messages — pass the exact address returned by list_peers (form `<cwd>@<name>`, `<pc>:` prefix cross-PC) VERBATIM; never build one by hand.",
       "Use wait_for_message when you have sent a request to another agent and want to block until their reply arrives.",
-      "Use the session-control tools (session_compact, session_reset, model_set, list_models, spawn_worktree) to manage a Pi peer's session by address — every one takes a required `target`.",
+      "Use the session-control tools (session_compact, session_reset, session_shutdown, model_set, list_models, spawn_worktree) to manage a Pi peer's session by address — every one takes a required `target`.",
       'Use "broadcast" as the target to send to all peers in your folder (cwd) at once.',
       "Follow the agent-network protocol for ACK statuses, replies via re, `<cwd>@<name>` addresses, and cross-PC `<pc>:` prefixes.",
     ].join("\n"),
@@ -456,6 +456,13 @@ mcp.registerTool("session_reset", {
     target: z.string().describe("Peer address from list_peers, echoed verbatim"),
   },
 }, async ({ target }) => controlRequest(target, { op: "session_new" }));
+
+mcp.registerTool("session_shutdown", {
+  description: "Gracefully END a remote Pi peer's session process (plan/166). The peer replies first, then exits when its current turn settles. Uncommitted work stays in the worktree. Destructive — for workers that finished their task.",
+  inputSchema: {
+    target: z.string().describe("Peer address from list_peers, echoed verbatim"),
+  },
+}, async ({ target }) => controlRequest(target, { op: "session_shutdown" }));
 
 mcp.registerTool("model_set", {
   description: "Switch a remote Pi peer's model (live + persisted default). Use list_models on that peer first.",

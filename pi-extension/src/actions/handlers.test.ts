@@ -203,6 +203,22 @@ describe("handleSessionShutdown", () => {
     }]);
   });
 
+  test("busy + defer_if_busy (plan/166 mesh path) accepts and defers instead of refusing", () => {
+    let shutdownCalled = false;
+    const ctx: ActionCtx = {
+      isIdle: () => false,
+      shutdown: () => { shutdownCalled = true; },
+    };
+    const sender = makeSender();
+    const accepted = handleSessionShutdown(ctx, sender, { type: "session_shutdown", id: "q3", defer_if_busy: true });
+
+    expect(accepted).toBe(true);
+    expect(shutdownCalled).toBe(true);
+    expect(sender.sent).toEqual([
+      { type: "action_ok", in_reply_to: "q3", action: "session_shutdown" },
+    ]);
+  });
+
   test("missing or throwing shutdown returns action_error without acceptance", () => {
     for (const ctx of [null, { shutdown: () => { throw new Error("stale ctx"); } }] as (ActionCtx | null)[]) {
       const sender = makeSender();

@@ -217,7 +217,7 @@ export type ClientMessage =
   // `action_error` back. Visible side-effects (chat output, model change
   // broadcasts, compaction notice) still flow through the normal channels.
   | { type: "session_new"; id: string }
-  | { type: "session_shutdown"; id: string }
+  | { type: "session_shutdown"; id: string; defer_if_busy?: boolean }
   | { type: "session_compact"; id: string }
   | { type: "model_set"; id: string; provider: string; model_id: string }
   | { type: "thinking_set"; id: string; level: ThinkingLevel }
@@ -712,26 +712,30 @@ export type ActionName =
 
 /**
  * Plan/161 — the plan/28 typed-action ClientMessage variants the mesh
- * control path can execute on a peer (everything except `session_shutdown`
- * and `thinking_set`, which stay app-only by scope decision). The Pi-side
- * dispatch (`_dispatchSessionAction` in main.ts) synthesizes members of
- * this union with a fresh `id` taken from the control envelope, so the
- * app path and the agent path run IDENTICAL code.
+ * control path can execute on a peer. `session_shutdown` joined in
+ * plan/166 (with `defer_if_busy:true` — see the variant above); only
+ * `thinking_set` stays app-only. The Pi-side dispatch
+ * (`_dispatchSessionAction` in main.ts) synthesizes members of this union
+ * with a fresh `id` taken from the control envelope, so the app path and
+ * the agent path run IDENTICAL code.
  */
 export type SessionActionMessage =
   | Extract<ClientMessage, { type: "session_new" }>
   | Extract<ClientMessage, { type: "session_compact" }>
   | Extract<ClientMessage, { type: "model_set" }>
-  | Extract<ClientMessage, { type: "list_models" }>;
+  | Extract<ClientMessage, { type: "list_models" }>
+  | Extract<ClientMessage, { type: "session_shutdown" }>;
 
-/** Ops a `$rp_control` envelope may request (plan/161). The four session ops
- *  map 1:1 onto `SessionActionMessage` variants; `spawn_worktree` reuses the
- *  plan/108 worktree machinery and has no ClientMessage counterpart. */
+/** Ops a `$rp_control` envelope may request (plan/161; shutdown added in
+ *  plan/166). The five session ops map 1:1 onto `SessionActionMessage`
+ * variants; `spawn_worktree` reuses the plan/108 worktree machinery and has
+ * no ClientMessage counterpart. */
 export type RpControlOp =
   | "session_compact"
   | "session_new"
   | "model_set"
   | "list_models"
+  | "session_shutdown"
   | "spawn_worktree";
 
 /** Envelope body an agent sends to control another peer's session. Carried

@@ -239,7 +239,12 @@ export function handleSessionShutdown(
     if (!ctx?.shutdown) throw new Error("shutdown unavailable (no active session ctx)");
     // RPC defers shutdown until agent_settled. Never acknowledge a Quit that
     // would need the daemon fallback while a turn/tool is still running.
-    if (ctx.isIdle?.() === false) {
+    // Plan/166: the MESH path sets defer_if_busy — a mesh shutdown is exactly
+    // the "wrap up, then exit" case (a local self-shutdown even runs inside
+    // its own tool call, so isIdle is always false there), and ctx.shutdown()
+    // itself defers until the turn settles, after the reply has flushed.
+    // The app Quit path keeps the strict refusal (flag unset).
+    if (ctx.isIdle?.() === false && !msg.defer_if_busy) {
       throw new Error("Session is busy — wait for the current turn to finish before quitting");
     }
     ctx.shutdown();

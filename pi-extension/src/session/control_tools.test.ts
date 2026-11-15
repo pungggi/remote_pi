@@ -61,6 +61,42 @@ describe("plan/161 session-control tools — local path", () => {
     expect(deps.dispatchLocal).toHaveBeenCalledWith(expect.objectContaining({ type: "session_new" }));
   });
 
+  test("session_shutdown (no target) → dispatches session_shutdown with defer_if_busy (plan/166)", async () => {
+    const { pi, tools } = makeMockPi();
+    const deps = makeDeps({
+      dispatchLocal: vi.fn().mockResolvedValue({
+        type: "action_ok", in_reply_to: "x", action: "session_shutdown",
+      } as ServerMessage),
+    });
+    registerSessionControlTools(pi, deps);
+    const r = await call(tools.get("session_shutdown")!, {});
+    expect(deps.dispatchLocal).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "session_shutdown", defer_if_busy: true }),
+    );
+    expect((r.content as { text: string }[])[0].text).toContain("Finish your turn");
+    expect(r.details).toEqual({ ok: true });
+  });
+
+  test("session_shutdown with target → $rp_control op session_shutdown, shutdown-specific reply (plan/166)", async () => {
+    const { pi, tools } = makeMockPi();
+    const peer = makeMockPeer();
+    peer.request = vi.fn().mockResolvedValue({
+      from: "other", to: "lead", id: "uuid-reply", re: "uuid-orig",
+      body: { rp_control_result: { ok: true, action: "session_shutdown" } },
+    });
+    const deps = makeDeps({ getPeer: () => peer });
+    registerSessionControlTools(pi, deps);
+    const r = await call(tools.get("session_shutdown")!, { target: "pc2:C:\\proj@w1" });
+    expect(peer.request).toHaveBeenCalledWith(
+      "pc2:C:\\proj@w1",
+      { $rp_control: { op: "session_shutdown" } },
+      expect.any(Number),
+    );
+    expect((r.content as { text: string }[])[0].text).toContain("shutdown accepted");
+    expect((r.content as { text: string }[])[0].text).toContain("list_peers");
+    expect(r.details).toEqual({ ok: true });
+  });
+
   test("local action_error surfaces as FAILED", async () => {
     const { pi, tools } = makeMockPi();
     const deps = makeDeps({
