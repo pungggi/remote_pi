@@ -93,6 +93,28 @@ describe("plan/161 session-control tools — local path", () => {
     expect(text).toContain("anthropic/b — Model b  ← current");
   });
 
+  test("list_models shows current even when outside the listed set", async () => {
+    const { pi, tools } = makeMockPi();
+    const m = (id: string, provider = "anthropic") => ({
+      id, name: `Model ${id}`, provider, reasoning: false, context_window: 1000,
+    });
+    const deps = makeDeps({
+      dispatchLocal: vi.fn().mockResolvedValue({
+        type: "models_list", in_reply_to: "x",
+        models: [m("a"), m("b")], current: m("ollama-default", "ollama"),
+      } as unknown as ServerMessage),
+    });
+    registerSessionControlTools(pi, deps);
+    const r = await call(tools.get("list_models")!, {});
+    const text = (r.content as { text: string }[])[0].text;
+    // In-list entries render WITHOUT the marker …
+    expect(text).toContain("anthropic/b — Model b");
+    expect(text).not.toContain("anthropic/b — Model b  ← current");
+    // … and the out-of-set current gets its own explicit line instead of
+    // silently disappearing (plan/161 e2e gap).
+    expect(text).toContain("ollama/ollama-default — Model ollama-default  ← current (outside the listed set)");
+  });
+
   test("model_set local passes provider + model_id", async () => {
     const { pi, tools } = makeMockPi();
     const deps = makeDeps();

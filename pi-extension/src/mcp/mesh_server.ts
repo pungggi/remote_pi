@@ -42,6 +42,7 @@ import {
 import { sessionSockPath, sessionAuditPath, LOCAL_SESSION_NAME } from "../session/global_config.js";
 import { resolveRelayUrl } from "../config.js";
 import { acquireNamedCwdLock, type NamedAcquiredLock } from "../session/cwd_lock.js";
+import { formatModelLines } from "../session/control_tools.js";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -219,11 +220,24 @@ function notReady() {
   };
 }
 
+/** Bounded wait for the async join (relay connect + room hold). A tool call
+ *  in the first seconds of server life used to hard-fail with "Mesh not
+ *  available yet" — the plan/161 live rig measured 2-3 s until ready at
+ *  spawn. mesh_status deliberately does NOT wait: it reports a truthful
+ *  snapshot. */
+async function awaitMeshReady(ms = 10_000, stepMs = 100): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (!meshReady && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+  return meshReady;
+}
+
 mcp.registerTool("list_peers", {
   description: "List all agents currently in the mesh (local + remote PCs).",
   inputSchema: {},
 }, async () => {
-  if (!meshReady || !_mesh) return notReady();
+  if (!(await awaitMeshReady()) || !_mesh) return notReady();
   try {
     const peers = await _mesh.listPeers();
     return { content: [{ type: "text" as const, text: peers.length > 0 ? peers.join("\n") : "(no peers)" }] };
@@ -259,7 +273,7 @@ mcp.registerTool("agent_send", {
     re: z.string().optional().describe("Optional: id of the message you are replying to"),
   },
 }, async ({ to, body, re }) => {
-  if (!meshReady || !_mesh) return notReady();
+  if (!(await awaitMeshReady()) || !_mesh) return notReady();
   if (to === _mesh.address() || to === _mesh.name()) {
     return { content: [{ type: "text" as const, text: "Cannot send to yourself" }], isError: true };
   }
@@ -302,7 +316,7 @@ mcp.registerTool("wait_for_message", {
       .describe("Optional: only wake for replies matching this message id"),
   },
 }, async ({ timeout_ms, from, re }, extra) => {
-  if (!meshReady || !_mesh) return notReady();
+  if (!(await awaitMeshReady()) || !_mesh) return notReady();
   const res = await inbox.waitForMessage({
     timeoutMs: timeout_ms,
     from,
@@ -350,7 +364,7 @@ interface ControlResultBody {
  *  extension intercepts the envelope before its LLM turn, executes the same
  *  plan/28 handlers the mobile app drives, and replies `re`-correlated. */
 async function controlRequest(target: string, ctrl: Record<string, unknown>) {
-  if (!meshReady || !_mesh) return notReady();
+  if (!(await awaitMeshReady()) || !_mesh) return notReady();
   // ai-review #107 r8: normalize once — a padded target (" pc2:x@y") must
   // hit the self-check and the empty-check, and the request must carry the
   // trimmed key (addresses are opaque; the broker matches exact strings).
@@ -415,10 +429,7 @@ async function controlRequest(target: string, ctrl: Record<string, unknown>) {
     };
   }
   if (res.action === "list_models") {
-    const lines = (res.models ?? []).map((m) => {
-      const cur = res.current && res.current.provider === m.provider && res.current.id === m.id ? "  ← current" : "";
-      return `- ${m.provider}/${m.id} — ${m.name}${cur}`;
-    });
+    const lines = formatModelLines(res.models ?? [], res.current);
     return { content: [{ type: "text" as const, text: lines.length > 0 ? lines.join("\n") : "(no models available)" }] };
   }
   if (res.action === "spawn_worktree") {

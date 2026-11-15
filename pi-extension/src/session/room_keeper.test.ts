@@ -139,6 +139,23 @@ describe("sessionStartedAtFromFileName", () => {
   });
 });
 
+/** Poll until `cond` passes, up to `ms`. Fixed sleeps flake under
+ * full-suite/CI load when the code under test is async (dynamic import +
+ * disk) — this test suite proved that the hard way during PR #107's live
+ * e2e (room_keeper failed 3/3 on a busy box, green when idle). */
+async function waitFor(cond: () => void, ms = 15_000, stepMs = 50): Promise<void> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    try {
+      cond();
+      return;
+    } catch (e) {
+      if (Date.now() > deadline) throw e;
+    }
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+}
+
 describe("RoomKeeper (plan/140)", () => {
   it("holds a fresh registry room and answers session_sync from the durable transcript with offline:true", async () => {
     const { keeper, fake, dir, cwd, registryPath } = makeKeeper();
@@ -156,9 +173,11 @@ describe("RoomKeeper (plan/140)", () => {
     // (mirrors RoomKeeper.start's own pre-warm) and allow real-world latency.
     await import("../main.js");
     fake.emitMessage(outerLine(PHONE_PEER, { type: "session_sync", id: "sync-1" }));
-    await new Promise((r) => setTimeout(r, 1000)); // serve is async (import + disk)
-
-    expect(fake.sent.length).toBeGreaterThan(0);
+    // serve is async (import + disk) — poll, don't sleep: a fixed 1 s wait
+    // flaked under load (see waitFor doc above).
+    await waitFor(() => {
+      expect(fake.sent.length).toBeGreaterThan(0);
+    });
     const reply = decodeSent(fake.sent[fake.sent.length - 1]!);
     expect(reply["type"]).toBe("session_history");
     expect(reply["in_reply_to"]).toBe("sync-1");

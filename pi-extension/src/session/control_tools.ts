@@ -86,6 +86,30 @@ interface LocalOutcome {
   ok: boolean;
 }
 
+/** Render a models list with the `← current` marker. When the session's
+ *  current model sits OUTSIDE the listed (scoped/enabled) set — e.g. the
+ *  default model, or a router-resolved one — surface it as its own line
+ *  instead of showing no marker at all (gap seen live in the plan/161 e2e:
+ *  the current model never appeared in any list). Shared with the MCP
+ *  renderer in mcp/mesh_server.ts. */
+export function formatModelLines(
+  models: ReadonlyArray<{ provider: string; id: string; name: string }>,
+  current?: { provider: string; id: string; name?: string } | null,
+): string[] {
+  const lines = models.map((m) => {
+    const cur = current && current.provider === m.provider && current.id === m.id ? "  ← current" : "";
+    return `- ${m.provider}/${m.id} — ${m.name}${cur}`;
+  });
+  const inList =
+    current !== undefined &&
+    current !== null &&
+    models.some((m) => m.provider === current.provider && m.id === current.id);
+  if (current && !inList) {
+    lines.push(`- ${current.provider}/${current.id} — ${current.name ?? current.id}  ← current (outside the listed set)`);
+  }
+  return lines;
+}
+
 /** Format the single plan/28 ServerMessage reply into tool text. */
 function _formatLocalReply(sm: ServerMessage): LocalOutcome {
   if (sm.type === "action_ok") {
@@ -95,10 +119,7 @@ function _formatLocalReply(sm: ServerMessage): LocalOutcome {
     return { text: `FAILED: "${sm.action}": ${sm.error}`, ok: false };
   }
   if (sm.type === "models_list") {
-    const lines = sm.models.map((m) => {
-      const cur = sm.current && sm.current.provider === m.provider && sm.current.id === m.id ? "  ← current" : "";
-      return `- ${m.provider}/${m.id} — ${m.name}${cur}`;
-    });
+    const lines = formatModelLines(sm.models, sm.current);
     return {
       text: lines.length > 0 ? lines.join("\n") : "(no models available)",
       ok: true,
@@ -133,10 +154,7 @@ async function _remoteControl(
     return { text: `FAILED on "${target}": ${res.error ?? "unknown error"}`, ok: false, details: res };
   }
   if (res.action === "list_models") {
-    const lines = (res.models ?? []).map((m) => {
-      const cur = res.current && res.current.provider === m.provider && res.current.id === m.id ? "  ← current" : "";
-      return `- ${m.provider}/${m.id} — ${m.name}${cur}`;
-    });
+    const lines = formatModelLines(res.models ?? [], res.current);
     return { text: lines.length > 0 ? lines.join("\n") : "(no models available)", ok: true, details: res };
   }
   if (res.action === "spawn_worktree") {

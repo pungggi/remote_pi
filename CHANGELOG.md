@@ -24,10 +24,29 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   `allow_remote_session_control: false` in the target's
   `.pi/remote-pi/config.json` (default on, per the 2026-11-08 ungated
   decision).
+- **Docs: second-PC setup checklist** in the agent-network skill, distilled
+  from the plan/161 cross-PC live e2e: phone-published membership (a relay
+  connection alone is not enough), pairing each machine from the phone,
+  explicit `set-relay`, and agent-side verification steps.
 
 ### Fixed
 
 - **Relay: deterministic `rooms` snapshot ordering** (plan/164). `rooms_of` returned `HashMap::into_values()`, so the snapshot serialized in a different order on every call: the per-conn byte-identical dedup could never suppress `rooms_check` replies, the phone app saw every reply as "changed", and the resulting re-poll loop pushed ~60 full snapshots/s onto the same WebSocket that carries `agent_chunk` — starving response streaming. Snapshots are now sorted by `room_id`; regression test covers multi-room suppression (single-room tests could never catch the ordering bug). The firehose 10s window log now also attributes rooms traffic (`rooms_poll_top`, `rooms_sent_conn_top`, `rooms_sent_target_top`). Measured: 623 replies/10s → 3.
+- **`list_models` always shows the current model**: the `← current` marker
+  only ever matched when the current model was part of the listed
+  (scoped/enabled) set; a default or router-resolved current rendered as
+  nothing at all. Renderers (Pi tool + MCP) now append a
+  `← current (outside the listed set)` line when the current model is set
+  but absent from the list (gap observed live in the plan/161 e2e).
+- **MCP mesh tools wait for the join instead of hard-failing**: in the first
+  seconds after server spawn, `list_peers`/`agent_send`/`wait_for_message`/
+  session-control answered "Mesh not available yet" (live rig measured
+  2-3 s until ready). They now wait up to 10 s for the async join;
+  `mesh_status` deliberately stays a truthful no-wait snapshot.
+- **Test: room_keeper `session_sync` flake**: the test slept a fixed 1 s for
+  the async serve (dynamic import + disk) and failed 3/3 under full-suite
+  load during PR #107's live e2e (green when idle). It now polls with a
+  deadline instead of sleeping.
 
 ## [1.6.2] - 2026-11-08
 
