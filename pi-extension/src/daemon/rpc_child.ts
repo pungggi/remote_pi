@@ -34,6 +34,10 @@ export interface RpcChildOptions {
   /** Additional env vars merged on top of `process.env` + the mandatory
    *  `REMOTE_PI_DAEMON=1`. */
   env?: NodeJS.ProcessEnv;
+  /** Plan/167 — pre-joined `provider/id` appended as `--model` to the
+   *  child's args. Lives in opts so auto-restarts keep the model. Validated
+   *  by the caller (SAFE_MODEL_TOKEN); the pipe is user-local. */
+  model?: string;
   /**
    * Daemon config injected into the child via `REMOTE_PI_DIRECT_CONFIG`
    * (JSON inline) instead of a per-cwd `.pi/remote-pi/config.json` file. The
@@ -213,12 +217,14 @@ export function rpcSpawnArgs(
   extensionPath: string,
   sessionName?: string,
   useContinue = true,
+  model?: string,
 ): string[] {
   return [
     "--mode", "rpc",
     "--approve",
     ...(useContinue ? ["--continue"] : []),
     ...(sessionName ? ["--name", sessionName] : []),
+    ...(model ? ["--model", model] : []),
     "-ne",
     "-e", extensionPath,
   ];
@@ -279,7 +285,7 @@ export class RpcChild extends EventEmitter {
     this.forceFreshSessionOnNextSpawn = false;
     // On Windows `prefixArgs` carries pi's cli.js (we spawn node directly); on
     // POSIX it's empty and `command` is `pi` itself.
-    const args = [...piTarget.prefixArgs, ...rpcSpawnArgs(this.opts.extensionPath, sessionName, useContinue)];
+    const args = [...piTarget.prefixArgs, ...rpcSpawnArgs(this.opts.extensionPath, sessionName, useContinue, this.opts.model)];
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       ...this.opts.env,

@@ -315,7 +315,7 @@ agent's (pass a `list_peers` address verbatim):
 | `session_reset {target?}` | Fresh context in the SAME process — wipes the conversation. Destructive; deliberate use only. |
 | `model_set {provider, model_id, target?}` | Switches the target's model (live + persisted default). `list_models` first — each peer has its OWN registry. |
 | `list_models {target?}` | Lists a peer's available models + its current one. |
-| `spawn_worktree {branch?, base?, provider?, model_id?, target?}` | Creates a git worktree and starts a fresh `pi` session there (visible terminal, optional `--model provider/model_id`). |
+| `spawn_worktree {branch?, base?, provider?, model_id?, headless?, target?}` | Creates a git worktree and starts a fresh `pi` session there (visible terminal, optional `--model provider/model_id`). `headless:true` (plan/167) spawns an INVISIBLE transient worker under the Piper supervisor instead — same mesh behavior, no window. |
 | `session_shutdown {target?}` (plan/166) | Gracefully ENDS a session's process. The reply goes out first; the exit lands when the target's current turn settles (busy sessions accept it deferred). Uncommitted work stays in the worktree. For workers that finished their task; prefer `session_reset` to keep the process alive. |
 
 Protocol notes:
@@ -328,6 +328,14 @@ Protocol notes:
 - **Spawned sessions join the mesh.** `spawn_worktree` returns when the
   terminal opens; poll `list_peers` for the new peer, then `agent_send` it
   its task. The worktree config auto-connects it.
+- **`headless:true` workers run without a terminal** (plan/167): a transient
+  `pi --mode rpc` child under the Piper supervisor. Same peer address
+  (`<worktree-path>@<agent_name>`), same `agent_send` / `session_shutdown`
+  workflow. While alive the supervisor auto-restarts it on crash and RESUMES
+  its session (a reused worktree continues its old conversation — unlike the
+  visible path, which starts fresh). `session_shutdown` is a clean exit: no
+  restart, no boot resurrection (transient ≠ pin). Needs the supervisor
+  running; without it you get an actionable error, not a silent terminal.
 - **Resetting YOUR OWN session mid-turn wipes the conversation you are in.**
   Reset others freely; reset yourself only at a deliberate boundary.
 - **Shutting yourself down ends the process after your turn.** The tool

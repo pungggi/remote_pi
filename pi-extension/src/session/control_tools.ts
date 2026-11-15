@@ -59,6 +59,8 @@ export interface SpawnWorktreeOpts {
   branch?: string | null;
   provider?: string | null;
   model_id?: string | null;
+  /** Plan/167 — transient RPC child under the supervisor (no terminal). */
+  headless?: boolean;
 }
 
 export interface SpawnWorktreeResult {
@@ -385,9 +387,13 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
       "The new session auto-joins the mesh as its own peer — poll list_peers, then " +
       "agent_send it a task. Reuses existing worktrees when the branch/folder already " +
       "exists (re-tap semantics). `target` runs the spawn on ANOTHER machine; omit for " +
-      "your own. Default base = the session cwd; branch defaults to `work/<timestamp>`.",
+      "your own. Default base = the session cwd; branch defaults to `work/<timestamp>`. " +
+      "`headless:true` (plan/167) spawns an invisible transient worker under the " +
+      "Piper supervisor (`pi --mode rpc`) instead of a terminal window — same mesh " +
+      "behavior, plus auto-restart with session resume while it lives; requires the " +
+      "supervisor to be running.",
     promptSnippet:
-      "spawn_worktree({branch?, base?, provider?, model_id?, target?}): worktree + fresh pi session (auto-joins mesh). Watch list_peers, then agent_send the task.",
+      "spawn_worktree({branch?, base?, provider?, model_id?, headless?, target?}): worktree + fresh pi session (auto-joins mesh; headless:true = invisible supervisor worker). Watch list_peers, then agent_send the task.",
     parameters: jsonSchema({
       type: "object",
       properties: {
@@ -401,15 +407,22 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
         },
         provider: { type: "string", description: "Optional model provider for the spawned session's `pi --model`." },
         model_id: { type: "string", description: "Optional model id — requires provider." },
+        headless: {
+          type: "boolean",
+          description:
+            "Spawn an invisible transient worker (`pi --mode rpc` under the Piper supervisor) " +
+            "instead of a visible terminal. Requires the supervisor; end the worker with session_shutdown.",
+        },
         target: TargetParam,
       },
     }),
     execute: async (_id, params) => {
-      const { branch, base, provider, model_id, target } = params as {
+      const { branch, base, provider, model_id, headless, target } = params as {
         branch?: string;
         base?: string;
         provider?: string;
         model_id?: string;
+        headless?: boolean;
         target?: string;
       };
       const peer = deps.getPeer();
@@ -429,10 +442,11 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
           ...(branch ? { branch } : {}),
           ...(base ? { base } : {}),
           ...(provider && model_id ? { provider, model_id } : {}),
+          ...(headless ? { headless: true } : {}),
         });
         return { content: [{ type: "text", text: out.text }], details: { ok: out.ok } };
       }
-      const r = await deps.spawnWorktreeLocal({ base: base ?? null, branch: branch ?? null, provider: provider ?? null, model_id: model_id ?? null });
+      const r = await deps.spawnWorktreeLocal({ base: base ?? null, branch: branch ?? null, provider: provider ?? null, model_id: model_id ?? null, headless: headless === true });
       const text = r.ok
         ? `${r.message}\npath: ${r.path ?? "?"}\nbranch: ${r.branch ?? "?"}\nThe new session auto-joins the mesh — watch list_peers, then agent_send it a task.`
         : r.message;

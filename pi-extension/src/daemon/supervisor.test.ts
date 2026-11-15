@@ -365,6 +365,22 @@ describe("Supervisor — start_transient (plan/124 — bring session to life)", 
     }
   });
 
+  // Plan/167 — headless spawn: `model` is accepted end-to-end over the UDS
+  // (typed into ControlRequest, read by the handler, threaded to
+  // RpcChildOptions; the arg composition itself is covered by the
+  // rpcSpawnArgs unit tests).
+  test("plan/167: accepts start_transient with a model", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "pi-sv-trm-"));
+    const r = await ask({
+      op: "start_transient", cwd: tmp, model: "anthropic/claude-opus-4-7",
+    }) as ControlReply<{ id: string; started: boolean }>;
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.data!.started).toBe(true);
+    }
+    await ask({ op: "stop", id: r.ok ? r.data!.id : "" });
+  });
+
   test("surfaces in `list` as a transient entry, then is removed by `stop`", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "pi-sv-trl-"));
     const r = await ask({

@@ -481,15 +481,16 @@ mcp.registerTool("list_models", {
 }, async ({ target }) => controlRequest(target, { op: "list_models" }));
 
 mcp.registerTool("spawn_worktree", {
-  description: "Create a git worktree on a remote peer's machine and start a fresh `pi` session there (visible terminal, auto-joins the mesh). Optional model via the standard --model flag.",
+  description: "Create a git worktree on a remote peer's machine and start a fresh `pi` session there (visible terminal, auto-joins the mesh). Optional model via the standard --model flag. headless:true spawns an invisible transient worker under the Piper supervisor instead of a terminal window (requires the supervisor on the target machine).",
   inputSchema: {
     target: z.string().describe("Peer address from list_peers, echoed verbatim"),
     branch: z.string().optional().describe("Branch to create (default work/<timestamp>)"),
     base: z.string().optional().describe("Base repo path on the target (default: its session cwd)"),
     provider: z.string().optional().describe("Optional model provider for the spawned session"),
     model_id: z.string().optional().describe("Optional model id — requires provider"),
+    headless: z.boolean().optional().describe("Spawn an invisible transient worker (pi --mode rpc under the Piper supervisor) instead of a visible terminal"),
   },
-}, async ({ target, branch, base, provider, model_id }) => {
+}, async ({ target, branch, base, provider, model_id, headless }) => {
   // ai-review #107 r5: both-or-neither, same rule as the Pi tool. Without
   // this guard a provider-only call would silently DROP the model and
   // spawn with the default — worse than an error.
@@ -507,6 +508,7 @@ mcp.registerTool("spawn_worktree", {
     ...(branch ? { branch } : {}),
     ...(base ? { base } : {}),
     ...(provider && model_id ? { provider, model_id } : {}),
+    ...(headless ? { headless: true } : {}),
   });
 });
 

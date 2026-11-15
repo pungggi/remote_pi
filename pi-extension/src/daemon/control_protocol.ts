@@ -55,7 +55,10 @@ export type ControlRequest =
   // until it crashes (auto-restarted w/ backoff) or the supervisor stops,
   // and is NOT resurrected at boot. `name` scopes the room for custom-
   // named sessions (omitted/default → legacy cwd-only room).
-  | { op: "start_transient"; cwd: string; name?: string }
+  // Plan/167 — `model` (pre-joined `provider/id`) appends `--model` to the
+  // child's args. Validated by the CALLER (SAFE_MODEL_TOKEN at the tool /
+  // envelope surface); the pipe is user-local, so the supervisor trusts it.
+  | { op: "start_transient"; cwd: string; name?: string; model?: string }
   // ── Plan/140 — a real session claims its room from the keeper ──
   // Called by ANY extension instance (interactive or daemon) whose relay
   // connect failed with RoomAlreadyOpenError: the supervisor asks the

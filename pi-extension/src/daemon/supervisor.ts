@@ -333,7 +333,7 @@ export class Supervisor {
       case "send":         return this._opSend(req.id, req.text);
       case "register":     return this._opRegister(req.cwd);
       case "unregister":   return this._opUnregister(req.id);
-      case "start_transient": return this._opStartTransient(req.cwd, req.name);
+      case "start_transient": return this._opStartTransient(req.cwd, req.name, req.model);
       // Plan/140 — real session claims its room from the keeper.
       case "claim_room":
         return { ok: true, data: { room_id: req.room_id, dropped: this.keeper?.dropRoom(req.room_id) ?? false } };
@@ -642,7 +642,7 @@ export class Supervisor {
    * transient or registry-backed, e.g. a pin) is a no-op success — the room
    * is already (becoming) live, no need to double-spawn.
    */
-  private _opStartTransient(rawCwd: string, name?: string): ControlReply<unknown> {
+  private _opStartTransient(rawCwd: string, name?: string, model?: string): ControlReply<unknown> {
     let cwd: string;
     try {
       cwd = normalizeCwd(rawCwd);
@@ -660,7 +660,7 @@ export class Supervisor {
     // crash-backoff wiring) but tag the slot transient so stop/boot treat
     // it as ephemeral. `--continue` (inside rpcSpawnArgs) resumes the cwd's
     // most-recent session JSONL → the existing conversation carries over.
-    const spawned = this._spawnEntry(id, cwd, effectiveName, true);
+    const spawned = this._spawnEntry(id, cwd, effectiveName, true, model);
     return { ok: true, data: { id, cwd, room_id, started: spawned } };
   }
 
@@ -906,7 +906,7 @@ export class Supervisor {
     child.on("stderr", (text: string) => appendDaemonLog(id, text));
   }
 
-  private _spawnEntry(id: string, cwd: string, name?: string, transient = false): boolean {
+  private _spawnEntry(id: string, cwd: string, name?: string, transient = false, model?: string): boolean {
     // Plan/159 — one child per cwd, ever. Two ids covering the same folder
     // (e.g. a registry entry for home + the built-in device daemon) means one
     // child loses the room lock and lingers as an unmanaged plain agent
@@ -948,6 +948,7 @@ export class Supervisor {
       cwd,
       config,
     };
+    if (model) childOpts.model = model;
     if (this.opts.piBin !== undefined) childOpts.piBin = this.opts.piBin;
     const child = new RpcChild(childOpts);
     const slot: ChildSlot = { id, cwd, child, restartTimer: null, restartAttempt: 0, spawnedAt: Date.now(), transient, name };

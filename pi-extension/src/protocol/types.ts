@@ -753,6 +753,10 @@ export interface RpControlRequest {
     branch?: string;
     /** spawn_worktree only: base repo (default: the target's session cwd). */
     base?: string;
+    /** spawn_worktree only (plan/167): spawn a HEADLESS worker — a
+     *  transient `pi --mode rpc` child under the Piper supervisor instead of
+     *  a visible terminal. Requires the supervisor to be running. */
+    headless?: boolean;
   };
 }
 
