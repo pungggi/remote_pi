@@ -31,6 +31,16 @@ export interface LocalConfig {
    * requests from the phone. Absent → current behaviour (cwd-derived room).
    */
   room_id?: string;
+  /**
+   * Plan/161 — when explicitly `false`, this peer refuses incoming
+   * `$rp_control` mesh envelopes (remote session control) with a typed
+   * error reply. Default (absent/true) allows them: the mesh trust domain
+   * already lets any peer steer another via ordinary messages, so session
+   * control adds no new attacker. This is an opt-out kill-switch, not a
+   * permission system (the ungated model was a deliberate user decision,
+   * 2026-11-08).
+   */
+  allow_remote_session_control?: boolean;
   // `workspace?`/`worktree?` were removed (plan/38, reescrito 2026-06-08): the
   // mesh identity is `(cwd, nome)`, with `cwd` subsuming folder + worktree
   // disambiguation. Neither axis is derived anymore, so the config fields are
@@ -106,6 +116,22 @@ function parseLocalConfig(raw: string): LocalConfig | null {
   }
   if (typeof src["auto_start_relay"] === "boolean") cfg.auto_start_relay = src["auto_start_relay"];
   if (typeof src["room_id"] === "string" && src["room_id"].length > 0) cfg.room_id = src["room_id"];
+  // ai-review #107 r3 — fail-CLOSED: a present-but-mistyped value on a
+  // kill-switch must DISABLE, not silently re-enable. The operator who
+  // wrote any explicit value here intended control over the default
+  // (e.g. the string "false" must not leave remote control on).
+  const arsc = src["allow_remote_session_control"];
+  if (typeof arsc === "boolean") {
+    cfg.allow_remote_session_control = arsc;
+  } else if (arsc !== undefined && arsc !== null) {
+    // ai-review #107 r10: log the TYPE, never the raw value — a mistyped
+    // value could be anything (including a pasted secret); "no secrets in
+    // logs" starts here too.
+    console.warn(
+      `[remote-pi] allow_remote_session_control must be a boolean — treating as false (got ${typeof arsc})`,
+    );
+    cfg.allow_remote_session_control = false;
+  }
   return cfg;
 }
 

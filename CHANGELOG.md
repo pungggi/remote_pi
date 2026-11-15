@@ -10,6 +10,21 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 ---
 ## [Unreleased]
 
+### Added
+
+- **Agent mesh session control (plan/161)**: mesh agents can now manage
+  sessions with five tools — `session_compact`, `session_reset` (fresh
+  context, same process), `model_set`, `list_models`, and `spawn_worktree`
+  (git worktree + fresh `pi` terminal that auto-joins the mesh). Omit
+  `target` to act on your own session (Pi); pass a `list_peers` address to
+  control a remote peer via `$rp_control` envelopes intercepted before the
+  target's LLM turn. Claude/Agy get the same verbs as MCP tools (remote
+  only). Execution reuses the plan/28 typed-action handlers and the
+  plan/108 worktree machinery unchanged. Kill-switch:
+  `allow_remote_session_control: false` in the target's
+  `.pi/remote-pi/config.json` (default on, per the 2026-11-08 ungated
+  decision).
+
 ### Fixed
 
 - **Relay: deterministic `rooms` snapshot ordering** (plan/164). `rooms_of` returned `HashMap::into_values()`, so the snapshot serialized in a different order on every call: the per-conn byte-identical dedup could never suppress `rooms_check` replies, the phone app saw every reply as "changed", and the resulting re-poll loop pushed ~60 full snapshots/s onto the same WebSocket that carries `agent_chunk` — starving response streaming. Snapshots are now sorted by `room_id`; regression test covers multi-room suppression (single-room tests could never catch the ordering bug). The firehose 10s window log now also attributes rooms traffic (`rooms_poll_top`, `rooms_sent_conn_top`, `rooms_sent_target_top`). Measured: 623 replies/10s → 3.
