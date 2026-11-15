@@ -256,6 +256,27 @@ internally, not as inbox replies.
 
 ---
 
+## Setting up a second PC (owner checklist)
+
+Cross-PC messaging works only when the phone app has published the second
+machine's mesh membership. A relay connection alone is NOT enough; skipping
+this yields silent `timeout`s on cross-PC sends. Distilled from the plan/161
+cross-PC live e2e — following this order saves about an hour:
+
+- **Pair each machine from the phone**: run `/remote-pi pair` on the new PC and
+  scan THAT window's QR. The `epk=` value is the machine-wide pi key; scanning
+  the wrong window pairs the wrong machine.
+- **Membership is published by the phone**, when it saves the paired peer. A
+  PC that merely connects to the relay stays invisible cross-PC.
+- **Give the new PC a reachable relay**: `/remote-pi set-relay <host>:3000`
+  then `relay start` (LAN or Tailscale host). The join wizard alone defaults
+  to NO relay — set it explicitly.
+- **Verify as the agent**: `list_peers` must show the remote peer as
+  `<pc>:<cwd>@<name>`. "Remote peer replied without a control result" means
+  the target's remote-pi build predates plan/161 — update it there.
+
+---
+
 ## Broadcast and multicast
 
 - `to: "broadcast"` → every other peer **in your folder (same cwd)** — broadcast
