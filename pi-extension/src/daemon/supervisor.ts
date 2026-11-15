@@ -661,7 +661,14 @@ export class Supervisor {
     // it as ephemeral. `--continue` (inside rpcSpawnArgs) resumes the cwd's
     // most-recent session JSONL → the existing conversation carries over.
     const spawned = this._spawnEntry(id, cwd, effectiveName, true, model);
-    return { ok: true, data: { id, cwd, room_id, started: spawned } };
+    // ai-review #113 L1 — `started:false` means "already running" to callers
+    // (idempotent re-tap). When _spawnEntry failed for another reason (e.g.
+    // the plan/159 one-child-per-cwd collision guard) report an ERROR instead
+    // of masquerading as success.
+    if (!spawned) {
+      return { ok: false, error: `could not spawn transient daemon for ${cwd} (see supervisor log; e.g. another daemon owns that cwd)` };
+    }
+    return { ok: true, data: { id, cwd, room_id, started: true } };
   }
 
   private async _opUnregister(id: string): Promise<ControlReply<unknown>> {

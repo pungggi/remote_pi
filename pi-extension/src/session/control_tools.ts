@@ -447,8 +447,13 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
         return { content: [{ type: "text", text: out.text }], details: { ok: out.ok } };
       }
       const r = await deps.spawnWorktreeLocal({ base: base ?? null, branch: branch ?? null, provider: provider ?? null, model_id: model_id ?? null, headless: headless === true });
+      // ai-review #113 L2 — headless replies already carry their own mesh
+      // hints (address + agent_send/session_shutdown); appending the generic
+      // visible-path line would duplicate (and slightly contradict) them.
       const text = r.ok
-        ? `${r.message}\npath: ${r.path ?? "?"}\nbranch: ${r.branch ?? "?"}\nThe new session auto-joins the mesh — watch list_peers, then agent_send it a task.`
+        ? headless === true
+          ? `${r.message}\npath: ${r.path ?? "?"}\nbranch: ${r.branch ?? "?"}`
+          : `${r.message}\npath: ${r.path ?? "?"}\nbranch: ${r.branch ?? "?"}\nThe new session auto-joins the mesh — watch list_peers, then agent_send it a task.`
         : r.message;
       return {
         content: [{ type: "text", text }],

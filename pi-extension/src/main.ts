@@ -5553,16 +5553,19 @@ export async function _spawnWorktreeSession(opts: {
             `While alive the supervisor auto-restarts it on crash (resuming its session). (${wt.message})`,
       };
     } catch (e) {
+      // ai-review #113 M2 — the worktree already exists at this point; every
+      // failure mode must say so, or a retry would silently re-tap into a
+      // different worktree and the caller loses the path.
+      const kept = `Worktree kept: ${wt.entry.path} (${wt.message}).`;
       if (e instanceof SupervisorOfflineError) {
         return {
           ok: false,
           message:
             "Piper Supervisor is not running — start it (pi-supervisord, or the " +
-            "'Piper Supervisor' scheduled task) or spawn without headless. " +
-            `Worktree kept: ${wt.entry.path} (${wt.message}).`,
+            "'Piper Supervisor' scheduled task) or spawn without headless. " + kept,
         };
       }
-      return { ok: false, message: `headless spawn failed: ${e instanceof Error ? e.message : String(e)}` };
+      return { ok: false, message: `headless spawn failed: ${e instanceof Error ? e.message : String(e)}. ${kept}` };
     }
   }
   const modelFlag = opts.provider && opts.model_id ? ` --model ${opts.provider}/${opts.model_id}` : "";

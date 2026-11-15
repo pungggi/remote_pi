@@ -118,11 +118,13 @@ describe("plan/167 _spawnWorktreeSession — headless branch", () => {
     expect(wt.openTerminalTab).not.toHaveBeenCalled();
   });
 
-  test("supervisor error reply (ok:false → thrown Error) surfaces the error", async () => {
+  test("supervisor error reply (ok:false → thrown Error) surfaces the error + kept worktree (ai-review #113 M2)", async () => {
     sv.callSupervisor.mockRejectedValue(new Error("pipe busy"));
     const r = await _spawnWorktreeSession({ headless: true });
     expect(r.ok).toBe(false);
     expect(r.message).toContain("pipe busy");
+    expect(r.message).toContain("Worktree kept");
+    expect(r.message).toContain(WT_PATH);
   });
 
   test("headless omitted → visible path unchanged (openTerminalTab)", async () => {
