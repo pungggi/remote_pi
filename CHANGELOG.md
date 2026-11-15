@@ -12,6 +12,8 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
+- **Mesh `session_shutdown` (plan/166)**: sixth session-control verb — gracefully END a session's process, locally (omit `target`) or on a remote peer. The mesh path passes `defer_if_busy`, so a busy session ACCEPTS the shutdown and exits when its current turn settles — without it, local self-shutdown would always fail (the tool call itself makes the session busy) and busy peers would refuse at the exact moment you want them gone. Reply-before-death is preserved: the ack flushes before the room goes idle and the relay closes. The app's Quit keeps the strict busy-refusal (flag unset) — semantics unchanged. Kill-switch `allow_remote_session_control:false` refuses the op like every other. MCP (`remote-pi-mesh`) gained the remote-only tool.
+
 - **Agent mesh session control (plan/161)**: mesh agents can now manage
   sessions with five tools — `session_compact`, `session_reset` (fresh
   context, same process), `model_set`, `list_models`, and `spawn_worktree`

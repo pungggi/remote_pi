@@ -140,7 +140,10 @@ describe("plan/161 $rp_control receiving side", () => {
 
   test("unknown op → typed error reply", async () => {
     main._setPiForTest({ stub: true });
-    const peer = await run({ op: "session_shutdown" }); // deliberately out of scope
+    // thinking_set stays app-only (plan/166 made session_shutdown legal —
+    // the old placeholder op for this test); anything outside RpControlOp
+    // must keep hitting the default branch.
+    const peer = await run({ op: "thinking_set" });
     const r = lastReply(peer);
     expect(r.body.rp_control_result.ok).toBe(false);
     expect(String(r.body.rp_control_result.error)).toContain("unknown op");
@@ -169,5 +172,32 @@ describe("plan/161 $rp_control receiving side", () => {
     const r = lastReply(peer);
     expect(r.body.rp_control_result.ok).toBe(false);
     expect(String(r.body.rp_control_result.error)).toContain("both provider and model_id");
+  });
+
+  // ── plan/166: session_shutdown on the mesh surface ─────────────────────
+
+  test("kill-switch off also refuses session_shutdown — same gate as every op", async () => {
+    main._setPiForTest({ stub: true });
+    saveLocalConfig(cwd, { allow_remote_session_control: false });
+    const peer = await run({ op: "session_shutdown" });
+    const r = lastReply(peer);
+    expect(r.body.rp_control_result.ok).toBe(false);
+    expect(String(r.body.rp_control_result.error)).toContain("allow_remote_session_control");
+  });
+
+  test("session_shutdown routes to the handler (plan/166) — no session ctx → typed action_error", async () => {
+    main._setPiForTest({ stub: true });
+    const peer = await run({ op: "session_shutdown" });
+    const r = lastReply(peer);
+    // Not "unknown op" anymore: the op reaches handleSessionShutdown and
+    // its no-ctx error is piped through the sink verbatim.
+    expect(r.body.rp_control_result.action).toBe("session_shutdown");
+    expect(r.body.rp_control_result.ok).toBe(false);
+    expect(String(r.body.rp_control_result.error)).toContain("shutdown unavailable");
+  });
+
+  test("_synthesizeSessionAction: shutdown op synthesizes defer_if_busy (plan/166)", () => {
+    const msg = main._synthesizeSessionAction({ op: "session_shutdown" }, "env-7");
+    expect(msg).toEqual({ type: "session_shutdown", id: "env-7", defer_if_busy: true });
   });
 });

@@ -5549,7 +5549,7 @@ interface ControlReplyPeer {
 
 /** Build the plan/28 ClientMessage variant for a control op, or null when
  *  the payload is incomplete (model_set without provider/model_id). */
-function _synthesizeSessionAction(
+export function _synthesizeSessionAction(
   ctrl: RpControlRequest["$rp_control"],
   id: string,
 ): SessionActionMessage | null {
@@ -5560,6 +5560,8 @@ function _synthesizeSessionAction(
       return { type: "session_new", id };
     case "list_models":
       return { type: "list_models", id };
+    case "session_shutdown":
+      return { type: "session_shutdown", id, defer_if_busy: true };
     case "model_set":
       if (!ctrl.provider || !ctrl.model_id) return null;
       return { type: "model_set", id, provider: ctrl.provider, model_id: ctrl.model_id };
@@ -5657,6 +5659,7 @@ async function _handleControlEnvelopeInner(
   switch (ctrl.op) {
     case "session_compact":
     case "session_new":
+    case "session_shutdown":
     case "model_set":
     case "list_models": {
       const msg = _synthesizeSessionAction(ctrl, _env.id);

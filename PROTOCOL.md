@@ -300,6 +300,7 @@ handlers são os mesmos, só muda o transporte. Cada tool aceita `target` opcion
 | `session_reset {target?}` | `session_new` (nome do op no wire — difere do nome da ferramenta) | `ctx.newSession()` (contexto novo, MESMO processo) |
 | `model_set {provider, model_id, target?}` | `model_set` | registry + `pi.setModel()` + persist |
 | `list_models {target?}` | `list_models` | registry + `scopedModels` |
+| `session_shutdown {target?}` (plan/166) | `session_shutdown` | `ctx.shutdown()` com `defer_if_busy:true` — ver regras |
 | `spawn_worktree {branch?, base?, provider?, model_id?, target?}` | `spawn_worktree` | `createWorktree()` (plan/108) + `openTerminalTab` rodando `pi` (`--model provider/id` opcional — flag padrão da CLI) |
 
 Regras:
@@ -314,10 +315,16 @@ Regras:
   `<cwd>/.pi/remote-pi/config.json` do alvo recusa envelopes com erro tipado.
   Default LIGADO (decisão 2026-11-08: mesh ungated — qualquer peer já pode
   steer outro via mensagens comuns; controle de sessão não adiciona atacante).
+- **`session_shutdown` (plan/166)**: shutdown gracioso. O `action_ok` sai
+  ANTES de qualquer teardown (o sink responde sincronamente; só então o
+  `_goIdle("shutdown")` avisa os apps e fecha a relay). Se a sessão do alvo
+  está ocupada, o op é ACEITO com `defer_if_busy` — `ctx.shutdown()` já
+  adia até o turno corrente settles (self-shutdown via tool roda dentro do
+  próprio tool call, então isso é o caminho normal). O path do app Quit
+  mantém a recusa estrita (flag ausente) — semântica inalterada.
+- `thinking_set` fica FORA do vocabulário da mesh por escopo (app-only).
 - Wire shapes: `RpControlRequest` / `RpControlResult` / `SessionActionMessage`
   em `pi-extension/src/protocol/types.ts`.
-- `session_shutdown` e `thinking_set` ficam FORA do vocabulário da mesh por
-  escopo (app-only); ver Next plans do plan/161.
 
 Detalhes em `plan/161-agent-session-control.md`.
 

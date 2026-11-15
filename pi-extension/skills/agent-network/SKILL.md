@@ -304,9 +304,9 @@ cross-PC live e2e — following this order saves about an hour:
 
 ---
 
-## Session control (plan/161): compact, reset, model, spawn
+## Session control (plan/161): compact, reset, shutdown, model, spawn
 
-Five tools manage sessions — your own (omit `target`, Pi only) or another
+Six tools manage sessions — your own (omit `target`, Pi only) or another
 agent's (pass a `list_peers` address verbatim):
 
 | Tool | What it does |
@@ -316,6 +316,7 @@ agent's (pass a `list_peers` address verbatim):
 | `model_set {provider, model_id, target?}` | Switches the target's model (live + persisted default). `list_models` first — each peer has its OWN registry. |
 | `list_models {target?}` | Lists a peer's available models + its current one. |
 | `spawn_worktree {branch?, base?, provider?, model_id?, target?}` | Creates a git worktree and starts a fresh `pi` session there (visible terminal, optional `--model provider/model_id`). |
+| `session_shutdown {target?}` (plan/166) | Gracefully ENDS a session's process. The reply goes out first; the exit lands when the target's current turn settles (busy sessions accept it deferred). Uncommitted work stays in the worktree. For workers that finished their task; prefer `session_reset` to keep the process alive. |
 
 Protocol notes:
 
@@ -329,6 +330,9 @@ Protocol notes:
   its task. The worktree config auto-connects it.
 - **Resetting YOUR OWN session mid-turn wipes the conversation you are in.**
   Reset others freely; reset yourself only at a deliberate boundary.
+- **Shutting yourself down ends the process after your turn.** The tool
+  replies "accepted", you finish the turn, then pi exits — a good way for a
+  spawned worker to retire itself once its task is done.
 - A peer may refuse remote control (`allow_remote_session_control:false` in
   its local config) — you'll get a typed error back.
 
