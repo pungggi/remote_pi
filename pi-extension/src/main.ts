@@ -5504,6 +5504,9 @@ export async function _spawnWorktreeSession(opts: {
   branch?: string | null;
   provider?: string | null;
   model_id?: string | null;
+  /** Plan/167 — spawn a transient `pi --mode rpc` child under the Piper
+   *  supervisor instead of opening a visible terminal. */
+  headless?: boolean;
 }): Promise<{ ok: boolean; message: string; path?: string; branch?: string }> {
   const base = opts.base && opts.base.trim() ? opts.base.trim() : (ext.myRoomMeta?.cwd ?? process.cwd());
   // ai-review #107 r2: `base` from a remote caller is an arbitrary path BY
@@ -5522,6 +5525,49 @@ export async function _spawnWorktreeSession(opts: {
   }
   const wt = createWorktree(base, opts.branch ?? null);
   if (!wt.ok || !wt.entry) return { ok: false, message: wt.message };
+  if (opts.headless) {
+    // Plan/167 — transient RPC child under the supervisor (plan/124
+    // machinery) instead of a visible terminal. The supervisor injects its
+    // own REMOTE_PI_DIRECT_CONFIG, so pass the worktree's seeded agent_name
+    // explicitly: the headless peer then carries the SAME name the visible
+    // path would have (`<worktree-path>@<agent_name>`).
+    const agentName =
+      loadLocalConfig(wt.entry.path).agent_name ?? defaultAgentName(wt.entry.path);
+    const model = opts.provider && opts.model_id ? `${opts.provider}/${opts.model_id}` : undefined;
+    const address = `${wt.entry.path}@${agentName}`;
+    try {
+      const data = await callSupervisor({
+        op: "start_transient",
+        cwd: wt.entry.path,
+        name: agentName,
+        ...(model ? { model } : {}),
+      });
+      return {
+        ok: true,
+        path: wt.entry.path,
+        branch: wt.entry.branch,
+        message: data.started === false
+          ? `Headless worker already running in ${wt.entry.path} (${wt.message}) — peer "${address}" in list_peers.`
+          : `Spawned headless worker (no terminal): peer "${address}" appears in list_peers shortly. ` +
+            `Send it a task with agent_send; end it with session_shutdown. ` +
+            `While alive the supervisor auto-restarts it on crash (resuming its session). (${wt.message})`,
+      };
+    } catch (e) {
+      // ai-review #113 M2 — the worktree already exists at this point; every
+      // failure mode must say so, or a retry would silently re-tap into a
+      // different worktree and the caller loses the path.
+      const kept = `Worktree kept: ${wt.entry.path} (${wt.message}).`;
+      if (e instanceof SupervisorOfflineError) {
+        return {
+          ok: false,
+          message:
+            "Piper Supervisor is not running — start it (pi-supervisord, or the " +
+            "'Piper Supervisor' scheduled task) or spawn without headless. " + kept,
+        };
+      }
+      return { ok: false, message: `headless spawn failed: ${e instanceof Error ? e.message : String(e)}. ${kept}` };
+    }
+  }
   const modelFlag = opts.provider && opts.model_id ? ` --model ${opts.provider}/${opts.model_id}` : "";
   const outcome = await openTerminalTab(wt.entry.path, `pi${modelFlag}`);
   return {
@@ -5701,6 +5747,7 @@ async function _handleControlEnvelopeInner(
         branch: ctrl.branch ?? null,
         provider: ctrl.provider ?? null,
         model_id: ctrl.model_id ?? null,
+        headless: ctrl.headless === true,
       });
       reply({
         ok: r.ok,

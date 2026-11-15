@@ -196,6 +196,44 @@ describe("plan/161 session-control tools — local path", () => {
     expect(deps.spawnWorktreeLocal).not.toHaveBeenCalled();
     expect((r.content as { text: string }[])[0].text).toContain("both provider and model_id");
   });
+
+  // Plan/167 — headless flag flows to the local spawn (visible default untouched).
+  test("spawn_worktree headless:true flows headless to the local spawn (plan/167)", async () => {
+    const { pi, tools } = makeMockPi();
+    const deps = makeDeps();
+    registerSessionControlTools(pi, deps);
+    const r = await call(tools.get("spawn_worktree")!, { headless: true });
+    expect(deps.spawnWorktreeLocal).toHaveBeenCalledWith(
+      expect.objectContaining({ headless: true }),
+    );
+    expect(r.details).toEqual({ ok: true, path: "C:\\proj_work", branch: "work/x" });
+  });
+
+  test("spawn_worktree without headless keeps the visible default (plan/167)", async () => {
+    const { pi, tools } = makeMockPi();
+    const deps = makeDeps();
+    registerSessionControlTools(pi, deps);
+    await call(tools.get("spawn_worktree")!, {});
+    expect(deps.spawnWorktreeLocal).toHaveBeenCalledWith(
+      expect.objectContaining({ headless: false }),
+    );
+  });
+
+  test("spawn_worktree headless + target → $rp_control envelope carries headless (plan/167)", async () => {
+    const { pi, tools } = makeMockPi();
+    const peer = makeMockPeer();
+    const deps = makeDeps({ getPeer: () => peer });
+    registerSessionControlTools(pi, deps);
+    const r = await call(tools.get("spawn_worktree")!, { target: "C:\other@p", headless: true });
+    expect(peer.request).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        $rp_control: expect.objectContaining({ op: "spawn_worktree", headless: true }),
+      }),
+      expect.any(Number),
+    );
+    expect((r.content as { text: string }[])[0].text).toContain("OK");
+  });
 });
 
 describe("plan/161 session-control tools — remote path", () => {

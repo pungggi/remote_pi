@@ -12,6 +12,20 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
+- **Headless spawn (plan/167)**: `spawn_worktree {headless:true}` spawns an
+  INVISIBLE worker instead of a terminal window — a transient `pi --mode rpc`
+  child under the Piper supervisor (plan/124 machinery): same worktree, same
+  mesh peer (`<worktree>@<agent_name>`), same `agent_send`/`session_shutdown`
+  workflow, no window. The optional `provider`/`model_id` now also ride the
+  headless path (`start_transient` gained `model`, validated by
+  `SAFE_MODEL_TOKEN` at the surface). While alive the supervisor auto-restarts
+  the worker on crash and RESUMES its session (documented divergence: a reused
+  worktree continues its old conversation, unlike the visible path's fresh
+  session). `session_shutdown` on the worker is a clean exit — no restart, no
+  boot resurrection. Requires the supervisor running; without it the spawn
+  fails with an actionable error (no silent fallback to a terminal). Available
+  on all three surfaces: Pi tool, `$rp_control` envelope, MCP.
+
 - **Mesh `session_shutdown` (plan/166)**: sixth session-control verb — gracefully END a session's process, locally (omit `target`) or on a remote peer. The mesh path passes `defer_if_busy`, so a busy session ACCEPTS the shutdown and exits when its current turn settles — without it, local self-shutdown would always fail (the tool call itself makes the session busy) and busy peers would refuse at the exact moment you want them gone. Reply-before-death is preserved: the ack flushes before the room goes idle and the relay closes. The app's Quit keeps the strict busy-refusal (flag unset) — semantics unchanged. Kill-switch `allow_remote_session_control:false` refuses the op like every other. MCP (`remote-pi-mesh`) gained the remote-only tool.
 
 - **Agent mesh session control (plan/161)**: mesh agents can now manage

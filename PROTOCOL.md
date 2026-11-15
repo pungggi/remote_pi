@@ -301,7 +301,7 @@ handlers são os mesmos, só muda o transporte. Cada tool aceita `target` opcion
 | `model_set {provider, model_id, target?}` | `model_set` | registry + `pi.setModel()` + persist |
 | `list_models {target?}` | `list_models` | registry + `scopedModels` |
 | `session_shutdown {target?}` (plan/166) | `session_shutdown` | `ctx.shutdown()` com `defer_if_busy:true` — ver regras |
-| `spawn_worktree {branch?, base?, provider?, model_id?, target?}` | `spawn_worktree` | `createWorktree()` (plan/108) + `openTerminalTab` rodando `pi` (`--model provider/id` opcional — flag padrão da CLI) |
+| `spawn_worktree {branch?, base?, provider?, model_id?, headless?, target?}` | `spawn_worktree` | `createWorktree()` (plan/108) + `openTerminalTab` rodando `pi` (`--model provider/id` opcional — flag padrão da CLI); com `headless:true` → `start_transient` no supervisor (`pi --mode rpc`, plan/167) |
 
 Regras:
 
@@ -311,6 +311,17 @@ Regras:
   de worktree existente, config `auto_start_relay` — a sessão nova entra na
   mesh como peer próprio (aparece no `list_peers`; mande a tarefa via
   `agent_send`).
+- **`headless:true` (plan/167)**: em vez de terminal visível, um worker
+  TRANSIENTE sob o Piper supervisor (`pi --mode rpc -e <ext> --approve
+  -ne --continue [--model p/m]`) — sem janela, mesmo endereço de peer
+  (`<worktree>@<agent_name>`), `agent_send`/`session_shutdown` funcionam
+  igual. Enquanto vivo o supervisor reinicia em crash (retomando a session
+  — divergência documentada vs. o path visível, que abre session nova a
+  cada spawn em worktree reusado); `session_shutdown` = clean exit, SEM
+  restart e SEM resurrect no boot (transient ≠ pin). Requer o supervisor
+  rodando — sem ele o spawn falha com erro acionável (não cai para
+  terminal). O `model` viaja no op `start_transient` (validado por
+  `SAFE_MODEL_TOKEN` na superfície; a pipe é user-local).
 - **Kill-switch**: `allow_remote_session_control: false` no
   `<cwd>/.pi/remote-pi/config.json` do alvo recusa envelopes com erro tipado.
   Default LIGADO (decisão 2026-11-08: mesh ungated — qualquer peer já pode

@@ -32,6 +32,22 @@ describe("rpcSpawnArgs", () => {
     ]);
   });
 
+  // Plan/167 — headless spawn: the model rides along as the standard CLI
+  // flag so a transient worker can run a cheaper/different model than the
+  // spawning agent.
+  test("plan/167: appends --model provider/id when one is given", () => {
+    expect(rpcSpawnArgs("/path/to/dist/index.js", "w", true, "anthropic/claude-opus-4-7")).toEqual([
+      "--mode", "rpc", "--approve", "--continue", "--name", "w",
+      "--model", "anthropic/claude-opus-4-7",
+      "-ne", "-e", "/path/to/dist/index.js",
+    ]);
+  });
+
+  test("plan/167: no --model flag when model is omitted", () => {
+    const args = rpcSpawnArgs("/path/to/dist/index.js", "w");
+    expect(args).not.toContain("--model");
+  });
+
   test("always passes --approve (pi >=0.79 project trust; RPC is non-interactive)", () => {
     expect(rpcSpawnArgs("/path/to/dist/index.js")).toContain("--approve");
     expect(rpcSpawnArgs("/path/to/dist/index.js", "PC", false)).toContain("--approve");
