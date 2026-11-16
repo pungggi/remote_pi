@@ -65,31 +65,56 @@ export const EXIT_DAEMON_FRESH_SESSION = 42;
 const WIN_EXECUTABLE_EXTS = [".exe", ".cmd", ".bat", ".com"];
 
 /**
+ * PATH lookup for a bare bin name. Injectable in `resolvePiBin` so the win32
+ * branch is deterministic under tests on any host (no real `where` needed).
+ */
+type WhereLookup = (bin: string) => string;
+
+function whereLookup(bin: string): string {
+  return execFileSync("where", [bin], { encoding: "utf8" });
+}
+
+/**
  * Resolve the `pi` executable for `spawn` (plan/40, decision C). On Windows a
  * bare `pi` is actually `pi.cmd`/`pi.ps1`, and `spawn` won't find it without an
  * extension → resolve the real path via `where` (rather than `shell:true`,
  * which risks shell injection). An explicit path or an already-suffixed name is
- * used as-is. POSIX returns the name unchanged. Best-effort: if `where` fails,
- * fall back to the bare name (spawn will surface ENOENT honestly).
+ * used as-is. POSIX returns the name unchanged.
  *
  * `where` lists every match in PATH order, which on pi-node installs puts the
  * extensionless `pi` (a shell script) BEFORE `pi.cmd`. Naively taking the first
  * line spawns the unrunnable script → ENOENT → "crashed". So we prefer a result
  * with a real Windows executable extension and only fall back to the first line.
+ *
+ * PATH-less fallback (2026-11-16 incident): when the lookup fails or finds
+ * nothing — e.g. a watchdog-relaunched supervisor whose Task Scheduler env
+ * lacks `%APPDATA%\npm` on PATH, so EVERY respawn died with `spawn pi ENOENT`
+ * and the device daemon stayed down overnight — try npm's default global-shim
+ * location `%APPDATA%\npm\<bin>.cmd` before returning the bare name (which
+ * spawn can only surface as ENOENT on Windows).
  */
-export function resolvePiBin(piBin: string, plat: NodeJS.Platform = process.platform): string {
+export function resolvePiBin(
+  piBin: string,
+  plat: NodeJS.Platform = process.platform,
+  whereFn: WhereLookup = whereLookup,
+): string {
   if (plat !== "win32") return piBin;
   if (piBin.includes("\\") || piBin.includes("/") || /\.[a-z0-9]+$/i.test(piBin)) return piBin;
+  let lines: string[] = [];
   try {
-    const out = execFileSync("where", [piBin], { encoding: "utf8" });
-    const lines = out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    const runnable = lines.find((l) =>
-      WIN_EXECUTABLE_EXTS.some((ext) => l.toLowerCase().endsWith(ext)),
-    );
-    const chosen = runnable ?? lines[0];
-    if (chosen) return chosen;
+    lines = whereFn(piBin).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   } catch {
-    /* `where` unavailable or `pi` not found — fall back to the bare name */
+    /* `where` unavailable or the name not found — try the default shim dir */
+  }
+  const runnable = lines.find((l) =>
+    WIN_EXECUTABLE_EXTS.some((ext) => l.toLowerCase().endsWith(ext)),
+  );
+  const chosen = runnable ?? lines[0];
+  if (chosen) return chosen;
+  const appdata = process.env.APPDATA;
+  if (appdata) {
+    const shim = join(appdata, "npm", `${piBin}.cmd`);
+    if (existsSync(shim)) return shim;
   }
   return piBin;
 }

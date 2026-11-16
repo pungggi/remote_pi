@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RpcChild, busyTransition, resolvePiBin, resolvePiSpawn, _npmShimTarget, rpcSpawnArgs, type RpcChildExitEvent } from "./rpc_child.js";
@@ -110,8 +110,47 @@ describe("resolvePiBin (plan/40 — Windows pi.cmd)", () => {
     expect(resolvePiBin("pi.cmd", "win32")).toBe("pi.cmd");
     expect(resolvePiBin("C:/tools/pi", "win32")).toBe("C:/tools/pi");
   });
-  // The bare-`pi`-on-win32 lookup uses `where` (Windows-only); not unit-tested
-  // here (no `where` on the POSIX dev host) — covered by the real Windows smoke.
+  // The bare-`pi`-on-win32 lookup is exercised via the injectable `where`
+  // stub (3rd arg of resolvePiBin) — deterministic on any host, no real
+  // `where` needed and the host's own PATH/APPDATA can't leak in.
+  test("Windows bare name → prefers a runnable .cmd/.exe over the extensionless first line (where order)", () => {
+    // `where` PATH order on pi-node installs puts the unrunnable extensionless
+    // `pi` first; picking it yields spawn ENOENT → "crashed".
+    expect(resolvePiBin("pi", "win32", () => "C:\\npm\\pi\r\nC:\\npm\\pi.cmd")).toBe("C:\\npm\\pi.cmd");
+    expect(resolvePiBin("pi", "win32", () => "C:\\npm\\pi\r\nC:\\npm\\pi.exe")).toBe("C:\\npm\\pi.exe");
+    // Only the extensionless script found → first line (unchanged behavior).
+    expect(resolvePiBin("pi", "win32", () => "C:\\npm\\pi")).toBe("C:\\npm\\pi");
+  });
+
+  test("Windows PATH-less env → falls back to %APPDATA%\\npm\\pi.cmd when `where` fails (2026-11-16)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "pi-appdata-"));
+    const origAppdata = process.env.APPDATA;
+    try {
+      const npmDir = join(tmp, "npm");
+      mkdirSync(npmDir, { recursive: true });
+      const shim = join(npmDir, "pi.cmd");
+      writeFileSync(shim, "@echo off\r\n");
+      process.env.APPDATA = tmp;
+      const noWhere = () => { throw new Error("where failed"); };
+      expect(resolvePiBin("pi", "win32", noWhere)).toBe(shim);
+      // Shim missing on disk → bare name (spawn surfaces ENOENT honestly).
+      rmSync(shim);
+      expect(resolvePiBin("pi", "win32", noWhere)).toBe("pi");
+      // APPDATA unset → bare name, never a bogus relative "npm\\pi.cmd".
+      delete process.env.APPDATA;
+      writeFileSync(shim, "@echo off\r\n");
+      expect(resolvePiBin("pi", "win32", noWhere)).toBe("pi");
+    } finally {
+      if (origAppdata === undefined) delete process.env.APPDATA;
+      else process.env.APPDATA = origAppdata;
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("Windows → a successful `where` still wins over the APPDATA fallback", () => {
+    // Real PATH resolution is never second-guessed by the shim fallback.
+    expect(resolvePiBin("pi", "win32", () => "C:\\opt\\pi.cmd")).toBe("C:\\opt\\pi.cmd");
+  });
 });
 
 describe("_npmShimTarget (plan/40 — parse the .cmd shim)", () => {
