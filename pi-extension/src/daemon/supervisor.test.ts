@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createConnection } from "node:net";
 import { join } from "node:path";
@@ -9,6 +9,7 @@ import { daemonLogPath, readDeadMarker, writeDeadMarker } from "./diagnostics.js
 import { ipcAddress, usesNamedPipe } from "../session/ipc.js";
 import { addDaemon } from "./registry.js";
 import { readCronLog } from "./cron_log.js";
+import { upsertRoom } from "../session/rooms_registry.js";
 import {
   encodeRequest,
   parseReply,
@@ -576,5 +577,95 @@ describe("Supervisor — plan/159 resilience", () => {
     // no second child in the cwd. `started` reports the refusal.
     expect(start.ok).toBe(true);
     if (start.ok) expect(start.data!.started).toBe(false);
+  });
+});
+
+describe("Supervisor — daemon_control + ping loop (plan/168)", () => {
+  // _daemonControl is wired through the keeper (relay-side tests live in
+  // room_keeper.test.ts); here we drive the supervisor's own callback and
+  // the ping loop directly.
+  type DaemonControlFn = (r: { op: "restart" | "status"; daemon?: string }) => Promise<Record<string, unknown>>;
+  const control = (r: { op: "restart" | "status"; daemon?: string }) =>
+    (supervisor as unknown as { _daemonControl: DaemonControlFn })._daemonControl(r);
+
+  test("status returns the device row with registry freshness", async () => {
+    upsertRoom({ cwd: testHome, roomId: "device", lastSeenAt: Date.now() });
+    const r = await control({ op: "status" });
+    const rows = (r["daemons"] as Array<Record<string, unknown>>);
+    expect(rows.length).toBe(1);
+    expect(rows[0]!["id"]).toBe("device");
+    expect(typeof rows[0]!["last_seen_age_s"]).toBe("number");
+    expect((rows[0]!["last_seen_age_s"] as number)).toBeLessThan(60);
+  });
+
+  test("restart respawns the device daemon and reports the new incarnation", async () => {
+    const r1 = await control({ op: "restart" });
+    expect(r1).toMatchObject({ op: "restart", daemon: "device", restarted: true });
+    // Idempotent back-to-back: a second restart still lands ok (stop+respawn
+    // of the fresh incarnation).
+    const r2 = await control({ op: "restart", daemon: "device" });
+    expect(r2).toMatchObject({ op: "restart", daemon: "device", restarted: true });
+  });
+
+  test("restart/status refuse non-device daemons (fleet scope is a follow-up)", async () => {
+    await expect(control({ op: "restart", daemon: "abc12345" })).rejects.toThrow(/supports "device" for now/);
+  });
+
+  test("kill-switch allow_remote_session_control:false refuses daemon_control", async () => {
+    mkdirSync(join(testHome, ".pi", "remote-pi"), { recursive: true });
+    writeFileSync(join(testHome, ".pi", "remote-pi", "config.json"), JSON.stringify({ allow_remote_session_control: false }), "utf8");
+    await expect(control({ op: "restart" })).rejects.toThrow(/allow_remote_session_control:false/);
+    await expect(control({ op: "status" })).rejects.toThrow(/allow_remote_session_control:false/);
+  });
+
+  test("ping loop: 2 consecutive misses bounce the child, recovery stops bouncing", async () => {
+    const sv = supervisor as unknown as {
+      children: Map<string, { id: string; cwd: string; child: Record<string, unknown>; restartTimer: null; restartAttempt: number; spawnedAt: number; transient: boolean }>;
+      _pingOnce: () => Promise<void>;
+      _spawnDeviceDaemon: () => boolean;
+    };
+    const fakeChild = {
+      state: "running",
+      pid: 4242,
+      ping: vi.fn(async () => false),
+      stop: vi.fn(async () => { (fakeChild as { state?: string }).state = "stopped"; }),
+    };
+    sv.children.set("device", { id: "device", cwd: testHome, child: fakeChild, restartTimer: null, restartAttempt: 0, spawnedAt: Date.now(), transient: false });
+    const spawnSpy = vi.spyOn(sv, "_spawnDeviceDaemon").mockReturnValue(true);
+    try {
+      await sv._pingOnce(); // miss 1/2 — logged, no action
+      expect(fakeChild.stop).not.toHaveBeenCalled();
+      await sv._pingOnce(); // miss 2/2 — bounce
+      expect(fakeChild.stop).toHaveBeenCalledTimes(1);
+      expect(spawnSpy).toHaveBeenCalledTimes(1);
+
+      // Loop alive again (misses reset): no further bounces.
+      fakeChild.state = "running";
+      fakeChild.ping = vi.fn(async () => true);
+      await sv._pingOnce();
+      await sv._pingOnce();
+      expect(fakeChild.stop).toHaveBeenCalledTimes(1);
+      expect(spawnSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      spawnSpy.mockRestore();
+    }
+  });
+
+  test("ping loop: a healthy child is never touched", async () => {
+    const sv = supervisor as unknown as {
+      children: Map<string, { id: string; cwd: string; child: Record<string, unknown>; restartTimer: null; restartAttempt: number; spawnedAt: number; transient: boolean }>;
+      _pingOnce: () => Promise<void>;
+      _spawnDeviceDaemon: () => boolean;
+    };
+    const fakeChild = { state: "running", pid: 1, ping: vi.fn(async () => true), stop: vi.fn(async () => {}) };
+    sv.children.set("device", { id: "device", cwd: testHome, child: fakeChild, restartTimer: null, restartAttempt: 0, spawnedAt: Date.now(), transient: false });
+    const spawnSpy = vi.spyOn(sv, "_spawnDeviceDaemon").mockReturnValue(true);
+    try {
+      for (let i = 0; i < 3; i++) await sv._pingOnce();
+      expect(fakeChild.stop).not.toHaveBeenCalled();
+      expect(spawnSpy).not.toHaveBeenCalled();
+    } finally {
+      spawnSpy.mockRestore();
+    }
   });
 });
