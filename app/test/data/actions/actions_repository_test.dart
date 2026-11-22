@@ -577,4 +577,86 @@ void main() {
       s.cm.dispose();
     });
   });
+
+  // Plan/168 — device-daemon repair verbs.
+  group('device daemon repair (plan/168)', () {
+    test('restartDeviceDaemon() sends daemon_control restart, completes on ack', () async {
+      final s = await _setup();
+      final future = s.repo.restartDeviceDaemon();
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      final sent = s.ch.sent.single as DaemonControlRequest;
+      expect(sent.op, 'restart');
+      s.ch.push(
+        DaemonControlOk(
+          inReplyTo: sent.id,
+          result: const DaemonRestartResult(
+            daemon: 'device',
+            restarted: true,
+            note: 'alive daemon self-restarting via supervisor crash-respawn',
+          ),
+        ),
+      );
+      final r = await future;
+      expect(
+        r,
+        isA<DaemonRestartResult>()
+            .having((x) => x.restarted, 'restarted', isTrue),
+      );
+      s.cm.dispose();
+    });
+
+    test('deviceStatus() sends daemon_control status, returns rows', () async {
+      final s = await _setup();
+      final future = s.repo.deviceStatus();
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      final sent = s.ch.sent.single as DaemonControlRequest;
+      expect(sent.op, 'status');
+      s.ch.push(
+        DaemonControlOk(
+          inReplyTo: sent.id,
+          result: const DaemonStatusResult(
+            daemons: [
+              DaemonRow(
+                id: 'device',
+                cwd: 'C:\\dev',
+                state: 'running',
+                pid: 17260,
+                uptimeS: 60,
+              ),
+            ],
+          ),
+        ),
+      );
+      final r = await future;
+      expect((r as DaemonStatusResult).daemons.single.state, 'running');
+      s.cm.dispose();
+    });
+
+    test('restartDeviceDaemon() surfaces kill-switch refusal as ActionFailure', () async {
+      final s = await _setup();
+      final future = s.repo.restartDeviceDaemon();
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+      final sent = s.ch.sent.single as DaemonControlRequest;
+      s.ch.push(
+        ActionError(
+          inReplyTo: sent.id,
+          action: ActionName.daemonControl,
+          rawAction: 'daemon_control',
+          error:
+              'remote session control disabled on this peer (allow_remote_session_control:false)',
+        ),
+      );
+      expect(
+        () => future,
+        throwsA(
+          isA<ActionFailure>().having(
+            (e) => e.message,
+            'message',
+            contains('allow_remote_session_control'),
+          ),
+        ),
+      );
+      s.cm.dispose();
+    });
+  });
 }

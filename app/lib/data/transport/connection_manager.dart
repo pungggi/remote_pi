@@ -849,6 +849,10 @@ class ConnectionManager extends Service {
     _cancelPing();
     _watchdogTimer?.cancel();
     _watchdogTimer = null;
+    // plan/168 tests exposed a leak: the online recheck (Timer.periodic in
+    // _startRecheck) survived dispose and tripped test teardown.
+    _recheckTimer?.cancel();
+    _recheckTimer = null;
     _presenceEmitTimer?.cancel();
     _presenceEmitTimer = null;
     _roomsEmitTimer?.cancel();

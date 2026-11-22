@@ -1724,6 +1724,9 @@ class SyncService extends Service {
       case ActionOk():
       case ActionError():
       case ModelsList():
+      // Plan/168 — daemon_control acks are owned by ActionsRepository
+      // (device-daemon repair), not the message sync.
+      case DaemonControlOk():
       // Plan/107 — git status replies are owned by ActionsRepository
       // (session-info dialog), not the message sync.
       case GitStatusResult():

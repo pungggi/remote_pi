@@ -1538,6 +1538,10 @@ enum ActionName {
   sessionCompact('session_compact'),
   modelSet('model_set'),
   thinkingSet('thinking_set'),
+  // Plan/168 — device-daemon repair verbs (restart/status). Served by the
+  // live daemon in room `device`, or by the keeper's control-only presence
+  // when that room is dark (daemon wedged/dead).
+  daemonControl('daemon_control'),
   // Plan/108 — local-only discriminator for the terminal-launch busy
   // spinner. Never appears on the wire (open_terminal_result carries no
   // action name); reuses the enum so QuickActionsBusy keeps one field.
@@ -1891,6 +1895,34 @@ class SetSessionRefRequest extends ClientMessage {
   };
 }
 
+/// Plan/168 — device-daemon control (repair verbs for the always-on
+/// daemon). Routed to room [kDeviceRoom]: answered by the live daemon
+/// itself, or — when the room is dark (daemon wedged/dead) — by the
+/// supervisor's keeper, which holds `device` control-only exactly for
+/// this. [op] `'restart'` acks first, then the daemon crash-exits for the
+/// supervisor's crash-respawn (`--continue` keeps its conversation);
+/// `'status'` reports live rows. Guarded by the same kill-switch as
+/// session control (`allow_remote_session_control:false` refuses with
+/// an `action_error`).
+class DaemonControlRequest extends ClientMessage {
+  final String id;
+
+  /// `'restart'` or `'status'` — mirrors the pi-side `RpDaemonControlOp`.
+  final String op;
+
+  /// Daemon selector; `null`/omitted targets the default `device` daemon.
+  final String? daemon;
+  DaemonControlRequest({required this.id, required this.op, this.daemon});
+
+  @override
+  Map<String, dynamic> toJson() => {
+    'type': 'daemon_control',
+    'id': id,
+    'op': op,
+    if (daemon != null && daemon!.isNotEmpty) 'daemon': daemon,
+  };
+}
+
 // --- ServerMessage (extension → app) ---
 // 1 pairing = 1 session: no session_id on any message.
 // Sealed: all subtypes in this file — switch exhaustiveness enforced by compiler.
@@ -1952,7 +1984,11 @@ sealed class ServerMessage {
       'compaction' => Compaction.fromJson(json),
       'session_history' => SessionHistory.fromJson(json),
       'bye' => Bye.fromJson(json),
-      'action_ok' => ActionOk.fromJson(json),
+      // Plan/168 — daemon_control acks carry a typed result payload;
+      // every other action_ok stays a bare ack ([ActionOk]).
+      'action_ok' => json['action'] == 'daemon_control'
+          ? DaemonControlOk.fromJson(json)
+          : ActionOk.fromJson(json),
       'action_error' => ActionError.fromJson(json),
       'models_list' => ModelsList.fromJson(json),
       // Plan/107 — git status snapshot reply (session-info dialog).
@@ -2841,6 +2877,106 @@ class ModelsList extends ServerMessage {
       models: list,
       current: cur is Map<String, dynamic> ? WireModel.fromJson(cur) : null,
     );
+  }
+}
+
+/// Plan/168 — typed result payload of a `daemon_control` ack.
+/// Discriminated by the payload's `op`; [DaemonRestartResult] for
+/// `'restart'`, [DaemonStatusResult] for `'status'`, and
+/// [DaemonControlUnknown] keeps future ops forward-compatible instead of
+/// silently dropping the reply.
+sealed class DaemonControlResult {
+  const DaemonControlResult();
+}
+
+/// `op: 'restart'` — the ack arrives BEFORE the daemon crash-exits (or
+/// before the supervisor starts the respawn, in the dark-room path).
+/// [restarted] is the supervisor's verdict, not a promise the new process
+/// is up yet — poll [DaemonStatusResult] or wait for the room to go live.
+class DaemonRestartResult extends DaemonControlResult {
+  final String daemon;
+  final bool restarted;
+
+  /// Human-readable context (e.g. "alive daemon self-restarting via
+  /// supervisor crash-respawn").
+  final String? note;
+
+  /// New pid when the answering path knows it (keeper/supervisor path).
+  final int? pid;
+  const DaemonRestartResult({
+    required this.daemon,
+    required this.restarted,
+    this.note,
+    this.pid,
+  });
+}
+
+/// One daemon row in a `op: 'status'` answer. [state] is `'running'` for
+/// a live daemon; the keeper/supervisor path reports what it tracks.
+class DaemonRow {
+  final String id;
+  final String cwd;
+  final String state;
+  final int? pid;
+  final int? uptimeS;
+  const DaemonRow({
+    required this.id,
+    required this.cwd,
+    required this.state,
+    this.pid,
+    this.uptimeS,
+  });
+
+  factory DaemonRow.fromJson(Map<String, dynamic> j) => DaemonRow(
+    id: (j['id'] as String?) ?? '',
+    cwd: (j['cwd'] as String?) ?? '',
+    state: (j['state'] as String?) ?? '',
+    pid: (j['pid'] as num?)?.toInt(),
+    uptimeS: (j['uptime_s'] as num?)?.toInt(),
+  );
+}
+
+class DaemonStatusResult extends DaemonControlResult {
+  final List<DaemonRow> daemons;
+  const DaemonStatusResult({required this.daemons});
+}
+
+/// Forward-compat: a well-formed result whose `op` this build predates.
+class DaemonControlUnknown extends DaemonControlResult {
+  final String op;
+  const DaemonControlUnknown(this.op);
+}
+
+/// Plan/168 — reply to [DaemonControlRequest]. This is the typed view of
+/// an `action_ok` whose `action` is `'daemon_control'` (the result payload
+/// rides inside the ack, like the other action-family replies) — see the
+/// interception in [ServerMessage.fromJson]. Failures arrive as plain
+/// [ActionError] (kill-switch refusal, unknown op, supervisor offline).
+class DaemonControlOk extends ServerMessage {
+  final String inReplyTo;
+  final DaemonControlResult result;
+  DaemonControlOk({required this.inReplyTo, required this.result});
+
+  factory DaemonControlOk.fromJson(Map<String, dynamic> j) {
+    final m = j['result'];
+    final r = m is Map<String, dynamic> ? m : const <String, dynamic>{};
+    final op = (r['op'] as String?) ?? '';
+    final DaemonControlResult result = switch (op) {
+      'restart' => DaemonRestartResult(
+        daemon: (r['daemon'] as String?) ?? '',
+        restarted: r['restarted'] as bool? ?? false,
+        note: r['note'] as String?,
+        pid: (r['pid'] as num?)?.toInt(),
+      ),
+      'status' => DaemonStatusResult(
+        daemons: (r['daemons'] as List<dynamic>? ?? const <dynamic>[])
+            .whereType<Map<String, dynamic>>()
+            .map(DaemonRow.fromJson)
+            .toList(),
+      ),
+      _ => DaemonControlUnknown(op),
+    };
+    return DaemonControlOk(inReplyTo: j['in_reply_to'] as String, result: result);
   }
 }
 
