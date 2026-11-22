@@ -203,6 +203,41 @@ launchers double the noise and can mask which path actually started it.
 
 ---
 
+## 3b. Daemon wedged (hung event loop) — self-healing (plan/168)
+
+A daemon can wedge with its process alive but the pi event loop stuck
+(2026-11-22 incident: the relay dropped the peer; the daemon never
+noticed; 5.5 h outage). All control verbs run inside the target's pi
+process, so a wedged loop processed none of them — the phone had no
+repair path. Three layers now detect and repair this without human
+action:
+
+1. **Supervisor ping loop** (no relay needed): every 30 s the supervisor
+   pipe-pings each running RPC child; 2 consecutive misses (≈60 s) →
+   kill + respawn (`--continue` keeps the conversation). Fastest layer;
+   works even when the relay is down.
+2. **App-triggered restart** (`daemon_control restart` via relay): the
+   room keeper now claims room `device` control-only while the daemon is
+   dark (no `roomMeta`, invisible as a session, yields to the real
+   daemon), so the phone can ask the SUPERVISOR to bounce the child. A
+   live daemon answers the verb itself (ack, then exit 1 → crash-respawn).
+   The Projects screen auto-fires this once after a 10 s grace, then
+   offers a Retry restart button. Kill-switch
+   `allow_remote_session_control:false` refuses.
+3. **Watchdog** (`piper-watchdog.ps1`): probes the supervisor with a real
+   `{"op":"status"}` pipe round-trip (a wedged supervisor fails 3× → kill
+   + restart; a plain connect probe false-OKs a wedged loop). Stale
+   `rooms.json` `device.lastSeenAt` (>5 min — fed by the daemon's 60 s
+   heartbeat tick) bounces ONLY the device child (10 min cooldown), never
+   the whole supervisor and never the plan/159 crash-backoff state.
+
+Net effect: this incident class shrinks from hours of manual surgery to
+minutes of automatic recovery. Measured replays: ping bounce ≈41 s,
+watchdog wedged-supervisor restart ≈105 s, dark room → Projects list
+rendering again well under the 90 s budget.
+
+---
+
 ## 4. `daemon send` says "daemon not running"
 
 The supervisor has the registry entry but no live child for that id.

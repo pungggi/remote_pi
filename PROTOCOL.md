@@ -258,6 +258,51 @@ Vocabulário curado de ações tipadas que o app mobile invoca sobre a sessão d
 }
 ```
 
+### Device daemon control (plan/168)
+
+Verbos de reparo para o daemon always-on, roteados pra room `device` como
+qualquer action. Servidos por um de DOIS caminhos (trust model):
+
+- **Daemon vivo**: o próprio daemon responde de dentro do processo pi.
+  `restart` faz ack PRIMEIRO e depois crash-exita (exit 1) — o supervisor
+  crash-respawna com `--continue` (conversa preservada). `status` reporta
+  pid/uptime nativos do processo.
+- **Room escura** (daemon wedged/morto): o keeper do supervisor segura a
+  room `device` em modo **control-only** — conecta SEM `roomMeta`, nunca
+  publica meta, nunca aparece como sessão (filtro plan/120 intacto). Serve
+  APENAS `daemon_control` (outros verbos são ignorados; op desconhecida →
+  `action_error`); o supervisor mata e respawna o filho. Um daemon real
+  sempre ganha a room de volta (yield do keeper no hello).
+
+Kill-switch: `allow_remote_session_control:false` recusa os dois caminhos
+com `action_error` (mesmo switch do session control, plan/161).
+
+```json
+// Request (op = "restart" | "status"; "daemon" opcional, default "device")
+{ "type": "daemon_control", "id": "<uuid>", "op": "restart" }
+
+// restart ok — daemon vivo OU supervisor via keeper (pid quando conhecido)
+{ "type": "action_ok", "in_reply_to": "<uuid>", "action": "daemon_control",
+  "result": { "op": "restart", "daemon": "device", "restarted": true,
+              "note": "...", "pid": 12345 } }
+
+// status ok — linhas ao vivo
+{ "type": "action_ok", "in_reply_to": "<uuid>", "action": "daemon_control",
+  "result": { "op": "status", "daemons": [
+    { "id": "device", "cwd": "/home/me", "state": "running",
+      "pid": 12345, "uptime_s": 3600 } ] } }
+
+// kill-switch / op desconhecida
+{ "type": "action_error", "in_reply_to": "<uuid>", "action": "daemon_control",
+  "error": "remote session control disabled on this peer (allow_remote_session_control:false)" }
+```
+
+O app (Projects screen) usa isso no fluxo de auto-reparo: diagnostica o erro
+(sem relay ≠ daemon offline), espera 10 s de grace, dispara UM `restart`,
+espera ≤10 s o daemon real re-anunciar a room (meta presente = vivo; o
+keeper nunca anuncia) e refaz UM `list_projects`. Falha → botão Retry
+restart. Detalhes das camadas de detecção: `pi-extension/docs/daemon.md`.
+
 ### Thinking levels (enum fixo)
 
 ```

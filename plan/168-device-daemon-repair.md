@@ -173,20 +173,36 @@ keeper + daemon, and opaque-passthrough stays intact.
 
 ## DoD
 
-- [ ] Replay: SIGSTOP the device daemon on the PC. Without touching the
+- [x] Replay: SIGSTOP the device daemon on the PC. Without touching the
       phone, supervisor ping bounce recovers the room ≤ ~90 s; with the
       Projects screen open, app auto-repair recovers ≤ ~30 s and the list
       renders without a manual tap.
-- [ ] Wedged-supervisor replay: watchdog `health` probe restarts it; the
+      (2026-11-23 live replay: NtSuspendProcess on the daemon → ping miss
+      1/2 → 2/2 → kill + respawn, room re-announced ≈41 s; keeper released
+      the claim on the daemon's hello. App-side flow verified by the
+      viewmodel/widget tests — 10 s grace → single restart → re-announce
+      wait → single list retry — not by a live phone replay.)
+- [x] Wedged-supervisor replay: watchdog `health` probe restarts it; the
       relay never needs manual surgery.
-- [ ] `list_projects` still served exclusively by the real daemon; keeper
+      (live replay: suspended supervisor → probe FAIL 1/3, 2/3, 3/3 over
+      ≈98 s → kill + restart ≈105 s; the old daemon followed via stdio-EOF,
+      new supervisor spawned a clean daemon, relay untouched.)
+- [x] `list_projects` still served exclusively by the real daemon; keeper
       never appears as a session (Home unchanged, plan/120 filter intact).
-- [ ] Kill-switch `allow_remote_session_control:false` refuses
+      (keeper unit tests: control-only claim sends no `roomMeta`; non-device
+      rooms keep the read-only `session_sync` contract.)
+- [x] Kill-switch `allow_remote_session_control:false` refuses
       `daemon_control` too.
-- [ ] `pnpm test` + `pnpm typecheck` green (pi-ext); `flutter test` +
+      (unit tests on all three serving paths: live daemon, keeper, and the
+      app-side surfaces the refusal as `ActionFailure`.)
+- [x] `pnpm test` + `pnpm typecheck` green (pi-ext); `flutter test` +
       `flutter analyze` green (app; no new infos). New tests per steps 2–7.
-- [ ] Outage window for the incident class: hours → minutes, documented in
-      docs/daemon.md.
+      (pi-ext: suites green, 7 known pre-existing env-sensitive flakes
+      exonerated vs main; app: +1122 tests, analyze shows only the 4
+      pre-existing infos; new: 8 protocol + 3 repository + 7 viewmodel +
+      2 widget tests.)
+- [x] Outage window for the incident class: hours → minutes, documented in
+      docs/daemon.md. (section 3b; measured replays ≈41 s / ≈105 s.)
 
 ## Next plans
 

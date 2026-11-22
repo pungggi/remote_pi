@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
+## [Unreleased]
+
+### Added
+
+- **Projects self-repair (plan/168)**: when the device daemon is dark, the
+  Projects screen diagnoses the failure (no relay connection vs "Device
+  daemon offline on <peer>"), auto-fires ONE restart after a 10 s grace
+  via the new `daemon_control` action, waits ≤10 s for the daemon to
+  re-announce and retries the list once, then falls back to a Retry
+  restart button. Relay-side errors show no repair affordance — there is
+  no channel to send it on. Requires the PC-side update (keeper
+  control-presence) for the dark-room path.
+
+---
 ## [1.6.2] - 2026-11-08
 
 ### Fixed
