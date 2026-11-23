@@ -429,6 +429,12 @@ pi-ask :started (sessão X)
 - **Idempotente por `(room_id, flow_id)`**; `open:false` = flow resolvido/
   cancelado/expiarado (cancela notificação/badge). A ordenação (epoch, seq)
   do jornal garante que um clear antigo não vence um open novo no replay.
+- **Trilha de auditoria (plan/171)**: o daemon do device registra cada
+  desfecho no `ext-device.log` (`pending_ask out … seq=N recipients=K`,
+  `ask_notice refused … reason="…"`); a sessão que perguntou registra no
+  próprio `ext-<room>.log` (`ask_notice sent … seq=N`, `… refused`,
+  `… failed`). O `rp_control_result` do `ask_notice` devolve o recibo
+  (`seq`, `epoch`, `recipients`).
 - **Limitações aceitas**: daemon do device apagado → sem fanout (o app já
   mostra o affordance plan/168); sessions sem pi-ask não emitem nada
   (bridge inerte — invariant plan/100 preservado).

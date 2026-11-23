@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 /// Thin seam over `flutter_local_notifications` so the completion gate
@@ -49,8 +50,55 @@ abstract class LocalNotifications {
   Future<String?> consumeLaunchTap();
 }
 
+/// Plan/171 — how intrusive a notification is.
+///
+/// - `normal`: informational (session finished a task). Silent shade entry on
+///   the long-standing `session-completion` channel.
+/// - `actionRequired`: a session is BLOCKED on the user. Heads-up banner +
+///   sound on a dedicated high-importance channel, because missing it means
+///   the chat stays wedged (the plan/170 incident class).
+enum NotificationUrgency { normal, actionRequired }
+
+/// Plan/171 — optional capability of a [LocalNotifications] that can post
+/// ACTION-REQUIRED notifications on the high-importance channel (Android:
+/// heads-up banner + sound instead of a silent shade entry).
+///
+/// Same pattern as `IControlLink` on channels: implementations and test
+/// fakes that predate it simply skip the upgrade. A default method on the
+/// base class would NOT do: the fakes use `implements`, which inherits no
+/// method bodies, so every one of them would have to change.
+abstract class IActionRequiredNotifications {
+  Future<void> showActionRequired({
+    required int id,
+    required String title,
+    required String body,
+    String? payload,
+  });
+}
+
+/// Plan/171 — post "a session is blocked on you" as action-required when the
+/// implementation supports it, else fall back to the plain (informational)
+/// channel. The one call site both consumers (plan/170 pending-ask, plan/134
+/// waiting-for-input) share.
+Future<void> postActionRequired(
+  LocalNotifications local, {
+  required int id,
+  required String title,
+  required String body,
+  String? payload,
+}) {
+  // Pattern binding instead of `is` + member access: the two interfaces are
+  // unrelated, so plain promotion does not apply (LocalNotifications is not
+  // sealed).
+  if (local case final IActionRequiredNotifications capable) {
+    return capable.showActionRequired(id: id, title: title, body: body, payload: payload);
+  }
+  return local.show(id: id, title: title, body: body, payload: payload);
+}
+
 /// Production implementation on top of `flutter_local_notifications`.
-class FlutterLocalNotifications implements LocalNotifications {
+class FlutterLocalNotifications
+    implements LocalNotifications, IActionRequiredNotifications {
   /// Notification channel for session completion (Plan 132).
   static const String channelId = 'session-completion';
   static const String _channelName = 'Session completion';
@@ -60,6 +108,15 @@ class FlutterLocalNotifications implements LocalNotifications {
   /// Same monochrome launcher icon the keep-alive service notification uses
   /// (KeepAliveService.kt) — stays consistent in the status bar.
   static const String _icon = '@mipmap/ic_launcher_monochrome';
+
+  /// Plan/171 — heads-up channel for "a session is blocked on you". A NEW
+  /// channel id on purpose: Android freezes a channel's importance at
+  /// creation and the user may have tuned `session-completion` down, so these
+  /// could never be raised to heads-up by re-using it.
+  static const String actionRequiredChannelId = 'action-required';
+  static const String _actionRequiredChannelName = 'Action required';
+  static const String _actionRequiredChannelDescription =
+      'A session is blocked waiting for your answer.';
 
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
@@ -157,25 +214,68 @@ class FlutterLocalNotifications implements LocalNotifications {
     // platform must never crash the completion gate (it runs in a stream
     // listener with no error handling upstream).
     try {
-      const details = NotificationDetails(
-        android: AndroidNotificationDetails(
-          channelId,
-          _channelName,
-          channelDescription: _channelDescription,
-          importance: Importance.defaultImportance,
-          priority: Priority.defaultPriority,
-          icon: _icon,
-        ),
-      );
       await _plugin.show(
         id: id,
         title: title,
         body: body,
-        notificationDetails: details,
+        notificationDetails: detailsFor(NotificationUrgency.normal),
         payload: payload,
       );
     } catch (_) {
       // Best-effort — the banner is an enhancement, never a hard dependency.
+    }
+  }
+
+  @override
+  Future<void> showActionRequired({
+    required int id,
+    required String title,
+    required String body,
+    String? payload,
+  }) async {
+    await initialize();
+    // Same defensive posture as show(): a blocked session must never be made
+    // worse by a notification failure crashing the stream listener.
+    try {
+      await _plugin.show(
+        id: id,
+        title: title,
+        body: body,
+        notificationDetails: detailsFor(NotificationUrgency.actionRequired),
+        payload: payload,
+      );
+    } catch (_) {
+      // Best-effort.
+    }
+  }
+
+  /// Plan/171 — per-urgency channel + importance/priority. A pure builder so
+  /// the channel contract is unit-testable without a platform.
+  @visibleForTesting
+  static NotificationDetails detailsFor(NotificationUrgency urgency) {
+    switch (urgency) {
+      case NotificationUrgency.normal:
+        return const NotificationDetails(
+          android: AndroidNotificationDetails(
+            channelId,
+            _channelName,
+            channelDescription: _channelDescription,
+            importance: Importance.defaultImportance,
+            priority: Priority.defaultPriority,
+            icon: _icon,
+          ),
+        );
+      case NotificationUrgency.actionRequired:
+        return const NotificationDetails(
+          android: AndroidNotificationDetails(
+            actionRequiredChannelId,
+            _actionRequiredChannelName,
+            channelDescription: _actionRequiredChannelDescription,
+            importance: Importance.high,
+            priority: Priority.high,
+            icon: _icon,
+          ),
+        );
     }
   }
 

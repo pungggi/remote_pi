@@ -214,7 +214,10 @@ class WaitingInputNotifications implements Service {
 
   Future<void> _show(String epk, String roomId) async {
     final title = roomTitle?.call(epk, roomId);
-    await _local.show(
+    // Plan/171 — a blocked session is action-required: heads-up channel
+    // when the implementation supports it.
+    await postActionRequired(
+      _local,
       id: _notificationId(epk, roomId),
       title: title == null || title.isEmpty ? 'Session' : title,
       body: 'Pi is waiting for input at the terminal.',

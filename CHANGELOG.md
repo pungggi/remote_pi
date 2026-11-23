@@ -12,6 +12,20 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
+- **Ask notifications are heads-up (plan/171)**: pending-ask (plan/170)
+  and waiting-for-input (plan/134) notifications now post on a new
+  `action-required` channel with high importance, so Android shows a
+  heads-up banner with sound. Before, every app notification was a silent
+  shade entry on the `session-completion` channel (default importance),
+  which is too quiet for "a session is blocked on you". Completion
+  notifications stay informational on the old channel. The channel is new
+  on purpose: Android freezes a channel's importance at creation.
+- **Ask fanout audit trail (plan/171)**: the device daemon now logs every
+  `ask_notice` outcome in `ext-device.log` (`pending_ask out … seq=N
+  recipients=K`, `ask_notice refused … reason="…"`), and the asking session
+  logs `ask_notice sent / refused / failed` in its own room log. The reply
+  carries the broadcast receipt (`seq`, `epoch`, `recipients`). A badge
+  that did not show is now a two-file lookup instead of a guess.
 - **Ask notifications for any session (plan/170)**: an `ask_user` in a
   session the phone was not viewing had no delivery path. The app keeps
   one connection and switches rooms, and only the `device` room (the

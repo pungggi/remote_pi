@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadLocalConfig, saveLocalConfig } from "./session/local_config.js";
@@ -70,6 +70,12 @@ function lastReply(peer: { sent: SentCall[] }) {
   expect(peer.sent.length).toBe(1);
   const last = peer.sent[peer.sent.length - 1]!;
   return { to: last.to, re: last.re, body: last.body as { rp_control_result: Record<string, unknown> } };
+}
+
+/** Plan/171 — the per-room ext log (`_relayLog`) inside this file's sandbox
+ *  REMOTE_PI_HOME: never the developer's real `~/.pi/piper` tree. */
+function roomLog(roomId: string): string {
+  return readFileSync(join(process.env["REMOTE_PI_HOME"]!, ".pi", "piper", `ext-${roomId}.log`), "utf8");
 }
 
 describe("plan/161 $rp_control receiving side", () => {
@@ -218,6 +224,10 @@ describe("plan/170 $rp_control ask_notice", () => {
     main._setRoomIdForTest("device");
     const sent: Array<Record<string, unknown>> = [];
     const { ext: extState } = await import("./extension-state.js");
+    // Plan/171 — a started session makes the broadcast ledger-stamped; the
+    // receipt (seq/epoch) is what the sender logs.
+    const prevStartedAt = extState.sessionStartedAt;
+    extState.sessionStartedAt = 1763900000000;
     extState.activePeers.set("phone", {
       send: (m: unknown) => {
         sent.push(m as Record<string, unknown>);
@@ -232,7 +242,8 @@ describe("plan/170 $rp_control ask_notice", () => {
       question_count: 2,
     });
     const r = lastReply(peer);
-    expect(r.body.rp_control_result).toMatchObject({ ok: true, action: "ask_notice" });
+    expect(r.body.rp_control_result).toMatchObject({ ok: true, action: "ask_notice", recipients: 1 });
+    expect(typeof r.body.rp_control_result.seq).toBe("number");
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({
       type: "pending_ask",
@@ -243,7 +254,15 @@ describe("plan/170 $rp_control ask_notice", () => {
       question_count: 2,
     });
     expect(typeof sent[0]!["ts"]).toBe("number");
+    // Plan/171 — the receipt matches the frame actually sent, and the room
+    // log carries the audit line.
+    expect(sent[0]!["seq"]).toBe(r.body.rp_control_result.seq);
+    expect(sent[0]!["epoch"]).toBe(1763900000000);
+    expect(roomLog("device")).toContain(
+      `pending_ask out open=true room=sess-room-9 flow=tool:tc_7 seq=${String(r.body.rp_control_result.seq)} epoch=1763900000000 recipients=1`,
+    );
     extState.activePeers.clear();
+    extState.sessionStartedAt = prevStartedAt;
     main._setRoomIdForTest(null);
   });
 
@@ -266,5 +285,97 @@ describe("plan/170 $rp_control ask_notice", () => {
     expect(r.body.rp_control_result.ok).toBe(false);
     expect(String(r.body.rp_control_result.error)).toContain("allow_remote_session_control");
     main._setRoomIdForTest(null);
+  });
+
+  test("plan/171 — a refusal is audited in the receiving room's ext log", async () => {
+    main._setPiForTest({ stub: true });
+    main._setRoomIdForTest("abc123room");
+    await run({ op: "ask_notice", open: true, room_id: "abc123room", flow_id: "tool:tc_1" });
+    expect(roomLog("abc123room")).toContain(
+      'ask_notice refused open=true room=abc123room flow=tool:tc_1 reason="ask_notice is only served by the device daemon (device room)"',
+    );
+    main._setRoomIdForTest(null);
+  });
+});
+
+describe("plan/171 ask_notice audit trail (sender side)", () => {
+  function fakeMeshNode(request: (to: string, body: unknown) => Promise<unknown>) {
+    return { peer: () => ({ request }) } as never;
+  }
+  const flow = (phase: "open" | "close") => ({
+    phase,
+    flowId: "tool:tc_7",
+    toolCallId: "tc_7",
+    title: "Direction",
+    questionCount: 2,
+  });
+  const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 30));
+
+  async function withMesh(request: (to: string, body: unknown) => Promise<unknown>, body: () => Promise<void>) {
+    const { ext: extState } = await import("./extension-state.js");
+    const prevNode = extState.meshNode;
+    extState.meshNode = fakeMeshNode(request);
+    main._setRoomIdForTest("asker-room");
+    try {
+      await body();
+    } finally {
+      extState.meshNode = prevNode;
+      main._setRoomIdForTest(null);
+    }
+  }
+
+  test("logs the daemon receipt (ledger seq + owners reached)", async () => {
+    const request = vi.fn(async () => ({
+      body: { rp_control_result: { ok: true, action: "ask_notice", seq: 12, epoch: 7, recipients: 1 } },
+    }));
+    await withMesh(request, async () => {
+      main._fanoutAskNotice(flow("open"));
+      await settle();
+      expect(request).toHaveBeenCalledWith(
+        "device",
+        {
+          $rp_control: {
+            op: "ask_notice",
+            open: true,
+            room_id: "asker-room",
+            flow_id: "tool:tc_7",
+            title: "Direction",
+            question_count: 2,
+          },
+        },
+        expect.any(Number),
+      );
+      expect(roomLog("asker-room")).toContain("ask_notice sent open=true flow=tool:tc_7 seq=12 recipients=1");
+    });
+  });
+
+  test("logs a typed refusal from the daemon", async () => {
+    await withMesh(
+      async () => ({ body: { rp_control_result: { ok: false, action: "ask_notice", error: "nope" } } }),
+      async () => {
+        main._fanoutAskNotice(flow("close"));
+        await settle();
+        expect(roomLog("asker-room")).toContain('ask_notice refused open=false flow=tool:tc_7 reason="nope"');
+      },
+    );
+  });
+
+  test("logs a transport failure and warns exactly once", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await withMesh(
+        async () => {
+          throw new Error("peer timeout");
+        },
+        async () => {
+          main._fanoutAskNotice(flow("open"));
+          await settle();
+          expect(roomLog("asker-room")).toContain('ask_notice failed open=true flow=tool:tc_7 error="peer timeout"');
+          expect(warn).toHaveBeenCalledTimes(1);
+        },
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

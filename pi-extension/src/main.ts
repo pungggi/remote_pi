@@ -508,7 +508,7 @@ export function _recreateExtensionUiBridge(pi: ExtensionAPI): void {
  * (no device daemon route; the phone already shows the plan/168 offline
  * affordance in that state). */
 const ASK_NOTICE_TIMEOUT_MS = 5_000;
-function _fanoutAskNotice(e: FlowLifecycleEvent): void {
+export function _fanoutAskNotice(e: FlowLifecycleEvent): void {
   const roomId = ext.myRoomId;
   if (!roomId || roomId === DEVICE_ROOM) return;
   const node = ext.meshNode;
@@ -521,12 +521,32 @@ function _fanoutAskNotice(e: FlowLifecycleEvent): void {
     ...(e.title ? { title: e.title } : {}),
     ...(e.questionCount > 0 ? { question_count: e.questionCount } : {}),
   };
+  // Plan/171 — audit trail in the asking session's ext log: the daemon's
+  // receipt (ledger seq of the broadcast frame + owners reached), its typed
+  // refusal, or a transport failure. One line per outcome, nothing on the
+  // happy path beyond it.
+  const tag = `open=${ctrl.open} flow=${ctrl.flow_id}`;
   node
     .peer()
     .request("device", { $rp_control: ctrl }, ASK_NOTICE_TIMEOUT_MS)
+    .then((reply: unknown) => {
+      const result = (reply as {
+        body?: { rp_control_result?: { ok?: boolean; seq?: number; recipients?: number; error?: string } };
+      } | null)?.body?.rp_control_result;
+      if (result?.ok) {
+        _relayLog(roomId, "ask_notice sent", `${tag} seq=${result.seq ?? "-"} recipients=${result.recipients ?? "-"}`);
+      } else {
+        _relayLog(roomId, "ask_notice refused", `${tag} reason=${JSON.stringify(result?.error ?? "no result")}`);
+      }
+    })
     .catch((err: unknown) => {
       console.warn(
         `[remote-pi] ask_notice fanout (${e.phase}) failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      _relayLog(
+        roomId,
+        "ask_notice failed",
+        `${tag} error=${JSON.stringify(err instanceof Error ? err.message : String(err))}`,
       );
     });
 }
@@ -1502,11 +1522,32 @@ export function _getWaitingBridgeFlowForTest(): boolean {
  * use this — they go to the sender channel directly.
  */
 export function _broadcastToActive(msg: ServerMessage): void {
+  _broadcastReporting(msg);
+}
+
+/**
+ * Plan/171 — `_broadcastToActive` with a receipt. Same single choke point for
+ * probe + ledger stamp + journal + fan-out (nothing else may stamp); callers
+ * that owe the sender an audit trail (`ask_notice`) read the stamped frame's
+ * `seq`/`epoch` (null when no session has started → unstamped) and the number
+ * of owner channels that actually took the frame.
+ */
+export function _broadcastReporting(msg: ServerMessage): {
+  seq: number | null;
+  epoch: number | null;
+  recipients: number;
+} {
   _probeBroadcast(msg);
   const frame = _stampBroadcast(msg);
+  let recipients = 0;
   for (const ch of ext.activePeers.values()) {
-    try { ch.send(frame); } catch { /* best-effort per channel */ }
+    try {
+      ch.send(frame);
+      recipients++;
+    } catch { /* best-effort per channel */ }
   }
+  const stamped = frame as { seq?: number; epoch?: number };
+  return { seq: stamped.seq ?? null, epoch: stamped.epoch ?? null, recipients };
 }
 
 // ── Plan/145 — delivery ledger ──────────────────────────────────────────────
@@ -5808,12 +5849,14 @@ async function _handleControlEnvelopeInner(
       // plan/145 journal (a re-attaching phone catches up via report_seq).
       // A project session receiving one is a routing error — refuse with a
       // typed answer instead of broadcasting into the wrong room.
+      // Plan/171 — every outcome is audited in this room's ext log
+      // (`~/.pi/piper/ext-<room>.log`): a badge that never showed must be
+      // tellable apart from a notice that never arrived.
+      const auditTag = `open=${ctrl.open === true} room=${String(ctrl.room_id)} flow=${String(ctrl.flow_id)}`;
       if (ext.myRoomId !== DEVICE_ROOM) {
-        reply({
-          ok: false,
-          action: "ask_notice",
-          error: "ask_notice is only served by the device daemon (device room)",
-        });
+        const reason = "ask_notice is only served by the device daemon (device room)";
+        _relayLog(ext.myRoomId, "ask_notice refused", `${auditTag} reason=${JSON.stringify(reason)}`);
+        reply({ ok: false, action: "ask_notice", error: reason });
         return;
       }
       if (
@@ -5822,19 +5865,32 @@ async function _handleControlEnvelopeInner(
         typeof ctrl.flow_id !== "string" ||
         !ctrl.flow_id
       ) {
-        reply({ ok: false, action: "ask_notice", error: "ask_notice requires room_id and flow_id" });
+        const reason = "ask_notice requires room_id and flow_id";
+        _relayLog(ext.myRoomId, "ask_notice refused", `${auditTag} reason=${JSON.stringify(reason)}`);
+        reply({ ok: false, action: "ask_notice", error: reason });
         return;
       }
-      _broadcastToActive({
+      const open = ctrl.open === true;
+      const receipt = _broadcastReporting({
         type: "pending_ask",
         room_id: ctrl.room_id,
         flow_id: ctrl.flow_id,
-        open: ctrl.open === true,
+        open,
         ...(typeof ctrl.title === "string" && ctrl.title ? { title: ctrl.title } : {}),
         ...(typeof ctrl.question_count === "number" ? { question_count: ctrl.question_count } : {}),
         ts: Date.now(),
       });
-      reply({ ok: true, action: "ask_notice" });
+      _relayLog(
+        ext.myRoomId,
+        "pending_ask out",
+        `open=${open} room=${ctrl.room_id} flow=${ctrl.flow_id} seq=${receipt.seq ?? "-"} epoch=${receipt.epoch ?? "-"} recipients=${receipt.recipients}`,
+      );
+      reply({
+        ok: true,
+        action: "ask_notice",
+        ...(receipt.seq !== null ? { seq: receipt.seq, epoch: receipt.epoch ?? undefined } : {}),
+        recipients: receipt.recipients,
+      });
       return;
     }
     default:
