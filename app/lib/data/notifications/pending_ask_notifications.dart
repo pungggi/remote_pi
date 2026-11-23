@@ -35,6 +35,12 @@ class PendingAskNotifications extends Service {
 
   StreamSubscription<PendingAskEvent>? _sub;
 
+  /// Events observed before [_attach]'s load finished, replayed in order
+  /// once the persisted set is live. Review #117: an ask landing exactly in
+  /// the app-start window (device-room journal replay) must not be lost —
+  /// dropping it would silence the badge until the next edge.
+  final List<PendingAskEvent> _preAttachBuffer = [];
+
   /// canonical key → open flow ids. Null until [_attach] loads the box.
   Map<String, Set<String>>? _openFlows;
 
@@ -47,10 +53,19 @@ class PendingAskNotifications extends Service {
         _local = local;
 
   /// Wire to [ConnectionManager.pendingAskStream]. Async: loads the persisted
-  /// badge set BEFORE the first event lands, so [isAsking] never flickers.
+  /// badge set while SUBSCRIBED — events arriving mid-load are buffered by
+  /// [_onEvent] and replayed after, so [isAsking] never flickers AND no
+  /// start-window event is lost (review #117 race fix).
   Future<void> attach(Stream<PendingAskEvent> stream) async {
-    await _loadPersisted();
+    _sub?.cancel();
     _sub = stream.listen(_onEvent, onError: (Object _, StackTrace _) {});
+    await _loadPersisted();
+    if (_preAttachBuffer.isEmpty) return;
+    final buffered = List<PendingAskEvent>.of(_preAttachBuffer);
+    _preAttachBuffer.clear();
+    for (final e in buffered) {
+      _onEvent(e);
+    }
   }
 
   /// Whether session `(epk, roomId)` has at least one open ask flow.
@@ -84,7 +99,11 @@ class PendingAskNotifications extends Service {
 
   void _onEvent(PendingAskEvent e) {
     final flows = _openFlows;
-    if (flows == null) return; // attach() not done — drop (next event wins)
+    if (flows == null) {
+      // attach()'s load is still in flight — buffer, don't drop.
+      _preAttachBuffer.add(e);
+      return;
+    }
     final key = canonicalKey(e.epk, e.roomId);
     final had = flows[key]?.isNotEmpty ?? false;
     if (e.open) {
@@ -169,6 +188,7 @@ class PendingAskNotifications extends Service {
   void dispose() {
     _sub?.cancel();
     _sub = null;
+    _preAttachBuffer.clear();
     _changesController.close();
   }
 }

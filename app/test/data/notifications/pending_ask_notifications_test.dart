@@ -228,6 +228,26 @@ void main() {
     expect(svc.isAsking('----', 'r1'), isFalse);
   });
 
+  test('events arriving during the attach load are buffered, not dropped',
+      () async {
+    final local = _FakeLocalNotifications();
+    final svc = PendingAskNotifications(boxes: LocalBoxes(), local: local);
+    final ctrl = StreamController<PendingAskEvent>.broadcast();
+
+    // Do NOT await attach: it subscribes synchronously, then loads the
+    // persisted set. This event lands while _openFlows is still null —
+    // exactly the app-start + device-room journal-replay window (review
+    // #117). It must be buffered and replayed once the load finishes.
+    final attaching = svc.attach(ctrl.stream);
+    ctrl.add(ask(true, flow: 'start-window'));
+    await attaching;
+    await pumpEventQueue();
+
+    expect(svc.isAsking('epkX', 'r1'), isTrue);
+    expect(local.shown, hasLength(1));
+    expect(local.shown.single.payload, 'epkX:r1');
+  });
+
   test('two rooms badge independently', () async {
     final local = _FakeLocalNotifications();
     final svc = PendingAskNotifications(boxes: LocalBoxes(), local: local);

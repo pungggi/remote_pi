@@ -1791,7 +1791,13 @@ class ConnectionManager extends Service {
         // Plan/170 — fanout hints are peer-attributed HERE (the only place
         // that knows which PC's channel delivered the frame) and forwarded
         // as events; the badge/notification semantics live downstream.
-        if (msg is PendingAsk && !_pendingAskController.isClosed) {
+        // The wire contract (PROTOCOL.md) binds pending_ask to the device
+        // room ONLY — the relay is content-agnostic, so an out-of-room
+        // frame is out-of-contract noise from a buggy/misbehaving PC:
+        // drop it instead of badging arbitrary rooms (review #117).
+        if (msg is PendingAsk &&
+            _activeRoomId == kDeviceRoom &&
+            !_pendingAskController.isClosed) {
           _pendingAskController.add(
             PendingAskEvent(
               epk: toStandardB64(peer.remoteEpk),
