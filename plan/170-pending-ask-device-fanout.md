@@ -108,36 +108,56 @@ means a replayed clear wins over an older open. PROTOCOL.md gains both.
 pi-extension:
 
 - `protocol/types.ts` — op + ServerMessage + docs.
-- `extension_ui_bridge.ts` — new hook payload: flows snapshot
-  (`onFlowsChanged(flows: FlowInfo[])`); keep the boolean transition for
-  `waiting_for_input` (derive `flows.length > 0`). Dispose fires the empty
-  snapshot (clear-all).
-- `main.ts` — `_recreateExtensionUiBridge` wiring: derive waiting flag AND
-  send `ask_notice` opens/closes (diff prev vs next snapshot) to the `device`
-  peer; resolve the peer from the mesh peer inventory by name `device`;
-  best-effort with short timeout, log-only failures (the ask itself must
-  never depend on the fanout). Daemon side: `_handleControlEnvelope` branch
-  for `ask_notice` → `_broadcastToActive(pending_ask)`.
-- Tests: bridge snapshot hook (open/close/dispose diffs), envelope handler
-  broadcast, op validation (mirror `delivery_ledger.test.ts` fakes).
+- `extension_ui_bridge.ts` — as-built: per-flow lifecycle hook
+  (`onFlowLifecycle(ev: FlowLifecycleEvent)` with `phase`
+  open/close/dispose, `flowId`, `toolCallId`, `title`, `questionCount`).
+  Dispose fires a close PER flow (snapshot-before-clear), not a clear-all
+  snapshot. The boolean `waiting_for_input` transition is kept as-is.
+- `main.ts` — `_recreateExtensionUiBridge` wiring: the lifecycle events
+  drive `ask_notice` opens/closes directly (no snapshot diffing); sent to
+  the mesh peer `device` via `peer.request` with a short timeout,
+  log-only failures (the ask itself must never depend on the fanout).
+  Daemon side: `_handleControlEnvelope` branch for `ask_notice` →
+  `_broadcastToActive(pending_ask)` (device-room guard + kill-switch +
+  field validation; as-built r2: receiving-side room validation is
+  intentionally NOT added — the UDS mesh is machine-local and peers past
+  it already hold stronger `session_control` ops).
+- Tests: bridge lifecycle hook (open/close/dispose-per-flow), envelope
+  handler broadcast, op validation (mirror `delivery_ledger.test.ts`
+  fakes).
 
 app:
 
-- `protocol/protocol.dart` — `PendingAsk` ServerMessage + fromJson.
-- New `PendingAskService` (data/sync) — listens to the online channel's
-  `serverMessages` for `PendingAsk` regardless of active room; keeps
-  `Map<room_id, Set<flow_id>>` badges; persists to the runtime box
-  (relaunch keeps badges until cleared); exposes a broadcast stream.
-- Notification via `LocalNotifications` (stable id per room — replaces,
-  never stacks; cancelled on clear). Payload `pending_ask:<room_id>`.
-- `main.dart` — tap handling mirroring plan/132
-  (`_openFromCompletionTap` guards: boot/onboarding park, /chat drop).
-- Home session tile badge (reuse the waiting-for-input dot style).
+- `protocol/protocol.dart` — `PendingAsk` ServerMessage + fromJson +
+  `PendingAskEvent` (peer-attributed).
+- `connection_manager.dart` — `pendingAskStream`: frames are attributed to
+  the channel's peer in `_watchChannel` (the only place that knows it) and
+  ONLY forwarded while the channel is parked in the `device` room
+  (as-built r2 guard, review #117).
+- New `PendingAskNotifications` (data/notifications) — subscribes to
+  `ConnectionManager.pendingAskStream`; keeps
+  `Map<<stdB64(epk)>:<roomId>, Set<flow_id>>` badges; persists to the
+  runtime box (relaunch keeps badges until cleared); events observed
+  before the persisted load finishes are buffered and replayed (as-built
+  r2, review #117). Exposes `isAsking` + a broadcast `changes` stream.
+- Notification via `LocalNotifications` (stable FNV-1a id per canonical
+  key — replaces, never stacks; cancelled on clear). Payload reuses the
+  plan/132 canonical key `<stdB64(epk)>:<roomId>` VERBATIM, so the
+  existing completion-banner tap routing opens the chat with zero new
+  plumbing (no separate `_openFromCompletionTap` mirror needed).
+- `main.dart` — attach + the stale-badge self-heal wiring
+  (`SyncService.onSyncSettledWithoutAsk` → `clearRoom`).
+- Home session tile: amber slot color via `isAsking` (the plan/149 slot
+  owns the status color now — the old dot is gone).
 - Self-heal: when a chat attaches and `session_sync` returns NO pending
   `extension_ui_request` for a room the badge says is asking, clear the
   badge (stale-notice recovery without waiting for a clear frame).
-- `flutter analyze` 0 issues; new tests for the service
-  (open/clear/replay-dedup/persistence) following plan/129's test style.
+  As-built: armed on every newest-page eos with a 1.5 s grace that
+  re-checks room + pending request under the timer.
+- `flutter analyze` 0 errors; new tests for the service
+  (open/clear/replay-dedup/persistence/start-window-buffer/self-heal)
+  following plan/129's test style, plus a ConnectionManager guard test
+  (device-room-only forwarding).
 
 ## Limitations (accepted)
 
