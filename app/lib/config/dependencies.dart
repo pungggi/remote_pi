@@ -7,6 +7,7 @@ import 'package:app/data/mesh/mesh_client.dart';
 import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/local/boxes.dart';
 import 'package:app/data/notifications/local_notifications.dart';
+import 'package:app/data/notifications/pending_ask_notifications.dart';
 import 'package:app/data/notifications/session_completion_notifications.dart';
 import 'package:app/data/notifications/waiting_input_notifications.dart';
 import 'package:app/data/preferences/preferences.dart';
@@ -175,6 +176,17 @@ Future<void> setupDependencies() async {
     ),
   );
 
+  // Plan/170 — pending-ask fanout hints (device room): badge + notification
+  // for ask_user flows in sessions the app is not attached to. Attached to
+  // ConnectionManager.pendingAskStream in main(); tap routing rides the
+  // completion-banner payload plumbing.
+  _injector.addService<PendingAskNotifications>(
+    () => PendingAskNotifications(
+      boxes: _injector.get<LocalBoxes>(),
+      local: _injector.get<LocalNotifications>(),
+    ),
+  );
+
   // Plan 153 — official UnifiedPush connector and relay registration.
   _injector.addService<UnifiedPushService>(
     () => UnifiedPushService(
@@ -244,6 +256,7 @@ Future<void> setupDependencies() async {
       _injector.get<ConnectionManager>(),
       _injector.get<IActionsRepository>(),
       _injector.get<SessionCompletionNotifications>(),
+      pendingAsk: _injector.get<PendingAskNotifications>(),
     ),
   );
   // Plan/121 — lightweight VM for the Projects screen (no stream

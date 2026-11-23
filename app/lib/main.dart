@@ -6,6 +6,7 @@ import 'package:app/data/images/image_picker_service.dart';
 import 'package:app/data/local/boxes.dart';
 import 'package:app/data/mesh/mesh_sync_service.dart';
 import 'package:app/data/notifications/local_notifications.dart';
+import 'package:app/data/notifications/pending_ask_notifications.dart';
 import 'package:app/data/notifications/session_completion_notifications.dart';
 import 'package:app/data/notifications/waiting_input_notifications.dart';
 import 'package:app/data/preferences/preferences.dart';
@@ -87,6 +88,19 @@ Future<void> main(List<String> args) async {
         sync.currentExtensionUiRequest != null;
   };
   waiting.attach(injector.get<ConnectionManager>().waitingForInputStream);
+  // Plan/170 — pending-ask fanout hints (device room): badge + notification
+  // for ask flows in sessions the app is not attached to. Payload/tap routing
+  // reuse the completion banner plumbing above.
+  // ignore: unawaited_futures
+  injector
+      .get<PendingAskNotifications>()
+      .attach(injector.get<ConnectionManager>().pendingAskStream);
+  // Plan/170 — stale-badge self-heal: when a chat's own sync settles with
+  // no pending interactive request, its badge hints are stale — drop them.
+  injector.get<SyncService>().onSyncSettledWithoutAsk = (epk, roomId) {
+    // ignore: unawaited_futures
+    injector.get<PendingAskNotifications>().clearRoom(epk, roomId);
+  };
   // Plan/141 — live waiting rooms for the background snapshot (dot seen in
   // the foreground → banner once the app backgrounds). roomsSnapshot is
   // keyed by standard-b64 epk; isRoomWaitingForInput re-normalizes and

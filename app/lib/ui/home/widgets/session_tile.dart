@@ -44,6 +44,12 @@ class SessionTile extends StatelessWidget {
   /// derivation: the room isn't computing, it's waiting for the human.
   /// Renders amber — distinct from the blue working status.
   final bool isWaitingForInput;
+
+  /// Plan/170 — `true` when a pending-ask fanout hint says this room has
+  /// an open ask flow (typically a room the app is NOT attached to).
+  /// Same amber as [isWaitingForInput]: asking IS waiting, this source
+  /// just sees rooms the relay meta can't.
+  final bool isAsking;
   final RoomInfo? room;
 
   /// Paired-device label shown when grouped sections contain sessions from
@@ -124,6 +130,7 @@ class SessionTile extends StatelessWidget {
     this.isReconnecting = false,
     this.isWorking = false,
     this.isWaitingForInput = false,
+    this.isAsking = false,
     this.isSelected = false,
     this.onLongPress,
     this.notifyOnDone = false,
@@ -287,7 +294,7 @@ class SessionTile extends StatelessWidget {
   /// stay grey and a relay reconnect keeps its amber state.
   Color _statusColor(AppColors colors) {
     if (isLive && (room?.providerError ?? false)) return colors.error;
-    if (isWaitingForInput) return colors.warning;
+    if (isWaitingForInput || isAsking) return colors.warning;
     if (isWorking) return colors.working;
     if (isReconnecting) return colors.warning;
     if (isLive) return colors.success;

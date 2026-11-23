@@ -945,6 +945,37 @@ class WaitingForInputEvent {
   int get hashCode => Object.hash(epk, roomId, waiting);
 }
 
+/// Plan/170 — pending-ask fanout hint, attributed to the PC whose channel
+/// delivered it (the `device` room of that PC). Emitted from
+/// [ConnectionManager.pendingAskStream] for every `pending_ask`
+/// ServerMessage; dedupe/reply semantics live in the consumer
+/// (PendingAskService), keyed by `(epk, roomId, flowId)`.
+class PendingAskEvent {
+  /// PC public key, already normalized to standard base64.
+  final String epk;
+
+  /// The ASKING session's room id (NOT the device room it arrived on).
+  final String roomId;
+
+  /// pi-ask flow id — dedupe key together with (epk, roomId).
+  final String flowId;
+
+  /// `true` = flow opened; `false` = cleared (answered/cancelled/expired).
+  final bool open;
+
+  final String? title;
+  final int? questionCount;
+
+  const PendingAskEvent({
+    required this.epk,
+    required this.roomId,
+    required this.flowId,
+    required this.open,
+    this.title,
+    this.questionCount,
+  });
+}
+
 /// Plan/137 — the relay reported a destination `(peer, room)` unreachable
 /// for an envelope this app sent (rate-limited server-side). Emitted on
 /// [ConnectionManager.routeErrorStream]. Consumers fail pending
@@ -2016,6 +2047,11 @@ sealed class ServerMessage {
       // Plan/145 — the journal can't cover our reported gap (frames fell out
       // of the ring) or the epoch moved on: fall back to a full session_sync.
       'sync_needed' => SyncNeeded.fromJson(json),
+      // Plan/170 — pending-ask fanout hint. Broadcast ONLY in the `device`
+      // room by the device daemon (on a $rp_control ask_notice envelope from
+      // the asking session over the UDS mesh): session `room_id` has an open
+      // (or just cleared) ask flow the app is not attached to.
+      'pending_ask' => PendingAsk.fromJson(json),
       // Plan/157 — reply to PlanResetCard (reset-card redemption button).
       'plan_reset_card_result' => PlanResetResult.fromJson(json),
       // forward-compat: unknown types are not fatal — callers catch and log
@@ -2629,6 +2665,42 @@ class SyncNeeded extends ServerMessage {
 
   factory SyncNeeded.fromJson(Map<String, dynamic> j) =>
       SyncNeeded(reason: (j['reason'] as String?) ?? 'overflow');
+}
+
+/// Plan/170 — pending-ask fanout hint (device room only).
+///
+/// A HINT, never the source of truth: the ask sheet itself still comes from
+/// the session room's own `session_sync` → `pendingRequests` replay
+/// (plan/100/129). This frame exists so the app can BADGE the session tile
+/// and raise a notification while it is attached to the `device` room —
+/// the always-on home-base channel — instead of sitting silent until the
+/// user happens to open that exact chat (the 6-hour wedge of 2026-11-22).
+/// Idempotent by (roomId, flowId); `open:false` clears one flow's hint.
+class PendingAsk extends ServerMessage {
+  final String roomId;
+  final String flowId;
+  final bool open;
+  final String? title;
+  final int? questionCount;
+  final int ts;
+
+  PendingAsk({
+    required this.roomId,
+    required this.flowId,
+    required this.open,
+    this.title,
+    this.questionCount,
+    required this.ts,
+  });
+
+  factory PendingAsk.fromJson(Map<String, dynamic> j) => PendingAsk(
+    roomId: j['room_id'] as String,
+    flowId: j['flow_id'] as String,
+    open: j['open'] == true,
+    title: j['title'] as String?,
+    questionCount: (j['question_count'] as num?)?.toInt(),
+    ts: (j['ts'] as num?)?.toInt() ?? 0,
+  );
 }
 
 sealed class SessionHistoryEvent {

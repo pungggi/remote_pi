@@ -428,6 +428,9 @@ class HomePage extends StatelessWidget {
       it.peer.remoteEpk,
       it.room.roomId,
     );
+    // Plan/170 — pending-ask fanout hint (covers rooms the app is not
+    // attached to); feeds the same warning color as waiting-for-input.
+    final isAsking = vm.isRoomAsking(it.peer.remoteEpk, it.room.roomId);
     // Plan/tablet — highlight the open session, but only in the two-pane
     // layout (on phone the list is covered by the pushed chat, so a
     // persistent highlight would be meaningless).
@@ -460,6 +463,7 @@ class HomePage extends StatelessWidget {
               isReconnecting: isReconnecting,
               isWorking: isWorking,
               isWaitingForInput: isWaitingForInput,
+              isAsking: isAsking,
               isSelected: isSelected,
               notifyOnDone: vm.notifyOnDone(it.peer.remoteEpk, it.room.roomId),
               room: it.room,
