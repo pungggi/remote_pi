@@ -153,24 +153,40 @@ class ProjectsViewModel extends ViewModel<ProjectsState> {
       return;
     }
     if (_disposed) return;
+    // Restart itself failing (kill-switch refusal, transport timeout, ...)
+    // is distinct from "restart acked but the daemon never came back" —
+    // the user acts differently (check the PC vs just retry).
     try {
       await _actions.restartDeviceDaemon();
-      if (_disposed) return;
-      await _waitForDeviceRoomLive(const Duration(seconds: 10));
-      if (_disposed) return;
     } catch (_) {
       if (!_disposed) {
         emit(const ProjectsError(
-          'Restart sent, daemon still unreachable.',
+          'Restart failed; daemon unreachable.',
           kind: ProjectsErrorKind.device,
         ));
       }
       return;
     }
+    if (_disposed) return;
+    try {
+      await _waitForDeviceRoomLive(const Duration(seconds: 10));
+    } catch (_) {
+      if (!_disposed) {
+        emit(const ProjectsError(
+          'Restart sent, daemon still dark. Try again in a moment.',
+          kind: ProjectsErrorKind.device,
+        ));
+      }
+      return;
+    }
+    if (_disposed) return;
+    // Any failure here (ActionFailure from the daemon OR an unexpected
+    // repository/transport exception) lands on the same retry affordance —
+    // it must never leave the user stuck in ProjectsRepairing.
     try {
       final projects = await _actions.listProjects();
       if (!_disposed) emit(_sortedReady(projects));
-    } on ActionFailure {
+    } catch (_) {
       if (!_disposed) {
         emit(const ProjectsError(
           'Daemon restarted but still unreachable.',

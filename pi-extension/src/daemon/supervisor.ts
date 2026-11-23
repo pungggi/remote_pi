@@ -1194,14 +1194,25 @@ export class Supervisor {
    *  cooperation. */
   private async _pingOnce(): Promise<void> {
     if (this.shuttingDown) return;
+    const running: Array<[string, ChildSlot]> = [];
     for (const [id, slot] of [...this.children]) {
       if (slot.child.state !== "running") {
         this.pingMisses.delete(id);
         continue;
       }
-      const alive = await slot.child.ping(5_000);
-      if (this.shuttingDown) return;
-      if (alive) {
+      running.push([id, slot]);
+    }
+    if (running.length === 0) return;
+    // Ping all running children CONCURRENTLY: a wedged child stays silent
+    // for the full 5 s timeout, so a serial pass with N wedged children
+    // could stretch to N x 5 s and outrun the interval. Result processing
+    // below stays sequential — kill + respawn is cheap and log-line order
+    // doesn't matter.
+    const alive = await Promise.all(running.map(([, slot]) => slot.child.ping(5_000)));
+    if (this.shuttingDown) return;
+    for (let i = 0; i < running.length; i++) {
+      const [id, slot] = running[i];
+      if (alive[i]) {
         this.pingMisses.set(id, 0);
         continue;
       }
