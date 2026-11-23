@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
-## [Unreleased]
+## [1.6.3] - 2026-11-23
 
 ### Added
 
@@ -20,6 +20,13 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   restart button. Relay-side errors show no repair affordance — there is
   no channel to send it on. Requires the PC-side update (keeper
   control-presence) for the dark-room path.
+
+### Fixed
+
+- **Fallback provider section no longer shows usage (plan/165)**: sessions
+  from pre-161 extensions (no provider info) land in a mixed fallback
+  section on Home — it previously displayed one account's plan quota in
+  its header as if it applied to all of them; now it shows none.
 
 ---
 ## [1.6.2] - 2026-11-08
