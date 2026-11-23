@@ -12,6 +12,26 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
+- **Ask notifications for any session (plan/170)**: an `ask_user` in a
+  session the phone was not viewing had no delivery path. The app keeps
+  one connection and switches rooms, and only the `device` room (the
+  Home/Projects home base) is always-on; the resume replay covered the
+  open chat alone. Result: no sheet, no notification, and a chat that
+  blocked until someone answered at the PC (evidence: a 6-hour wedge on
+  2026-11-22/23).
+  The asking session now emits a tiny hint instead of relying on the phone
+  being attached:
+  - `$rp_control {op:"ask_notice"}` travels over the machine-local mesh
+    (plan/161) to the `device` daemon: best-effort, 5 s timeout, log-only
+    failures. The ask itself never depends on the fanout.
+  - The daemon broadcasts `pending_ask {room_id, flow_id, open, title?,
+    question_count?}` in the device room, journal-stamped (plan/145), so
+    a re-attaching phone catches up via `report_seq`.
+  - The app raises a notification and an amber Home tile for the asking
+    session. Tapping it opens the chat, where the real sheet still comes
+    from that session's own `session_sync` replay (plan/100/129).
+  Idempotent per `(room_id, flow_id)`; `open:false` clears the badge. The
+  hint is never the source of truth.
 - **Device daemon self-healing (plan/168)**: a wedged always-on daemon
   (alive process, stuck event loop) now recovers without human action,
   on three layers. The supervisor pipe-pings every RPC child every 30 s —
