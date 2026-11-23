@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
+## [Unreleased]
+
+### Added
+
+- **Ask notifications for ANY session (plan/170)**: when an agent's
+  clarification prompt (ask_user) opens in a session you are NOT currently
+  viewing, the phone now finds out anyway: the PC broadcasts a hint on the
+  always-on device channel, the app raises a notification and marks the
+  session's Home tile in amber. Tapping opens that chat, where the question
+  sheet appears as usual. Answering (or the session moving on) clears the
+  badge; opening the chat self-heals a stale one. Requires the PC-side
+  update (device daemon) for the hints.
+
+---
 ## [1.6.3] - 2026-11-23
 
 ### Added

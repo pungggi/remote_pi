@@ -201,3 +201,70 @@ describe("plan/161 $rp_control receiving side", () => {
     expect(msg).toEqual({ type: "session_shutdown", id: "env-7", defer_if_busy: true });
   });
 });
+
+describe("plan/170 $rp_control ask_notice", () => {
+  test("project session (non-device room) → typed refusal, nothing broadcast", async () => {
+    main._setPiForTest({ stub: true });
+    main._setRoomIdForTest("abc123room");
+    const peer = await run({ op: "ask_notice", open: true, room_id: "abc123room", flow_id: "tool:tc_1" });
+    const r = lastReply(peer);
+    expect(r.body.rp_control_result.ok).toBe(false);
+    expect(String(r.body.rp_control_result.error)).toContain("device daemon");
+    main._setRoomIdForTest(null);
+  });
+
+  test("device room + valid fields → ok reply + pending_ask broadcast to owners", async () => {
+    main._setPiForTest({ stub: true });
+    main._setRoomIdForTest("device");
+    const sent: Array<Record<string, unknown>> = [];
+    const { ext: extState } = await import("./extension-state.js");
+    extState.activePeers.set("phone", {
+      send: (m: unknown) => {
+        sent.push(m as Record<string, unknown>);
+      },
+    });
+    const peer = await run({
+      op: "ask_notice",
+      open: true,
+      room_id: "sess-room-9",
+      flow_id: "tool:tc_7",
+      title: "Direction",
+      question_count: 2,
+    });
+    const r = lastReply(peer);
+    expect(r.body.rp_control_result).toMatchObject({ ok: true, action: "ask_notice" });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: "pending_ask",
+      room_id: "sess-room-9",
+      flow_id: "tool:tc_7",
+      open: true,
+      title: "Direction",
+      question_count: 2,
+    });
+    expect(typeof sent[0]!["ts"]).toBe("number");
+    extState.activePeers.clear();
+    main._setRoomIdForTest(null);
+  });
+
+  test("missing room_id/flow_id → typed validation error", async () => {
+    main._setPiForTest({ stub: true });
+    main._setRoomIdForTest("device");
+    const peer = await run({ op: "ask_notice", open: true, flow_id: "tool:tc_1" });
+    const r = lastReply(peer);
+    expect(r.body.rp_control_result.ok).toBe(false);
+    expect(String(r.body.rp_control_result.error)).toContain("room_id and flow_id");
+    main._setRoomIdForTest(null);
+  });
+
+  test("kill-switch off refuses ask_notice too (gate precedes the op switch)", async () => {
+    main._setPiForTest({ stub: true });
+    saveLocalConfig(cwd, { allow_remote_session_control: false });
+    main._setRoomIdForTest("device");
+    const peer = await run({ op: "ask_notice", open: true, room_id: "r", flow_id: "f" });
+    const r = lastReply(peer);
+    expect(r.body.rp_control_result.ok).toBe(false);
+    expect(String(r.body.rp_control_result.error)).toContain("allow_remote_session_control");
+    main._setRoomIdForTest(null);
+  });
+});

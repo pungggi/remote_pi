@@ -568,4 +568,68 @@ describe("extension_ui_bridge", () => {
       expect(sent).toHaveLength(0);
     });
   });
+
+  describe("onFlowLifecycle (plan/170)", () => {
+    it("fires open on started and close on completed, with flow details", () => {
+      const bus = fakeBus();
+      const events: Array<{ phase: string; flowId: string; title: string | null; questionCount: number }> = [];
+      createExtensionUiBridge(fakePi(bus), () => {}, {
+        onFlowLifecycle: (e) => events.push(e),
+      });
+
+      bus.emit("@eko24ive/pi-ask:started", singleQuestionFlow());
+      bus.emit("@eko24ive/pi-ask:completed", { version: 1, flowId: "tool:tc_1" });
+
+      expect(events).toEqual([
+        { phase: "open", flowId: "tool:tc_1", toolCallId: "tc_1", title: "Direction", questionCount: 1 },
+        { phase: "close", flowId: "tool:tc_1", toolCallId: "tc_1", title: "Direction", questionCount: 1 },
+      ]);
+    });
+
+    it("fires close on TTL expiry", () => {
+      vi.useFakeTimers();
+      const bus = fakeBus();
+      const events: string[] = [];
+      createExtensionUiBridge(fakePi(bus), () => {}, {
+        onFlowLifecycle: (e) => events.push(e.phase),
+      });
+
+      bus.emit("@eko24ive/pi-ask:started", singleQuestionFlow());
+      vi.advanceTimersByTime(4 * 60 * 60 * 1000 + 1);
+
+      expect(events).toEqual(["open", "close"]);
+    });
+
+    it("fires close for every still-open flow on dispose (session replaced — no completed)", () => {
+      const bus = fakeBus();
+      const events: string[] = [];
+      const bridge = createExtensionUiBridge(fakePi(bus), () => {}, {
+        onFlowLifecycle: (e) => events.push(e.phase),
+      })!;
+
+      bus.emit("@eko24ive/pi-ask:started", singleQuestionFlow({ flowId: "tool:a", toolCallId: "a" }));
+      bus.emit("@eko24ive/pi-ask:started", singleQuestionFlow({ flowId: "tool:b", toolCallId: "b" }));
+      bridge.dispose();
+
+      expect(events).toEqual(["open", "open", "close", "close"]);
+    });
+
+    it("swallows host hook errors (the ask itself must never depend on the fanout)", () => {
+      const bus = fakeBus();
+      const sent: ServerMessage[] = [];
+      const bridge = createExtensionUiBridge(fakePi(bus), (m) => sent.push(m), {
+        onFlowLifecycle: () => {
+          throw new Error("host hook blew up");
+        },
+      })!;
+
+      expect(() => {
+        bus.emit("@eko24ive/pi-ask:started", singleQuestionFlow());
+      }).not.toThrow();
+      // The request still went out — the fanout failure is invisible to the
+      // session-room bridge path.
+      expect(sent.some((m) => m.type === "extension_ui_request")).toBe(true);
+      expect(() => bridge.dispose()).not.toThrow();
+    });
+  });
 });

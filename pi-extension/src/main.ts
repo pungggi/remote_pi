@@ -92,8 +92,9 @@ import { PlainPeerChannel } from "./transport/peer_channel.js";
 import {
   createExtensionUiBridge,
   type ExtensionUiBridge,
+  type FlowLifecycleEvent,
 } from "./extension_ui_bridge.js";
-import { roomIdFor } from "./rooms.js";
+import { DEVICE_ROOM, roomIdFor } from "./rooms.js";
 import { registerAgentTools } from "./session/tools.js";
 import {
   resolveCurrentSessionFile,
@@ -491,7 +492,43 @@ export function _recreateExtensionUiBridge(pi: ExtensionAPI): void {
   ext.waitingBridgeFlow = false;
   ext.extensionUiBridge = createExtensionUiBridge(pi, _broadcastToActive, {
     onActiveFlowsChanged: (active) => _setWaitingBridgeFlow(active),
+    onFlowLifecycle: _fanoutAskNotice,
   });
+}
+
+/** Plan/170 — fan a pending-ask hint to the `device` daemon over the UDS
+ *  mesh so the phone's always-on home-base channel (the `device` room)
+ * learns about an ask flow in THIS session even while the app is attached
+ * elsewhere / backgrounded. Best-effort BY CONTRACT: the ask itself (TUI
+ * dialog + session-room extension_ui_request bridge) must never depend on
+ * the fanout — failures log and vanish.
+ *
+ * Skipped when this session has no App↔Pi room (`ext.myRoomId` null — not
+ * joined), IS the device room (self-fanout is a loop), or the mesh is down
+ * (no device daemon route; the phone already shows the plan/168 offline
+ * affordance in that state). */
+const ASK_NOTICE_TIMEOUT_MS = 5_000;
+function _fanoutAskNotice(e: FlowLifecycleEvent): void {
+  const roomId = ext.myRoomId;
+  if (!roomId || roomId === DEVICE_ROOM) return;
+  const node = ext.meshNode;
+  if (!node) return;
+  const ctrl: RpControlRequest["$rp_control"] = {
+    op: "ask_notice",
+    open: e.phase === "open",
+    room_id: roomId,
+    flow_id: e.flowId,
+    ...(e.title ? { title: e.title } : {}),
+    ...(e.questionCount > 0 ? { question_count: e.questionCount } : {}),
+  };
+  node
+    .peer()
+    .request("device", { $rp_control: ctrl }, ASK_NOTICE_TIMEOUT_MS)
+    .catch((err: unknown) => {
+      console.warn(
+        `[remote-pi] ask_notice fanout (${e.phase}) failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
 }
 
 /** Plan/134/137 defensive reset — a session rebind, run end, or teardown kills
@@ -1305,6 +1342,12 @@ export function _getPendingSteerIdsForTest(text: string): string[] {
  *  content handed to `sendUserMessage` (plan/30 multimodal ingest). */
 export function _setPiForTest(pi: unknown): void {
   ext.pi = pi as typeof ext.pi;
+}
+
+/** Plan/170 — pin `ext.myRoomId` for ask_notice handler tests (device-room
+ *  guard). Null restores "not joined". */
+export function _setRoomIdForTest(roomId: string | null): void {
+  ext.myRoomId = roomId;
 }
 
 /**
@@ -5757,6 +5800,41 @@ async function _handleControlEnvelopeInner(
         ...(r.ok && r.branch ? { branch: r.branch } : {}),
         ...(!r.ok ? { error: r.message } : {}),
       });
+      return;
+    }
+    case "ask_notice": {
+      // Plan/170 — only the DEVICE DAEMON serves this op: its room is the
+      // phone's always-on home base, and its _broadcastToActive rides the
+      // plan/145 journal (a re-attaching phone catches up via report_seq).
+      // A project session receiving one is a routing error — refuse with a
+      // typed answer instead of broadcasting into the wrong room.
+      if (ext.myRoomId !== DEVICE_ROOM) {
+        reply({
+          ok: false,
+          action: "ask_notice",
+          error: "ask_notice is only served by the device daemon (device room)",
+        });
+        return;
+      }
+      if (
+        typeof ctrl.room_id !== "string" ||
+        !ctrl.room_id ||
+        typeof ctrl.flow_id !== "string" ||
+        !ctrl.flow_id
+      ) {
+        reply({ ok: false, action: "ask_notice", error: "ask_notice requires room_id and flow_id" });
+        return;
+      }
+      _broadcastToActive({
+        type: "pending_ask",
+        room_id: ctrl.room_id,
+        flow_id: ctrl.flow_id,
+        open: ctrl.open === true,
+        ...(typeof ctrl.title === "string" && ctrl.title ? { title: ctrl.title } : {}),
+        ...(typeof ctrl.question_count === "number" ? { question_count: ctrl.question_count } : {}),
+        ts: Date.now(),
+      });
+      reply({ ok: true, action: "ask_notice" });
       return;
     }
     default:

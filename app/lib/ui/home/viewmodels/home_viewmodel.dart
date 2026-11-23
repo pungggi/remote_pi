@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:app/data/actions/actions_repository.dart';
 import 'package:app/data/local/boxes.dart';
+import 'package:app/data/notifications/pending_ask_notifications.dart';
 import 'package:app/data/notifications/session_completion_notifications.dart';
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/data/transport/connection_manager.dart';
@@ -45,6 +46,12 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// re-emits its HomeList when a toggle flips so the tile bell badges
   /// rebuild without a separate provider.
   final ICompletionNotifications _completion;
+
+  /// Plan/170 — pending-ask badge source (device-room fanout hints).
+  /// Optional so existing tests construct the VM unchanged; when null no
+  /// tile ever shows the asking state.
+  final PendingAskNotifications? _pendingAsk;
+  StreamSubscription<void>? _pendingAskSub;
   StreamSubscription<Map<String, PresenceState>>? _presenceSub;
   StreamSubscription<Map<String, List<RoomInfo>>>? _roomsSub;
   StreamSubscription<ConnectionStatus>? _statusSub;
@@ -79,7 +86,9 @@ class HomeViewModel extends ViewModel<HomeState> {
     this._actions,
     this._completion, {
     LocalBoxes? boxes,
+    PendingAskNotifications? pendingAsk,
   }) : _boxes = boxes ?? LocalBoxes(),
+       _pendingAsk = pendingAsk,
        super(const HomeLoading()) {
     _homeGroupBy = _prefs.homeGroupBy;
     _relayConnected = _conn.status is StatusOnline;
@@ -93,6 +102,8 @@ class HomeViewModel extends ViewModel<HomeState> {
     _storage.addListener(_onStorageChanged);
     // Plan/132 — a toggled session repaints its tile's bell badge.
     _completion.addListener(_reemitHomeList);
+    // Plan/170 — a pending-ask open/clear repaints the tile's asking color.
+    _pendingAskSub = _pendingAsk?.changes.listen((_) => _reemitHomeList());
     // Plan 116 — boot may already be offline; arm the banner timer.
     _reconcileReliability(_relayConnected);
   }
@@ -208,6 +219,12 @@ class HomeViewModel extends ViewModel<HomeState> {
   /// priority over `working` (tri-state derivation lives in the tile).
   bool isRoomWaitingForInput(String epk, String roomId) =>
       _conn.isRoomWaitingForInput(epk, roomId);
+
+  /// Plan/170 — the pending-ask badge source (device-room fanout hints),
+  /// independent of the relay's `waiting_for_input` meta: it covers ask
+  /// flows in rooms the app is NOT attached to (which is the whole point).
+  bool isRoomAsking(String epk, String roomId) =>
+      _pendingAsk?.isAsking(epk, roomId) ?? false;
 
   // ---- Plan/132 — completion notifications ---------------------------------
 
@@ -1219,6 +1236,8 @@ class HomeViewModel extends ViewModel<HomeState> {
     _sustainedOfflineTimer?.cancel();
     _storage.removeListener(_onStorageChanged);
     _completion.removeListener(_reemitHomeList);
+    _pendingAskSub?.cancel();
+    _pendingAskSub = null;
     super.dispose();
   }
 }

@@ -66,6 +66,21 @@ export interface ExtensionUiBridgeHooks {
    *  `ui_prompt_start/end` (pre-0.84.4 SDKs), belt-and-suspenders next to
    *  plan/134's SDK-event path. */
   onActiveFlowsChanged?: (active: boolean) => void;
+  /** Plan/170 — per-flow lifecycle for the device-room fanout. Fired on
+   *  EVERY flow entering/leaving the active set (started, completed, TTL
+   *  expiry, dispose), unlike `onActiveFlowsChanged`'s empty↔non-empty
+   *  edges — the fanout needs opens/closes per flow_id so the phone can
+   *  badge/clear individual sessions. Host hook errors are swallowed. */
+  onFlowLifecycle?: (event: FlowLifecycleEvent) => void;
+}
+
+/** Plan/170 — one flow transition surfaced to the host for fanout. */
+export interface FlowLifecycleEvent {
+  phase: "open" | "close";
+  flowId: string;
+  toolCallId: string | null;
+  title: string | null;
+  questionCount: number;
 }
 
 export interface ExtensionUiBridge {
@@ -140,13 +155,35 @@ export function createExtensionUiBridge(
       // Host hook errors must never break the bridge.
     }
   }
+
+  /** Plan/170 — swallow-by-contract mirror of notifyFlowsChanged for the
+   *  per-flow hook. `flow` is the snapshot BEFORE removal for closes (the
+   * map no longer holds it by the time the host reacts). */
+  function notifyFlowLifecycle(
+    phase: "open" | "close",
+    flow: ActiveFlow,
+  ): void {
+    try {
+      hooks?.onFlowLifecycle?.({
+        phase,
+        flowId: flow.flowId,
+        toolCallId: flow.toolCallId,
+        title: flow.title,
+        questionCount: flow.questions.length,
+      });
+    } catch {
+      // Host hook errors must never break the bridge.
+    }
+  }
   function armFlowTtl(flowId: string): void {
     clearFlowTtl(flowId);
     flowTimers.set(
       flowId,
       setTimeout(() => {
+        const flow = activeFlows.get(flowId);
         if (!activeFlows.delete(flowId)) return; // already resolved
         flowTimers.delete(flowId);
+        if (flow) notifyFlowLifecycle("close", flow);
         // Tell the app the bridge forgot this flow instead of stranding its
         // modal silently: a matching WARNING notify keeps the modal open with
         // a retry hint. Rich clients can still retry (the response carries
@@ -178,6 +215,7 @@ export function createExtensionUiBridge(
     activeFlows.set(flow.flowId, flow);
     armFlowTtl(flow.flowId);
     notifyFlowsChanged();
+    notifyFlowLifecycle("open", flow);
     broadcast(requestForFlow(flow));
   });
 
@@ -185,9 +223,11 @@ export function createExtensionUiBridge(
     const e = raw as { version?: number; flowId?: unknown } | null;
     if (!e || e.version !== 1 || typeof e.flowId !== "string") return;
     const flowId = e.flowId;
+    const flow = activeFlows.get(flowId);
     clearFlowTtl(flowId);
     activeFlows.delete(flowId);
     notifyFlowsChanged();
+    if (flow) notifyFlowLifecycle("close", flow);
     // Same id as the originating request (the flowId). The app treats a `notify`
     // whose id matches an open interactive request as "that flow resolved —
     // dismiss it". Covers the non-submitting owner in a multi-owner setup.
@@ -351,6 +391,10 @@ export function createExtensionUiBridge(
       unsubResult();
       for (const t of flowTimers.values()) clearTimeout(t);
       flowTimers.clear();
+      // Plan/170 — snapshot BEFORE clear: every still-open flow is closing
+      // (session replaced/shutdown — pi-ask emits no `completed` for these),
+      // so the fanout must send the clears while the data is still in hand.
+      for (const flow of activeFlows.values()) notifyFlowLifecycle("close", flow);
       activeFlows.clear();
       notifyFlowsChanged();
     },

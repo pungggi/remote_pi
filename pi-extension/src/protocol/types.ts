@@ -702,7 +702,30 @@ export type ServerMessage =
   // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors
   // RpcExtensionUIRequest (select/confirm/input/editor/notify); the optional
   // `ask` envelope carries pi-ask's full question so the app renders richly.
-  | ExtensionUiRequestWire;
+  | ExtensionUiRequestWire
+  // Plan/170 — pending-ask fanout. Broadcast ONLY in the `device` room by
+  // the device daemon's extension (on a $rp_control ask_notice envelope from
+  // the asking session over the UDS mesh): tells the phone that session
+  // `room_id` has an open (or just cleared) ask flow the app is not attached
+  // to. A HINT, never the source of truth — the sheet itself still comes
+  // from the session room's own session_sync replay. Journaled by the
+  // plan/145 ledger like every _broadcastToActive frame, so a phone that
+  // re-attaches to the device room later catches up via report_seq.
+  | {
+      type: "pending_ask";
+      /** The asking session's App↔Pi room id. */
+      room_id: string;
+      /** pi-ask flow id — dedupe key together with room_id. */
+      flow_id: string;
+      /** true = flow opened; false = cleared (answered/cancelled/disposed). */
+      open: boolean;
+      /** Human title for the notification (the flow's title, when present). */
+      title?: string;
+      /** Number of questions in the flow, when known. */
+      question_count?: number;
+      /** Sender timestamp (ms) — display/ordering aid only. */
+      ts: number;
+    };
 
 /**
  * Plan/28 — Stable names for the typed actions the app can request. Kept
@@ -779,7 +802,8 @@ export type RpControlOp =
   | "model_set"
   | "list_models"
   | "session_shutdown"
-  | "spawn_worktree";
+  | "spawn_worktree"
+  | "ask_notice";
 
 /** Envelope body an agent sends to control another peer's session. Carried
  *  by ordinary `agent_send`/`peer.request`; the TARGET's extension
@@ -800,6 +824,16 @@ export interface RpControlRequest {
      *  transient `pi --mode rpc` child under the Piper supervisor instead of
      *  a visible terminal. Requires the supervisor to be running. */
     headless?: boolean;
+    /** ask_notice only (plan/170): true = flow opened, false = cleared. */
+    open?: boolean;
+    /** ask_notice only: the asking session's App↔Pi room id. */
+    room_id?: string;
+    /** ask_notice only: the pi-ask flow id (dedupe key with room_id). */
+    flow_id?: string;
+    /** ask_notice only: human title for the notification. */
+    title?: string;
+    /** ask_notice only: number of questions in the flow. */
+    question_count?: number;
   };
 }
 

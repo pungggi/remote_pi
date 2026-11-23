@@ -347,6 +347,7 @@ handlers são os mesmos, só muda o transporte. Cada tool aceita `target` opcion
 | `list_models {target?}` | `list_models` | registry + `scopedModels` |
 | `session_shutdown {target?}` (plan/166) | `session_shutdown` | `ctx.shutdown()` com `defer_if_busy:true` — ver regras |
 | `spawn_worktree {branch?, base?, provider?, model_id?, headless?, target?}` | `spawn_worktree` | `createWorktree()` (plan/108) + `openTerminalTab` rodando `pi` (`--model provider/id` opcional — flag padrão da CLI); com `headless:true` → `start_transient` no supervisor (`pi --mode rpc`, plan/167) |
+| *(interno, plan/170)* — fanout disparado pela bridge do pi-ask | `ask_notice {open, room_id, flow_id, title?, question_count?}` | SÓ o device daemon (guarda `myRoomId === "device"`): faz broadcast de `pending_ask` na sala `device` via `_broadcastToActive` (jornal plan/145 — re-attach pega via `report_seq`) |
 
 Regras:
 
@@ -383,6 +384,56 @@ Regras:
   em `pi-extension/src/protocol/types.ts`.
 
 Detalhes em `plan/161-agent-session-control.md`.
+
+---
+
+## Pending-ask fanout (plan/170)
+
+O app mantém UMA conexão que troca de sala (`switchRoom`) — a sala `device`
+é o canal home-base sempre vivo (Home/Projects). Um `ask_user` aberto numa
+sessão cuja sala o app NÃO está ouvindo não tinha caminho de entrega: nem
+frame vivo, nem replay de resume (synca só a sala aberta), nem notificação.
+Resultado: sheet nunca aparecia e o chat travava até alguém responder no
+desktop (evidência: wedge de 6h em 2026-11-22/23).
+
+Fluxo (best-effort por contrato — o ask em si nunca depende do fanout):
+
+```
+pi-ask :started (sessão X)
+  → bridge hook onFlowLifecycle
+  → $rp_control {op:"ask_notice", open:true, room_id:<sala de X>, flow_id, title?, question_count?}
+     via UDS mesh peer.request("device", …, 5s)
+  → device daemon valida (sala device + kill-switch + campos) e faz
+     _broadcastToActive do frame abaixo na sala `device` (jorna + stamp)
+  → app: notificação + badge no tile da sessão X
+  → tap abre o chat → session_sync → pendingRequests (plan/100/129) → sheet
+```
+
+### Wire — ServerMessage `pending_ask` (só na sala `device`)
+
+```json
+{
+  "type": "pending_ask",
+  "room_id": "<sala da sessão que perguntou>",
+  "flow_id": "tool:tc_7",
+  "open": true,
+  "title": "Direction",
+  "question_count": 2,
+  "ts": 1763892000000
+}
+```
+
+- **HINT, nunca fonte da verdade**: o sheet continua vindo do replay de
+  `session_sync` da própria sala da sessão. O frame só faz o app SABER que a
+  pergunta existe.
+- **Idempotente por `(room_id, flow_id)`**; `open:false` = flow resolvido/
+  cancelado/expiarado (cancela notificação/badge). A ordenação (epoch, seq)
+  do jornal garante que um clear antigo não vence um open novo no replay.
+- **Limitações aceitas**: daemon do device apagado → sem fanout (o app já
+  mostra o affordance plan/168); sessions sem pi-ask não emitem nada
+  (bridge inerte — invariant plan/100 preservado).
+
+Detalhes em `plan/170-pending-ask-device-fanout.md`.
 
 ---
 

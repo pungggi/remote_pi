@@ -195,6 +195,12 @@ class ConnectionManager extends Service {
   final _waitingForInputController =
       StreamController<WaitingForInputEvent>.broadcast();
 
+  /// Plan/170 — pending-ask fanout hints, attributed to the channel's peer
+  /// (the PC whose `device` room delivered the frame). Every `pending_ask`
+  /// ServerMessage is forwarded verbatim; dedupe/reply semantics live in the
+  /// consumer (PendingAskService).
+  final _pendingAskController = StreamController<PendingAskEvent>.broadcast();
+
   /// Plan/134 (PR #58 review) — the last `waiting_for_input` value observed
   /// on a LIVE `room_meta_updated` frame, per `<stdB64(epk)>:<roomId>`,
   /// for rooms the announce/snapshot cache hasn't landed yet. Without it,
@@ -390,6 +396,9 @@ class ConnectionManager extends Service {
   /// so a reconnecting app cannot re-fire the notification.
   Stream<WaitingForInputEvent> get waitingForInputStream =>
       _waitingForInputController.stream;
+
+  /// Plan/170 — see [_pendingAskController].
+  Stream<PendingAskEvent> get pendingAskStream => _pendingAskController.stream;
 
   /// Plan/137 — route NACKs observed for any `(peer, room)` the app tried
   /// to reach. Fires as soon as the relay reports the destination gone.
@@ -1779,6 +1788,21 @@ class ConnectionManager extends Service {
         _missedPings = 0;
         _retryAttempt = 0;
         _lastInboundAt = _now();
+        // Plan/170 — fanout hints are peer-attributed HERE (the only place
+        // that knows which PC's channel delivered the frame) and forwarded
+        // as events; the badge/notification semantics live downstream.
+        if (msg is PendingAsk && !_pendingAskController.isClosed) {
+          _pendingAskController.add(
+            PendingAskEvent(
+              epk: toStandardB64(peer.remoteEpk),
+              roomId: msg.roomId,
+              flowId: msg.flowId,
+              open: msg.open,
+              title: msg.title,
+              questionCount: msg.questionCount,
+            ),
+          );
+        }
         // False-offline fix (2026-08-22): inbound traffic proves the Pi
         // leg — if a ping-miss streak had marked the active room offline
         // (`_markActiveRoomOffline`), re-mark it live NOW instead of

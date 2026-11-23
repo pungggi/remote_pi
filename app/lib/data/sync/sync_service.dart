@@ -112,6 +112,15 @@ class SyncService extends Service {
   // surfaces when the chat next opens.
   ExtensionUiRequest? _currentExtensionUiRequest;
 
+  /// Plan/170 — stale-badge self-heal hook. Fired when a newest-page
+  /// session_sync settled (eos + grace) with NO pending interactive request
+  /// in the active room: any pending-ask badge claiming this room is asking
+  /// is stale (the clear frame was missed while detached). Wired in main()
+  /// to PendingAskNotifications.clearRoom; a callback (not a constructor
+  /// dep) so the sync core stays notification-agnostic.
+  void Function(String epk, String roomId)? onSyncSettledWithoutAsk;
+  Timer? _askBadgeHealTimer;
+
   /// PR #49 review — ids of extension_ui_request flows this process has seen
   /// RESOLVED (a terminal `notify`, PR #50 review 1: recorded even when it
   /// matches no open sheet). A non-notify request whose id is in this set is
@@ -1204,6 +1213,25 @@ class SyncService extends Service {
     _syncRetryTimer = null;
   }
 
+  /// Plan/170 — arm the stale-badge healer for the ACTIVE room (see
+  /// [onSyncSettledWithoutAsk]). Grace window: the bridge replays
+  /// still-pending extension_ui_request frames AROUND the history reply
+  /// (same session_sync burst, plan/100) — healing without the grace would
+  /// clear a LIVE badge whose replay is still in flight. Re-armed on every
+  /// newest-page settle; the callback re-checks room + request under the
+  /// timer, so a mid-grace room switch makes it a no-op.
+  void _armAskBadgeHeal() {
+    final epk = _activeEpk;
+    final room = _activeRoomId;
+    if (epk == null || room.isEmpty) return;
+    _askBadgeHealTimer?.cancel();
+    _askBadgeHealTimer = Timer(const Duration(milliseconds: 1500), () {
+      if (_activeEpk != epk || _activeRoomId != room) return;
+      if (_currentExtensionUiRequest != null) return;
+      onSyncSettledWithoutAsk?.call(epk, room);
+    });
+  }
+
   /// Strategy fix (2026-08-21) — "load ALL messages no matter how long the
   /// app was offline". A page that shares NO ids with the local box means
   /// the offline gap exceeds that page, so we keep auto-paging OLDER via the
@@ -1652,6 +1680,8 @@ class SyncService extends Service {
         if (msg.eos) {
           _pendingSyncs.remove(msg.inReplyTo);
           if (_pendingSyncs.isEmpty) _cancelSyncRetryTimer();
+          // Plan/170 — newest-page settle arms the stale-badge healer.
+          if (rec?.limit == null) _armAskBadgeHeal();
         }
         // Plan/145 — re-baseline the ledger cursor to the snapshot (closes
         // the race with frames broadcast during the sync computation).
@@ -1724,6 +1754,10 @@ class SyncService extends Service {
       case ActionOk():
       case ActionError():
       case ModelsList():
+      // Plan/170 — pending-ask fanout hints are owned by ConnectionManager
+      // (peer attribution) + PendingAskNotifications (badge/notification);
+      // the ask sheet itself still arrives via the room's own frames below.
+      case PendingAsk():
       // Plan/168 — daemon_control acks are owned by ActionsRepository
       // (device-daemon repair), not the message sync.
       case DaemonControlOk():
@@ -2616,6 +2650,7 @@ class SyncService extends Service {
     _runDoneSyncDebounce?.cancel();
     _ledgerHoldTimer?.cancel();
     _ledgerTailTimer?.cancel();
+    _askBadgeHealTimer?.cancel();
     _cancelSyncRetryTimer();
     _cancelAllSendTimers();
     _connSub?.cancel();
