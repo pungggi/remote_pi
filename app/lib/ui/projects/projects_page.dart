@@ -123,11 +123,41 @@ class _ProjectsPageState extends State<ProjectsPage> {
           Center(child: CircularProgressIndicator()),
         ],
       ),
-      ProjectsError(:final message) => _CenterMessage(
-        icon: LucideIcons.wifiOff,
-        title: 'Device unreachable',
+      ProjectsRepairing() => const _CenterMessage(
+        icon: LucideIcons.refreshCw,
+        title: 'Restarting device daemon…',
         subtitle:
-            '$message\n\nStart the Cockpit or the pi-supervisor on that PC so its device daemon can list projects.',
+            'Restart sent to the PC. The list reloads automatically once the daemon is back.',
+      ),
+      ProjectsError(:final message, :final kind) => _CenterMessage(
+        icon: kind == ProjectsErrorKind.relay
+            ? LucideIcons.wifiOff
+            : LucideIcons.serverOff,
+        title: kind == ProjectsErrorKind.relay
+            ? 'No connection to relay'
+            : 'Device daemon offline',
+        subtitle: kind == ProjectsErrorKind.relay
+            ? '$message\n\nCheck the phone\'s network and relay reachability.'
+            : '$message\n\nOne automatic restart fires a few seconds after '
+                'this screen appears; if the daemon stays dark, tap Retry '
+                'restart below or start the pi-supervisor on that PC.',
+        action: kind == ProjectsErrorKind.relay
+            ? null
+            : OutlinedButton.icon(
+                onPressed: () =>
+                    context.read<ProjectsViewModel>().repairNow(),
+                icon: Icon(LucideIcons.refreshCw,
+                    size: 16, color: colors.accent),
+                label: Text(
+                  'Retry restart',
+                  style: typo.monoSmall.copyWith(color: colors.accent),
+                ),
+                style: OutlinedButton.styleFrom(
+                  side: BorderSide(color: colors.border),
+                  backgroundColor: colors.surface,
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
       ),
       ProjectsReady(:final projects) when projects.isEmpty =>
         const _CenterMessage(
@@ -219,10 +249,15 @@ class _CenterMessage extends StatelessWidget {
   final IconData icon;
   final String title;
   final String subtitle;
+
+  /// Plan/168 — optional action under the copy (Retry restart button on
+  /// device-daemon errors).
+  final Widget? action;
   const _CenterMessage({
     required this.icon,
     required this.title,
     required this.subtitle,
+    this.action,
   });
 
   @override
@@ -257,6 +292,10 @@ class _CenterMessage extends StatelessWidget {
                       height: 1.5,
                     ),
                   ),
+                  if (action != null) ...[
+                    const SizedBox(height: 16),
+                    action!,
+                  ],
                 ],
               ),
             ),

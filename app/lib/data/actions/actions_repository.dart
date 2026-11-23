@@ -154,6 +154,20 @@ abstract class IActionsRepository extends Repository {
   /// [ChangeLayoutResult.message]) for unknown layout / Cockpit missing.
   Future<ChangeLayoutResult> changeLayout(String layout);
 
+  /// Plan/168 — restart the always-on device daemon (self-repair). Routed
+  /// to room [kDeviceRoom]: the live daemon acks first, then crash-exits
+  /// for the supervisor's respawn (`--continue` keeps its conversation);
+  /// when the room is dark, the keeper's control-only presence answers and
+  /// the supervisor respawns the daemon. Throws [ActionFailure] on
+  /// offline/timeout or kill-switch refusal
+  /// (`allow_remote_session_control:false`).
+  Future<DaemonControlResult> restartDeviceDaemon();
+
+  /// Plan/168 — live status rows (id/cwd/state/pid/uptime) for the device
+  /// daemon, served by the daemon itself or — when room [kDeviceRoom] is
+  /// dark — by the supervisor via the keeper's control-only presence.
+  Future<DaemonControlResult> deviceStatus();
+
   /// Plan/124 + plan/152 — bring an OFFLINE session back to life in its own
   /// cwd (no new worktree, no pin). Call after switching to [kDeviceRoom].
   /// The daemon resumes a stored session ID in a terminal, or uses visible
@@ -252,6 +266,13 @@ class ActionsRepository extends Repository implements IActionsRepository {
         if (p == null) return;
         p.timeout.cancel();
         if (!p.completer.isCompleted) p.completer.complete(null);
+      // Plan/168 — daemon_control ack (typed result rides in the payload;
+      // failures arrive as plain ActionError below).
+      case DaemonControlOk(:final inReplyTo, :final result):
+        final p = _pending.remove(inReplyTo);
+        if (p == null) return;
+        p.timeout.cancel();
+        if (!p.completer.isCompleted) p.completer.complete(result);
       case ActionError(:final inReplyTo, :final error):
         final p = _pending.remove(inReplyTo);
         if (p == null) return;
@@ -617,6 +638,18 @@ class ActionsRepository extends Repository implements IActionsRepository {
   Future<ChangeLayoutResult> changeLayout(String layout) =>
       _dispatch<ChangeLayoutResult>(
         (id) => ChangeLayoutRequest(id: id, layout: layout),
+      );
+
+  @override
+  Future<DaemonControlResult> restartDeviceDaemon() =>
+      _dispatch<DaemonControlResult>(
+        (id) => DaemonControlRequest(id: id, op: 'restart'),
+      );
+
+  @override
+  Future<DaemonControlResult> deviceStatus() =>
+      _dispatch<DaemonControlResult>(
+        (id) => DaemonControlRequest(id: id, op: 'status'),
       );
 
   @override

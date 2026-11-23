@@ -12,6 +12,25 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
+- **Device daemon self-healing (plan/168)**: a wedged always-on daemon
+  (alive process, stuck event loop) now recovers without human action,
+  on three layers. The supervisor pipe-pings every RPC child every 30 s —
+  2 missed pings → kill + respawn with `--continue` (conversation kept).
+  New `daemon_control` action verb (`restart`/`status`) reaches the daemon
+  when it is alive (acks, then crash-exits for the supervisor respawn) or,
+  when room `device` is dark, the supervisor's keeper — which now holds
+  that room control-only (never publishes meta, never shows as a session,
+  yields to the real daemon; kill-switch `allow_remote_session_control:false`
+  refuses both paths). The daemon refreshes its registry `lastSeenAt` every
+  60 s tick (heartbeat), and the watchdog probes the supervisor with a real
+  `{"op":"status"}` round-trip (3 fails → kill + restart) plus bounces the
+  device child on stale `lastSeenAt` (>5 min, 10 min cooldown, child-only).
+  App Projects screen: diagnosed errors (no relay vs daemon offline on
+  <peer>), auto-repair ONCE after a 10 s grace → `restart` → wait ≤10 s for
+  the re-announce → single `list_projects` retry, then a Retry restart
+  button. Outage window for the incident class: hours → minutes (replays:
+  ≈41 s ping bounce, ≈105 s wedged-supervisor restart).
+
 - **Headless spawn (plan/167)**: `spawn_worktree {headless:true}` spawns an
   INVISIBLE worker instead of a terminal window — a transient `pi --mode rpc`
   child under the Piper supervisor (plan/124 machinery): same worktree, same

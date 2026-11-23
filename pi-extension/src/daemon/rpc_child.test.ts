@@ -99,6 +99,96 @@ describe("RpcChild — deliberate stop is not a crash", () => {
   });
 });
 
+/**
+ * Plan/168 — ping(): event-loop liveness probe over the child's stdin
+ * RPC. The stub "pi" ignores its args (like the stop test above) and either
+ * answers every `get_state` with a canned reply (responsive) or reads stdin
+ * and stays silent (wedged) — the 2026-11-22 zombie shape.
+ *
+ * Windows: an npm-style `pi.cmd` shim + a real `cli.js` stub node script
+ * (resolvePiSpawn spawns `node cli.js --mode rpc …`). POSIX: a shell script.
+ * Both stay alive reading stdin, so `state === "running"` holds.
+ */
+const STUB_CLI_JS = `
+let buf = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (c) => {
+  buf += c;
+  let nl;
+  while ((nl = buf.indexOf("\\n")) >= 0) {
+    const line = buf.slice(0, nl);
+    buf = buf.slice(nl + 1);
+    if (process.env["STUB_SILENT"] === "1") continue;
+    let msg;
+    try { msg = JSON.parse(line); } catch { continue; }
+    if (msg && msg.type === "get_state") {
+      process.stdout.write(JSON.stringify({ id: msg.id, type: "response", command: "get_state", data: { isStreaming: false } }) + "\\n");
+    }
+  }
+});
+setInterval(() => {}, 60_000);
+`;
+
+function makeStubPi(dir: string): string {
+  if (process.platform === "win32") {
+    const rel = join("node_modules", "stub-pi", "cli.js");
+    const target = join(dir, rel);
+    mkdirSync(join(target, ".."), { recursive: true });
+    writeFileSync(target, STUB_CLI_JS);
+    const shim = join(dir, "pi.cmd");
+    writeFileSync(shim, `@ECHO off\r\n"%_prog%"  "%dp0%\\${rel}" %*\r\n`);
+    return shim;
+  }
+  const bin = join(dir, "stubsilent.sh");
+  writeFileSync(bin, "#!/bin/sh\nwhile IFS= read -r line; do\n" +
+    '  if [ "$STUB_SILENT" != "1" ]; then\n' +
+    '    case "$line" in *get_state*)\n' +
+    '      id=$(printf \'%s\' "$line" | sed -n \'s/.*"id":"\\([^"]*\\)".*/\\1/p\')\n' +
+    '      printf \'{"id":"%s","type":"response","command":"get_state","data":{"isStreaming":false}}\\n\' "$id";;\n' +
+    '    esac\n  fi\ndone\n');
+  chmodSync(bin, 0o755);
+  return bin;
+}
+
+describe("RpcChild — ping (plan/168 wedge detector)", () => {
+  let dir: string;
+  afterEach(() => {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    delete process.env["STUB_SILENT"];
+  });
+
+  test("ping resolves false without a running child", async () => {
+    dir = mkdtempSync(join(tmpdir(), "pi-ping-"));
+    const child = new RpcChild({ piBin: makeStubPi(dir), extensionPath: "/no/such.js", cwd: dir });
+    expect(child.state).toBe("stopped");
+    await expect(child.ping(100)).resolves.toBe(false);
+  });
+
+  test("a responsive child answers ping (busy turns keep the loop alive)", async () => {
+    dir = mkdtempSync(join(tmpdir(), "pi-ping-"));
+    const child = new RpcChild({ piBin: makeStubPi(dir), extensionPath: "/no/such.js", cwd: dir });
+    child.spawn();
+    // Give the stub a moment to boot before pinging.
+    await new Promise((r) => setTimeout(r, 300));
+    await expect(child.ping(4_000)).resolves.toBe(true);
+    await child.stop();
+  });
+
+  test("a silent (wedged) child misses the ping", async () => {
+    dir = mkdtempSync(join(tmpdir(), "pi-ping-"));
+    const child = new RpcChild({
+      piBin: makeStubPi(dir),
+      extensionPath: "/no/such.js",
+      cwd: dir,
+      env: { STUB_SILENT: "1" },
+    });
+    child.spawn();
+    await new Promise((r) => setTimeout(r, 300));
+    await expect(child.ping(300)).resolves.toBe(false);
+    await child.stop();
+  });
+});
+
 describe("resolvePiBin (plan/40 — Windows pi.cmd)", () => {
   test("POSIX → returns the bin name unchanged", () => {
     expect(resolvePiBin("pi", "darwin")).toBe("pi");

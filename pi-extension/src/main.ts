@@ -5764,6 +5764,65 @@ async function _handleControlEnvelopeInner(
   }
 }
 
+/**
+ * Plan/168 — `daemon_control` served by a LIVE daemon (the normal serving
+ * path is the room keeper inside the supervisor, which holds the device
+ * room only while this daemon is dark). This path covers the race where the
+ * daemon recovered between the app's "room is dark" decision and the send:
+ *
+ *  - `status` answers natively (own pid/uptime — fresher than any registry).
+ *  - `restart` acks FIRST, then crash-exits (code 1) so the supervisor's
+ *    crash-restart respawns with `--continue` — conversation continuity is
+ *    preserved and the 500 ms window mirrors `restartFresh`'s reply-flush
+ *    guarantee (ai-review #107 r5). Kill-switch mirrors session control.
+ */
+function handleDaemonControl(
+  sender: ActionReplySender,
+  msg: Extract<ClientMessage, { type: "daemon_control" }>,
+): void {
+  const cwd = ext.myRoomMeta?.cwd ?? process.cwd();
+  if (loadLocalConfig(cwd).allow_remote_session_control === false) {
+    sender.send({
+      type: "action_error",
+      in_reply_to: msg.id,
+      action: "daemon_control",
+      error: "remote session control disabled on this peer (allow_remote_session_control:false)",
+    });
+    return;
+  }
+  if (msg.op === "status") {
+    sender.send({
+      type: "action_ok",
+      in_reply_to: msg.id,
+      action: "daemon_control",
+      result: {
+        op: "status",
+        daemons: [{
+          id: msg.daemon ?? "device",
+          cwd,
+          state: "running",
+          pid: process.pid,
+          uptime_s: Math.floor(process.uptime()),
+        }],
+      },
+    });
+    return;
+  }
+  sender.send({
+    type: "action_ok",
+    in_reply_to: msg.id,
+    action: "daemon_control",
+    result: {
+      op: "restart",
+      daemon: msg.daemon ?? "device",
+      restarted: true,
+      note: "alive daemon self-restarting via supervisor crash-respawn",
+    },
+  });
+  console.log("[remote-pi] daemon_control restart — exiting for supervisor respawn");
+  setTimeout(() => process.exit(1), 500);
+}
+
 export function _routeClientMessageFrom(
   sender: PlainPeerChannel,
   msg: ClientMessage,
@@ -5994,6 +6053,13 @@ export function _routeClientMessageFrom(
     // no live pi). Spawn-from-project reuses open_terminal_request.
     case "list_projects_request":
       handleListProjects(sender, msg);
+      break;
+    // Plan/168 — supervisor-level repair. Normally served by the room keeper
+    // (inside the supervisor) while the device daemon is dark; THIS path is
+    // the race where the daemon is alive: status answers natively, restart
+    // acks then crash-exits so the supervisor respawns with --continue.
+    case "daemon_control":
+      handleDaemonControl(sender, msg);
       break;
     // api.changeLayout — apply a named `.ckp` layout via the Cockpit CLI
     // (orchestrate). Served by the device daemon like the other actions.

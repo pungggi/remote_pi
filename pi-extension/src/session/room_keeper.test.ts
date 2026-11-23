@@ -84,6 +84,10 @@ function outerLine(peer: string, payload: unknown): string {
   return JSON.stringify({ peer, room: "keptRoom", ct: Buffer.from(JSON.stringify(payload)).toString("base64") });
 }
 
+function outerLineIn(room: string, peer: string, payload: unknown): string {
+  return JSON.stringify({ peer, room, ct: Buffer.from(JSON.stringify(payload)).toString("base64") });
+}
+
 function decodeSent(sent: string): Record<string, unknown> {
   const outer = JSON.parse(sent) as { ct: string };
   return JSON.parse(Buffer.from(outer.ct, "base64").toString("utf8")) as Record<string, unknown>;
@@ -313,6 +317,146 @@ describe("RoomKeeper (plan/140)", () => {
     // No further pushes without another change.
     await new Promise((r) => setTimeout(r, 80));
     expect(fake.controlFrames.length).toBe(1);
+    await keeper.stop();
+  });
+});
+
+describe("RoomKeeper — device-room control presence (plan/168)", () => {
+  /** Per-room fakes: the shared makeKeeper returns ONE fake, but the device
+   *  room + session rooms must each get their own connection. */
+  function makeMultiKeeper(over: Partial<ConstructorParameters<typeof RoomKeeper>[0]> = {}) {
+    const dir = mkdtempSync(join(tmpdir(), "keeper168-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const registryPath = join(dir, "rooms.json");
+    const fakes: FakeRelay[] = [];
+    const keeper = new RoomKeeper({
+      relayUrl: "http://127.0.0.1:3000",
+      keypair: generateEd25519Keypair(),
+      registryPath,
+      listPairedPeers: async () => [PHONE_PEER],
+      makeClient: () => {
+        const f = new FakeRelay();
+        fakes.push(f);
+        return f as unknown as KeeperRelayClient;
+      },
+      log: (line) => console.error("[keeper168-test]", line),
+      ...over,
+    });
+    /** The fake that connected as `roomId` (connectCalls[0] of that fake). */
+    const fakeFor = (roomId: string): FakeRelay =>
+      fakes.find((f) => f.connectCalls.some((c) => c.roomId === roomId))!;
+    return { keeper, fakes, fakeFor, dir, registryPath };
+  }
+
+  it("claims the device room control-only (no roomMeta) and pinned outside maxRooms/maxAge", async () => {
+    const { keeper, fakes, fakeFor, registryPath } = makeMultiKeeper({ maxRooms: 1 });
+    const now = Date.now();
+    upsertRoom({ cwd: "C:\\old", roomId: "roomA", lastSeenAt: now - 3000 }, registryPath);
+    upsertRoom({ cwd: "C:\\new", roomId: "roomB", lastSeenAt: now - 1000 }, registryPath);
+    // Stale by any session-room measure — still pinned.
+    upsertRoom({ cwd: "C:\\home", roomId: "device", lastSeenAt: 1 }, registryPath);
+    await keeper.start();
+
+    const dev = fakeFor("device");
+    expect(dev.connectCalls.length).toBe(1);
+    expect(dev.connectCalls[0]!.roomId).toBe("device");
+    // Control-only: NOTHING announced — no phantom session-shaped room.
+    expect(dev.connectCalls[0]!.roomMeta).toBeUndefined();
+
+    // Pinned outside the bound: maxRooms 1 holds newest session room + device.
+    expect(() => fakeFor("device")).not.toThrow();
+    expect(() => fakeFor("roomB")).not.toThrow();
+    // …and NOT the older session room (device didn't consume the slot).
+    expect(fakes.some((f) => f.connectCalls.some((c) => c.roomId === "roomA"))).toBe(false);
+    await keeper.stop();
+  });
+
+  it("serves daemon_control restart via the supervisor callback and replies action_ok", async () => {
+    const seen: Array<{ op: string; daemon?: string }> = [];
+    const { keeper, fakeFor, registryPath } = makeMultiKeeper({
+      onDaemonControl: async (req) => {
+        seen.push(req);
+        return { op: "restart", daemon: "device", restarted: true, pid: 4242 };
+      },
+    });
+    upsertRoom({ cwd: "C:\\home", roomId: "device", lastSeenAt: Date.now() }, registryPath);
+    await keeper.start();
+
+    const dev = fakeFor("device");
+    dev.emitMessage(outerLineIn("device", PHONE_PEER, { type: "daemon_control", id: "dc-1", op: "restart" }));
+    await waitFor(() => {
+      expect(dev.sent.length).toBeGreaterThan(0);
+    });
+    const reply = decodeSent(dev.sent[dev.sent.length - 1]!);
+    expect(reply["type"]).toBe("action_ok");
+    expect(reply["in_reply_to"]).toBe("dc-1");
+    expect(reply["action"]).toBe("daemon_control");
+    expect(reply["result"]).toMatchObject({ op: "restart", restarted: true, pid: 4242 });
+    expect(seen).toEqual([{ op: "restart", daemon: undefined }]);
+    await keeper.stop();
+  });
+
+  it("replies action_error for unknown ops, a throwing handler, and a missing handler", async () => {
+    const { keeper, fakeFor, registryPath } = makeMultiKeeper({
+      onDaemonControl: async () => {
+        throw new Error("boom: fleet on fire");
+      },
+    });
+    upsertRoom({ cwd: "C:\\home", roomId: "device", lastSeenAt: Date.now() }, registryPath);
+    await keeper.start();
+    const dev = fakeFor("device");
+
+    dev.emitMessage(outerLineIn("device", PHONE_PEER, { type: "daemon_control", id: "dc-2", op: "explode" }));
+    await waitFor(() => expect(dev.sent.length).toBe(1));
+    expect(decodeSent(dev.sent[0]!)).toMatchObject({
+      type: "action_error", in_reply_to: "dc-2", action: "daemon_control",
+      error: expect.stringContaining("unknown daemon_control op"),
+    });
+
+    dev.emitMessage(outerLineIn("device", PHONE_PEER, { type: "daemon_control", id: "dc-3", op: "restart" }));
+    await waitFor(() => expect(dev.sent.length).toBe(2));
+    expect(decodeSent(dev.sent[1]!)).toMatchObject({
+      type: "action_error", in_reply_to: "dc-3", action: "daemon_control",
+      error: expect.stringContaining("fleet on fire"),
+    });
+    await keeper.stop();
+
+    // No handler wired (standalone keeper / tests): explicit error, no silence.
+    const bare = makeMultiKeeper();
+    upsertRoom({ cwd: "C:\\home", roomId: "device", lastSeenAt: Date.now() }, bare.registryPath);
+    await bare.keeper.start();
+    const bareDev = bare.fakeFor("device");
+    bareDev.emitMessage(outerLineIn("device", PHONE_PEER, { type: "daemon_control", id: "dc-4", op: "status" }));
+    await waitFor(() => expect(bareDev.sent.length).toBe(1));
+    expect(decodeSent(bareDev.sent[0]!)).toMatchObject({
+      type: "action_error", in_reply_to: "dc-4", action: "daemon_control",
+      error: expect.stringContaining("no supervisor handler"),
+    });
+    await bare.keeper.stop();
+  });
+
+  it("keeps session rooms read-only: daemon_control ignored there, session_sync ignored on device", async () => {
+    let handlerCalls = 0;
+    const { keeper, fakeFor, registryPath } = makeMultiKeeper({
+      onDaemonControl: async () => {
+        handlerCalls++;
+        return { op: "status", daemons: [] };
+      },
+    });
+    upsertRoom({ cwd: "C:\\proj", roomId: "keptRoom", lastSeenAt: Date.now() }, registryPath);
+    upsertRoom({ cwd: "C:\\home", roomId: "device", lastSeenAt: Date.now() }, registryPath);
+    await keeper.start();
+
+    const session = fakeFor("keptRoom");
+    session.emitMessage(outerLine(PHONE_PEER, { type: "daemon_control", id: "dc-x", op: "restart" }));
+    await new Promise((r) => setTimeout(r, 150));
+    expect(handlerCalls).toBe(0);
+    expect(session.sent.length).toBe(0);
+
+    const dev = fakeFor("device");
+    dev.emitMessage(outerLineIn("device", PHONE_PEER, { type: "session_sync", id: "sync-x" }));
+    await new Promise((r) => setTimeout(r, 150));
+    expect(dev.sent.length).toBe(0);
     await keeper.stop();
   });
 });

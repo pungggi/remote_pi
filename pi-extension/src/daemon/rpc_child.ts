@@ -275,6 +275,10 @@ export class RpcChild extends EventEmitter {
   private _busy = false;
   /** In-flight `get_state` requests, keyed by request id. */
   private readonly _statePending = new Map<string, { resolve: (b: boolean) => void; timer: ReturnType<typeof setTimeout> }>();
+  /** Plan/168 — in-flight liveness pings, keyed by request id. Distinct from
+   *  `_statePending`: a ping resolves on RESPONSE PRESENCE (any answer means
+   *  the child's event loop is alive), not on the busy payload. */
+  private readonly _pongPending = new Map<string, { resolve: (ok: boolean) => void; timer: ReturnType<typeof setTimeout> }>();
 
   constructor(private readonly opts: RpcChildOptions) {
     super();
@@ -415,6 +419,12 @@ export class RpcChild extends EventEmitter {
     if (t !== null) this._busy = t;
     const gs = parseGetStateResponse(line);
     if (gs && gs.id) {
+      const pong = this._pongPending.get(gs.id);
+      if (pong) {
+        clearTimeout(pong.timer);
+        this._pongPending.delete(gs.id);
+        pong.resolve(true);
+      }
       const pending = this._statePending.get(gs.id);
       if (pending) {
         clearTimeout(pending.timer);
@@ -424,6 +434,39 @@ export class RpcChild extends EventEmitter {
       }
     }
     this.emit("stdout", line);
+  }
+
+  /**
+   * Plan/168 — event-loop liveness probe: sends `get_state` and resolves
+   * TRUE on any response for our id, false on timeout / not running.
+   *
+   * The pi RPC dispatcher handles each stdin line concurrently
+   * (`void handleInputLine(line)` — rpc-mode.js), so a BUSY turn still
+   * answers while streaming; only a wedged loop (the 2026-11-22 zombie:
+   * socket half-open, process alive, nothing processed) stays silent.
+   * That makes a missed ping a safe wedge signal — no busy false-positives.
+   */
+  ping(timeoutMs = 5000): Promise<boolean> {
+    if (this._state !== "running" || !this.child?.stdin) {
+      // Not running: the supervisor's ping loop skips non-running slots, so
+      // this only matters for direct callers — report not-alive, not a miss.
+      return Promise.resolve(false);
+    }
+    const id = `ping-${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        this._pongPending.delete(id);
+        resolve(false);
+      }, timeoutMs);
+      this._pongPending.set(id, { resolve, timer });
+      try {
+        this.child!.stdin!.write(JSON.stringify({ id, type: "get_state" }) + "\n");
+      } catch {
+        clearTimeout(timer);
+        this._pongPending.delete(id);
+        resolve(false);
+      }
+    });
   }
 
   /**
@@ -473,6 +516,11 @@ export class RpcChild extends EventEmitter {
       p.resolve(false);
     }
     this._statePending.clear();
+    for (const p of this._pongPending.values()) {
+      clearTimeout(p.timer);
+      p.resolve(false);
+    }
+    this._pongPending.clear();
     this.emit("exit", { code, signal, isCrash } satisfies RpcChildExitEvent);
   }
 

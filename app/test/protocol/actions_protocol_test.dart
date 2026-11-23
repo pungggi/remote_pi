@@ -176,4 +176,118 @@ void main() {
       expect(list.models, isEmpty);
     });
   });
+
+  // Plan/168 — device-daemon control surface (repair verbs).
+  group('daemon_control (plan/168)', () {
+    test('DaemonControlRequest encodes restart op', () {
+      expect(DaemonControlRequest(id: 'r7', op: 'restart').toJson(), {
+        'type': 'daemon_control',
+        'id': 'r7',
+        'op': 'restart',
+      });
+    });
+
+    test('DaemonControlRequest encodes status op + optional daemon selector', () {
+      expect(
+        DaemonControlRequest(id: 'r8', op: 'status', daemon: 'device')
+            .toJson(),
+        {
+          'type': 'daemon_control',
+          'id': 'r8',
+          'op': 'status',
+          'daemon': 'device',
+        },
+      );
+    });
+
+    test('ActionName round-trips daemon_control', () {
+      expect(ActionName.fromWire('daemon_control'), ActionName.daemonControl);
+      expect(ActionName.daemonControl.wire, 'daemon_control');
+    });
+
+    test('action_ok daemon_control parses restart result', () {
+      final m = ServerMessage.fromJson({
+        'type': 'action_ok',
+        'in_reply_to': 'r7',
+        'action': 'daemon_control',
+        'result': {
+          'op': 'restart',
+          'daemon': 'device',
+          'restarted': true,
+          'note': 'alive daemon self-restarting via supervisor crash-respawn',
+          'pid': 4242,
+        },
+      });
+      final ok = m as DaemonControlOk;
+      expect(ok.inReplyTo, 'r7');
+      final r = ok.result as DaemonRestartResult;
+      expect(r.daemon, 'device');
+      expect(r.restarted, isTrue);
+      expect(r.note, contains('self-restarting'));
+      expect(r.pid, 4242);
+    });
+
+    test('action_ok daemon_control parses status rows', () {
+      final m = ServerMessage.fromJson({
+        'type': 'action_ok',
+        'in_reply_to': 'r8',
+        'action': 'daemon_control',
+        'result': {
+          'op': 'status',
+          'daemons': [
+            {
+              'id': 'device',
+              'cwd': 'C:\\dev',
+              'state': 'running',
+              'pid': 17260,
+              'uptime_s': 1234,
+            },
+          ],
+        },
+      });
+      final r = (m as DaemonControlOk).result as DaemonStatusResult;
+      expect(r.daemons, hasLength(1));
+      final row = r.daemons.single;
+      expect(row.id, 'device');
+      expect(row.state, 'running');
+      expect(row.pid, 17260);
+      expect(row.uptimeS, 1234);
+    });
+
+    test('unknown result op stays typed (forward-compat)', () {
+      final m = ServerMessage.fromJson({
+        'type': 'action_ok',
+        'in_reply_to': 'r9',
+        'action': 'daemon_control',
+        'result': {'op': 'migrate'},
+      });
+      expect(
+        (m as DaemonControlOk).result,
+        isA<DaemonControlUnknown>()
+            .having((u) => u.op, 'op', 'migrate'),
+      );
+    });
+
+    test('action_ok with another action still parses as ActionOk', () {
+      final m = ServerMessage.fromJson({
+        'type': 'action_ok',
+        'in_reply_to': 'r10',
+        'action': 'session_new',
+      });
+      expect(m, isA<ActionOk>());
+    });
+
+    test('action_error daemon_control carries the refusal message', () {
+      final m = ServerMessage.fromJson({
+        'type': 'action_error',
+        'in_reply_to': 'r11',
+        'action': 'daemon_control',
+        'error':
+            'remote session control disabled on this peer (allow_remote_session_control:false)',
+      });
+      final e = m as ActionError;
+      expect(e.action, ActionName.daemonControl);
+      expect(e.error, contains('allow_remote_session_control'));
+    });
+  });
 }

@@ -4,12 +4,14 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { addDaemon, listDaemons, migrateRegistryNames, normalizeCwd, removeDaemon } from "./registry.js";
 import { daemonIdForCwd } from "./id.js";
-import { defaultAgentName, type LocalConfig } from "../session/local_config.js";
+import { defaultAgentName, loadLocalConfig, type LocalConfig } from "../session/local_config.js";
 import { DEVICE_ROOM, roomIdFor } from "../rooms.js";
 import { ipcAddress, usesNamedPipe } from "../session/ipc.js";
 import { RoomKeeper } from "../session/room_keeper.js";
 import { getOrCreateEd25519Keypair } from "../pairing/storage.js";
 import { resolveRelayUrl } from "../config.js";
+import { readRoomsRegistry } from "../session/rooms_registry.js";
+import type { DaemonControlResult, DaemonControlStatusRow } from "../protocol/types.js";
 import { EXIT_DAEMON_FRESH_SESSION, RpcChild, type RpcChildExitEvent, type RpcChildOptions } from "./rpc_child.js";
 import {
   type ControlReply,
@@ -135,6 +137,11 @@ export interface SupervisorOptions {
    *  against `daemons.json` (adopts externally-added entries, stops removed
    *  ones). Default 60 s; tests inject a short interval. `0` disables. */
   reconcileIntervalMs?: number;
+  /** Plan/168 — how often each running child's event loop is pinged via
+   *  `get_state` over stdin (answered even mid-turn; only a wedged loop
+   *  stays silent). 2 consecutive misses → kill + respawn. Default 30 s;
+   *  tests inject a short interval. `0` disables. */
+  pingIntervalMs?: number;
 }
 
 /** Pure decision for `fireJob` (plan/39) — picks the action from the daemon's
@@ -182,6 +189,10 @@ export class Supervisor {
   private shuttingDown = false;
   /** Plan/159 — periodic fleet ↔ registry reconciliation handle. */
   private reconcileTimer: ReturnType<typeof setInterval> | null = null;
+  /** Plan/168 — periodic child event-loop ping loop handle. */
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  /** Plan/168 — consecutive missed pings per child id (wedge detector). */
+  private readonly pingMisses = new Map<string, number>();
 
   constructor(private readonly opts: SupervisorOptions) {}
 
@@ -204,6 +215,9 @@ export class Supervisor {
     // Plan/159 — keep the in-memory fleet honest against a hand-edited or
     // externally-written daemons.json without requiring a supervisor bounce.
     this._startReconcileLoop();
+    // Plan/168 — wedge detector: exit-based restart can't see a child whose
+    // process is alive but whose loop is dead (2026-11-22 zombie daemon).
+    this._startPingLoop();
     // Plan/140 — durable-history keeper for dark rooms. Started AFTER the
     // children so a registry daemon wins the race for its own room (the
     // keeper backs off on RoomAlreadyOpen and the real daemon has the
@@ -222,6 +236,12 @@ export class Supervisor {
       clearInterval(this.reconcileTimer);
       this.reconcileTimer = null;
     }
+    // Plan/168 — stop the ping loop for the same reason.
+    if (this.pingTimer !== null) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+    this.pingMisses.clear();
     // Plan/140 — release keeper rooms first so a concurrently starting
     // sibling supervisor doesn't fight RoomAlreadyOpen ghosts during the
     // handover.
@@ -886,7 +906,11 @@ export class Supervisor {
 
   /** Plan/140 — start the in-process room keeper. Never throws: a keeper
    *  failure (missing keyring, unreadable config) must not take the
-   *  supervisor down — the fleet keeps running without keeper coverage. */
+   *  supervisor down — the fleet keeps running without keeper coverage.
+   *  Plan/168 — the keeper also receives the `daemon_control` callback: it
+   *  holds the control-only DEVICE_ROOM whenever the daemon is dark, which
+   *  is the phone's only repair path that does not depend on the (possibly
+   *  wedged) daemon process. */
   private async _startKeeper(): Promise<void> {
     try {
       const keypair = await getOrCreateEd25519Keypair();
@@ -894,6 +918,7 @@ export class Supervisor {
         relayUrl: resolveRelayUrl().url,
         keypair,
         log: (line) => process.stderr.write(`[room-keeper] ${line}\n`),
+        onDaemonControl: (req) => this._daemonControl(req),
       });
       await keeper.warmRatchets();
       await keeper.start();
@@ -902,6 +927,61 @@ export class Supervisor {
     } catch (err) {
       process.stderr.write(`[room-keeper] failed to start (keeper disabled): ${String(err)}\n`);
     }
+  }
+
+  /** Plan/168 — serve a `daemon_control` request relayed by the keeper from
+   *  the paired phone. The kill-switch mirrors session control: an operator
+   * who opted out of remote control on this PC is opted out here too. */
+  private async _daemonControl(req: { op: "restart" | "status"; daemon?: string }): Promise<DaemonControlResult> {
+    if (loadLocalConfig(supervisorHome()).allow_remote_session_control === false) {
+      throw new Error("remote session control disabled on this peer (allow_remote_session_control:false)");
+    }
+    const daemon = req.daemon ?? DEVICE_DAEMON_ID;
+    if (daemon !== DEVICE_DAEMON_ID) {
+      // Fleet-wide control is a plan/168 follow-up; the callback surface
+      // already carries the id, but only the device room is keeper-held.
+      throw new Error(`daemon_control supports "${DEVICE_DAEMON_ID}" for now (got "${daemon}")`);
+    }
+    if (req.op === "status") {
+      const registry = readRoomsRegistry();
+      const lastSeen = registry.get(DEVICE_ROOM)?.lastSeenAt;
+      const rows: DaemonControlStatusRow[] = this._listInfo()
+        .filter((d) => d.id === DEVICE_DAEMON_ID)
+        .map((d) => ({
+          id: d.id,
+          cwd: d.cwd,
+          state: d.state,
+          ...(d.pid !== undefined ? { pid: d.pid } : {}),
+          ...(d.uptime_s !== undefined ? { uptime_s: d.uptime_s } : {}),
+          ...(d.restart_count !== undefined ? { restart_count: d.restart_count } : {}),
+          ...(lastSeen !== undefined ? { last_seen_age_s: Math.max(0, Math.floor((Date.now() - lastSeen) / 1000)) } : {}),
+        }));
+      return { op: "status", daemons: rows };
+    }
+    // restart: sequential kill→respawn (never two children racing the room).
+    // stop() escalates SIGTERM→SIGKILL, so a wedged (even SIGSTOPped) child
+    // dies within its 5 s window; the ack lands only after the new child is
+    // spawned — the caller retries list_projects and tolerates one timeout
+    // while the fresh daemon's relay hello lands.
+    const slot = this.children.get(DEVICE_DAEMON_ID);
+    const beforePid = slot?.child.pid;
+    if (slot && (slot.child.state === "running" || slot.child.state === "starting")) {
+      await slot.child.stop();
+    }
+    const spawned = this._spawnDeviceDaemon();
+    const afterPid = this.children.get(DEVICE_DAEMON_ID)?.child.pid;
+    process.stderr.write(
+      `[remote-pi-supervisord] daemon_control restart (via relay): pid ${beforePid ?? "-"} → ${afterPid ?? "-"}\n`,
+    );
+    if (!spawned) {
+      return {
+        op: "restart",
+        daemon: DEVICE_DAEMON_ID,
+        restarted: false,
+        note: "device daemon not spawned — a registry entry covers the home cwd (remove it to restore the built-in device daemon)",
+      };
+    }
+    return { op: "restart", daemon: DEVICE_DAEMON_ID, restarted: true, ...(afterPid !== undefined ? { pid: afterPid } : {}) };
   }
 
   /** Plan/159 — wire a freshly created child's diagnostics: persist stderr
@@ -1085,6 +1165,71 @@ export class Supervisor {
         `[remote-pi-supervisord] reconcile: adopting registry entry ${entry.id} (${entry.cwd})\n`,
       );
       this._spawnEntry(entry.id, entry.cwd, entry.name);
+    }
+  }
+
+  // ── Plan/168 — child wedge detection (event-loop ping) ──────────────
+
+  /** Starts the periodic ping loop (see `_pingOnce`). `unref`ed so tests
+   *  and tooling processes aren't kept alive by it. */
+  private _startPingLoop(): void {
+    const interval = this.opts.pingIntervalMs ?? 30_000;
+    if (interval <= 0 || this.pingTimer !== null) return;
+    this.pingTimer = setInterval(() => {
+      void this._pingOnce().catch((e) => {
+        process.stderr.write(`[remote-pi-supervisord] ping pass failed: ${String(e)}\n`);
+      });
+    }, interval);
+    this.pingTimer.unref?.();
+  }
+
+  /** One ping pass: every RUNNING child gets a `get_state` ping (answered
+   *  even mid-turn — the RPC dispatcher handles stdin lines concurrently, so
+   *  only a wedged event loop stays silent). Two consecutive misses → kill +
+   *  respawn through the slot's own spawn path, which also drops the keeper
+   *  claim so the fresh child wins its room. The 2026-11-22 incident class
+   *  (process alive, socket half-open, nothing processed for hours) is
+   *  invisible to exit-based restart and to relay-side liveness — this loop
+   *  is the only detector that needs neither the relay nor the child's
+   *  cooperation. */
+  private async _pingOnce(): Promise<void> {
+    if (this.shuttingDown) return;
+    const running: Array<[string, ChildSlot]> = [];
+    for (const [id, slot] of [...this.children]) {
+      if (slot.child.state !== "running") {
+        this.pingMisses.delete(id);
+        continue;
+      }
+      running.push([id, slot]);
+    }
+    if (running.length === 0) return;
+    // Ping all running children CONCURRENTLY: a wedged child stays silent
+    // for the full 5 s timeout, so a serial pass with N wedged children
+    // could stretch to N x 5 s and outrun the interval. Result processing
+    // below stays sequential — kill + respawn is cheap and log-line order
+    // doesn't matter.
+    const alive = await Promise.all(running.map(([, slot]) => slot.child.ping(5_000)));
+    if (this.shuttingDown) return;
+    for (let i = 0; i < running.length; i++) {
+      const [id, slot] = running[i];
+      if (alive[i]) {
+        this.pingMisses.set(id, 0);
+        continue;
+      }
+      const misses = (this.pingMisses.get(id) ?? 0) + 1;
+      this.pingMisses.set(id, misses);
+      process.stderr.write(
+        `[remote-pi-supervisord] ${id}: ping miss ${misses}/2 (pid ${slot.child.pid ?? "-"})\n`,
+      );
+      if (misses < 2) continue;
+      this.pingMisses.set(id, 0);
+      process.stderr.write(
+        `[remote-pi-supervisord] ${id}: wedged (2 missed pings) — kill + respawn\n`,
+      );
+      await slot.child.stop();
+      if (this.shuttingDown) return;
+      if (id === DEVICE_DAEMON_ID) this._spawnDeviceDaemon();
+      else this._spawnEntry(id, slot.cwd, slot.name, slot.transient);
     }
   }
 }

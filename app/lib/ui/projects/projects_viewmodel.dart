@@ -26,7 +26,24 @@ final class ProjectsReady extends ProjectsState {
 
 final class ProjectsError extends ProjectsState {
   final String message;
-  const ProjectsError(this.message);
+
+  /// Plan/168 — what failed. Drives the repair affordance: [relay] means
+  /// the phone never reached the relay (no channel to send `daemon_control`
+  /// on — no repair possible); [device] (default) means the link is up but
+  /// the device daemon's room is dark (repair available).
+  final ProjectsErrorKind kind;
+  const ProjectsError(this.message, {this.kind = ProjectsErrorKind.device});
+}
+
+/// Plan/168 — failure diagnosis for [ProjectsError].
+enum ProjectsErrorKind { relay, device }
+
+/// Plan/168 — transient state while a `daemon_control restart` round-trip
+/// (plus the wait for the daemon to come back) is in flight. Ends in
+/// [ProjectsReady] (single retry succeeded) or back in [ProjectsError]
+/// (device kind → the page shows the Retry restart button).
+final class ProjectsRepairing extends ProjectsState {
+  const ProjectsRepairing();
 }
 
 /// Plan/121 — viewmodel for the Projects screen.
@@ -45,6 +62,15 @@ class ProjectsViewModel extends ViewModel<ProjectsState> {
   final Preferences _prefs;
   bool _disposed = false;
 
+  // Plan/168 — device-daemon self-repair bookkeeping.
+  /// Display label of the routed peer ("Device daemon offline on <label>").
+  String? _peerLabel;
+
+  /// Auto-repair fires at most once per screen visit (VM lifetime) —
+  /// auto once, then the manual Retry button (plan/168 UX decision).
+  bool _autoRepairFired = false;
+  Timer? _graceTimer;
+
   ProjectsViewModel(this._storage, this._conn, this._actions, this._prefs)
     : super(const ProjectsLoading());
 
@@ -52,20 +78,159 @@ class ProjectsViewModel extends ViewModel<ProjectsState> {
   /// connection to the device room on demand. Throws nothing — failures land
   /// as [ProjectsError] in [state].
   Future<void> load() async {
+    _graceTimer?.cancel();
     emit(const ProjectsLoading());
+    var routed = false;
     try {
       await _routeToDeviceRoom();
       if (_disposed) return;
+      routed = true;
       final projects = await _actions.listProjects();
       if (_disposed) return;
       emit(_sortedReady(projects));
     } on ActionFailure catch (e) {
-      if (!_disposed) {
-        emit(ProjectsError(e.message.isEmpty ? 'Device unreachable.' : e.message));
-      }
+      if (!_disposed) _emitFailure(routed, e);
     } catch (_) {
-      if (!_disposed) emit(const ProjectsError('Device unreachable.'));
+      if (!_disposed) _emitFailure(routed, null);
     }
+  }
+
+  /// Plan/168 — translate a load failure into a diagnosed error state.
+  /// [routed] is true only when routing to the device room SUCCEEDED (the
+  /// relay link is up): a failure past that point means the daemon room is
+  /// dark, which is repairable via `daemon_control` (the keeper holds the
+  /// room control-only exactly for this). Earlier failures mean the phone
+  /// itself has no channel — no repair is possible.
+  void _emitFailure(bool routed, ActionFailure? e) {
+    if (!routed) {
+      final noPeer = e?.message == 'no paired peer';
+      emit(ProjectsError(
+        noPeer ? 'No paired peer.' : 'No connection to relay.',
+        kind: ProjectsErrorKind.relay,
+      ));
+      return;
+    }
+    emit(ProjectsError(
+      'Device daemon offline on ${_peerLabel ?? 'the PC'}.',
+      kind: ProjectsErrorKind.device,
+    ));
+    _scheduleAutoRepair();
+  }
+
+  /// Plan/168 — after a 10 s grace (transient blips usually clear on
+  /// their own; pull-to-refresh is also wired to [load]), fire the repair
+  /// flow exactly once per screen visit. If the state moved on (user
+  /// recovered manually), the timer pops as a no-op.
+  void _scheduleAutoRepair() {
+    if (_autoRepairFired) return;
+    _autoRepairFired = true;
+    _graceTimer = Timer(const Duration(seconds: 10), () {
+      if (_disposed) return;
+      final s = state;
+      if (s is ProjectsError && s.kind == ProjectsErrorKind.device) {
+        repairNow();
+      }
+    });
+  }
+
+  /// Plan/168 — the repair flow (auto timer + Retry button both land
+  /// here): re-route → `daemon_control restart` → wait ≤10 s for the real
+  /// daemon to re-announce the device room → ONE `list_projects` retry.
+  /// Throws nothing — progress and outcomes land in [state].
+  Future<void> repairNow() async {
+    if (_disposed) return;
+    _graceTimer?.cancel();
+    emit(const ProjectsRepairing());
+    try {
+      await _routeToDeviceRoom();
+    } catch (_) {
+      if (!_disposed) {
+        emit(const ProjectsError(
+          'No connection to relay.',
+          kind: ProjectsErrorKind.relay,
+        ));
+      }
+      return;
+    }
+    if (_disposed) return;
+    // Restart itself failing (kill-switch refusal, transport timeout, ...)
+    // is distinct from "restart acked but the daemon never came back" —
+    // the user acts differently (check the PC vs just retry).
+    try {
+      await _actions.restartDeviceDaemon();
+    } catch (_) {
+      if (!_disposed) {
+        emit(const ProjectsError(
+          'Restart failed; daemon unreachable.',
+          kind: ProjectsErrorKind.device,
+        ));
+      }
+      return;
+    }
+    if (_disposed) return;
+    try {
+      await _waitForDeviceRoomLive(const Duration(seconds: 10));
+    } catch (_) {
+      if (!_disposed) {
+        emit(const ProjectsError(
+          'Restart sent, daemon still dark. Try again in a moment.',
+          kind: ProjectsErrorKind.device,
+        ));
+      }
+      return;
+    }
+    if (_disposed) return;
+    // Any failure here (ActionFailure from the daemon OR an unexpected
+    // repository/transport exception) lands on the same retry affordance —
+    // it must never leave the user stuck in ProjectsRepairing.
+    try {
+      final projects = await _actions.listProjects();
+      if (!_disposed) emit(_sortedReady(projects));
+    } catch (_) {
+      if (!_disposed) {
+        emit(const ProjectsError(
+          'Daemon restarted but still unreachable.',
+          kind: ProjectsErrorKind.device,
+        ));
+      }
+    }
+  }
+
+  /// Wait up to [timeout] for the device room to be held by a LIVE daemon
+  /// again. The keeper's control-only presence never announces room meta
+  /// (plan/120 invisible-room filter), so "an entry with meta" means the
+  /// respawned daemon re-announced. Scoped subscription, cancelled in
+  /// `finally` — never leaks past the await.
+  Future<void> _waitForDeviceRoomLive(Duration timeout) async {
+    if (_deviceRoomLive()) return;
+    final completer = Completer<void>();
+    final sub = _conn.roomsStream.listen((_) {
+      if (_deviceRoomLive() && !completer.isCompleted) completer.complete();
+    });
+    final timer = Timer(timeout, () {
+      if (!completer.isCompleted) {
+        completer.completeError(const ActionFailure('timeout'));
+      }
+    });
+    try {
+      await completer.future;
+    } finally {
+      sub.cancel();
+      timer.cancel();
+    }
+  }
+
+  /// The device room counts as live when an entry with room meta (cwd or
+  /// model) exists for the active peer — the keeper publishes none.
+  bool _deviceRoomLive() {
+    final epk = _conn.activePeer?.remoteEpk;
+    if (epk == null) return false;
+    for (final r in _conn.roomsFor(epk)) {
+      if (r.roomId == kDeviceRoom && (r.cwd != null || r.model != null)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /// Spawn a worktree terminal for a project. Routes to the device room on
@@ -121,6 +286,7 @@ class ProjectsViewModel extends ViewModel<ProjectsState> {
     final peers = await _storage.listPeers();
     if (peers.isEmpty) throw const ActionFailure('no paired peer');
     final peer = peers.first;
+    _peerLabel = peer.sessionName;
     final samePeer = _conn.activePeer?.remoteEpk == peer.remoteEpk;
     if (!samePeer || _conn.status is! StatusOnline) {
       await _conn.switchTo(peer);
@@ -157,6 +323,7 @@ class ProjectsViewModel extends ViewModel<ProjectsState> {
   @override
   void dispose() {
     _disposed = true;
+    _graceTimer?.cancel();
     super.dispose();
   }
 }

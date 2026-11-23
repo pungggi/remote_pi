@@ -43,6 +43,12 @@ class _FakeRepo implements IActionsRepository {
   @override
   Future<PlanResetResult> planResetCard({required String kind}) async => throw UnimplementedError();
 
+  // Plan/168 — never used by QuickActions; stubbed for the interface.
+  @override
+  Future<DaemonControlResult> restartDeviceDaemon() async => throw UnimplementedError();
+  @override
+  Future<DaemonControlResult> deviceStatus() async => throw UnimplementedError();
+
   @override
   Future<OpenTerminalResult> openTerminal({
     String? cwd,

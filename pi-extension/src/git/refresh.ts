@@ -15,7 +15,7 @@
 import { getGitStatusSnapshot } from "../actions/git_status.js";
 import type { GitRepositoryInfo } from "../actions/git_status.js";
 import { ext } from "../extension-state.js";
-import { upsertRoomMeta } from "../session/rooms_registry.js";
+import { upsertRoom, upsertRoomMeta } from "../session/rooms_registry.js";
 import { applyRefWithPrecedence, ghPrViewRef } from "../session/ref_ingest.js";
 import type { WireGhRef, WireGitStatus } from "../protocol/types.js";
 
@@ -140,10 +140,29 @@ export function startGitRefresh(): void {
     lastGhBranch: undefined,
   };
   activeRefresh = state;
+  touchDaemonHeartbeat(cwd); // plan/168 — seed immediately
   void refreshRoomGit(cwd, state); // seed immediately
   ext.gitRefreshTimer = setInterval(() => {
+    touchDaemonHeartbeat(cwd);
     void refreshRoomGit(cwd, state);
   }, GIT_REFRESH_MS);
+}
+
+/**
+ * Plan/168 — daemon-mode room heartbeat: refresh the room registry's
+ * `lastSeenAt` on the existing 60 s cadence so staleness means "this
+ * daemon's relay path is probably dead" (the watchdog bounces on it; the
+ * app's daemon-dark diagnosis reads it). Without this tick a healthy
+ * daemon connected for hours would read as stale — `lastSeenAt` previously
+ * moved only on (re)connect. Interactive sessions don't need it: their
+ * presence is the live socket, and the registry serves DARK-room eligibility
+ * only. Best-effort by design — one lost tick just means the next one wins.
+ * Exported for tests. */
+export function touchDaemonHeartbeat(cwd: string): void {
+  if (process.env["REMOTE_PI_DAEMON"] !== "1" || !ext.myRoomId) return;
+  try {
+    upsertRoom({ cwd, roomId: ext.myRoomId, lastSeenAt: Date.now() });
+  } catch { /* best-effort registry write */ }
 }
 
 export function stopGitRefresh(): void {

@@ -266,6 +266,14 @@ export type ClientMessage =
   // list with no live pi). The chosen project is then spawned as a worktree
   // via open_terminal_request.
   | { type: "list_projects_request"; id: string }
+  // Plan/168 — supervisor-level repair ops for the phone, served by the
+  // room keeper (inside the supervisor) when the device daemon's room is
+  // dark, and by a still-live device daemon itself (status natively;
+  // restart = ack + crash-exit so the supervisor respawns with --continue).
+  // This is deliberately OUTSIDE the pi process: a wedged daemon cannot
+  // process any in-band verb, so the repair path must not depend on it.
+  // Honors `allow_remote_session_control:false` like session control.
+  | { type: "daemon_control"; id: string; op: "restart" | "status"; daemon?: string }
   // api.changeLayout — apply a NAMED `.ckp` layout on the PC (Cockpit
   // orchestration). The daemon resolves `layout` (a plain basename, no
   // extension) to a `.ckp` under the configured projects roots and runs the
@@ -589,7 +597,7 @@ export type ServerMessage =
   // `models_list` is the response to a `list_models` request; the optional
   // `current` echoes the model the Pi is using right now so the app can
   // highlight the selected row without a second round-trip.
-  | { type: "action_ok"; in_reply_to: string; action: ActionName }
+  | { type: "action_ok"; in_reply_to: string; action: ActionName; result?: DaemonControlResult }
   | { type: "action_error"; in_reply_to: string; action: ActionName; error: string }
   | { type: "models_list"; in_reply_to: string; models: WireModel[]; current?: WireModel }
   // Plan/107 — Reply to `git_status_request`. `status` is null when the cwd
@@ -699,14 +707,49 @@ export type ServerMessage =
 /**
  * Plan/28 — Stable names for the typed actions the app can request. Kept
  * as a closed string union so a switch in either side gets exhaustiveness
- * checking from the compiler.
+ * checking from the compiler. `daemon_control` (plan/168) is supervisor-
+ * level, not a session action, but rides the same reply channel so the
+ * app demultiplexes identically.
  */
 export type ActionName =
   | "session_new"
   | "session_shutdown"
   | "session_compact"
   | "model_set"
-  | "thinking_set";
+  | "thinking_set"
+  | "daemon_control";
+
+// ── Plan/168 — device-daemon repair from the phone ──────────────────────────
+
+/** One fleet row in a `daemon_control {op:"status"}` result. Mirrors the
+ *  supervisor's DaemonInfo (control_protocol.ts) plus the relay-side
+ *  freshness the watchdog also uses. */
+export interface DaemonControlStatusRow {
+  id: string;
+  cwd: string;
+  state: "running" | "stopped" | "starting" | "crashed";
+  pid?: number;
+  uptime_s?: number;
+  restart_count?: number;
+  /** Seconds since the room registry last saw this daemon's room
+   *  (`rooms.json` lastSeenAt, refreshed by the daemon's 60 s heartbeat —
+   *  plan/168 step 4). Missing when the registry has no entry. */
+  last_seen_age_s?: number;
+}
+
+/** Payload on `action_ok` for `daemon_control` replies. */
+export type DaemonControlResult =
+  | {
+      op: "restart";
+      daemon: string;
+      /** True when the supervisor killed + respawned the daemon. False with
+       *  a `note` when it refused (e.g. a registry entry shadows the device
+       *  daemon's home cwd). */
+      restarted: boolean;
+      pid?: number;
+      note?: string;
+    }
+  | { op: "status"; daemons: DaemonControlStatusRow[] };
 
 // ── Plan/161 — agent mesh session control ────────────────────────────────────
 

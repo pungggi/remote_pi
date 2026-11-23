@@ -48,6 +48,7 @@ import {
 } from "./file_index.js";
 import { readRoomsRegistry, type RoomsRegistryEntry } from "./rooms_registry.js";
 import { DEVICE_ROOM } from "../rooms.js";
+import type { DaemonControlResult } from "../protocol/types.js";
 
 /** Lazy accessor for the ext's message→events mapper. Imported dynamically on
  *  first sync to keep this module free of a static main.ts edge — the
@@ -108,11 +109,22 @@ export interface RoomKeeperOptions {
   listPairedPeers?: () => Promise<string[]>;
   /** Injectable relay-client factory (tests). */
   makeClient?: (wsUrl: string, keypair: Ed25519Keypair) => KeeperRelayClient;
+  /** Plan/168 — supervisor callback serving `daemon_control` requests that
+   *  arrive while the keeper holds the control-only DEVICE_ROOM (daemon
+   *  dark/wedged). The keeper parses + replies; the supervisor owns the
+   *  fleet action (restart/status) and the kill-switch. Absent → the keeper
+   *  replies `action_error` (tests, standalone keepers). */
+  onDaemonControl?: (req: { op: "restart" | "status"; daemon?: string }) => Promise<DaemonControlResult>;
 }
 
 interface HeldRoom {
   entry: RoomsRegistryEntry;
   relay: KeeperRelayClient;
+  /** Plan/168 — true for the DEVICE_ROOM claim: control-only presence. No
+   *  room_meta is announced, no meta refreshes are pushed, and only
+   *  `daemon_control` is served. The room stays invisible to the session
+   *  list (plan/120 filters it) while giving the phone a repair path. */
+  controlOnly: boolean;
   /** Per-sender verified channels (lazily created, paired peers only). */
   channels: Map<string, PlainPeerChannel>;
   /** The channel's own line-listener, registered via the sink adapter — the
@@ -193,10 +205,15 @@ export class RoomKeeper {
     const cutoff = this.now - this.opts.maxAgeMs;
     // Newest first, bounded: the app's session list mirrors held rooms, so
     // an unbounded sweep floods it (2026-09-08: 207 rooms appeared).
+    // Plan/168 — the DEVICE_ROOM is PINNED outside the window and the bound:
+    // it never announces meta (no session-list impact) and exists precisely
+    // when the daemon is dark, which is when repair reachability matters.
     const eligible = [...registry.values()]
-      .filter((e) => e.lastSeenAt >= cutoff && e.roomId !== DEVICE_ROOM)
+      .filter((e) => e.roomId !== DEVICE_ROOM && e.lastSeenAt >= cutoff)
       .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
     const desired = new Set(eligible.slice(0, this.opts.maxRooms).map((e) => e.roomId));
+    const deviceEntry = registry.get(DEVICE_ROOM);
+    if (deviceEntry) desired.add(DEVICE_ROOM);
     for (const roomId of [...this.held.keys()]) {
       if (!desired.has(roomId)) this._release(roomId, "stale");
     }
@@ -206,6 +223,7 @@ export class RoomKeeper {
     // keeper stays read-only for MESSAGES; a room_meta_update control frame
     // is presence, not a broadcast.
     for (const room of this.held.values()) {
+      if (room.controlOnly) continue; // plan/168 — device room announces nothing
       const entry = registry.get(room.entry.roomId);
       if (!entry) continue;
       if (
@@ -219,7 +237,7 @@ export class RoomKeeper {
     for (const roomId of desired) {
       if (this.held.has(roomId)) continue;
       if ((this.suppressedUntil.get(roomId) ?? 0) > this.now) continue;
-      await this._connectRoom(registry.get(roomId)!);
+      await this._connectRoom(registry.get(roomId)!, roomId === DEVICE_ROOM);
     }
   }
 
@@ -237,12 +255,15 @@ export class RoomKeeper {
 
   // ── connection management ────────────────────────────────────────────────
 
-  private async _connectRoom(entry: RoomsRegistryEntry): Promise<void> {
+  private async _connectRoom(entry: RoomsRegistryEntry, controlOnly = false): Promise<void> {
     const make = this.opts.makeClient ?? ((url: string, kp: Ed25519Keypair) =>
       new RelayClient(url, kp) as unknown as KeeperRelayClient);
     const relay = make(toWebSocketUrl(this.opts.relayUrl), this.opts.keypair);
-    // Plan/149 — the keeper serves the registry's gh_ref / stats with the
-    // announce (offline tiles keep their slot content, plan/149 scope).
+    // Plan/140 C / plan/149 — the keeper marker + slot fields ride the
+    // hello's room_meta for SESSION rooms (app badges "Pi offline", offline
+    // tiles keep slot content). Plan/168 — a control-only claim (device
+    // room) announces NOTHING: no keeper meta, no phantom session shape;
+    // the room exists purely so `daemon_control` can reach the supervisor.
     const roomMeta: Record<string, unknown> = {
       name: basename(entry.cwd) || entry.cwd,
       cwd: entry.cwd,
@@ -257,7 +278,8 @@ export class RoomKeeper {
         // Plan/140 C — the keeper marker rides the hello's room_meta so the
         // relay announces this room as a durable-history mirror, letting the
         // app badge it "Pi offline / archive" instead of a live session.
-        roomMeta,
+        // Control-only claims (plan/168) connect with roomId alone.
+        ...(controlOnly ? {} : { roomMeta }),
       });
     } catch (err) {
       try { relay.close(); } catch { /* best-effort */ }
@@ -275,6 +297,7 @@ export class RoomKeeper {
     const room: HeldRoom = {
       entry,
       relay,
+      controlOnly,
       channels: new Map(),
       channelSinks: new Map(),
       index: null,
@@ -295,7 +318,7 @@ export class RoomKeeper {
     // Warm the paired-peer set so the first sync from a paired phone is
     // served immediately (unknown senders trigger a refresh and retry).
     void this._refreshPaired();
-    this.log(`room-keeper: holding ${entry.roomId} (${entry.cwd})`);
+    this.log(`room-keeper: holding ${entry.roomId} (${entry.cwd})${controlOnly ? " [control-only]" : ""}`);
   }
 
   /** Push a git / gh_ref / stats update for a held room and record it as the
@@ -426,10 +449,51 @@ export class RoomKeeper {
 
   private _onClientMessage(room: HeldRoom, peerId: string, msg: { type?: string } & Record<string, unknown>): void {
     this.log(`room-keeper: client message ${String(msg.type)} from ${peerId.slice(0, 8)}`);
+    if (room.controlOnly) {
+      // Plan/168 — control-only rooms serve exactly one verb; everything
+      // else (including session_sync: the device room has no chat history
+      // contract) is dropped.
+      if (msg.type !== "daemon_control") return;
+      this._serveDaemonControl(room, peerId, msg);
+      return;
+    }
     if (msg.type !== "session_sync") return; // read-only mirror: nothing else is served
     void this._serveSync(room, peerId, msg).catch((err) => {
       this.log(`room-keeper: session_sync failed (${room.entry.roomId}): ${String(err)}`);
     });
+  }
+
+  /** Plan/168 — `daemon_control` on a control-only room: parse op, hand it
+   *  to the supervisor callback, reply action_ok/action_error on the SAME
+   *  id-matched channel the app already demultiplexes. */
+  private _serveDaemonControl(room: HeldRoom, peerId: string, msg: Record<string, unknown>): void {
+    const replyId = typeof msg["id"] === "string" ? msg["id"] : "";
+    const op = msg["op"];
+    const daemon = typeof msg["daemon"] === "string" ? msg["daemon"] : undefined;
+    const channel = this._channelFor(room, peerId);
+    const send = (frame: object) => {
+      try {
+        channel.send(frame as Parameters<PlainPeerChannel["send"]>[0]);
+      } catch (err) {
+        this.log(`room-keeper: daemon_control reply failed: ${String(err)}`);
+      }
+    };
+    if (op !== "restart" && op !== "status") {
+      send({ type: "action_error", in_reply_to: replyId, action: "daemon_control", error: `unknown daemon_control op: ${String(op)}` });
+      return;
+    }
+    const handler = this.opts.onDaemonControl;
+    if (!handler) {
+      send({ type: "action_error", in_reply_to: replyId, action: "daemon_control", error: "daemon control unavailable (no supervisor handler)" });
+      return;
+    }
+    void handler({ op, daemon })
+      .then((result) => {
+        send({ type: "action_ok", in_reply_to: replyId, action: "daemon_control", result });
+      })
+      .catch((err) => {
+        send({ type: "action_error", in_reply_to: replyId, action: "daemon_control", error: String((err as Error)?.message ?? err) });
+      });
   }
 
   // ── history serving ──────────────────────────────────────────────────────
@@ -557,7 +621,10 @@ export class RoomKeeper {
     const t = setTimeout(() => {
       this.retryTimers.delete(roomId);
       const entry = readRoomsRegistry(this.opts.registryPath).get(roomId);
-      if (entry) void this._connectRoom(entry);
+      // Plan/168 — re-derive the claim kind on every retry so the device
+      // room STAYS control-only across reconnect cycles (announcing keeper
+      // meta there would surface a phantom session-shaped room).
+      if (entry) void this._connectRoom(entry, entry.roomId === DEVICE_ROOM);
     }, this.opts.retryMs);
     this.retryTimers.set(roomId, t);
   }
