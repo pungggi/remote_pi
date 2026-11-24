@@ -38,6 +38,16 @@ Numeração `00-` é proposital: este arquivo carrega antes dos planos numerados
 - **Platform rules stay intact**: `dataSync` remains the service type, with a clean `onTimeout` stop and no FGS-type evasion or automatic restart loop.
 - **FCM/APNs remain unadopted**: this decision supersedes earlier deferred-push notes only for Balanced/UnifiedPush. It adds no Firebase project, embedded FCM distributor, distributor implementation, or iOS push architecture.
 
+### Android as a session host (closed 2026-11-24 — plan 172)
+
+- **The phone is a host, not only a remote.** Sessions can run on the Android phone (Pi today, AGY after a spike) and are started from the Piper app like on a PC. Reason: the owner wants to work without the PC and to use the phone as an extra agent in the mesh.
+- **Two choices per start: agent and place.** Pi or AGY, PC or phone. The app offers only what the chosen device reports it can start.
+- **The app stays the standard UI; the terminal is on demand.** Chat happens in the Piper app. A tap opens the session's terminal on the phone (Termux). Reason: a text UI on a phone is the fallback, not the main surface, and it keeps working without any relay.
+- **No AGY chat in the app for now.** AGY sessions started from the app are reached in their terminal. A full AGY chat view is its own later plan. Reason: it is a large, separate project and not needed to start and reach AGY.
+- **Preferred hub, fallback hub (no relay federation).** The PC relay remains the preferred meeting point. The phone runs its own relay in Termux and uses it only while the PC relay is unreachable. Reason: the app holds one live relay connection and treats that relay's room snapshot as the live set; one active relay keeps that invariant and unifies the mesh whenever the PC is on. Accepted cost: phone sessions reconnect for a few seconds when the PC switches on or off.
+- **Termux background execution is the accepted cost on Android.** Wake lock, Termux:Boot autostart and the one-time phantom-process and battery settings are documented prerequisites. Reason: the platform's limits are a ceiling, not a gap to code around (same stance as the 2026-07-27 keep-alive decision).
+- **A model can be chosen when a session starts, for Pi and AGY.** The choice reuses the Quick actions model sheet with a list coming from the target device (`agy models` for AGY). It is optional: untouched, the session starts as before. The start model applies to that one session and never changes Pi's saved default. Switching the model of a running AGY session from the app is not planned (AGY has no channel to the app).
+
 ## Cockpit — motor de agente (fechado 2026-08-12 — plano 58)
 
 | Decisão | Razão / nota |
@@ -156,7 +166,7 @@ Estas decisões foram **propositalmente adiadas**. Quando alguém quiser fechar,
 | Versionamento de protocolo (`v` field) | Quando v2 do protocolo surgir e exigir migração |
 | Conta de usuário opcional | Quando aparecer dor multi-device |
 | Push notifications | v2, após MVP validado. **(2026-07-27)** Keep-alive em background já resolvido **separadamente** via foreground service (plano 103), Firebase-free — push só voltaria a importar pra *wake-after-kill*, que o fork não persegue |
-| Multi-relay / federação | Provavelmente nunca. Só se relay público virar gargalo |
+| ~~Multi-relay / federação~~ | ~~Provavelmente nunca. Só se relay público virar gargalo~~ **fechado 2026-11-24 (plano 172)**: dois relays por Owner, **sem federação**. O relay do PC continua sendo o hub preferido; o relay do telefone (Termux) é o hub de fallback enquanto o PC está inalcançável. Detalhe em "Android as a session host" acima |
 | Apps nativos (Swift/Kotlin) em vez de Flutter | Provavelmente nunca. Reconsiderar só se Flutter limitar features críticas (ex: integração profunda iOS Keychain). **Desktop: reconsiderado e mantido Flutter — decidido no plano 37, validado em produção (Cockpit 1.13.0; plano encerrado 2026-07-19)** |
 
 ---
