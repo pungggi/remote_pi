@@ -5757,6 +5757,16 @@ async function _handleControlEnvelopeInner(
   reply: (body: RpControlResult["rp_control_result"]) => void,
 ): Promise<void> {
   if (loadLocalConfig(cwd).allow_remote_session_control === false) {
+    // Plan/171 (ai-review #120) — audit the kill-switch refusal for ask_notice
+    // too: otherwise "owner opted out" looks in the room log exactly like a
+    // notice that never arrived. Same line format as the op-specific refusals
+    // below; written at the envelope level because the gate precedes the op
+    // switch.
+    if (ctrl.op === "ask_notice") {
+      const auditTag = `open=${ctrl.open === true} room=${String(ctrl.room_id)} flow=${String(ctrl.flow_id)}`;
+      const reason = "remote session control disabled on this peer (allow_remote_session_control:false)";
+      _relayLog(ext.myRoomId, "ask_notice refused", `${auditTag} reason=${JSON.stringify(reason)}`);
+    }
     reply({
       ok: false,
       action: ctrl.op,

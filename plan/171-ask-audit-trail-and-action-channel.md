@@ -46,9 +46,11 @@ A missing badge is now a two-file lookup. The asking session's
 `ext-<room>.log` says whether the notice left; `ext-device.log` says whether
 it was broadcast and under which ledger seq.
 
-Not logged: the kill-switch refusal (`allow_remote_session_control:false`).
-It happens in the generic gate before the op switch and is not specific to
-plan/170.
+The kill-switch refusal (`allow_remote_session_control:false`) is audited
+too (ai-review #120): the generic gate writes the same
+`ask_notice refused … reason="allow_remote_session_control:false"` line
+before replying, so an opt-out is never mistaken for a notice that never
+arrived.
 
 ## Part B: action-required channel
 

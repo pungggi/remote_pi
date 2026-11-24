@@ -284,6 +284,12 @@ describe("plan/170 $rp_control ask_notice", () => {
     const r = lastReply(peer);
     expect(r.body.rp_control_result.ok).toBe(false);
     expect(String(r.body.rp_control_result.error)).toContain("allow_remote_session_control");
+    // Plan/171 (ai-review #120) — the refusal is audited like every other
+    // outcome: an opt-out must never be mistaken for a notice that never
+    // arrived.
+    expect(roomLog("device")).toContain(
+      'ask_notice refused open=true room=r flow=f reason="remote session control disabled on this peer (allow_remote_session_control:false)"',
+    );
     main._setRoomIdForTest(null);
   });
 
