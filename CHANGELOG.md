@@ -12,6 +12,27 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
+- **Timestamps in the chat (plan/172)**: the transcript had no sense of
+  time and mixed two clocks. Live frames carried no time, so the app
+  stamped arrival on the phone's clock while replayed history used the
+  Pi's; with drift, a reply could precede its question. A replayed
+  `tool_request` carried the LLM reply's timestamp, not the execution
+  start, so a queued parallel call showed minutes too early.
+  - pi-extension: live `user_input`/`user_message`, `agent_chunk`,
+    `tool_request` and `tool_result` frames carry `ts` (Pi clock).
+    `tool_request` adds `reply_ts` (when the issuing LLM reply started),
+    `tool_result` adds `duration_ms` (the SDK's wall time), which the
+    history mapper replays too. Every field is optional, so an older app
+    ignores them.
+  - app: `ChatMessage.ts` reaches the widgets, and tool rows persist
+    `reply_at` / `started_at` / `ended_at` / `duration_ms`. The echo's `ts`
+    replaces the optimistic send time, so a transcript runs on one clock.
+    Live and replayed rows derive the same window, and a live/replay
+    merge never mixes clocks. User and assistant bubbles show
+    `Tue 14:03:12` (Settings switch "Show message timestamps", on by
+    default). The expanded tool card shows the invocation and then the
+    run window + duration, one per line, with a live counter while running;
+    the collapsed row is unchanged.
 - **Ask notifications are heads-up (plan/171)**: pending-ask (plan/170)
   and waiting-for-input (plan/134) notifications now post on a new
   `action-required` channel with high importance, so Android shows a

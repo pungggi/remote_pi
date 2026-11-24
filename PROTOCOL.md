@@ -443,6 +443,74 @@ Detalhes em `plan/170-pending-ask-device-fanout.md`.
 
 ---
 
+## Carimbos de tempo nos frames do chat (plan/172)
+
+O transcript não mostrava hora nenhuma. Pior: cada linha vivia em um relógio
+diferente. Frame vivo não carrega tempo, então o app carimbava a CHEGADA com o
+relógio do celular; histórico re-sincronizado usa o relógio do Pi. Com
+desencontro entre os dois, uma resposta podia aparecer ANTES da pergunta. E
+um `tool_request` re-sincronizado carrega o timestamp da mensagem do
+assistente (início da resposta do LLM), não o início da execução: com tool
+calls paralelas que rolam em sequência, a segunda aparecia minutos antes de
+ter rodado de verdade.
+
+Decisão (owner, 2026-11-24): **o Pi carimba seus frames**. O relógio do
+celular é só o fallback para extensões antigas.
+
+### Wire — campos opcionais (todos retrocompatíveis)
+
+| Frame | Campo | Significado (relógio do Pi, epoch ms) |
+|---|---|---|
+| `user_input` / `user_message` | `ts` | quando o Pi ACEITOU o input |
+| `agent_chunk` | `ts` | INÍCIO da resposta: timestamp da mensagem do assistente no SDK (igual em todo chunk de uma mesma mensagem LLM) |
+| `tool_request` | `ts` | quando a tool COMEÇOU a executar (`tool_execution_start`) |
+| `tool_request` | `reply_ts` | quando a resposta do LLM que emitiu a call começou; omitido sem mensagem do assistente em curso (pares sintéticos) |
+| `tool_result` | `ts` | quando a tool TERMINOU (`tool_execution_end`) |
+| `tool_result` | `duration_ms` | wall time de `execute()` (relógio monotônico); ausente quando a tool não rodou |
+| `session_history` → `tool_result` | `duration_ms` | replay do `ToolResultMessage.durationMs` do SDK; ausente em sessões legadas |
+
+```json
+{"type":"tool_request","tool_call_id":"tc_7","tool":"Bash","args":{"command":"ls"},"ts":1763892007100,"reply_ts":1763892000000}
+{"type":"tool_result","tool_call_id":"tc_7","result":"a.md\nb.md","ts":1763892013921,"duration_ms":6821}
+```
+
+### Semântica (receptor — app)
+
+- **Um relógio por transcript.** O eco `user_message` com `ts` SUBSTITUI o
+  horário otimista do envio (relógio do celular) pelo de aceite do Pi. Sem
+  `ts`, a linha otimista fica com a hora do celular, como antes.
+- **Linha de assistente = início da resposta.** O app carimba a linha com o
+  `ts` do primeiro chunk; a re-sincronização traz o mesmo valor no
+  `agent_message`. Vivo == replay.
+- **Janela da tool**: `startedAt = ts` do request; `endedAt = ts` do result;
+  `durationMs = duration_ms` (ou `endedAt − startedAt`). No replay:
+  `startedAt = ts − duration_ms` do `tool_result`. Sessão legada sem
+  `duration_ms` → início DESCONHECIDO (não empresta o horário da resposta,
+  que pode ser minutos cedo demais).
+- **Merge vivo ↔ replay nunca mistura relógios**: a janela é tomada como um
+  CONJUNTO do lado que sabe mais (janela completa > mais campos > local).
+- **Exibição**: usuário e assistente mostram `Tue 14:03:12` (dia da semana
+  nos últimos 7 dias; `Tue 24 Nov 14:03:12` além disso), desligável em
+  Settings. O card de tool expandido mostra duas linhas sob o comando:
+  `reply Tue 14:03:05` e `ran Tue 14:03:12 → 14:03:19 · 6.8s` (em execução:
+  `running since Tue 14:03:12 (6s)`, com contador vivo). A linha colapsada
+  fica sem hora, como antes.
+
+### Compatibilidade
+
+| Extensão | App novo | App antigo |
+|---|---|---|
+| nova (plan/172) | um relógio; janela exata vivo e no replay | ignora os campos novos |
+| antiga | chegada no relógio do celular (vivo), relógio do Pi (replay); sem `duration_ms` | inalterado |
+
+Os dois lados são implantáveis de forma independente. `ts` de um evento
+`tool_request` do histórico NÃO muda de significado (continua sendo o
+início da resposta do LLM): o app o usa para ordenação de páginas e retenção.
+
+Detalhes em `plan/172-message-timestamps.md`.
+
+---
+
 ## Imagens (plan/30)
 
 `user_message` aceita um anexo de imagem inline (uma por mensagem hoje),

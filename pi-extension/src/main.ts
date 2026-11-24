@@ -946,6 +946,9 @@ function _echoUserMessage(msg: ClientUserMessage, forceSteer = false): void {
     ...(echoBehavior ? { streaming_behavior: echoBehavior } : {}),
     // Plan/109 — echo the one-shot override model so other owners see it.
     ...(msg.model ? { model: msg.model } : {}),
+    // Plan/172 — Pi clock when the input was accepted. The app adopts it over
+    // its optimistic send time so the whole transcript runs on ONE clock.
+    ts: Date.now(),
   });
 }
 
@@ -1943,6 +1946,12 @@ function _subscribeOwnerPresence(relay: RelayClient): void {
 let _chunkPending = "";
 let _chunkPendingTurn: string | null = null;
 let _chunkFlushTimer: ReturnType<typeof setTimeout> | null = null;
+/** Plan/172 — reply-start time of the text in [_chunkPending]: the SDK
+ *  assistant-message timestamp captured when the window opened. One window
+ *  never spans two LLM messages (every tool boundary flushes first), so the
+ *  value is constant for the window. Rides on the flushed `agent_chunk` so a
+ *  live row carries the same reply-start time its replay will. */
+let _chunkPendingTs: number | null = null;
 const CHUNK_COALESCE_MS = 50;
 
 // Cumulative text of the in-flight turn (flushed frames + coalesced pending).
@@ -1962,11 +1971,13 @@ function _flushAgentChunks(): void {
   }
   const delta = _chunkPending;
   const turn = _chunkPendingTurn;
+  const ts = _chunkPendingTs;
   _chunkPending = "";
   _chunkPendingTurn = null;
+  _chunkPendingTs = null;
   if (delta === "" || turn === null) return;
   if (!_anyPeerActive()) return;
-  _broadcastToActive({ type: "agent_chunk", in_reply_to: turn, delta });
+  _broadcastToActive({ type: "agent_chunk", in_reply_to: turn, delta, ...(ts !== null ? { ts } : {}) });
 }
 
 function _bufferAgentChunk(delta: string, turn: string): void {
@@ -1976,6 +1987,7 @@ function _bufferAgentChunk(delta: string, turn: string): void {
     // in_reply_to targets).
     _flushAgentChunks();
     _chunkPendingTurn = turn;
+    _chunkPendingTs = ext.assistantMsgTs;
   }
   if (turn !== ext.turnTextTurn) {
     // REAL turn boundary only (flush windows don't clear ext.turnTextTurn):
@@ -2025,6 +2037,7 @@ function _maybeResumeTurnForOwner(channel: PlainPeerChannel): void {
       _chunkFlushTimer = null;
     }
     _chunkPendingTurn = null;
+    _chunkPendingTs = null;
     // Adopt the hydrated id for the cumulative accumulator: the fallback
     // accumulate path (no turn id) grew `ext.turnText` without owning a turn;
     // post-attach buffering continues that SAME accumulator so
@@ -2074,11 +2087,15 @@ function _maybeResumeTurnForOwner(channel: PlainPeerChannel): void {
       // ring no longer reaches its cursor) → sync_needed, never the head —
       // so the head text is never duplicated onto a connected owner.
       // Stamped so the attaching owner's gate dedups its later replay.
+      // Plan/172 — the head may span several LLM messages (text → tool →
+      // text while no owner was attached); `ts` names the latest one, the
+      // closest reply-start the extension can report for a catch-up row.
       channel.send(
         _stampBroadcast({
           type: "agent_chunk",
           in_reply_to: turn,
           delta: head,
+          ...(ext.assistantMsgTs !== null ? { ts: ext.assistantMsgTs } : {}),
         }),
       );
     }
@@ -3304,7 +3321,8 @@ export function onInputRest(event: InputEvent): void {
   if (event.source === "extension") return;
   const turnId = `local_${randomUUID()}`;
   ext.currentTurnId = turnId;
-  _broadcastToActive({ type: "user_input", id: turnId, text: event.text });
+  // Plan/172 — Pi clock at acceptance (see _echoUserMessage).
+  _broadcastToActive({ type: "user_input", id: turnId, text: event.text, ts: Date.now() });
 }
 
 /** `model_select` — cache the friendly model name and fan it out as
@@ -3349,6 +3367,7 @@ export function onAgentStart(pi: ExtensionAPI, ctx: ExtensionContext): void {
   ext.agentRunGeneration += 1;
   ext.turnText = ""; // a fresh run's replayable text starts empty
   ext.turnTextTurn = null; // (and belongs to no turn until the first delta)
+  ext.assistantMsgTs = null; // plan/172 — no LLM reply is streaming yet
 }
 
 export function onMessageStart(event: MessageStartEvent): void {
@@ -3361,6 +3380,11 @@ export function onMessageUpdate(event: MessageUpdateEvent): void {
   const ae = event?.assistantMessageEvent;
   if (ae?.type !== "text_delta") return;
   const delta = ae.delta as string;
+  // Plan/172 — keep the reply-start time current even if the thin entry's
+  // `message_start` saw no owner (it records it ungated; this is belt and
+  // braces for a runtime loaded mid-message).
+  const replyTs = _replyTsOf(event?.message);
+  if (replyTs !== null) ext.assistantMsgTs = replyTs;
   if (ext.currentTurnId !== null && _anyPeerActive()) {
     _bufferAgentChunk(delta, ext.currentTurnId);
     return;
@@ -3388,6 +3412,10 @@ export function onToolExecutionStart(event: ToolExecutionStartEvent): void {
     tool_call_id: event.toolCallId,
     tool: event.toolName,
     args: enrichToolArgs(event.toolName, event.args),
+    // Plan/172 — Pi clock at execution start, plus the reply that issued the
+    // call (its SDK assistant-message timestamp) when one is streaming.
+    ts: Date.now(),
+    ...(ext.assistantMsgTs !== null ? { reply_ts: ext.assistantMsgTs } : {}),
   });
 }
 
@@ -3398,10 +3426,37 @@ export function onToolExecutionEnd(event: ToolExecutionEndEvent): void {
   // a content-array/object into "[object Object]" and the success branch sent
   // the object unstringified — both diverging from re-sync.
   const text = stringifyToolResult(event.result);
-  const msg: ServerMessage = event.isError
-    ? { type: "tool_result", tool_call_id: event.toolCallId, error: text }
-    : { type: "tool_result", tool_call_id: event.toolCallId, result: text };
+  // Plan/172 — Pi clock at execution end + the SDK's monotonic wall time of
+  // `execute()` (absent when the tool did not run). Same fields a replayed
+  // tool_result carries, so live == re-sync for the tool timing.
+  const outcome = event.isError
+    ? { error: text }
+    : { result: text };
+  const msg: ServerMessage = {
+    type: "tool_result",
+    tool_call_id: event.toolCallId,
+    ts: Date.now(),
+    ..._durationMsField((event as { durationMs?: unknown }).durationMs),
+    ...outcome,
+  };
   _broadcastToActive(msg);
+}
+
+/** Plan/172 — the SDK assistant-message timestamp as a finite number, else
+ *  null. Structural read: the field is typed by the SDK, older builds may
+ *  not carry it. */
+function _replyTsOf(message: unknown): number | null {
+  const ts = (message as { timestamp?: unknown } | null | undefined)?.timestamp;
+  return typeof ts === "number" && Number.isFinite(ts) ? ts : null;
+}
+
+/** Plan/172 — `{ duration_ms }` for the wire when the SDK reported a usable
+ *  (finite, non-negative) duration; `{}` otherwise, so the key never travels
+ *  as null/NaN/undefined. Rounded: sub-millisecond precision is noise here. */
+function _durationMsField(durationMs: unknown): { duration_ms?: number } {
+  return typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0
+    ? { duration_ms: Math.round(durationMs) }
+    : {};
 }
 
 /** Cumulative session buffer fed via `message_end`, which fires once per
@@ -5043,6 +5098,8 @@ function _deliverMeshMessageToAgent(
 ): void {
   const bodyText = typeof env.body === "string" ? env.body : JSON.stringify(env.body);
   const toolCallId = `mesh_${env.id}`;
+  // Plan/172 — both halves are stamped on the Pi clock like a real tool pair
+  // (the request is the delivery moment; no `duration_ms`: nothing executed).
   _broadcastToActive({
     type: "tool_request",
     tool_call_id: toolCallId,
@@ -5050,8 +5107,9 @@ function _deliverMeshMessageToAgent(
     args: env.re
       ? { from: env.from, re: env.re, message: bodyText }
       : { from: env.from, message: bodyText },
+    ts: Date.now(),
   });
-  _broadcastToActive({ type: "tool_result", tool_call_id: toolCallId, result: { from: env.from, message: bodyText } });
+  _broadcastToActive({ type: "tool_result", tool_call_id: toolCallId, result: { from: env.from, message: bodyText }, ts: Date.now() });
 
   const owner = joinedOwner ?? ext.meshDelivery.active() ?? (ext.pi ? ext.meshDelivery.for(ext.pi) : null);
   if (!owner || !owner.deliver(env)) {
@@ -6765,10 +6823,14 @@ export function _mapAgentMessagesToEvents(
       // Same helper as the live `tool_execution_end` broadcast → live == re-sync.
       const text = stringifyToolResult(m.content);
       const tcid = String(m.toolCallId ?? "");
+      // Plan/172 — replay the SDK's recorded wall time so the app derives the
+      // execution start (`ts - duration_ms`) exactly as it does for a live
+      // call. Absent on legacy sessions (older SDK never recorded it).
+      const timing = _durationMsField((m as { durationMs?: unknown }).durationMs);
       events.push(
         m.isError
-          ? { ts, type: "tool_result", tool_call_id: tcid, error: text }
-          : { ts, type: "tool_result", tool_call_id: tcid, result: text },
+          ? { ts, type: "tool_result", tool_call_id: tcid, error: text, ...timing }
+          : { ts, type: "tool_result", tool_call_id: tcid, result: text, ...timing },
       );
     }
   }

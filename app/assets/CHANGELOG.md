@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
+## [Unreleased]
+
+### Added
+
+- **Timestamps in the chat (plan/172)**: your messages and the assistant
+  replies now show when they happened (`Tue 14:03:12`). An expanded tool call
+  shows when the model issued it and, on the next line, when it actually ran
+  and for how long (`reply Tue 14:03:05`, then
+  `ran Tue 14:03:12 → 14:03:19 · 6.8s`). A running tool counts up live.
+  Collapsed tool calls stay one line without a time.
+  - The PC now stamps its live frames with its own clock. Before, live rows
+    used the phone's clock and replayed history the PC's, so with clock
+    drift a reply could show up before its question.
+  - A tool call replayed from history used to show when the model started
+    replying, not when the command ran. For parallel calls that run one
+    after another, that could be minutes off. The start is now exact.
+  - Tool calls logged by an older SDK keep their end time. The start shows
+    as unknown instead of being guessed.
+  - New switch in Settings: "Show message timestamps" (on by default).
+  - Exact times need a pi-extension release with plan/172. With an older
+    extension the app falls back to the time a frame reached the phone.
+
+---
 ## [1.6.5] - 2026-11-24
 
 ### Added

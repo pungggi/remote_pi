@@ -89,6 +89,10 @@ export type BufferMsg = {
   /** Plan/32: pre-compaction token count, set on the synthetic
    *  `role:"compaction"` marker pushed in `session_compact`. */
   tokensBefore?: number;
+  /** Plan/172 — wall time of the tool's `execute()` in ms (monotonic clock).
+   *  Present on `toolResult` rows recorded by a current SDK; absent on legacy
+   *  sessions and when the tool did not run. Replayed as `duration_ms`. */
+  durationMs?: number;
 };
 
 export type PendingSteer = { id: string; text: string };
@@ -230,6 +234,12 @@ export interface ExtensionState {
   turnText: string;
   turnTextTurn: string | null;
   currentTurnId: string | null;
+  /** Plan/172 — start time (epoch ms, SDK assistant-message timestamp) of
+   *  the LLM reply currently streaming. Recorded by the thin entry's
+   *  `message_start` hook (ungated) so a later `tool_request` can name the
+   *  reply that issued the call (`reply_ts`), and so live `agent_chunk` frames
+   *  carry the same reply-start time a replayed `agent_message` does. */
+  assistantMsgTs: number | null;
   messageBuffer: BufferMsg[];
   /** Plan/128 — cached durable `.jsonl` index (metadata only); the volatile
    *  in-RAM tail stays in `messageBuffer`. Null until first `session_sync`. */
@@ -327,6 +337,7 @@ export const ext: ExtensionState = {
   turnText: "",
   turnTextTurn: null,
   currentTurnId: null,
+  assistantMsgTs: null,
   messageBuffer: [],
   historyIndex: null,
   pendingSteers: [],
@@ -433,6 +444,7 @@ export function resetExtensionState(): void {
     turnText: "",
     turnTextTurn: null,
     currentTurnId: null,
+    assistantMsgTs: null,
     messageBuffer: [],
     historyIndex: null,
     pendingSteers: [],

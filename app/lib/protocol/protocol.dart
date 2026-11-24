@@ -2068,11 +2068,19 @@ sealed class ServerMessage {
 class AgentChunk extends ServerMessage {
   final String inReplyTo;
   final String delta;
-  AgentChunk({required this.inReplyTo, required this.delta});
+
+  /// Plan/172 — epoch ms on the PI clock: when the LLM reply that produces
+  /// this delta started (the SDK's assistant-message timestamp; identical for
+  /// every chunk of one message and equal to the `ts` the same text block
+  /// carries when replayed in `session_history`). Null on pre-172 extensions
+  /// → the sync layer stamps the row with the chunk's arrival time instead.
+  final int? ts;
+  AgentChunk({required this.inReplyTo, required this.delta, this.ts});
 
   factory AgentChunk.fromJson(Map<String, dynamic> j) => AgentChunk(
     inReplyTo: j['in_reply_to'] as String,
     delta: j['delta'] as String,
+    ts: (j['ts'] as num?)?.toInt(),
   );
 }
 
@@ -2100,16 +2108,30 @@ class ToolRequest extends ServerMessage {
   final String toolCallId;
   final String tool;
   final dynamic args;
+
+  /// Plan/172 — epoch ms on the PI clock, when the tool STARTED executing.
+  /// Null on pre-172 extensions (the app then uses the frame's arrival time).
+  final int? ts;
+
+  /// Plan/172 — epoch ms on the PI clock: when the LLM reply that issued this
+  /// call started. Same value the call's replayed `tool_request` history event
+  /// carries as its `ts`, so live and replayed rows agree. Null when no
+  /// assistant message was in flight (synthetic pairs) or on old extensions.
+  final int? replyTs;
   ToolRequest({
     required this.toolCallId,
     required this.tool,
     required this.args,
+    this.ts,
+    this.replyTs,
   });
 
   factory ToolRequest.fromJson(Map<String, dynamic> j) => ToolRequest(
     toolCallId: j['tool_call_id'] as String,
     tool: j['tool'] as String,
     args: j['args'],
+    ts: (j['ts'] as num?)?.toInt(),
+    replyTs: (j['reply_ts'] as num?)?.toInt(),
   );
 }
 
@@ -2117,12 +2139,28 @@ class ToolResult extends ServerMessage {
   final String toolCallId;
   final dynamic result;
   final String? error;
-  ToolResult({required this.toolCallId, this.result, this.error});
+
+  /// Plan/172 — epoch ms on the PI clock, when the tool FINISHED. Null on
+  /// pre-172 extensions.
+  final int? ts;
+
+  /// Plan/172 — wall time of the tool's `execute()` in ms (monotonic clock on
+  /// the Pi). Absent when the tool did not run or the extension is older.
+  final int? durationMs;
+  ToolResult({
+    required this.toolCallId,
+    this.result,
+    this.error,
+    this.ts,
+    this.durationMs,
+  });
 
   factory ToolResult.fromJson(Map<String, dynamic> j) => ToolResult(
     toolCallId: j['tool_call_id'] as String,
     result: j['result'],
     error: j['error'] as String?,
+    ts: (j['ts'] as num?)?.toInt(),
+    durationMs: (j['duration_ms'] as num?)?.toInt(),
   );
 }
 
@@ -2342,11 +2380,18 @@ class UserInput extends ServerMessage {
   /// Plan/30 — echoed-back attached image (the Pi rebroadcasts `images`).
   final WireImage? image;
 
+  /// Plan/172 — epoch ms on the PI clock, when the Pi accepted this input.
+  /// The echo confirms the sender's optimistic row and REPLACES its phone-clock
+  /// send time with this value, so the whole transcript runs on one clock.
+  /// Null on pre-172 extensions → the optimistic row keeps the phone's time.
+  final int? ts;
+
   UserInput({
     required this.id,
     required this.text,
     this.streamingBehavior,
     this.image,
+    this.ts,
   });
 
   factory UserInput.fromJson(Map<String, dynamic> j) => UserInput(
@@ -2356,6 +2401,7 @@ class UserInput extends ServerMessage {
       j['streaming_behavior'] as String?,
     ),
     image: _firstImage(j['images']),
+    ts: (j['ts'] as num?)?.toInt(),
   );
 }
 
@@ -2727,6 +2773,7 @@ sealed class SessionHistoryEvent {
         toolCallId: j['tool_call_id'] as String,
         result: j['result'],
         error: j['error'] as String?,
+        durationMs: (j['duration_ms'] as num?)?.toInt(),
       ),
       'agent_message' => AgentMessageEvt(
         ts: ts,
@@ -2790,11 +2837,18 @@ class ToolResultEvt extends SessionHistoryEvent {
   final String toolCallId;
   final dynamic result;
   final String? error;
+
+  /// Plan/172 — wall time of the tool's `execute()` in ms, replayed from the
+  /// SDK's `ToolResultMessage.durationMs`. The event's [ts] is when the tool
+  /// FINISHED, so the execution start is `ts - durationMs`. Absent on sessions
+  /// recorded by an older SDK or when the tool did not run.
+  final int? durationMs;
   const ToolResultEvt({
     required super.ts,
     required this.toolCallId,
     this.result,
     this.error,
+    this.durationMs,
   });
 }
 

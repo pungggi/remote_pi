@@ -78,6 +78,10 @@ class Preferences extends ChangeNotifier {
   // Plan 110 — tool calls are collapsed by default; tapping expands them to show
   // full details. Reduces chat noise when the AI makes many tool calls.
   bool _collapseToolCalls = true;
+  // Plan/172 — clock stamps under user / assistant messages, on by default.
+  // The timing inside an expanded tool card is not governed by this (it is
+  // the detail the user opens the card for).
+  bool _showMessageTimestamps = true;
   // Plan/122 — project paths pinned to the top of the Projects list for
   // quick access. Matched by absolute repo path.
   List<String> _pinnedProjects = const [];
@@ -98,6 +102,7 @@ class Preferences extends ChangeNotifier {
   static const _kThemeModeKey = 'prefs.theme_mode';
   static const _kKeepAliveInBackgroundKey = 'prefs.keep_alive_in_background';
   static const _kCollapseToolCallsKey = 'prefs.collapse_tool_calls';
+  static const _kShowMessageTimestampsKey = 'prefs.show_message_timestamps';
   static const _kPinnedProjectsKey = 'prefs.pinned_projects';
   static const _kUiFontScaleKey = 'prefs.ui_font_scale';
 
@@ -244,6 +249,14 @@ class Preferences extends ChangeNotifier {
     final collapseBool = collapse == null ? true : collapse == 'true';
     if (collapseBool != _collapseToolCalls) {
       _collapseToolCalls = collapseBool;
+      changed = true;
+    }
+
+    // Plan/172 — default true when the key is absent (first launch: shown).
+    final stamps = await _store.read(key: _kShowMessageTimestampsKey);
+    final stampsBool = stamps == null ? true : stamps == 'true';
+    if (stampsBool != _showMessageTimestamps) {
+      _showMessageTimestamps = stampsBool;
       changed = true;
     }
 
@@ -435,6 +448,21 @@ class Preferences extends ChangeNotifier {
     if (_collapseToolCalls == value) return;
     _collapseToolCalls = value;
     await _store.write(key: _kCollapseToolCallsKey, value: value.toString());
+    notifyListeners();
+  }
+
+  /// Plan/172 — when true, user and assistant messages show a clock stamp
+  /// (`Tue 14:03:12`). Default true. Tool cards keep their timing line either
+  /// way.
+  bool get showMessageTimestamps => _showMessageTimestamps;
+
+  Future<void> setShowMessageTimestamps(bool value) async {
+    if (_showMessageTimestamps == value) return;
+    _showMessageTimestamps = value;
+    await _store.write(
+      key: _kShowMessageTimestampsKey,
+      value: value.toString(),
+    );
     notifyListeners();
   }
 

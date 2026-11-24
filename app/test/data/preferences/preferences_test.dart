@@ -377,6 +377,55 @@ void main() {
         expect(notifs, 1);
       });
     });
+
+    // ── Plan/172 — clock stamps under user / assistant messages ─────
+    group('showMessageTimestamps (plan/172)', () {
+      test('defaults to true before load()', () {
+        final p = Preferences(_FakeSecureStorage());
+        expect(p.showMessageTimestamps, isTrue);
+      });
+
+      test('load() hydrates from storage', () async {
+        final store = _FakeSecureStorage();
+        await store.write(key: 'prefs.show_message_timestamps', value: 'false');
+        final p = Preferences(store);
+        await p.load();
+        expect(p.showMessageTimestamps, isFalse);
+      });
+
+      test('load() defaults to true when key is absent', () async {
+        final p = Preferences(_FakeSecureStorage());
+        await p.load();
+        expect(p.showMessageTimestamps, isTrue);
+      });
+
+      test(
+        'setShowMessageTimestamps writes, notifies, survives a new load',
+        () async {
+          final store = _FakeSecureStorage();
+          final p = Preferences(store);
+          var notifs = 0;
+          p.addListener(() => notifs++);
+
+          await p.setShowMessageTimestamps(false);
+          expect(p.showMessageTimestamps, isFalse);
+          expect(
+            await store.read(key: 'prefs.show_message_timestamps'),
+            'false',
+          );
+          expect(notifs, 1);
+
+          // Setting the same value again does nothing.
+          await p.setShowMessageTimestamps(false);
+          expect(notifs, 1);
+
+          // Cold start with the persisted value.
+          final again = Preferences(store);
+          await again.load();
+          expect(again.showMessageTimestamps, isFalse);
+        },
+      );
+    });
     // ── Plan 131 (upstream #114) — font-size preset ───────────────
     group('uiFontScale (plan 131)', () {
       test('defaults to normal before load()', () {

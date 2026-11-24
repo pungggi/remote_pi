@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:app/data/preferences/preferences.dart';
 import 'package:app/domain/session_state.dart';
 import 'package:app/protocol/protocol.dart';
+import 'package:app/ui/chat/widgets/message_stamp.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -20,12 +23,23 @@ import 'package:provider/provider.dart';
 // row (tool name + status icon + chevron); tapping expands to full details.
 // The setting `Preferences.collapseToolCalls` controls the initial state.
 //
+// Plan/172 — WHEN the tool ran is part of those full details: the expanded
+// card carries a timing line (reply start · run start → end · duration). The
+// collapsed row stays a single tight line with no timestamp, by owner choice.
+//
 // `onDecide` is kept on the API for forward compat — when the Pi adds a
 // real approval pause we can re-enable the controls. Today it is unused.
 
 class ToolRequestCard extends StatefulWidget {
   final ToolEvent tool;
   final void Function(String toolCallId, ApproveDecision decision)? onDecide;
+
+  /// Plan/172 — tests pin the wall clock here (widget tests' fake async
+  /// advances timers but NOT `DateTime.now()`, so a running tool's elapsed
+  /// counter would otherwise be unfalsifiable). Production code never sets
+  /// it; null = the real clock.
+  @visibleForTesting
+  static DateTime Function()? debugNow;
 
   const ToolRequestCard({super.key, required this.tool, this.onDecide});
 
@@ -196,6 +210,17 @@ class _ToolRequestCardState extends State<ToolRequestCard> {
             ),
             const SizedBox(height: 10),
             _buildCodeBlock(context),
+            // Plan/172 — the timing line sits between the command and the
+            // outcome: read the invocation, then what it ran, then the
+            // result. Nothing is known (a legacy row with no row time) → no
+            // line at all, never an empty gap.
+            if (toolTimingParts(
+              widget.tool,
+              now: ToolRequestCard.debugNow?.call(),
+            ).isNotEmpty) ...[
+              const SizedBox(height: 8),
+              _TimingLine(tool: widget.tool),
+            ],
             const SizedBox(height: 8),
             _buildOutcome(color),
           ],
@@ -351,6 +376,84 @@ class _ToolDisplay {
   final List<_DiffLine> lines;
 
   const _ToolDisplay({required this.command, required this.lines});
+}
+
+/// Plan/172 — the timing line of an expanded tool card. A [StatefulWidget]
+/// only because a RUNNING tool shows its elapsed time: a 1 s ticker rebuilds
+/// the line while the tool has a start and no result, and stops the moment
+/// the result lands (or the card collapses / unmounts). Every other state is
+/// static text.
+class _TimingLine extends StatefulWidget {
+  final ToolEvent tool;
+  const _TimingLine({required this.tool});
+
+  @override
+  State<_TimingLine> createState() => _TimingLineState();
+}
+
+class _TimingLineState extends State<_TimingLine> {
+  Timer? _ticker;
+
+  bool get _ticks => widget.tool.isRunning && widget.tool.startedAt != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _syncTicker();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TimingLine old) {
+    super.didUpdateWidget(old);
+    _syncTicker();
+  }
+
+  void _syncTicker() {
+    final ticker = _ticker;
+    if (_ticks && ticker == null) {
+      _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+        // Only the elapsed counter depends on `now`; a static line never
+        // needs this rebuild, which is why the ticker stops on completion.
+        if (mounted) setState(() {});
+      });
+    } else if (!_ticks && ticker != null) {
+      ticker.cancel();
+      _ticker = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final style = TextStyle(
+      fontFamily: kMonoFamily,
+      fontSize: 11,
+      color: colors.muted,
+      letterSpacing: 0.2,
+      height: 1.4,
+    );
+    // One part per line ("reply …", then "ran …" / "running since …"). On a
+    // phone the two parts together exceed the card's inner width, and a soft
+    // wrap orphaned the duration ("· 6.8s") on its own line. Stacked, the
+    // invocation and the execution window each read as one unit.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final part in toolTimingParts(
+          widget.tool,
+          now: ToolRequestCard.debugNow?.call(),
+        ))
+          Text(part, style: style),
+      ],
+    );
+  }
 }
 
 class _DiffLine {

@@ -6,6 +6,7 @@ import 'package:app/ui/chat/widgets/agent_markdown.dart';
 import 'package:app/ui/chat/widgets/copy_button.dart';
 import 'package:app/ui/chat/widgets/linkified_text.dart';
 import 'package:app/ui/chat/widgets/message_bubble.dart';
+import 'package:app/ui/chat/widgets/message_stamp.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -261,6 +262,123 @@ void main() {
     await tester.pump();
     expect(find.text('sending…'), findsOneWidget);
   });
+
+  // --- Plan/172 — clock stamps under the bubbles ---------------------------
+
+  Widget host(Widget child) => MaterialApp(home: Scaffold(body: child));
+
+  testWidgets('plan/172: UserBubble shows the stamp under the text', (
+    tester,
+  ) async {
+    final ts = DateTime.now().subtract(const Duration(minutes: 3));
+    await tester.pumpWidget(
+      host(
+        UserBubble(UserMsg(id: 'u1', text: 'when?', ts: ts), showStamp: true),
+      ),
+    );
+    await tester.pump();
+    expect(find.text(formatStamp(ts)), findsOneWidget);
+  });
+
+  testWidgets('plan/172: UserBubble hides the stamp when off or without a ts', (
+    tester,
+  ) async {
+    final ts = DateTime.now();
+    // Stamps off (the default — the transcript passes the setting down).
+    await tester.pumpWidget(
+      host(UserBubble(UserMsg(id: 'u1', text: 'a', ts: ts))),
+    );
+    await tester.pump();
+    expect(find.text(formatStamp(ts)), findsNothing);
+    // Stamps on but the message carries no time (synthetic message).
+    await tester.pumpWidget(
+      host(const UserBubble(UserMsg(id: 'u2', text: 'b'), showStamp: true)),
+    );
+    await tester.pump();
+    // No stamp widget is even built (no footer row at all).
+    expect(find.byType(MessageStamp), findsNothing);
+    expect(find.textContaining(RegExp(r'\d\d:\d\d:\d\d')), findsNothing);
+  });
+
+  testWidgets('plan/172: pending bubble keeps its label and adds the stamp', (
+    tester,
+  ) async {
+    final ts = DateTime.now().subtract(const Duration(seconds: 20));
+    await tester.pumpWidget(
+      host(
+        UserBubble(
+          UserMsg(
+            id: 'u1',
+            text: 'send',
+            status: UserMsgStatus.pending,
+            ts: ts,
+          ),
+          showStamp: true,
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('sending…'), findsOneWidget);
+    expect(find.text(formatStamp(ts)), findsOneWidget);
+  });
+
+  testWidgets('plan/172: failed bubble shows "not delivered" and the stamp', (
+    tester,
+  ) async {
+    final ts = DateTime.now().subtract(const Duration(minutes: 1));
+    await tester.pumpWidget(
+      host(
+        UserBubble(
+          UserMsg(id: 'u1', text: 'lost', status: UserMsgStatus.failed, ts: ts),
+          showStamp: true,
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('not delivered'), findsOneWidget);
+    expect(find.text(formatStamp(ts)), findsOneWidget);
+  });
+
+  testWidgets(
+    'plan/172: AssistantBubble shows the stamp beside the Copy button',
+    (tester) async {
+      final ts = DateTime.now().subtract(const Duration(minutes: 2));
+      await tester.pumpWidget(
+        host(
+          AssistantBubble(
+            AssistantMsg(id: 'a1', text: 'reply', ts: ts),
+            showStamp: true,
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.byType(CopyButton), findsOneWidget);
+      expect(find.text(formatStamp(ts)), findsOneWidget);
+      // Copy first (left), stamp after it.
+      expect(
+        tester.getCenter(find.byType(CopyButton)).dx,
+        lessThan(tester.getCenter(find.text(formatStamp(ts))).dx),
+      );
+    },
+  );
+
+  testWidgets(
+    'plan/172: AssistantBubble with empty text shows only the stamp',
+    (tester) async {
+      final ts = DateTime.now().subtract(const Duration(minutes: 2));
+      await tester.pumpWidget(
+        host(
+          AssistantBubble(
+            AssistantMsg(id: 'a1', text: '', ts: ts),
+            showStamp: true,
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.byType(CopyButton), findsNothing);
+      expect(find.text(formatStamp(ts)), findsOneWidget);
+    },
+  );
 
   // --- Bare HTTP(S) links are tappable anywhere in the chat ---------------
 
