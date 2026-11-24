@@ -141,7 +141,10 @@ class PendingAskNotifications extends Service {
       body.write('$questions question${questions == 1 ? '' : 's'}');
     }
     if (body.isEmpty) body.write('The agent needs your answer to continue.');
-    await _local.show(
+    // Plan/171 — a blocked session is action-required: heads-up channel
+    // when the implementation supports it.
+    await postActionRequired(
+      _local,
       id: id,
       title: 'Session is asking you',
       body: body.toString(),

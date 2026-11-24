@@ -857,6 +857,13 @@ export interface RpControlResult {
     path?: string;
     /** spawn_worktree only: the branch created/reused. */
     branch?: string;
+    /** ask_notice only (plan/171): ledger seq + epoch of the broadcast
+     *  `pending_ask` frame (absent when the daemon has no started session, so
+     *  the frame travelled unstamped) and the number of owner channels it
+     *  reached. The sender logs them as its audit trail. */
+    seq?: number;
+    epoch?: number;
+    recipients?: number;
   };
 }
 

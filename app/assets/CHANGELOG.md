@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
+## [Unreleased]
+
+### Added
+
+- **Ask and waiting notifications are heads-up (plan/171)**: when a session
+  is blocked on your answer (a clarification question or a waiting prompt),
+  the notification now pops up as a banner with a sound instead of sitting
+  silently in the notification shade. It uses a new "Action required"
+  channel, which you can tune in the system settings. "Task finished"
+  notifications stay quiet as before.
+
+---
 ## [1.6.4] - 2026-11-23
 
 ### Added

@@ -12,7 +12,8 @@ import 'package:app/data/notifications/waiting_input_notifications.dart';
 import 'package:app/protocol/protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-class _FakeLocalNotifications implements LocalNotifications {
+class _FakeLocalNotifications
+    implements LocalNotifications, IActionRequiredNotifications {
   bool permission = true;
   final List<({int id, String title, String body, String? payload})> shown = [];
   final List<int> cancelled = [];
@@ -38,6 +39,21 @@ class _FakeLocalNotifications implements LocalNotifications {
     String? payload,
   }) async {
     shown.add((id: id, title: title, body: body, payload: payload));
+  }
+
+  /// Plan/171 — counts action-required posts (heads-up channel) separately
+  /// from plain `show`, so tests can assert the urgency a service chose.
+  int actionRequired = 0;
+
+  @override
+  Future<void> showActionRequired({
+    required int id,
+    required String title,
+    required String body,
+    String? payload,
+  }) async {
+    actionRequired++;
+    await show(id: id, title: title, body: body, payload: payload);
   }
 
   @override
@@ -84,6 +100,8 @@ void main() {
     expect(local.shown.single.title, 'backend');
     expect(local.shown.single.body, 'Pi is waiting for input at the terminal.');
     expect(local.shown.single.payload, 'epkX:r1');
+    // Plan/171 — a blocked session is action-required: heads-up channel.
+    expect(local.actionRequired, 1);
 
     await ctrl.close();
     svc.dispose();
