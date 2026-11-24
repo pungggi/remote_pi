@@ -5,7 +5,9 @@ This page collects what the Step 0 spikes prove on a real phone, so the
 implementation and the later `remote-pi phone-setup` command can build on it.
 
 **Status (2026-11-25):** spike S1 passed on a Galaxy Z Fold 4 (Android 16,
-One UI 8). S2 (relay on Android) and S3 (AGY on Android) are still open.
+One UI 8). Spike S2 passed as well: the relay builds and runs in Termux.
+S3 is half done: AGY installs and starts inside proot-distro, the sign-in is
+still pending.
 
 ## What works today
 
@@ -18,6 +20,10 @@ With the steps below, a phone behaves like a second PC:
   peers ("Local mesh: connected as "demo" (6 peers)").
 - **The app's Projects screen lists the phone's repositories** (`~/source`),
   served by the device daemon over the PC's relay.
+- **The relay itself builds and runs in Termux** (see below), and a Pi on the
+  phone authenticates against it over loopback.
+- **AGY installs and starts** inside a proot-distro Debian on the phone
+  (`agy --version` answers 1.5.16).
 
 ## Requirements discovered
 
@@ -91,6 +97,39 @@ With the steps below, a phone behaves like a second PC:
 9. **Session.** `cd ~/source/<name> && pi` in Termux. The app lists it and
    chat works.
 
+## Relay on Android (S2)
+
+- **Build on device, no NDK.** `pkg install rust binutils clang openssl
+  pkg-config make`, unpack `git archive HEAD relay`, then
+  `OPENSSL_NO_VENDOR=1 OPENSSL_DIR=$PREFIX cargo build --release -j 3`.
+  Why `OPENSSL_NO_VENDOR`: the crate's vendored build compiles OpenSSL from
+  source; the Termux package is enough and avoids perl and a long build.
+- **Result:** release build in 11 min 46 s, binary 11.8 MB.
+- **Run:** `REMOTEPI_RELAY_PORT=3001 REMOTEPI_MESH_DB_PATH=~/.pi/piper/relay/mesh.db
+  ./relay`. The bind address is hardcoded to `0.0.0.0`, so the relay is
+  reachable from the WLAN. Stage B adds a bind option so the phone can keep
+  it on loopback.
+- **Verified:** `/health` answers `OK` on the phone's loopback and from the PC
+  over the WLAN. A Pi started with `REMOTE_PI_RELAY=http://127.0.0.1:3001`
+  authenticated (relay log: `authenticated peer=… room=… addr=127.0.0.1`).
+- **Footprint while idle:** about 10 MB RSS, 5 threads, a few hundredths of a
+  second of CPU in half a minute.
+
+## AGY on Android (S3)
+
+- **No built-in Linux Terminal on the Z Fold 4:** `ro.virtualization.supported`
+  is empty. The only route is Termux with proot-distro.
+- **Install:** `pkg install proot-distro`, `proot-distro install debian`
+  (Debian 13), then inside the distro `apt install curl ca-certificates` and
+  `curl -fsSL https://antigravity.google/cli/install.sh | bash`. The binary
+  lands in `/root/.local/bin/agy`, version 1.5.16.
+- **Start time:** `agy --version` takes about 1.9 s under proot.
+- **Sign-in is pending.** Without a login `agy models` answers "Please sign in
+  to view available models. Launch the CLI without arguments to sign in."
+  The credentials on the PC live in the Windows keyring, so they cannot be
+  copied. Sign-in needs a real terminal session and the owner's Google login
+  in the phone's browser.
+
 ## Observations
 
 - **First contact looks like an outage.** When the app switched to the phone
@@ -101,7 +140,25 @@ With the steps below, a phone behaves like a second PC:
   is a false alarm on first contact with a new device.
 - **No phantom-process kill so far** in the first half hour with the killer at
   its default: supervisor, device daemon and the visible session all
-  survived, including a restart that the app requested.
+  survived, including a restart that the app requested. The killer was then
+  disabled for the heavy builds (`device_config put activity_manager
+  max_phantom_processes 2147483647`, `settings put global
+  settings_enable_monitor_phantom_procs false`, `device_config
+  set_sync_disabled_for_tests persistent`).
+- **The phone keeps working while locked.** With the wake lock held and the
+  device-idle whitelist set, a mesh message sent from the PC was processed by
+  the phone's Pi session while the phone was locked and dozing.
+- **`RUN_COMMAND` from inside Termux failed** in this test. Calling
+  `am startservice -n com.termux/.app.RunCommandService -a
+  com.termux.RUN_COMMAND …` from a Termux shell reaches the service (the
+  system log shows it starting), but Termux logs "Processing plugin execution
+  error" and runs nothing, with and without `allow-external-apps = true`,
+  foreground and background. Stage A must find the cause before relying on
+  it for "open terminal on the phone".
+- **Nothing outside Termux can kill a stuck Termux process.** `adb shell` runs
+  as another user. Give every unattended command a hard limit
+  (`timeout -k 5 30 …`). In this session the PC agent asked the phone's agent
+  over the mesh to kill a hung `agy` process, which worked.
 
 ## Measured
 
@@ -115,9 +172,10 @@ With the steps below, a phone behaves like a second PC:
 
 - The exact message `open_terminal` returns on Android today (expected:
   unsupported).
-- **Soak result** and whether the phantom-process settings are needed.
-- **S2:** the relay has not been built or run on Android yet.
-- **S3:** `ro.virtualization.supported` is empty on the Z Fold 4, so there is
-  no built-in Linux Terminal. AGY can only be tried through Termux with
-  proot-distro.
+- **Soak result** over a longer run, now with the phantom-process settings
+  applied.
+- **S3 sign-in and first task** for AGY on the phone, then the mesh plugin
+  inside proot.
+- **Why `RUN_COMMAND` fails** from inside Termux (see above).
+- **Relay bind address** (Stage B) and the relay preference logic.
 - **Termux:Boot** for autostart, and the app-side start flow of Stage A.
