@@ -184,12 +184,12 @@ nenhuma. Cada conexão peer↔peer já é exclusiva daquela sessão.
 |---|---|---|
 | `pair_ok` | `in_reply_to`, `session_name`, `session_started_at` (number, epoch ms), `room_id` (string, plano 17 fix) | Resposta ao `pair_request` válido. App salva `room_id` no PeerRecord pra reconectar futuros (em vez de chutar "main") |
 | `pair_error` | `in_reply_to`, `code`, `message` | Resposta ao `pair_request` inválido (ver `pairing.md`) |
-| `user_input` | `id`, `text` | Push — input que o user digitou no terminal Pi (ou via RPC). Permite app espelhar perguntas que não vieram dele. `id` correlaciona com `agent_chunk`/`agent_done` subsequentes (`in_reply_to = id`) |
-| `agent_chunk` | `in_reply_to`, `delta` | Push streaming |
+| `user_input` | `id`, `text`, `ts?` | Push — input que o user digitou no terminal Pi (ou via RPC). Permite app espelhar perguntas que não vieram dele. `id` correlaciona com `agent_chunk`/`agent_done` subsequentes (`in_reply_to = id`). `ts` (plan/172): relógio do Pi em que o input foi aceito; ausente em extensões antigas |
+| `agent_chunk` | `in_reply_to`, `delta`, `ts?` | Push streaming. `ts` (plan/172) = início da resposta (timestamp da mensagem do assistente no SDK) |
 | `agent_done` | `in_reply_to`, `usage?` | Push terminal |
 | `agent_message` | `in_reply_to`, `text`, `usage?` | Usado **apenas** em `session_history`: representa uma resposta consolidada do agente (texto final). Em real-time o pareamento é `agent_chunk`* + `agent_done` |
-| `tool_request` | `tool_call_id`, `tool`, `args` | Push (notificação visual; sem approval pós plano 10.2) |
-| `tool_result` | `tool_call_id`, `result?`, `error?` | Push após tool executar |
+| `tool_request` | `tool_call_id`, `tool`, `args`, `ts?`, `reply_ts?` | Push (notificação visual; sem approval pós plano 10.2). Plan/172: `ts` = início da execução, `reply_ts` = início da resposta do LLM que emitiu a call |
+| `tool_result` | `tool_call_id`, `result?`, `error?`, `ts?`, `duration_ms?` | Push após tool executar. Plan/172: `ts` = fim da execução, `duration_ms` = wall time de `execute()` (também replayado no evento `tool_result` do histórico) |
 | `session_history` | `in_reply_to`, `session_started_at` (number, diagnóstico), `events: [{ts, type, ...}]`, `eos` (bool), `truncated` (bool, plano 16) | Resposta a `session_sync` — **mirror das últimas N** (não delta). Eventos têm os mesmos shapes dos types acima (user_input, agent_message, tool_request, tool_result) com `ts` (epoch ms) adicional. Pós-plano 16: server sempre devolve em 1 frame (eos:true), `truncated` indica se Pi tem mais que o limit |
 | `error` | `in_reply_to?`, `code`, `message` | Qualquer falha não-pair |
 | `cancelled` | `in_reply_to`, `target_id` | Push após cancel |

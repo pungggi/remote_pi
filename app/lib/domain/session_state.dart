@@ -7,7 +7,25 @@
 
 sealed class ChatMessage {
   final String id;
-  const ChatMessage({required this.id});
+
+  /// Plan/172 — when this row's event happened, on the clock that produced
+  /// it: the Pi's for frames the extension stamps (and for every replayed
+  /// history row), the phone's where an older extension left the app to stamp
+  /// arrival. Per variant:
+  ///
+  /// - [UserMsg]: when the message was sent / accepted by the Pi.
+  /// - [AssistantMsg]: when the LLM reply STARTED (the SDK's assistant-message
+  ///   timestamp), not when it finished streaming.
+  /// - [ToolEvent]: legacy row time. The tool's execution window lives in
+  ///   [ToolEvent.replyAt] / [ToolEvent.startedAt] / [ToolEvent.endedAt]; `ts`
+  ///   is kept for ordering (paging, retention) and as the last-resort stamp
+  ///   on rows persisted before plan/172.
+  ///
+  /// Every persisted row carries one (`MessageRecord.ts`). Null only on
+  /// synthetic messages built without a time (tests): the UI then renders no
+  /// stamp. Nullable so the const constructors stay const.
+  final DateTime? ts;
+  const ChatMessage({required this.id, this.ts});
 }
 
 /// Plan/24-fix-app-source-of-truth: every UserMsg is tagged with the
@@ -91,16 +109,21 @@ class UserMsg extends ChatMessage {
     this.steering = false,
     this.followUp = false,
     this.image,
+    super.ts,
   });
 
-  UserMsg copyWith({UserMsgStatus? status, bool? steering, bool? followUp}) => UserMsg(
-    id: id,
-    text: text,
-    status: status ?? this.status,
-    steering: steering ?? this.steering,
-    followUp: followUp ?? this.followUp,
-    image: image,
-  );
+  /// Copies with a new lifecycle. [ts] is carried over; the Pi's echo is the
+  /// only writer that moves it (see `SyncService`, plan/172).
+  UserMsg copyWith({UserMsgStatus? status, bool? steering, bool? followUp}) =>
+      UserMsg(
+        id: id,
+        text: text,
+        status: status ?? this.status,
+        steering: steering ?? this.steering,
+        followUp: followUp ?? this.followUp,
+        image: image,
+        ts: ts,
+      );
 
   @override
   bool operator ==(Object other) =>
@@ -110,22 +133,29 @@ class UserMsg extends ChatMessage {
       other.status == status &&
       other.steering == steering &&
       other.followUp == followUp &&
-      other.image == image;
+      other.image == image &&
+      other.ts == ts;
 
   @override
-  int get hashCode => Object.hash(id, text, status, steering, followUp, image);
+  int get hashCode =>
+      Object.hash(id, text, status, steering, followUp, image, ts);
 }
 
 class AssistantMsg extends ChatMessage {
   final String text;
-  const AssistantMsg({required super.id, required this.text});
+
+  /// Plan/172 — [ts] is when the LLM reply STARTED (see [ChatMessage.ts]).
+  const AssistantMsg({required super.id, required this.text, super.ts});
 
   @override
   bool operator ==(Object other) =>
-      other is AssistantMsg && other.id == id && other.text == text;
+      other is AssistantMsg &&
+      other.id == id &&
+      other.text == text &&
+      other.ts == ts;
 
   @override
-  int get hashCode => Object.hash(id, text);
+  int get hashCode => Object.hash(id, text, ts);
 }
 
 /// Plan/114 — an image the agent pushed to the user from a file in the repo
@@ -143,6 +173,7 @@ class AgentImageMsg extends ChatMessage {
     required this.image,
     this.path,
     this.caption = '',
+    super.ts,
   });
 
   @override
@@ -151,10 +182,11 @@ class AgentImageMsg extends ChatMessage {
       other.id == id &&
       other.image == image &&
       other.path == path &&
-      other.caption == caption;
+      other.caption == caption &&
+      other.ts == ts;
 
   @override
-  int get hashCode => Object.hash(id, image, path, caption);
+  int get hashCode => Object.hash(id, image, path, caption, ts);
 }
 
 /// Plan/126 - a document the agent pushed to the user from a file in the repo
@@ -190,6 +222,7 @@ class AgentFileMsg extends ChatMessage {
     this.bytes,
     this.caption = '',
     this.allowNetwork = false,
+    super.ts,
   });
 
   @override
@@ -204,12 +237,23 @@ class AgentFileMsg extends ChatMessage {
       other.name == name &&
       other.bytes == bytes &&
       other.caption == caption &&
-      other.allowNetwork == allowNetwork;
+      other.allowNetwork == allowNetwork &&
+      other.ts == ts;
 
   @override
-  int get hashCode =>
-      Object.hash(id, kind, data, mime, path, fileId, name, bytes, caption,
-          allowNetwork);
+  int get hashCode => Object.hash(
+    id,
+    kind,
+    data,
+    mime,
+    path,
+    fileId,
+    name,
+    bytes,
+    caption,
+    allowNetwork,
+    ts,
+  );
 }
 
 class ToolEvent extends ChatMessage {
@@ -220,6 +264,27 @@ class ToolEvent extends ChatMessage {
   final dynamic result;
   final String? error;
 
+  /// Plan/172 — when the LLM reply that issued this call STARTED. Live it is
+  /// the `reply_ts` of the `tool_request` frame; replayed it is that event's
+  /// `ts`. Null when neither carried one (old extensions, synthetic pairs).
+  final DateTime? replyAt;
+
+  /// Plan/172 — when the tool actually started executing. Live: `ts` of the
+  /// `tool_request`. Replayed: `ts - duration_ms` of the `tool_result`. Null
+  /// when the replay carried no duration (legacy session) and nothing live did.
+  final DateTime? startedAt;
+
+  /// Plan/172 — when the tool finished (the `tool_result` time). Null until
+  /// the result arrives.
+  final DateTime? endedAt;
+
+  /// Plan/172 — wall time of the tool's `execute()` in ms. The SDK's monotonic
+  /// measurement when reported, else `endedAt - startedAt`. Null when neither
+  /// end is known.
+  final int? durationMs;
+
+  /// Plan/172 — [ts] is the legacy row time (see [ChatMessage.ts]); the four
+  /// fields above are the tool's real execution window.
   const ToolEvent({
     required super.id,
     required this.toolCallId,
@@ -228,8 +293,16 @@ class ToolEvent extends ChatMessage {
     this.status = ToolEventStatus.pending,
     this.result,
     this.error,
+    super.ts,
+    this.replyAt,
+    this.startedAt,
+    this.endedAt,
+    this.durationMs,
   });
 
+  /// Copies with a new lifecycle ([status], [result], [error]). The timing
+  /// window is carried over unchanged: the sync layer sets it through
+  /// `ToolEventData`, which owns the persisted values.
   ToolEvent copyWith({
     ToolEventStatus? status,
     dynamic result,
@@ -242,17 +315,40 @@ class ToolEvent extends ChatMessage {
     status: status ?? this.status,
     result: result ?? this.result,
     error: error ?? this.error,
+    ts: ts,
+    replyAt: replyAt,
+    startedAt: startedAt,
+    endedAt: endedAt,
+    durationMs: durationMs,
   );
+
+  /// True while the tool is running or waiting, i.e. no result has landed.
+  bool get isRunning =>
+      status == ToolEventStatus.pending || status == ToolEventStatus.allowed;
 
   @override
   bool operator ==(Object other) =>
       other is ToolEvent &&
       other.id == id &&
       other.toolCallId == toolCallId &&
-      other.status == status;
+      other.status == status &&
+      other.ts == ts &&
+      other.replyAt == replyAt &&
+      other.startedAt == startedAt &&
+      other.endedAt == endedAt &&
+      other.durationMs == durationMs;
 
   @override
-  int get hashCode => Object.hash(id, toolCallId, status);
+  int get hashCode => Object.hash(
+    id,
+    toolCallId,
+    status,
+    ts,
+    replyAt,
+    startedAt,
+    endedAt,
+    durationMs,
+  );
 }
 
 /// Plan/32 — `denied` = the user/SDK declined the tool; `failed` = the tool
@@ -270,6 +366,7 @@ class CompactionMsg extends ChatMessage {
     required super.id,
     required this.summary,
     this.tokensBefore,
+    super.ts,
   });
 
   @override
@@ -277,10 +374,11 @@ class CompactionMsg extends ChatMessage {
       other is CompactionMsg &&
       other.id == id &&
       other.summary == summary &&
-      other.tokensBefore == tokensBefore;
+      other.tokensBefore == tokensBefore &&
+      other.ts == ts;
 
   @override
-  int get hashCode => Object.hash(id, summary, tokensBefore);
+  int get hashCode => Object.hash(id, summary, tokensBefore, ts);
 }
 
 // ---------------------------------------------------------------------------

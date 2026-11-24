@@ -359,12 +359,19 @@ export type SessionHistoryEvent =
       tool: string;
       args: Record<string, unknown>;
     }
+  // Plan/172 — NOTE: a `tool_request` event's `ts` is the timestamp of the
+  // ASSISTANT MESSAGE that carries the tool call (when that LLM reply started),
+  // not the execution start — the SDK records no per-call start. The execution
+  // window comes from the matching `tool_result`: start = `ts - duration_ms`.
+  // `duration_ms` is replayed from the SDK's `ToolResultMessage.durationMs` and
+  // is absent on legacy sessions (older SDK never recorded it).
   | {
       ts: number;
       type: "tool_result";
       tool_call_id: string;
       result?: unknown;
       error?: string;
+      duration_ms?: number;
     }
   | {
       ts: number;
@@ -428,7 +435,7 @@ export type ServerMessage =
       hostname?: string;
     }
   | { type: "pair_error"; in_reply_to: string; code: PairErrorCode; message: string }
-  | { type: "user_input"; id: string; text: string; streaming_behavior?: StreamingBehavior }
+  | { type: "user_input"; id: string; text: string; streaming_behavior?: StreamingBehavior; ts?: number }
   // Echo of an app-originated user_message, broadcast by the Pi to every
   // connected owner (including the sender). Source-of-truth model: each
   // app waits for this echo to render the message it sent, so all owners
@@ -445,10 +452,19 @@ export type ServerMessage =
       streaming_behavior?: StreamingBehavior;
       /** Plan/109 — echoed so other owners see the one-shot override model. */
       model?: { provider: string; id: string };
+      /** Plan/172 — epoch ms on the PI clock when the input was accepted.
+       *  The app adopts it over its optimistic send time, so a transcript runs
+       *  on one clock. Absent on extensions built before plan/172 (the app
+       *  then keeps the phone's send time). */
+      ts?: number;
     }
   | { type: "queued_message_state"; id?: string; text?: string; items?: QueuedMessageItem[] }
   | { type: "steer_consumed"; id: string }
-  | { type: "agent_chunk"; in_reply_to: string; delta: string }
+  // Plan/172 — `ts` is the reply START: the SDK's assistant-message timestamp,
+  // identical for every chunk of one LLM message and equal to the `ts` the
+  // same block carries when replayed as an `agent_message`. The app stamps
+  // its streamed row with the first chunk's value. Absent on pre-172 extensions.
+  | { type: "agent_chunk"; in_reply_to: string; delta: string; ts?: number }
   // Reconciliation fallback (2026-08-22, "final answer never renders"): `text`
   // carries the turn's CUMULATIVE streamed text (same accumulator the daemon
   // replays for mid-run attaches — `_turnText`). Omitted when the turn
@@ -563,8 +579,33 @@ export type ServerMessage =
   // Plan/32: pushed after a context compaction (live, and replayed on history
   // re-sync). `tokens_before` is the pre-compaction token count.
   | { type: "compaction"; summary: string; tokens_before: number; ts?: number }
-  | { type: "tool_request"; tool_call_id: string; tool: string; args: Record<string, unknown> }
-  | { type: "tool_result"; tool_call_id: string; result?: unknown; error?: string }
+  // Plan/172 — live tool timing, all on the PI clock (absent on pre-172
+  // extensions; the app then falls back to frame-arrival time):
+  //   `ts`       — when the tool STARTED executing (`tool_execution_start`).
+  //   `reply_ts` — when the LLM reply that issued this call started (the SDK's
+  //                assistant-message timestamp; the same value the call's
+  //                replayed `tool_request` event carries as `ts`). Omitted when
+  //                no assistant message is in flight (e.g. a synthetic pair).
+  | {
+      type: "tool_request";
+      tool_call_id: string;
+      tool: string;
+      args: Record<string, unknown>;
+      ts?: number;
+      reply_ts?: number;
+    }
+  // Plan/172 — `ts` = when the tool FINISHED (`tool_execution_end`);
+  // `duration_ms` = wall time of `execute()` on a monotonic clock, omitted when
+  // the tool did not run. A replayed tool_result carries the same two fields,
+  // so the app derives start/end/duration identically live and after a re-sync.
+  | {
+      type: "tool_result";
+      tool_call_id: string;
+      result?: unknown;
+      error?: string;
+      ts?: number;
+      duration_ms?: number;
+    }
   | { type: "error"; in_reply_to?: string; code: ErrorCode; message: string }
   | { type: "cancelled"; in_reply_to: string; target_id: string }
   | { type: "pong"; in_reply_to: string }

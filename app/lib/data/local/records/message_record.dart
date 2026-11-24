@@ -129,6 +129,9 @@ class MessageRecord {
     this.tokensBefore,
   });
 
+  /// Copies with new content / lifecycle flags. Plan/172 — [ts] is the row
+  /// time: only the Pi's echo passes it (replacing the optimistic send time),
+  /// so it follows the usual `?? this` rule.
   MessageRecord copyWith({
     int? seq,
     String? text,
@@ -136,6 +139,7 @@ class MessageRecord {
     ToolEventData? tool,
     String? imagePath,
     MessageFile? file,
+    DateTime? ts,
     bool? pending,
     bool? steering,
     bool? followUp,
@@ -148,7 +152,7 @@ class MessageRecord {
     tool: tool ?? this.tool,
     imagePath: imagePath ?? this.imagePath,
     file: file ?? this.file,
-    ts: ts,
+    ts: ts ?? this.ts,
     pending: pending ?? this.pending,
     steering: steering ?? this.steering,
     followUp: followUp ?? this.followUp,
@@ -205,6 +209,8 @@ class MessageRecord {
   }
 
   /// Project to the domain [ChatMessage] the chat widgets render.
+  /// Plan/172 — every variant now carries the row time ([ts]); tool rows
+  /// additionally project their execution window from [ToolEventData].
   ChatMessage toChatMessage() {
     switch (role) {
       case MsgRole.user:
@@ -215,6 +221,7 @@ class MessageRecord {
           steering: steering,
           followUp: followUp,
           image: image,
+          ts: ts,
         );
       case MsgRole.assistant:
         // Plan/126 - an assistant row carrying a file is an agent-pushed
@@ -232,6 +239,7 @@ class MessageRecord {
             bytes: agentFile.bytes,
             caption: text,
             allowNetwork: agentFile.allowNetwork,
+            ts: ts,
           );
         }
         // Plan/114 - an assistant row carrying an image is an agent-pushed
@@ -244,9 +252,10 @@ class MessageRecord {
             image: agentImage,
             path: imagePath,
             caption: text,
+            ts: ts,
           );
         }
-        return AssistantMsg(id: id, text: text);
+        return AssistantMsg(id: id, text: text, ts: ts);
       case MsgRole.tool:
         final t = tool;
         return ToolEvent(
@@ -257,14 +266,37 @@ class MessageRecord {
           status: t?.status ?? ToolEventStatus.pending,
           result: t?.result,
           error: t?.error,
+          ts: ts,
+          replyAt: _msToDateTime(t?.replyAtMs),
+          startedAt: _msToDateTime(t?.startedAtMs),
+          endedAt: _msToDateTime(t?.endedAtMs),
+          durationMs: t?.durationMs,
         );
       case MsgRole.compaction:
-        return CompactionMsg(id: id, summary: text, tokensBefore: tokensBefore);
+        return CompactionMsg(
+          id: id,
+          summary: text,
+          tokensBefore: tokensBefore,
+          ts: ts,
+        );
     }
   }
+
+  static DateTime? _msToDateTime(int? ms) =>
+      ms == null ? null : DateTime.fromMillisecondsSinceEpoch(ms);
 }
 
 /// Tool request + result collapsed into a single persisted shape.
+///
+/// Plan/172 — the execution window, all in epoch ms so it survives the JSON
+/// roundtrip without timezone surprises. Absent (null) on rows written before
+/// plan/172 and whenever the producer could not know the value:
+/// - `replyAtMs`:  when the LLM reply that issued the call started;
+/// - `startedAtMs`: when the tool started executing;
+/// - `endedAtMs`:   when it finished;
+/// - `durationMs`:  wall time of `execute()`.
+/// The sync layer is the only writer (live frames and replayed history derive
+/// them; see `SyncService`).
 class ToolEventData {
   final String toolCallId;
   final String tool;
@@ -273,6 +305,12 @@ class ToolEventData {
   final dynamic result;
   final String? error;
 
+  /// Plan/172 — execution window, epoch ms (see the class doc).
+  final int? replyAtMs;
+  final int? startedAtMs;
+  final int? endedAtMs;
+  final int? durationMs;
+
   const ToolEventData({
     required this.toolCallId,
     required this.tool,
@@ -280,12 +318,40 @@ class ToolEventData {
     this.status = ToolEventStatus.pending,
     this.result,
     this.error,
+    this.replyAtMs,
+    this.startedAtMs,
+    this.endedAtMs,
+    this.durationMs,
   });
 
+  /// Copies with a new lifecycle ([status], [result], [error]); the timing
+  /// window is carried over. Use [withTiming] to change it.
   ToolEventData copyWith({
     ToolEventStatus? status,
     dynamic result,
     String? error,
+  }) => withTiming(
+    status: status ?? this.status,
+    result: result ?? this.result,
+    error: error ?? this.error,
+    replyAtMs: replyAtMs,
+    startedAtMs: startedAtMs,
+    endedAtMs: endedAtMs,
+    durationMs: durationMs,
+  );
+
+  /// Plan/172 — replaces the execution window (and optionally the lifecycle)
+  /// in one step. Every timing argument is take-it-or-leave-it: passing `null`
+  /// STORES null, unlike [copyWith], so a writer must pass the values it wants
+  /// to keep explicitly. Callers in `SyncService` compute the full set first.
+  ToolEventData withTiming({
+    ToolEventStatus? status,
+    dynamic result,
+    String? error,
+    int? replyAtMs,
+    int? startedAtMs,
+    int? endedAtMs,
+    int? durationMs,
   }) => ToolEventData(
     toolCallId: toolCallId,
     tool: tool,
@@ -293,7 +359,19 @@ class ToolEventData {
     status: status ?? this.status,
     result: result ?? this.result,
     error: error ?? this.error,
+    replyAtMs: replyAtMs,
+    startedAtMs: startedAtMs,
+    endedAtMs: endedAtMs,
+    durationMs: durationMs,
   );
+
+  /// Plan/172 — how many of the four timing fields this row knows.
+  int get timingFieldCount => [
+    replyAtMs,
+    startedAtMs,
+    endedAtMs,
+    durationMs,
+  ].where((v) => v != null).length;
 
   Map<String, dynamic> toJson() => {
     'tool_call_id': toolCallId,
@@ -302,6 +380,12 @@ class ToolEventData {
     'status': status.name,
     'result': result,
     'error': error,
+    // Plan/172 — omitted (not null) when unknown: a pre-172 row and a row
+    // with no known timing stay byte-identical on disk.
+    if (replyAtMs != null) 'reply_at': replyAtMs,
+    if (startedAtMs != null) 'started_at': startedAtMs,
+    if (endedAtMs != null) 'ended_at': endedAtMs,
+    if (durationMs != null) 'duration_ms': durationMs,
   };
 
   factory ToolEventData.fromJson(Map<String, dynamic> j) => ToolEventData(
@@ -314,5 +398,9 @@ class ToolEventData {
     ),
     result: j['result'],
     error: j['error'] as String?,
+    replyAtMs: (j['reply_at'] as num?)?.toInt(),
+    startedAtMs: (j['started_at'] as num?)?.toInt(),
+    endedAtMs: (j['ended_at'] as num?)?.toInt(),
+    durationMs: (j['duration_ms'] as num?)?.toInt(),
   );
 }

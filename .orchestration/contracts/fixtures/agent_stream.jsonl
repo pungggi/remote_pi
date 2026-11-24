@@ -1,3 +1,5 @@
 {"type":"agent_chunk","in_reply_to":"018f9c2a-7b1e-7000-9a3b-1c2d3e4f5a6e","delta":"Vou olhar o "}
 {"type":"agent_chunk","in_reply_to":"018f9c2a-7b1e-7000-9a3b-1c2d3e4f5a6e","delta":"middleware..."}
 {"type":"agent_done","in_reply_to":"018f9c2a-7b1e-7000-9a3b-1c2d3e4f5a6e","usage":{"input_tokens":120,"output_tokens":340}}
+{"type":"agent_chunk","in_reply_to":"018f9c2b-7b1e-7000-9a3b-1c2d3e4f5a6e","delta":"Rodando","ts":1716234600000}
+{"type":"agent_chunk","in_reply_to":"018f9c2b-7b1e-7000-9a3b-1c2d3e4f5a6e","delta":" os testes","ts":1716234600000}

@@ -2756,6 +2756,9 @@ describe("multi-channel broadcast (W2D)", () => {
     expect(echo?.inner).toMatchObject({ type: "user_message", id: "msg-txt", text: "hi" });
     expect(echo?.inner).not.toHaveProperty("images");
     expect(echo?.inner).not.toHaveProperty("streaming_behavior");
+    // Plan/172 — the echo carries the Pi-clock accept time (a finite epoch ms).
+    expect(echo?.inner).toHaveProperty("ts", expect.any(Number));
+    expect(Number.isFinite(echo?.inner["ts"] as number)).toBe(true);
   });
 
   test(

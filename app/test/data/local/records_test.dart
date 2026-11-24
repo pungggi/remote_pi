@@ -77,6 +77,99 @@ void main() {
       expect(evt.status, ToolEventStatus.completed);
     });
 
+    // --- Plan/172 — tool execution window on the persisted row ---------------
+
+    test(
+      'plan/172: the execution window survives the roundtrip + projects',
+      () {
+        final r = MessageRecord(
+          id: 'tc1',
+          seq: 0,
+          role: MsgRole.tool,
+          ts: DateTime.fromMillisecondsSinceEpoch(1200),
+          tool: const ToolEventData(
+            toolCallId: 'tc1',
+            tool: 'Bash',
+            status: ToolEventStatus.completed,
+            replyAtMs: 1000,
+            startedAtMs: 1200,
+            endedAtMs: 8021,
+            durationMs: 6821,
+          ),
+        );
+        final back = MessageRecord.fromJson(r.toJson());
+        expect(back.tool?.replyAtMs, 1000);
+        expect(back.tool?.startedAtMs, 1200);
+        expect(back.tool?.endedAtMs, 8021);
+        expect(back.tool?.durationMs, 6821);
+
+        final evt = back.toChatMessage() as ToolEvent;
+        expect(evt.ts, DateTime.fromMillisecondsSinceEpoch(1200));
+        expect(evt.replyAt, DateTime.fromMillisecondsSinceEpoch(1000));
+        expect(evt.startedAt, DateTime.fromMillisecondsSinceEpoch(1200));
+        expect(evt.endedAt, DateTime.fromMillisecondsSinceEpoch(8021));
+        expect(evt.durationMs, 6821);
+      },
+    );
+
+    test(
+      'plan/172: a pre-172 row decodes with no window and stays identical',
+      () {
+        // Exactly what a pre-172 build wrote: no timing keys at all.
+        final back = MessageRecord.fromJson({
+          'id': 'tc1',
+          'seq': 0,
+          'role': 'tool',
+          'text': '',
+          'tool': {
+            'tool_call_id': 'tc1',
+            'tool': 'Bash',
+            'args': null,
+            'status': 'completed',
+            'result': 'ok',
+            'error': null,
+          },
+          'ts': 5,
+          'pending': false,
+        });
+        expect(back.tool?.timingFieldCount, 0);
+        // Re-serializing adds nothing: unknown values are omitted, not null.
+        final toolJson = back.toJson()['tool'] as Map<String, dynamic>;
+        expect(
+          toolJson.keys,
+          isNot(
+            anyElement(
+              isIn(['reply_at', 'started_at', 'ended_at', 'duration_ms']),
+            ),
+          ),
+        );
+
+        // The legacy row time still reaches the domain as the fallback stamp.
+        final evt = back.toChatMessage() as ToolEvent;
+        expect(evt.ts, DateTime.fromMillisecondsSinceEpoch(5));
+        expect(evt.replyAt, isNull);
+        expect(evt.startedAt, isNull);
+        expect(evt.endedAt, isNull);
+        expect(evt.durationMs, isNull);
+      },
+    );
+
+    test('plan/172: every variant projects the row time into the domain', () {
+      final ts = DateTime.fromMillisecondsSinceEpoch(777);
+      MessageRecord rec(MsgRole role) =>
+          MessageRecord(id: 'x', seq: 0, role: role, text: 't', ts: ts);
+      expect((rec(MsgRole.user).toChatMessage() as UserMsg).ts, ts);
+      expect((rec(MsgRole.assistant).toChatMessage() as AssistantMsg).ts, ts);
+      expect((rec(MsgRole.compaction).toChatMessage() as CompactionMsg).ts, ts);
+      // copyWith keeps the row time unless the Pi's echo supplies one.
+      final u = rec(MsgRole.user);
+      expect(u.copyWith(pending: false).ts, ts);
+      expect(
+        u.copyWith(ts: DateTime.fromMillisecondsSinceEpoch(9)).ts,
+        DateTime.fromMillisecondsSinceEpoch(9),
+      );
+    });
+
     test('SessionIndexRecord survives roundtrip', () {
       final r = SessionIndexRecord(
         epk: 'epk1',

@@ -91,6 +91,13 @@ class SyncService extends Service {
   String _chunkReplyTo = '';
   Timer? _flushTimer;
   StreamingMessage? _streaming;
+
+  /// Plan/172 — reply START of the text segment being streamed: the Pi's
+  /// assistant-message timestamp (`agent_chunk.ts`) when the frame carries
+  /// one, else the first chunk's arrival. One segment is one LLM message (a
+  /// tool boundary / `agent_done` closes it in [_finalizeSegment]), so the
+  /// value is constant within it. Null while nothing is streaming.
+  DateTime? _segStart;
   final StreamController<StreamingMessage?> _streamingController =
       StreamController<StreamingMessage?>.broadcast();
 
@@ -705,6 +712,7 @@ class SyncService extends Service {
     _flushTimer = null;
     _chunkBuffer.clear();
     _chunkReplyTo = '';
+    _segStart = null;
     _reconcileTurnId = null;
     _reconcileStreamedText = '';
     _workingReplyTo = null;
@@ -1361,7 +1369,7 @@ class SyncService extends Service {
       if (!_ledgerGate(msg)) return;
     }
     switch (msg) {
-      case AgentChunk(:final inReplyTo, :final delta):
+      case AgentChunk(:final inReplyTo, :final delta, :final ts):
         // Plan/140 C — a live frame: the session is NOT keeper-served.
         _setPiOffline(false);
         StreamProbe.instance.chunk(inReplyTo, delta.length);
@@ -1372,6 +1380,12 @@ class SyncService extends Service {
           _reconcileStreamedText = '';
         }
         _reconcileStreamedText += delta;
+        // Plan/172 — open a segment: stamp its reply start (see [_segStart]).
+        if (_segStart == null || _chunkReplyTo != inReplyTo) {
+          _segStart = ts != null
+              ? DateTime.fromMillisecondsSinceEpoch(ts)
+              : DateTime.now();
+        }
         _chunkBuffer.write(delta);
         _chunkReplyTo = inReplyTo;
         // Keep the first timer running: restarting it for every chunk would
@@ -1549,6 +1563,7 @@ class SyncService extends Service {
         :final text,
         :final image,
         :final streamingBehavior,
+        :final ts,
       ):
         // Echo dedupes against the optimistic row (same id): confirm it
         // (pending=false) or insert as confirmed (foreign device).
@@ -1561,12 +1576,22 @@ class SyncService extends Service {
               if (item.id != id) item,
           ]);
         }
+        // Plan/172 — the Pi's accept time REPLACES the optimistic phone-clock
+        // send time, so the whole transcript runs on one clock (a phone/PC
+        // offset would otherwise render a reply before its question, and the
+        // same message would show two different times before and after a
+        // re-sync). Null on pre-172 extensions → the optimistic row keeps the
+        // phone's time, exactly as before.
+        final acceptedAt = ts != null
+            ? DateTime.fromMillisecondsSinceEpoch(ts)
+            : null;
         // ignore: discarded_futures
         _upsert(
           MsgRole.user,
           id,
           (seq, existing) => existing != null
-              ? existing.copyWith(pending: false)
+              // `copyWith(ts: null)` keeps the stored ts — the fallback above.
+              ? existing.copyWith(pending: false, ts: acceptedAt)
               : MessageRecord(
                   id: id,
                   seq: seq,
@@ -1575,7 +1600,7 @@ class SyncService extends Service {
                   image: image == null
                       ? null
                       : MessageImage(data: image.data, mime: image.mime),
-                  ts: DateTime.now(),
+                  ts: acceptedAt ?? DateTime.now(),
                   // Plan/127 — a foreign-device echo (no local optimistic
                   // row) must carry the delivery marker so every owner
                   // renders the same steer/follow-up bubble from the echoed
@@ -1603,11 +1628,23 @@ class SyncService extends Service {
           }
         }
 
-      case ToolRequest(:final toolCallId, :final tool, :final args):
+      case ToolRequest(
+        :final toolCallId,
+        :final tool,
+        :final args,
+        :final ts,
+        :final replyTs,
+      ):
         // Sequential ordering: close the current text segment as its own row
         // BEFORE the tool, so "narration → command → narration" renders in
         // order instead of all text landing after the commands.
         _finalizeSegment();
+        // Plan/172 — execution START: the Pi's clock when the frame is
+        // stamped, else its arrival (pre-172 extension). `reply_ts` names the
+        // LLM reply that issued the call (null for synthetic pairs).
+        final startedAt = ts != null
+            ? DateTime.fromMillisecondsSinceEpoch(ts)
+            : DateTime.now();
         // ignore: discarded_futures
         _upsert(
           MsgRole.tool,
@@ -1618,35 +1655,70 @@ class SyncService extends Service {
                 id: toolCallId,
                 seq: seq,
                 role: MsgRole.tool,
-                ts: DateTime.now(),
+                ts: startedAt,
                 tool: ToolEventData(
                   toolCallId: toolCallId,
                   tool: tool,
                   args: args,
+                  startedAtMs: startedAt.millisecondsSinceEpoch,
+                  replyAtMs: replyTs,
                 ),
               ),
         );
 
-      case ToolResult(:final toolCallId, :final result, :final error):
+      case ToolResult(
+        :final toolCallId,
+        :final result,
+        :final error,
+        :final ts,
+        :final durationMs,
+      ):
         // ignore: discarded_futures
         _upsert(MsgRole.tool, toolCallId, (seq, existing) {
           final base =
               existing?.tool ??
               ToolEventData(toolCallId: toolCallId, tool: 'unknown');
+          // Plan/172 — execution END on the same clock as the start: the
+          // Pi's when stamped, else this frame's arrival. The start is what
+          // the request recorded live. A row first seen from HISTORY has no
+          // live start, and its row time is the LLM reply's start (not an
+          // execution start), so it is left alone: the replay path owns it.
+          final endedAt = ts != null
+              ? DateTime.fromMillisecondsSinceEpoch(ts)
+              : DateTime.now();
+          final endedMs = endedAt.millisecondsSinceEpoch;
+          // Rows persisted before plan/172 have no timing fields; their row
+          // time IS the request's arrival, so it still serves as the start.
+          final recordedStart =
+              base.startedAtMs ??
+              (base.replyAtMs == null
+                  ? existing?.ts.millisecondsSinceEpoch
+                  : null);
+          // Never a negative span: drop the start rather than show a lie if
+          // the two ends ever disagree.
+          final startMs = recordedStart != null && recordedStart <= endedMs
+              ? recordedStart
+              : null;
+          final duration =
+              durationMs ?? (startMs != null ? endedMs - startMs : null);
           return (existing ??
                   MessageRecord(
                     id: toolCallId,
                     seq: seq,
                     role: MsgRole.tool,
-                    ts: DateTime.now(),
+                    ts: endedAt,
                   ))
               .copyWith(
-                tool: base.copyWith(
+                tool: base.withTiming(
                   status: error != null
                       ? ToolEventStatus.failed
                       : ToolEventStatus.completed,
                   result: result,
                   error: error,
+                  replyAtMs: base.replyAtMs,
+                  startedAtMs: startMs,
+                  endedAtMs: endedMs,
+                  durationMs: duration,
                 ),
               );
         });
@@ -2072,11 +2144,22 @@ class SyncService extends Service {
     final status = bDone ? tb.status : ta.status;
     final result = bDone ? tb.result : ta.result;
     final error = bDone ? tb.error : ta.error;
+    // Plan/172 — the execution window is taken as ONE SET from the side that
+    // knows more. The local row may be on the phone's clock (a pre-172
+    // extension left the app stamping arrival) while the replay is on the
+    // Pi's: splicing a start from one with an end from the other would
+    // fabricate a wrong span. Ranking: a complete window (start + end) wins,
+    // then the richer set, then the local row (never downgrade on a tie).
+    final timing = _richerTiming(ta, tb);
     if (nameSrc.tool == ta.tool &&
         args == ta.args &&
         status == ta.status &&
         result == ta.result &&
-        error == ta.error) {
+        error == ta.error &&
+        timing.replyAtMs == ta.replyAtMs &&
+        timing.startedAtMs == ta.startedAtMs &&
+        timing.endedAtMs == ta.endedAtMs &&
+        timing.durationMs == ta.durationMs) {
       return null; // local row already complete; no write
     }
     return ToolEventData(
@@ -2086,7 +2169,29 @@ class SyncService extends Service {
       status: status,
       result: result,
       error: error,
+      replyAtMs: timing.replyAtMs,
+      startedAtMs: timing.startedAtMs,
+      endedAtMs: timing.endedAtMs,
+      durationMs: timing.durationMs,
     );
+  }
+
+  static bool _hasWindow(ToolEventData t) =>
+      t.startedAtMs != null && t.endedAtMs != null;
+
+  /// Plan/172 — which of two tool rows carries the better execution window
+  /// (see [_mergeTool]). Never mixes fields between the two.
+  static ToolEventData _richerTiming(
+    ToolEventData local,
+    ToolEventData replay,
+  ) {
+    final windowLocal = _hasWindow(local);
+    final windowReplay = _hasWindow(replay);
+    if (windowLocal != windowReplay) return windowLocal ? local : replay;
+    if (local.timingFieldCount != replay.timingFieldCount) {
+      return local.timingFieldCount > replay.timingFieldCount ? local : replay;
+    }
+    return local;
   }
 
   List<MessageRecord> _convertHistory(List<SessionHistoryEvent> events) {
@@ -2127,26 +2232,50 @@ class SyncService extends Service {
               seq: seq++,
               role: MsgRole.tool,
               ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+              // Plan/172 — a replayed request carries the LLM reply's own START
+              // (the SDK records no per-call start), so that is its replyAt.
+              // The execution window comes from the result below; the row's
+              // `ts` keeps its historical meaning (ordering, retention).
               tool: ToolEventData(
                 toolCallId: toolCallId,
                 tool: tool,
                 args: args,
+                replyAtMs: e.ts,
               ),
             ),
           );
-        case ToolResultEvt(:final toolCallId, :final result, :final error):
+        case ToolResultEvt(
+          :final toolCallId,
+          :final result,
+          :final error,
+          :final ts,
+          :final durationMs,
+        ):
           final idx = out.lastIndexWhere(
             (m) => m.role == MsgRole.tool && m.tool?.toolCallId == toolCallId,
           );
           final status = error != null
               ? ToolEventStatus.failed
               : ToolEventStatus.completed;
-          if (idx >= 0) {
+          // Plan/172 — the result's ts is the execution END. The SDK's
+          // recorded wall time yields the START (= ts − duration) exactly; a
+          // legacy session without it leaves the start UNKNOWN rather than
+          // borrowing the reply time (which can be minutes too early for a
+          // queued parallel call).
+          final startMs = durationMs != null ? ts - durationMs : null;
+          // The index filter above matched on `tool?.toolCallId`, so `cur`
+          // is non-null here in practice; the null branch costs nothing.
+          final cur = idx >= 0 ? out[idx].tool : null;
+          if (idx >= 0 && cur != null) {
             out[idx] = out[idx].copyWith(
-              tool: out[idx].tool!.copyWith(
+              tool: cur.withTiming(
                 status: status,
                 result: result,
                 error: error,
+                replyAtMs: cur.replyAtMs,
+                startedAtMs: startMs,
+                endedAtMs: ts,
+                durationMs: durationMs,
               ),
             );
           } else {
@@ -2155,13 +2284,16 @@ class SyncService extends Service {
                 id: toolCallId,
                 seq: seq++,
                 role: MsgRole.tool,
-                ts: DateTime.fromMillisecondsSinceEpoch(e.ts),
+                ts: DateTime.fromMillisecondsSinceEpoch(ts),
                 tool: ToolEventData(
                   toolCallId: toolCallId,
                   tool: 'unknown',
                   status: status,
                   result: result,
                   error: error,
+                  startedAtMs: startMs,
+                  endedAtMs: ts,
+                  durationMs: durationMs,
                 ),
               ),
             );
@@ -2543,6 +2675,12 @@ class SyncService extends Service {
     final text = _streaming?.buffer ?? '';
     if (text.isNotEmpty) {
       final id = 'agent_${uuid7()}';
+      // Plan/172 — the row is stamped with the reply START (`_segStart`: the
+      // Pi's assistant-message time when the chunks carried one), the same
+      // value its replayed `agent_message` will carry. Finalization time is
+      // not the message's time. Captured HERE: the upsert builder runs later
+      // on the write chain, after `_segStart` has been reset below.
+      final replyStartedAt = _segStart ?? DateTime.now();
       // ignore: discarded_futures
       _upsert(
         MsgRole.assistant,
@@ -2552,11 +2690,12 @@ class SyncService extends Service {
           seq: seq,
           role: MsgRole.assistant,
           text: text,
-          ts: DateTime.now(),
+          ts: replyStartedAt,
         ),
       );
     }
     _chunkReplyTo = '';
+    _segStart = null;
     _emitStreaming(null);
     return text;
   }
@@ -2566,6 +2705,7 @@ class SyncService extends Service {
     _flushTimer = null;
     _chunkBuffer.clear();
     _chunkReplyTo = '';
+    _segStart = null;
     // Cancel/Bye path: the turn is aborted or the channel is gone — a late
     // agent_done carrying the turn text must NOT resurrect healed rows for
     // a turn the user cancelled (session_sync remains the healing path).

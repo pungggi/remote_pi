@@ -513,9 +513,17 @@ const extension: ExtensionFactory = (pi: ExtensionAPI): void => {
     ext.agentRunGeneration += 1;
     ext.turnText = "";      // a fresh run's replayable text starts empty
     ext.turnTextTurn = null; // (and belongs to no turn until the first delta)
+    ext.assistantMsgTs = null; // plan/172 — no reply is streaming yet
   });
   // main.onMessageStart only broadcasts a consumed-steer notice, peers-gated.
   pi.on("message_start", (event) => {
+    // Plan/172 — cheap + ungated: remember when the streaming LLM reply
+    // started, so a later tool frame can name it (`reply_ts`) even when no
+    // owner is attached yet.
+    const started = (event as { message?: { role?: unknown; timestamp?: unknown } }).message;
+    if (started?.role === "assistant" && typeof started.timestamp === "number") {
+      ext.assistantMsgTs = started.timestamp;
+    }
     if (ext.activePeers.size > 0) fwd((m) => m.onMessageStart(event));
   });
   pi.on("message_update", (event) => {

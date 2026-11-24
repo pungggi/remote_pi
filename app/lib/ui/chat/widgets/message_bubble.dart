@@ -3,6 +3,7 @@ import 'package:app/ui/chat/widgets/agent_markdown.dart';
 import 'package:app/ui/chat/widgets/copy_button.dart';
 import 'package:app/ui/chat/widgets/image_bubble.dart';
 import 'package:app/ui/chat/widgets/linkified_text.dart';
+import 'package:app/ui/chat/widgets/message_stamp.dart';
 import 'package:app/ui/core/themes/themes.dart';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -13,7 +14,12 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 class UserBubble extends StatelessWidget {
   final UserMsg message;
-  const UserBubble(this.message, {super.key});
+
+  /// Plan/172 — show the clock stamp (when the message was sent / accepted)
+  /// under the bubble. Off by default: the transcript passes the user's
+  /// "Show message timestamps" setting down; a bare bubble shows no stamp.
+  final bool showStamp;
+  const UserBubble(this.message, {super.key, this.showStamp = false});
 
   @override
   Widget build(BuildContext context) {
@@ -25,6 +31,11 @@ class UserBubble extends StatelessWidget {
     final isFailed = message.status == UserMsgStatus.failed;
     final isSteering = message.steering;
     final isFollowUp = message.followUp;
+    final hasStatus = isPending || isSteering || isFailed;
+    // Plan/172 — the stamp shares the status caption's row (one muted line
+    // under the bubble either way). A pending send already shows the phone's
+    // send time; the Pi's echo then replaces it (see SyncService).
+    final hasStamp = showStamp && message.ts != null;
     // Plan/30 — when an image is attached the bubble becomes an ImageBubble
     // (thumbnail + caption); otherwise the existing text card.
     final image = message.image;
@@ -108,7 +119,7 @@ class UserBubble extends StatelessWidget {
                       ),
                     ),
             ),
-            if (isPending || isSteering || isFailed)
+            if (hasStatus || hasStamp)
               Padding(
                 padding: const EdgeInsets.only(top: 4, right: 4),
                 child: Row(
@@ -135,7 +146,7 @@ class UserBubble extends StatelessWidget {
                           fontSize: 11,
                         ),
                       ),
-                    ] else ...[
+                    ] else if (isFailed) ...[
                       Icon(
                         LucideIcons.circleAlert,
                         size: 12,
@@ -150,6 +161,11 @@ class UserBubble extends StatelessWidget {
                         ),
                       ),
                     ],
+                    if (hasStamp)
+                      Padding(
+                        padding: EdgeInsets.only(left: hasStatus ? 7 : 0),
+                        child: MessageStamp(message.ts),
+                      ),
                   ],
                 ),
               ),
@@ -241,7 +257,11 @@ class CompactionBubble extends StatelessWidget {
 
 class AssistantBubble extends StatelessWidget {
   final AssistantMsg message;
-  const AssistantBubble(this.message, {super.key});
+
+  /// Plan/172 — show the clock stamp (when the LLM reply started) beside the
+  /// Copy button. Off by default; see [UserBubble.showStamp].
+  final bool showStamp;
+  const AssistantBubble(this.message, {super.key, this.showStamp = false});
 
   @override
   Widget build(BuildContext context) {
@@ -249,6 +269,10 @@ class AssistantBubble extends StatelessWidget {
     // spanning the FULL content width (the message list already pads 16px on
     // each side) — unlike the user's right-aligned chat bubble, which stays
     // capped. Selectable so prose/code can be copied.
+    final hasCopy = message.text.isNotEmpty;
+    // Plan/172 — the stamp is when the reply STARTED (the Pi's
+    // assistant-message time), the same value a replay of this row carries.
+    final hasStamp = showStamp && message.ts != null;
     return SizedBox(
       width: double.infinity,
       child: Column(
@@ -256,12 +280,21 @@ class AssistantBubble extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           AgentMarkdown(message.text, selectable: true),
-          // One-tap copy of the whole reply. Hidden when empty (a finalized
-          // turn that produced no text has nothing to copy).
-          if (message.text.isNotEmpty)
+          // One-tap copy of the whole reply (hidden when empty: a finalized
+          // turn that produced no text has nothing to copy) + the stamp.
+          if (hasCopy || hasStamp)
             Padding(
               padding: const EdgeInsets.only(top: 4),
-              child: CopyButton(text: message.text, label: 'Copy'),
+              child: Row(
+                children: [
+                  if (hasCopy) CopyButton(text: message.text, label: 'Copy'),
+                  if (hasStamp)
+                    Padding(
+                      padding: EdgeInsets.only(left: hasCopy ? 10 : 2),
+                      child: MessageStamp(message.ts),
+                    ),
+                ],
+              ),
             ),
         ],
       ),

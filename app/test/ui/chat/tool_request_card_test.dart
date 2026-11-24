@@ -224,4 +224,150 @@ void main() {
       expect(find.text('⏳ Running…'), findsOneWidget);
     });
   });
+
+  // --- Plan/172 — WHEN the tool ran, only in the expanded card -------------
+  group('plan/172 timing line', () {
+    final reply = DateTime(2026, 11, 24, 14, 3, 5);
+    final start = DateTime(2026, 11, 24, 14, 3, 12);
+    final end = DateTime(2026, 11, 24, 14, 3, 19);
+    late DateTime now;
+
+    setUp(() {
+      now = DateTime(2026, 11, 24, 20);
+      ToolRequestCard.debugNow = () => now;
+    });
+
+    tearDown(() => ToolRequestCard.debugNow = null);
+
+    /// A completed call with the full window. [withReply] false drops the
+    /// reply time (a pre-172 live row); [withWindow] false leaves only the
+    /// row time (a row persisted before plan/172).
+    ToolEvent done({bool withReply = true, bool withWindow = true}) =>
+        ToolEvent(
+          id: 'tc1',
+          toolCallId: 'tc1',
+          tool: 'Bash',
+          args: const {'command': 'ls'},
+          status: ToolEventStatus.completed,
+          ts: start,
+          replyAt: withReply ? reply : null,
+          startedAt: withWindow ? start : null,
+          endedAt: withWindow ? end : null,
+          durationMs: withWindow ? 6821 : null,
+        );
+
+    testWidgets('expanded: reply, then the run window + duration, one per line', (
+      tester,
+    ) async {
+      await tester.pumpWidget(_wrap(ToolRequestCard(tool: done())));
+      final reply = find.text('reply Tue 14:03:05');
+      final run = find.text('ran Tue 14:03:12 → 14:03:19 · 6.8s');
+      expect(reply, findsOneWidget);
+      expect(run, findsOneWidget);
+      // The lines sit between the command and the outcome, reply above run.
+      final command = tester.getCenter(find.text('ls')).dy;
+      final replyY = tester.getCenter(reply).dy;
+      final runY = tester.getCenter(run).dy;
+      final outcome = tester.getCenter(find.text('✓ Done')).dy;
+      expect(command, lessThan(replyY));
+      expect(replyY, lessThan(runY));
+      expect(runY, lessThan(outcome));
+    });
+
+    testWidgets('collapsed: the timing stays hidden even when known', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _wrap(ToolRequestCard(tool: done()), collapse: true),
+      );
+      expect(find.textContaining('ran '), findsNothing);
+      expect(find.textContaining('reply '), findsNothing);
+      expect(find.textContaining(RegExp(r'\d\d:\d\d:\d\d')), findsNothing);
+      // Still one compact line.
+      expect(tester.getRect(find.byType(ToolRequestCard)).height, lessThan(44));
+    });
+
+    testWidgets('expanded without any known time: no line, never a gap', (
+      tester,
+    ) async {
+      await tester.pumpWidget(_wrap(const ToolRequestCard(tool: _bashTool)));
+      expect(find.textContaining('reply '), findsNothing);
+      expect(find.textContaining('ran '), findsNothing);
+      expect(find.textContaining('running since'), findsNothing);
+      expect(find.textContaining(RegExp(r'\d\d:\d\d:\d\d')), findsNothing);
+    });
+
+    testWidgets(
+      'legacy row (only a row time): the plain stamp instead of a window',
+      (tester) async {
+        await tester.pumpWidget(
+          _wrap(
+            ToolRequestCard(tool: done(withReply: false, withWindow: false)),
+          ),
+        );
+        expect(find.text('Tue 14:03:12'), findsOneWidget);
+        expect(find.textContaining('ran '), findsNothing);
+      },
+    );
+
+    testWidgets('running: the elapsed counter ticks once per second', (
+      tester,
+    ) async {
+      now = start.add(const Duration(milliseconds: 400));
+      await tester.pumpWidget(
+        _wrap(
+          ToolRequestCard(
+            tool: ToolEvent(
+              id: 'tc1',
+              toolCallId: 'tc1',
+              tool: 'Bash',
+              args: const {'command': 'ls'},
+              status: ToolEventStatus.pending,
+              replyAt: reply,
+              startedAt: start,
+            ),
+          ),
+        ),
+      );
+      // Under a second: the start time alone, no counter.
+      expect(find.text('reply Tue 14:03:05'), findsOneWidget);
+      expect(
+        find.text('running since Tue 14:03:12'),
+        findsOneWidget,
+      );
+
+      // 2.4 s later (clock advanced by the test, timer by pump) → "(2s)".
+      now = start.add(const Duration(milliseconds: 2400));
+      await tester.pump(const Duration(seconds: 1));
+      expect(
+        find.text('running since Tue 14:03:12 (2s)'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('the ticker stops once the result lands', (tester) async {
+      // Start running, then rebuild the same card with the result.
+      await tester.pumpWidget(
+        _wrap(
+          ToolRequestCard(
+            tool: ToolEvent(
+              id: 'tc1',
+              toolCallId: 'tc1',
+              tool: 'Bash',
+              args: const {'command': 'ls'},
+              status: ToolEventStatus.pending,
+              startedAt: start,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpWidget(
+        _wrap(ToolRequestCard(tool: done(withReply: false))),
+      );
+      expect(find.text('ran Tue 14:03:12 → 14:03:19 · 6.8s'), findsOneWidget);
+      // Leaving timers running would fail this test at teardown ("A Timer is
+      // still pending"); pumping past several ticks proves it was cancelled.
+      await tester.pump(const Duration(seconds: 5));
+    });
+  });
 }

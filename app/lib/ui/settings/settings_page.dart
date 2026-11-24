@@ -724,6 +724,26 @@ class _DisplaySection extends StatelessWidget {
           value: prefs.collapseToolCalls,
           onChanged: (v) => prefs.setCollapseToolCalls(v),
         ),
+        // Plan 172 — clock stamps under user / assistant messages. The
+        // timing line of an expanded tool call stays regardless.
+        SwitchListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 18),
+          activeThumbColor: colors.accent,
+          title: Text(
+            'Show message timestamps',
+            style: context.typo.sansBody.copyWith(color: colors.text),
+          ),
+          subtitle: Text(
+            'Clock time under your messages and the assistant replies. Tool '
+            'call timings stay in the expanded tool card.',
+            style: context.typo.sansBody.copyWith(
+              color: colors.muted,
+              fontSize: 12,
+            ),
+          ),
+          value: prefs.showMessageTimestamps,
+          onChanged: (v) => prefs.setShowMessageTimestamps(v),
+        ),
         // Plan 125 (Layer 4) — Android-only foreground service that keeps the
         // relay connection alive in the background. Three-way: When charging
         // (default) / Always / Off. Replaces the plan-103 on/off switch.

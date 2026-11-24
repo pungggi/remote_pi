@@ -533,6 +533,9 @@ class ChatPage extends StatelessWidget {
 
   Widget _buildBody(BuildContext context, ChatState state, ChatViewModel vm) {
     final hideToolCalls = context.watch<Preferences>().hideToolCalls;
+    // Plan/172 — one read for the whole transcript: toggling the switch in
+    // Settings rebuilds every bubble the next time the chat is shown.
+    final showStamps = context.watch<Preferences>().showMessageTimestamps;
     return switch (state) {
       // Edge case: opened /chat without a peer (e.g. peer revoked while
       // user was here). The chat is not the place to pair — render
@@ -568,6 +571,7 @@ class ChatPage extends StatelessWidget {
         return MessageList(
           messages: visible,
           streaming: streaming,
+          showStamps: showStamps,
           onDecide: (id, decision) => vm.approveTool(id, decision),
           truncated: state.truncated,
           onLoadMore: vm.loadMoreHistory,
@@ -877,6 +881,11 @@ class MessageList extends StatefulWidget {
     void Function(int received, int total)? onProgress,
   })? fetcher;
 
+  /// Plan/172 — pass the "Show message timestamps" setting to the user and
+  /// assistant bubbles. Off by default so a transcript mounted without the
+  /// ChatPage's Provider tree (tests) renders exactly as before.
+  final bool showStamps;
+
   const MessageList({
     super.key,
     required this.messages,
@@ -885,6 +894,7 @@ class MessageList extends StatefulWidget {
     required this.truncated,
     this.onLoadMore,
     this.fetcher,
+    this.showStamps = false,
   });
 
   @override
@@ -1014,8 +1024,12 @@ class _MessageListState extends State<MessageList> {
   /// by the list items and the paused frozen slot, which keeps showing the
   /// message right below the pause cut).
   Widget _buildMessage(ChatMessage msg) => switch (msg) {
-    UserMsg() => UserBubble(msg, key: _keyFor(msg)),
-    AssistantMsg() => AssistantBubble(msg),
+    UserMsg() => UserBubble(
+      msg,
+      key: _keyFor(msg),
+      showStamp: widget.showStamps,
+    ),
+    AssistantMsg() => AssistantBubble(msg, showStamp: widget.showStamps),
     AgentImageMsg() => AgentImageBubble(msg),
     AgentFileMsg() => AgentFileBubble(msg, fetcher: widget.fetcher),
     ToolEvent() => ToolRequestCard(tool: msg, onDecide: widget.onDecide),
