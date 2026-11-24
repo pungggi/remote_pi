@@ -534,7 +534,15 @@ export function _fanoutAskNotice(e: FlowLifecycleEvent): void {
         body?: { rp_control_result?: { ok?: boolean; seq?: number; recipients?: number; error?: string } };
       } | null)?.body?.rp_control_result;
       if (result?.ok) {
-        _relayLog(roomId, "ask_notice sent", `${tag} seq=${result.seq ?? "-"} recipients=${result.recipients ?? "-"}`);
+        // Plan/171 (ai-review #120 r2) — ok WITHOUT a ledger seq means the
+        // frame went out unstamped (no started session to journal it). Mark
+        // it explicitly so `seq=-` is never misread as a stamped seq.
+        const unstamped = result.seq === undefined || result.seq === null;
+        _relayLog(
+          roomId,
+          "ask_notice sent",
+          `${tag} seq=${result.seq ?? "-"} recipients=${result.recipients ?? "-"}${unstamped ? " unstamped" : ""}`,
+        );
       } else {
         _relayLog(roomId, "ask_notice refused", `${tag} reason=${JSON.stringify(result?.error ?? "no result")}`);
       }

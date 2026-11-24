@@ -355,6 +355,19 @@ describe("plan/171 ask_notice audit trail (sender side)", () => {
     });
   });
 
+  test("marks an ok-without-receipt as unstamped in the audit line", async () => {
+    await withMesh(
+      async () => ({ body: { rp_control_result: { ok: true, action: "ask_notice", recipients: 2 } } }),
+      async () => {
+        main._fanoutAskNotice(flow("open"));
+        await settle();
+        expect(roomLog("asker-room")).toContain(
+          "ask_notice sent open=true flow=tool:tc_7 seq=- recipients=2 unstamped",
+        );
+      },
+    );
+  });
+
   test("logs a typed refusal from the daemon", async () => {
     await withMesh(
       async () => ({ body: { rp_control_result: { ok: false, action: "ask_notice", error: "nope" } } }),
