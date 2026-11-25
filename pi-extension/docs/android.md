@@ -4,10 +4,10 @@ Companion to [`plan/172-android-host-sessions.md`](../../plan/172-android-host-s
 This page collects what the Step 0 spikes prove on a real phone, so the
 implementation and the later `remote-pi phone-setup` command can build on it.
 
-**Status (2026-11-25):** spike S1 passed on a Galaxy Z Fold 4 (Android 16,
-One UI 8). Spike S2 passed as well: the relay builds and runs in Termux.
-S3 is half done: AGY installs and starts inside proot-distro, the sign-in is
-still pending.
+**Status (2026-11-25):** all three Step 0 spikes passed on a Galaxy Z Fold 4
+(Android 16, One UI 8). S1: the phone works as a host. S2: the relay builds
+and runs in Termux. S3: AGY installs, signs in and completes a task inside
+proot-distro.
 
 ## What works today
 
@@ -22,8 +22,8 @@ With the steps below, a phone behaves like a second PC:
   served by the device daemon over the PC's relay.
 - **The relay itself builds and runs in Termux** (see below), and a Pi on the
   phone authenticates against it over loopback.
-- **AGY installs and starts** inside a proot-distro Debian on the phone
-  (`agy --version` answers 1.5.16).
+- **AGY runs inside a proot-distro Debian on the phone.** It is signed in
+  with the owner's Google account and completed its first task in 16 s.
 
 ## Requirements discovered
 
@@ -124,11 +124,31 @@ With the steps below, a phone behaves like a second PC:
   `curl -fsSL https://antigravity.google/cli/install.sh | bash`. The binary
   lands in `/root/.local/bin/agy`, version 1.5.16.
 - **Start time:** `agy --version` takes about 1.9 s under proot.
-- **Sign-in is pending.** Without a login `agy models` answers "Please sign in
-  to view available models. Launch the CLI without arguments to sign in."
-  The credentials on the PC live in the Windows keyring, so they cannot be
-  copied. Sign-in needs a real terminal session and the owner's Google login
-  in the phone's browser.
+- **Run it in tmux, not in the interactive session.** The phone's visible
+  Termux session already hosts the Pi session, and Termux's own command intent
+  did not work (see Observations). A detached tmux session gives AGY the real
+  terminal it needs, and `tmux capture-pane -p` returns its screen as text:
+
+  ```bash
+  pkg install tmux
+  tmux new-session -d -s agy -x 210 -y 50 '~/agy'
+  tmux capture-pane -p -t agy      # read the screen, tmux send-keys to type
+  ```
+
+  The wrapper `~/agy` binds the Termux home as `/root/termux-home`, exports
+  `SSH_CONNECTION` (so the CLI prints the sign-in URL instead of opening a
+  browser that proot does not have), and execs `agy` in the project folder.
+- **Sign-in is an OAuth code flow.** Google redirects to
+  `antigravity.google/oauth-callback`, which shows an authorization code. Any
+  browser works, the PC's included. The code goes into the CLI prompt. Why
+  this matters: the callback is not on localhost, so the owner can sign in on
+  whichever device is handy.
+- **Onboarding asks three things:** the color scheme, consent to interaction
+  data collection (the owner's decision, not ours), and trust for the project
+  folder.
+- **Result:** signed in with the owner's Google AI Pro account, model
+  "Gemini 4 Neon (High)", auto mode. The first task (create `hello.txt`)
+  was done in 16 s. The `agy` process uses about 290 MB RSS.
 
 ## Observations
 
@@ -159,6 +179,13 @@ With the steps below, a phone behaves like a second PC:
   as another user. Give every unattended command a hard limit
   (`timeout -k 5 30 …`). In this session the PC agent asked the phone's agent
   over the mesh to kill a hung `agy` process, which worked.
+- **Eight hours overnight, unplugged.** Supervisor, device daemon, the visible
+  Pi session and the test relay all survived with the screen off. No
+  phantom-process kill after the settings above were applied. The battery
+  dropped by about 2 % per hour with everything idle. Why this matters: an
+  always-on phone host has a real idle cost, so Stage A needs an easy way to
+  stop idle sessions, and the relay fallback (Stage B) should not keep extra
+  processes alive.
 
 ## Measured
 
@@ -166,16 +193,20 @@ With the steps below, a phone behaves like a second PC:
 - The extension (worktree build) installs in about 18 s.
 - The identity falls back to `~/.pi/piper/identity.json`, as designed when no
   keyring is available.
-- Soak with the phantom-process killer at its default: pending.
+- Footprint after a night: relay 6 MB RSS, `agy` about 290 MB while busy.
+- Soak with the phantom-process killer at its default: 35 min without a kill
+  (light load), then the settings were applied before the heavy builds.
 
 ## Still open
 
 - The exact message `open_terminal` returns on Android today (expected:
   unsupported).
-- **Soak result** over a longer run, now with the phantom-process settings
-  applied.
-- **S3 sign-in and first task** for AGY on the phone, then the mesh plugin
-  inside proot.
+- **AGY with the mesh plugin inside proot** (`remote-pi agy` needs Node and the
+  extension in the distro), which is Stage C.
+- **tmux as the container for phone sessions.** Since `RUN_COMMAND` fails,
+  "open a terminal on the phone" is best built on tmux sessions started by the
+  device daemon and attached from Termux on demand.
+- **Idle battery cost** of an always-on phone host (about 2 % per hour here).
 - **Why `RUN_COMMAND` fails** from inside Termux (see above).
 - **Relay bind address** (Stage B) and the relay preference logic.
 - **Termux:Boot** for autostart, and the app-side start flow of Stage A.
