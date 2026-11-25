@@ -1,8 +1,9 @@
 # Plan 172 — Android as a session host: pick Pi or AGY, pick PC or phone
 
-Status: planned 2026-11-24 (conversation with the owner). Step 0 (spikes) is
-the next thing to execute. Stages A/B/C below are the implementation plan;
-each stage ships on its own.
+Status: planned 2026-11-24 (conversation with the owner). **Step 0 is done
+(2026-11-25): all three spikes passed**, written up in
+[`pi-extension/docs/android.md`](../pi-extension/docs/android.md).
+Stages A/B/C below are the implementation plan; each stage ships on its own.
 
 ## Context
 
@@ -82,6 +83,11 @@ These are also recorded in [`00-decisions.md`](00-decisions.md) (section
    connection and treats that relay's room snapshot as the live set. The
    design below keeps that invariant instead of rewriting the transport.
 
+Spikes 1 to 3 are answered, see the results under Step 0. Two points the
+spikes added: the idle battery cost of an always-on host (about 2 % per hour
+with everything running), and Termux's `RUN_COMMAND` intent failing from
+inside Termux, which moves phone terminals into tmux.
+
 ## Design
 
 ### Topology: preferred hub, fallback hub
@@ -155,11 +161,11 @@ the bounce proves annoying in practice.
 | `pi-supervisord` + device daemon | Always-on control channel, started by the boot script |
 | `remote-pi phone-setup` | One guided command: checks, install, start, print pairing link |
 
-- **Terminal sessions.** The daemon opens a terminal through Termux's
-  `RUN_COMMAND` intent. Each started session becomes one Termux terminal
-  session, the phone equivalent of one terminal tab on the PC. The command is
-  written to a launcher script file first, so no shell quoting travels
-  through intent extras.
+- **Terminal sessions live in tmux.** The daemon starts each session as a
+  detached tmux session, the phone equivalent of one terminal tab on the PC.
+  "Open terminal" brings Termux to the front and attaches to it. Why: the
+  spike showed Termux's `RUN_COMMAND` intent failing from inside Termux, while
+  tmux worked for Pi and for AGY.
 - **Projects live in the Termux home** (`~/source` by default, the same
   `projects.roots` default as on a PC). Shared storage is slow and permission
   bound, so it is not used for repositories.
@@ -194,7 +200,7 @@ pi-extension/
   src/actions/agent_models.ts           # NEW: `agy models` probe + parser
   src/actions/open_terminal.ts          # Termux launcher branch, agent param
   src/actions/start_session.ts          # agent param
-  src/actions/termux.ts                 # NEW: RUN_COMMAND launcher script writer
+  src/actions/termux.ts                 # NEW: tmux session launcher
   src/daemon/install.ts                 # "android" platform: Termux:Boot script
   src/transport/relay_client.ts         # Stage B: ordered relay list + promotion
   src/config.ts                         # relay_fallbacks, local_relay (Stage B)
@@ -214,11 +220,25 @@ app/
   lib/data/mesh/mesh_sync_service.dart  # Stage B: publish to every relay
 ```
 
-## Step 0 — Spikes (do first, no product code)
+## Step 0 — Spikes (done 2026-11-25)
 
-All three run on the owner's Z Fold 4 and end as written results in
+All three ran on the owner's Z Fold 4 and are written up in
 [`pi-extension/docs/android.md`](../pi-extension/docs/android.md). S1 and S2
 decide Stage B, S3 decides Stage C.
+
+**Results**
+
+- **S1 passed.** Supervisor, device daemon and a visible Pi session run in
+  Termux. The app pairs, lists the phone's projects and chats with the
+  session, and survived eight hours overnight unplugged.
+- **S2 passed.** The relay builds on the phone in 12 minutes and runs there.
+  `/health` and a Pi login were verified over loopback and from the PC.
+- **S3 passed.** AGY 1.5.16 runs inside proot-distro Debian 13, signed in, and
+  finished its first task in 16 seconds.
+
+Two findings change the design below. Termux must be 0.119.0-beta.3 or newer
+on Android 16. And phone sessions are started inside tmux, because Termux's
+`RUN_COMMAND` intent failed from inside Termux.
 
 ### S1 — Termux base run against the PC relay
 
@@ -333,9 +353,10 @@ the phone.
 - `daemon/install.ts`: `detectPlatform()` returns `"android"` inside Termux.
   `install` writes `~/.termux/boot/start-piper.sh` (wake lock, supervisor,
   logs under `~/.pi/piper/`); `uninstall` removes it.
-- `actions/termux.ts`: writes a launcher script under `~/.pi/piper/launch/`
-  and sends the `RUN_COMMAND` intent. The script sets the terminal title to
-  `<agent> · <folder>`.
+- `actions/termux.ts`: starts the command in a **detached tmux session** named
+  after the room (`tmux new-session -d -s <room> '<command>'`). Why tmux: the
+  `RUN_COMMAND` intent failed in the spike, and tmux gives AGY a real terminal
+  too. The setup command installs tmux.
 - `remote-pi phone-setup` (in `main.ts`): environment checks, `remote-pi
   install`, starts the supervisor, waits for the device room, prints the
   pairing link and copies it to the clipboard when `termux-clipboard-set`
@@ -345,8 +366,8 @@ the phone.
 **Acceptance**
 - On the Z Fold 4, `remote-pi phone-setup` ends with a pairing link.
 - Pasting it into the app lists the phone as a device with a phone icon.
-- "Start session" on the phone opens a Termux session running `pi` in the
-  chosen folder, and the tile goes live in the app.
+- "Start session" on the phone starts `pi` in the chosen folder inside a tmux
+  session, and the tile goes live in the app.
 - `open_terminal` on the phone still honours `remoteCwdAllowed` (a folder
   outside `projects.roots` is refused).
 
@@ -436,12 +457,20 @@ one mesh again as soon as the PC relay is back.
   local relay, after exactly one reconnect.
 - Switching the PC five times in a row leaves no stuck "offline" tile.
 
-## Stage C — AGY on the phone (detail: plan 174, only if S3 is a go)
+## Stage C — AGY on the phone (detail: plan 174)
 
-- The Termux launcher gains a **prelude** step for AGY (enter the proot
-  distro, or talk to the Linux Terminal VM, whichever S3 selected).
-- A sign-in helper opens AGY's authorisation URL in the Android browser.
-- `device_info.agents` includes `agy` on the phone only when the route works.
+- The route is fixed by S3: proot-distro Debian 13. The launcher gains a
+  **prelude** for AGY, run inside the session's tmux window:
+  `proot-distro login debian --bind <termux home>:/root/termux-home -- bash -lc
+  'remote-pi agy …'`.
+- **Sign-in helper.** With `SSH_CONNECTION` set, AGY prints its OAuth URL. The
+  helper shows the URL, opens it in any browser, and types the returned
+  authorization code into the CLI. Consent to data collection stays with the
+  owner.
+- `remote-pi agy` needs Node and the extension inside the distro for the mesh
+  plugin. The setup command installs both there.
+- `device_info.agents` includes `agy` on the phone once the distro and the
+  binary are found.
 
 **Acceptance**
 - From the app: choose the phone, choose AGY, and a terminal opens on the
@@ -463,7 +492,7 @@ one mesh again as soon as the PC relay is back.
 
 ## DoD
 
-- [ ] **Step 0**: S1, S2, S3 written up in `pi-extension/docs/android.md` with
+- [x] **Step 0**: S1, S2, S3 written up in `pi-extension/docs/android.md` with
       go/no-go for S2 and S3.
 - [ ] **Stage A**: from the app, the user picks PC or phone and Pi or AGY.
       Pi sessions on the phone are chat-capable in the app and can be opened
