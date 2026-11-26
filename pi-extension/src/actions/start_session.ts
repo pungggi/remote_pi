@@ -11,8 +11,9 @@
  * a hidden RPC process. Because the App↔Pi room is `roomIdFor(cwd, name)`,
  * either path re-announces the SAME room and the tile flips live.
  *
- * Both paths use the Windows launcher from open_terminal and currently report
- * unsupported on other platforms.
+ * Both paths use the platform launcher from open_terminal: Windows Terminal
+ * on Windows (plan/124/152), a detached tmux session named after the room on
+ * a Termux host (plan/173). Other platforms currently report unsupported.
  *
  * Always replies (never hangs the action channel).
  */
@@ -64,7 +65,7 @@ export function handleStartSession(
   const successMessage = sessionId
     ? "Opened terminal — resuming the saved Pi session."
     : "Opened terminal — continuing the latest Pi session in this folder.";
-  void openTerminalTab(cwd, command, { newWindow: true }).then(
+  void openTerminalTab(cwd, command, { newWindow: true, sessionName: roomId }).then(
     (outcome) => {
       sender.send({
         type: "start_session_result",

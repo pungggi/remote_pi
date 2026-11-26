@@ -71,7 +71,15 @@ export type ControlRequest =
   | { op: "cron_remove"; job_id: string }
   | { op: "cron_enable"; job_id: string; enabled: boolean }
   | { op: "cron_run"; job_id: string }
-  | { op: "cron_log"; job_id?: string; tail?: number };
+  | { op: "cron_log"; job_id?: string; tail?: number }
+  // ── Plan/173 — mint a pairing link through a RUNNING daemon. The pairing
+  // token lives in the process that will consume the app's `pair_request`, so
+  // the daemon itself runs `/remote-pi pair` and this op forwards the URI
+  // its extension prints. `id` defaults to the always-on device daemon (the
+  // one session that exists on a fresh phone); `ttl_ms` is clamped to the
+  // pairing window (10 s … 10 min, default 60 s). Local UDS only: the same
+  // trust as `start_transient` (an owner-only socket), no kill-switch.
+  | { op: "pair"; id?: string; ttl_ms?: number };
 
 /** Replies sent supervisor → CLI. Tagged by `ok` boolean. */
 export type ControlReply<T = unknown> =
@@ -108,6 +116,8 @@ export interface ControlReplyShapes {
   cron_enable: { job_id: string; enabled: boolean; updated: boolean };
   cron_run: { job_id: string; result: string };
   cron_log: { entries: CronLogEntry[] };
+  // ── Plan/173 — pairing link minted by the daemon in `id`.
+  pair: { id: string; uri: string; expiresAt: number; roomId: string; name: string };
 }
 
 /** A cron job plus its computed `next_run` (ISO), for `cron list`. */

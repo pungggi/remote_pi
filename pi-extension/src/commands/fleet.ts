@@ -192,13 +192,20 @@ export async function cmdDaemonsList(ctx: Pick<ExtensionContext, "ui">): Promise
   }
 }
 
-export async function cmdDaemonStatus(ctx: Pick<ExtensionContext, "ui">): Promise<void> {
+/** `/remote-pi daemon status` and `remote-pi daemon status`. Resolves FALSE
+ *  when the supervisor did not answer (offline, or a reply timeout — the
+ *  wedged shape of 2026-11-22). The CLI turns that into a non-zero exit code:
+ *  an exit-code-based health probe must never read a silent supervisor as
+ *  healthy. The slash command ignores the result (the warning is the reply). */
+export async function cmdDaemonStatus(ctx: Pick<ExtensionContext, "ui">): Promise<boolean> {
   try {
     const data = await callSupervisor({ op: "status" });
     ctx.ui.notify(`[remote-pi] Fleet status:\n${formatDaemonTable(data.daemons)}`, "info");
+    return true;
   } catch (err) {
-    if (err instanceof SupervisorOfflineError) { notifyOffline(ctx, err); return; }
+    if (err instanceof SupervisorOfflineError) { notifyOffline(ctx, err); return false; }
     ctx.ui.notify(`[remote-pi] status failed: ${String(err)}`, "error");
+    return false;
   }
 }
 
@@ -491,8 +498,10 @@ export function cmdInstall(ctx: Pick<ExtensionContext, "ui">, opts: { linkCli?: 
   try {
     const result = installService();
     const sections = [
-      `[remote-pi] Supervisor service installed (${result.platform}).`,
-      `  Unit: ${result.unitPath}`,
+      result.platform === "android"
+        ? "[remote-pi] Supervisor autostart installed (Android/Termux)."
+        : `[remote-pi] Supervisor service installed (${result.platform}).`,
+      `  ${result.platform === "android" ? "Boot script" : "Unit"}: ${result.unitPath}`,
       `  Steps:\n${result.log.map((l) => "    " + l).join("\n")}`,
     ];
     if (linkCli) {
@@ -530,8 +539,10 @@ export function cmdUninstall(ctx: Pick<ExtensionContext, "ui">, opts: { linkCli?
   try {
     const result = uninstallService();
     const sections = [
-      `[remote-pi] Supervisor service uninstalled (${result.platform}).`,
-      `  Unit: ${result.unitPath} (${result.removed ? "removed" : "not present"})`,
+      result.platform === "android"
+        ? "[remote-pi] Supervisor autostart removed (Android/Termux)."
+        : `[remote-pi] Supervisor service uninstalled (${result.platform}).`,
+      `  ${result.platform === "android" ? "Boot script" : "Unit"}: ${result.unitPath} (${result.removed ? "removed" : "not present"})`,
       `  Steps:\n${result.log.map((l) => "    " + l).join("\n")}`,
       `  Note: daemons registry (~/.pi/piper/daemons.json) kept — re-install restores everything.`,
     ];

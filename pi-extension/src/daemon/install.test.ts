@@ -15,11 +15,18 @@ import {
   findSupervisorScript,
   findRemotePiScript,
   findTemplate,
+  installService,
+  isGeneratedBootScript,
   isOnPath,
   launchdPlistPath,
+  lineDiff,
   linkCliBinaries,
+  previewTermuxBootScript,
+  renderLineDiff,
   renderTemplate,
   systemdUnitPath,
+  toLf,
+  uninstallService,
   unlinkCliBinaries,
   userLocalBinDir,
   vbsLauncherPath,
@@ -35,7 +42,22 @@ import {
 describe("detectPlatform", () => {
   test("returns a known platform", () => {
     const p = detectPlatform();
-    expect(["macos", "linux", "windows", "unsupported"]).toContain(p);
+    expect(["macos", "linux", "windows", "android", "unsupported"]).toContain(p);
+  });
+
+  // Plan/173 — Termux reports as linux; the Android branch is chosen by the
+  // environment, so both are injected here and the suite runs on any host.
+  test("android inside Termux, whatever the host OS reports", () => {
+    expect(detectPlatform({ TERMUX_VERSION: "119" }, "linux")).toBe("android");
+    expect(detectPlatform({ PREFIX: "/data/data/com.termux/files/usr" }, "linux")).toBe("android");
+  });
+
+  test("a plain linux box and the other desktops are unchanged", () => {
+    expect(detectPlatform({}, "linux")).toBe("linux");
+    expect(detectPlatform({}, "darwin")).toBe("macos");
+    expect(detectPlatform({}, "win32")).toBe("windows");
+    expect(detectPlatform({ TERMUX_VERSION: "119" }, "darwin")).toBe("macos");
+    expect(detectPlatform({}, "freebsd")).toBe("unsupported");
   });
 });
 
@@ -106,6 +128,23 @@ describe("findTemplate", () => {
     expect(content).toContain("{SUPERVISOR}");
     expect(content).toContain("{LOG}");
   });
+
+  // Plan/173 — Android has no service manager; Termux:Boot runs a shell
+  // script instead of a unit/plist/XML.
+  test("termux-boot template file exists on disk (plan/173)", () => {
+    const p = findTemplate("termux-boot");
+    expect(p.endsWith("termux-boot.template")).toBe(true);
+    const content = readFileSync(p, "utf8");
+    // Termux:Boot requires the absolute interpreter path.
+    expect(content.startsWith("#!/data/data/com.termux/files/usr/bin/sh\n")).toBe(true);
+    expect(content).toContain("termux-wake-lock");
+    expect(content).toContain("{NODE}");
+    expect(content).toContain("{SUPERVISOR}");
+    expect(content).toContain("{REMOTE_PI}");
+    expect(content).toContain("{PREFIX}");
+    expect(content).toContain("guard run");
+    expect(content).toContain("$PIPER/supervisord.log");
+  });
 });
 
 describe("renderTemplate", () => {
@@ -117,6 +156,8 @@ describe("renderTemplate", () => {
     path: "/usr/local/bin:/usr/bin:/bin",
     vbs: "/Users/x/.pi/remote/RemotePiSupervisorLauncher.vbs",
     logPath: "/Users/x/.pi/remote/supervisord.log",
+    remotePi: "/Users/x/dist/index.js",
+    prefix: "/data/data/com.termux/files/usr",
   };
 
   test("substitutes every placeholder in systemd template", () => {
@@ -175,6 +216,28 @@ describe("renderTemplate", () => {
     expect(out).toContain(vars.node);
     expect(out).toContain(vars.supervisor);
     expect(out).toContain(vars.logPath);
+  });
+
+  test("substitutes {REMOTE_PI} / {PREFIX} in the termux-boot template and nothing else", () => {
+    const tpl = readFileSync(findTemplate("termux-boot"), "utf8");
+    const out = renderTemplate(tpl, vars);
+    expect(out).not.toMatch(/\{[A-Z_]+\}/);
+    expect(out).toContain(`nohup "${vars.node}" "${vars.supervisor}"`);
+    expect(out).toContain(`nohup "${vars.node}" "${vars.remotePi}" guard run`);
+    expect(out).toContain(`export PATH="${vars.prefix}/bin:${vars.path}"`);
+    expect(out).toContain(`export HOME="${vars.home}"`);
+    // The desktop templates never contain these placeholders, so their output
+    // is byte-for-byte what it was.
+    for (const name of ["systemd", "launchd", "taskscheduler", "vbs-launcher"] as const) {
+      const desktop = readFileSync(findTemplate(name), "utf8");
+      expect(desktop).not.toContain("{REMOTE_PI}");
+      expect(desktop).not.toContain("{PREFIX}");
+    }
+  });
+
+  test("toLf turns CRLF into LF (Android's sh must not see CR)", () => {
+    expect(toLf("a\r\nb\r\n")).toBe("a\nb\n");
+    expect(toLf("a\nb\n")).toBe("a\nb\n");
   });
 });
 
@@ -236,6 +299,9 @@ describe("defaultRenderVars", () => {
     expect(isAbsolute(vars.home)).toBe(true);
     expect(vars.user.length).toBeGreaterThan(0);
     expect(vars.path.length).toBeGreaterThan(0);
+    // Plan/173 — the Android placeholders resolve to the real CLI entry.
+    expect(vars.remotePi).toBe(findRemotePiScript());
+    expect(vars.prefix).toBe("/data/data/com.termux/files/usr");
   });
 });
 
@@ -415,5 +481,234 @@ describe.skipIf(!posixOnly)("linkCliBinaries / unlinkCliBinaries (Windows .cmd s
     for (const r of first.removed) expect(existsSync(r.path)).toBe(false);
     const second = unlinkCliBinaries(tmpHome);
     expect(second.removed.map((r) => r.existed)).toEqual([false, false]);
+  });
+});
+
+// ── Android / Termux boot script (plan/173) ────────────────────────────────
+//
+// The platform is injected, so the branch runs on any host. Only file
+// writes happen: Android has no activation command (Termux:Boot runs the
+// script at boot, `remote-pi phone-setup` runs it once), and uninstall's
+// signals go to an injected sender — never to a real process.
+describe("installService / uninstallService (android)", () => {
+  let tmpHome: string;
+  let ext: string;
+  let vars: ReturnType<typeof defaultRenderVars>;
+  const script = (): string => join(tmpHome, ".termux", "boot", "start-piper.sh");
+
+  beforeEach(() => {
+    tmpHome = mkdtempSync(join(tmpdir(), "pi-boot-"));
+    ext = join(tmpHome, "ext");
+    mkdirSync(join(ext, "bin"), { recursive: true });
+    writeFileSync(join(ext, "index.js"), "#!/usr/bin/env node\n");
+    writeFileSync(join(ext, "bin", "supervisord.js"), "// stub\n");
+    vars = {
+      ...defaultRenderVars(),
+      home: tmpHome,
+      supervisor: join(ext, "bin", "supervisord.js"),
+      remotePi: join(ext, "index.js"),
+      path: "/data/data/com.termux/files/usr/bin:/system/bin",
+    };
+  });
+
+  afterEach(() => {
+    rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  test("writes an executable LF boot script with absolute paths, idempotently", () => {
+    const first = installService(vars, { platform: "android", home: tmpHome });
+    expect(first.platform).toBe("android");
+    expect(first.unitPath).toBe(script());
+    expect(first.log.some((l) => l.includes("Termux:Boot"))).toBe(true);
+    expect(first.log.some((l) => l.includes("phone-setup"))).toBe(true);
+    // No activation command was attempted (nothing starting with `$ `).
+    expect(first.log.some((l) => l.startsWith("$ "))).toBe(false);
+
+    const raw = readFileSync(script(), "utf8");
+    expect(raw.includes("\r")).toBe(false);
+    expect(raw.startsWith("#!/data/data/com.termux/files/usr/bin/sh\n")).toBe(true);
+    expect(raw).toContain(`nohup "${vars.node}" "${vars.supervisor}"`);
+    expect(raw).toContain(`nohup "${vars.node}" "${vars.remotePi}" guard run`);
+    expect(raw).toContain(`export PATH="/data/data/com.termux/files/usr/bin:${vars.path}"`);
+    expect(raw).toContain("termux-wake-lock");
+    expect(raw).not.toMatch(/\{[A-Z_]+\}/);
+    if (process.platform !== "win32") {
+      // Termux:Boot executes only scripts with the executable bit.
+      expect(lstatSync(script()).mode & 0o111).not.toBe(0);
+    }
+
+    // Re-running install rewrites the same file and reports the same path.
+    const second = installService(vars, { platform: "android", home: tmpHome });
+    expect(second.unitPath).toBe(script());
+    expect(readFileSync(script(), "utf8")).toBe(raw);
+  });
+
+  test("a missing CLI entry is refused before anything is written", () => {
+    expect(() => installService(
+      { ...vars, remotePi: join(ext, "missing.js") },
+      { platform: "android", home: tmpHome },
+    )).toThrow(/remote-pi script not found/);
+    expect(existsSync(script())).toBe(false);
+  });
+
+  test("the unsupported-platform message names Android as supported", () => {
+    expect(() => installService(vars, { platform: "unsupported" })).toThrow(/Android \(Termux\)/);
+  });
+
+  test("uninstall signals guard then supervisor and removes the script", () => {
+    installService(vars, { platform: "android", home: tmpHome });
+    const signalled: Array<[number, string]> = [];
+    const result = uninstallService({
+      platform: "android",
+      home: tmpHome,
+      findGuards: () => [4242],
+      findSupervisors: () => [4243, 4244],
+      signal: (pid, sig) => { signalled.push([pid, sig]); return true; },
+    });
+    expect(result.platform).toBe("android");
+    expect(result.removed).toBe(true);
+    expect(existsSync(script())).toBe(false);
+    // The guard goes first so it cannot restart the supervisor stopped next.
+    expect(signalled).toEqual([[4242, "SIGTERM"], [4243, "SIGTERM"], [4244, "SIGTERM"]]);
+    expect(result.log.filter((l) => l.startsWith("guard: SIGTERM"))).toHaveLength(1);
+    expect(result.log.filter((l) => l.startsWith("supervisor: SIGTERM"))).toHaveLength(2);
+  });
+
+  test("uninstall is idempotent: nothing to signal, script already gone", () => {
+    const signalled: number[] = [];
+    const result = uninstallService({
+      platform: "android",
+      home: tmpHome,
+      findGuards: () => [],
+      findSupervisors: () => [],
+      signal: (pid) => { signalled.push(pid); return false; },
+    });
+    expect(result.removed).toBe(false);
+    expect(signalled).toEqual([]);
+    expect(result.log.some((l) => l.startsWith("guard: SIGTERM"))).toBe(false);
+  });
+
+  // Plan/173 review — the phone already had an interim boot script when this
+  // release arrived. It is never silently clobbered: dated copy + diff.
+  test("an existing boot script that differs is kept as a dated copy, with its diff in the log", () => {
+    mkdirSync(dirname(script()), { recursive: true });
+    const interim = [
+      "#!/data/data/com.termux/files/usr/bin/sh",
+      "# interim script written by hand on 2026-11-26",
+      "termux-wake-lock",
+      "nohup pi-supervisord >> ~/.pi/piper/boot.log 2>&1 &",
+      "",
+    ].join("\n");
+    writeFileSync(script(), interim);
+
+    const at = new Date(2026, 10, 26, 14, 30, 15).getTime();
+    // Without `force` a script remote-pi did not write is left alone: no
+    // write, no copy, a clear error (the docs promise "never clobbered").
+    expect(() => installService(vars, { platform: "android", home: tmpHome, now: () => at })).toThrow(
+      new RegExp(`${script().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} was not written by remote-pi, so it is left alone`),
+    );
+    expect(readFileSync(script(), "utf8")).toBe(interim);
+    expect(existsSync(`${script()}.bak-20261126-143015`)).toBe(false);
+
+    const result = installService(vars, { platform: "android", home: tmpHome, now: () => at, force: true });
+
+    const backup = `${script()}.bak-20261126-143015`;
+    expect(result.backup).toBe(backup);
+    expect(readFileSync(backup, "utf8")).toBe(interim);          // byte-for-byte copy
+    expect(readFileSync(script(), "utf8")).toBe(previewTermuxBootScript(vars)); // and ours is in place
+    expect(result.log).toContain(`existing ${script()} differs: kept a copy at ${backup}`);
+    expect(result.diff).toBeDefined();
+    // Log order: the notice, the diff, then the "wrote" line.
+    expect(result.log[0]).toBe(`existing ${script()} differs: kept a copy at ${backup}`);
+    expect(result.log.slice(1, 1 + result.diff!.length)).toEqual(result.diff);
+    expect(result.log[1 + result.diff!.length]).toBe(`wrote ${script()}`);
+
+    // The diff reads like a diff: the shebang is shared, the interim's own
+    // lines carry `-`, ours carry `+`, and no CR survives.
+    expect(result.diff![0]).toBe("    … (1 unchanged line)");
+    expect(result.diff).toContain("    - # interim script written by hand on 2026-11-26");
+    expect(result.diff).toContain("    - nohup pi-supervisord >> ~/.pi/piper/boot.log 2>&1 &");
+    expect(result.diff!.some((l) => l.startsWith("    + # start-piper.sh"))).toBe(true);
+    expect(result.diff!.some((l) => l.includes("+ nohup ") && l.includes("guard run"))).toBe(true);
+    expect(result.diff!.every((l) => !l.startsWith("    - # start-piper"))).toBe(true);
+    expect(result.diff!.join("\n")).not.toContain("\r");
+  });
+
+  test("our own earlier script is refreshed with a copy too; an identical one leaves no copy", () => {
+    installService(vars, { platform: "android", home: tmpHome, now: () => 1 });
+    // Identical: nothing to back up, no diff.
+    const same = installService(vars, { platform: "android", home: tmpHome, now: () => 2 });
+    expect(same.backup).toBeUndefined();
+    expect(same.diff).toBeUndefined();
+    // An older generated version (one line removed) is still ours: replaced,
+    // with a dated copy, and recognised as generated.
+    const ours = readFileSync(script(), "utf8");
+    const older = ours.split("\n").filter((l) => !l.includes("Guard:")) .join("\n");
+    writeFileSync(script(), older);
+    expect(isGeneratedBootScript(older)).toBe(true);
+    const refreshed = installService(vars, { platform: "android", home: tmpHome, now: () => new Date(2026, 10, 26, 15, 0, 0).getTime() });
+    expect(refreshed.backup).toBe(`${script()}.bak-20261126-150000`);
+    expect(readFileSync(refreshed.backup!, "utf8")).toBe(older);
+    expect(readFileSync(script(), "utf8")).toBe(ours);
+    expect(isGeneratedBootScript(readFileSync(script(), "utf8"))).toBe(true);
+    expect(isGeneratedBootScript("#!/bin/sh\necho hi\n")).toBe(false);
+  });
+
+  // Review finding (MEDIUM): install used `vars.home`, uninstall `homedir()`,
+  // and neither looked at REMOTE_PI_HOME — install could write under one home
+  // and uninstall delete from another. Both now use the daemon's resolution.
+  test("install and uninstall resolve the boot script under ONE home, REMOTE_PI_HOME included", () => {
+    const other = mkdtempSync(join(tmpdir(), "pi-boot-home-"));
+    const previous = process.env["REMOTE_PI_HOME"];
+    process.env["REMOTE_PI_HOME"] = other;
+    try {
+      // `vars.home` points somewhere else on purpose: the Android path must
+      // not follow it.
+      const result = installService({ ...vars, home: tmpHome }, { platform: "android" });
+      expect(result.unitPath).toBe(join(other, ".termux", "boot", "start-piper.sh"));
+      expect(result.unitPath).not.toBe(script());
+      expect(readFileSync(result.unitPath, "utf8")).toContain(`export HOME="${other}"`);
+      expect(existsSync(script())).toBe(false);
+
+      const un = uninstallService({ platform: "android", findGuards: () => [], findSupervisors: () => [], signal: () => false });
+      expect(un.unitPath).toBe(result.unitPath);
+      expect(un.removed).toBe(true);
+      expect(existsSync(result.unitPath)).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env["REMOTE_PI_HOME"];
+      else process.env["REMOTE_PI_HOME"] = previous;
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("lineDiff / renderLineDiff (plan/173)", () => {
+  test("keeps the common lines, marks removed and added ones, trailing newlines do not count", () => {
+    expect(lineDiff("a\nb\nc\n", "a\nB\nc\nd\n")).toEqual([
+      { type: "same", text: "a" },
+      { type: "minus", text: "b" },
+      { type: "plus", text: "B" },
+      { type: "same", text: "c" },
+      { type: "plus", text: "d" },
+    ]);
+    expect(lineDiff("", "x")).toEqual([{ type: "plus", text: "x" }]);
+    expect(lineDiff("x", "x")).toEqual([{ type: "same", text: "x" }]);
+    expect(lineDiff("a\nb", "a\nb")).toEqual([
+      { type: "same", text: "a" },
+      { type: "same", text: "b" },
+    ]);
+  });
+
+  test("rendering folds unchanged runs into one marker and prefixes - and +", () => {
+    const out = renderLineDiff([
+      { type: "same", text: "shebang" },
+      { type: "same", text: "comment" },
+      { type: "same", text: "other" },
+      { type: "minus", text: "old" },
+      { type: "plus", text: "new" },
+      { type: "same", text: "tail" },
+    ]);
+    expect(out).toEqual(["    … (3 unchanged lines)", "    - old", "    + new", "    … (1 unchanged line)"]);
+    expect(renderLineDiff([])).toEqual([]);
   });
 });

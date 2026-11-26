@@ -20,7 +20,8 @@
  * never hits the 15s action timeout; a misconfigured path surfaces as a
  * snackbar, not a hang.
  *
- * Platform guard: only Windows is supported for now. Mac/Linux launchers are
+ * Platform guard: Windows (plan/108) and Android/Termux (plan/173, a detached
+ * tmux session per room — see `./termux.ts`). Mac/Linux launchers are
  * plan 108b; on those the handler replies ok:false "unsupported".
  */
 import { execFileSync, spawn } from "node:child_process";
@@ -30,7 +31,10 @@ import type { ClientMessage, WireWorktree } from "../protocol/types.js";
 import type { ActionReplySender } from "./handlers.js";
 import { remoteCwdAllowed } from "./cwd_policy.js";
 import { addWorktree, forgetWorktree, listWorktrees } from "./worktree_registry.js";
-import { saveLocalConfig } from "../session/local_config.js";
+import { saveLocalConfig, loadLocalConfigFile } from "../session/local_config.js";
+import { roomIdFor } from "../rooms.js";
+import { isTermux } from "../termux.js";
+import { startTermuxSession, envWithoutDaemonIdentity } from "./termux.js";
 
 type OpenTerminalRequestMsg = Extract<
   ClientMessage,
@@ -50,7 +54,31 @@ type RemoveWorktreeRequestMsg = Extract<
 export interface OpenTerminalOutcome {
   ok: boolean;
   message: string;
-  method: "wt" | "window" | "none";
+  method: "wt" | "window" | "tmux" | "none";
+}
+
+/** Which launcher `openTerminalTab` uses: Termux gets tmux (plan/173), Windows
+ *  its Windows Terminal / console code (plan/108), everything else is
+ *  unsupported. Pure in the two inputs so the dispatch is testable anywhere. */
+export function launcherKind(
+  termux: boolean,
+  platform: NodeJS.Platform,
+): "termux" | "windows" | "none" {
+  if (termux) return "termux";
+  return platform === "win32" ? "windows" : "none";
+}
+
+/**
+ * The tmux session name when a caller gives none: the room the Pi started in
+ * `cwd` will announce. A custom `agent_name` in the folder's FILE config makes
+ * the room name-scoped, exactly as `roomIdFor` does for the session itself.
+ * File config only — this also runs inside the device daemon, whose inline
+ * config (room `device`) is not the folder's. One fallback for every caller,
+ * so a session started from "Start session" and one started from "Open
+ * terminal" in the same folder end up in the same tmux session.
+ */
+export function defaultTermuxSessionName(cwd: string): string {
+  return roomIdFor(cwd, loadLocalConfigFile(cwd).agent_name);
 }
 
 /** Quote a token for a cmd.exe double-quoted context (paths have no "). */
@@ -340,33 +368,43 @@ interface ChildHandle {
 }
 
 /**
- * Env for a terminal spawned FROM the device daemon. The daemon carries
- * `REMOTE_PI_DIRECT_CONFIG={"room_id":"device",…}` and `REMOTE_PI_DAEMON=1`
- * so it joins the fixed phone-filtered room. Node's `spawn` inherits
- * `process.env` by default, so without scrubbing those vars the worktree's
- * `pi` would also join room `"device"` — and the app filters that room out of
- * Home (`kDeviceRoom`). Result: footer shows 🟢 relay but the session never
- * appears as a tile. Strip the daemon-only identity; keep everything else
- * (PATH, REMOTE_PI_RELAY, user profile, …).
+ * Env for a terminal spawned FROM the device daemon: the daemon-only identity
+ * (`REMOTE_PI_DIRECT_CONFIG`, `REMOTE_PI_DAEMON`) is stripped, or the worktree's
+ * `pi` would join room `"device"` and never appear as a tile. The rule and its
+ * rationale live with the Termux launcher, which needs the same scrub in its
+ * command string (`./termux.ts`).
  */
 function envForSpawnedTerminal(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  delete env.REMOTE_PI_DIRECT_CONFIG;
-  delete env.REMOTE_PI_DAEMON;
-  return env;
+  return envWithoutDaemonIdentity(process.env);
 }
 
 /**
  * Opens a new terminal at `cwd`, optionally running `command` (e.g. "pi").
- * Mirrors pi-ps `openTab`: WT_SESSION → `wt.exe new-tab`; else Start-Process
- * window. A 2s safety net assumes success — the target runs independently of
- * the launcher (detached + unref'd).
+ * Windows mirrors pi-ps `openTab`: WT_SESSION → `wt.exe new-tab`; else
+ * Start-Process window. A 2s safety net assumes success — the target runs
+ * independently of the launcher (detached + unref'd).
+ *
+ * Termux (plan/173): a detached tmux session named after `options.sessionName`
+ * (the relay room; default: the folder's own room). tmux answers with an exit
+ * code, so the outcome is real, not assumed.
  */
 export function openTerminalTab(
   cwd: string,
   command: string | undefined,
-  options: { newWindow?: boolean } = {},
+  options: { newWindow?: boolean; sessionName?: string } = {},
 ): Promise<OpenTerminalOutcome> {
+  if (launcherKind(isTermux(), process.platform) === "termux") {
+    return startTermuxSession({
+      session: options.sessionName ?? defaultTermuxSessionName(cwd),
+      cwd,
+      command,
+    }).catch((e: unknown): OpenTerminalOutcome => ({
+      ok: false,
+      message: `Failed to launch tmux: ${e instanceof Error ? e.message : String(e)}`,
+      method: "none",
+    }));
+  }
+
   return new Promise((resolve) => {
     if (process.platform !== "win32") {
       resolve({
@@ -599,6 +637,9 @@ export async function handleOpenTerminal(
   }
 
   const runPi = msg.runPi !== false; // default true (matches /ps clone)
+  // Plan/173 — on Termux the tmux session is named after the room the
+  // worktree's Pi will announce (see `defaultTermuxSessionName`). Other
+  // platforms ignore the name.
   const outcome = await openTerminalTab(worktreePath, runPi ? "pi" : undefined);
 
   sender.send({

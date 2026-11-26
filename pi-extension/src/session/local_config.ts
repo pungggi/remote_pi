@@ -158,8 +158,11 @@ export function localConfigExists(cwd: string): boolean {
  * file. Without this guard, a worktree created from inside the device daemon
  * inherits `room_id:"device"` (the env wins in `loadLocalConfig`), sending the
  * worktree's session to the phone-filtered "device" room.
+ *
+ * Plan/173 — exported because the device daemon needs the same file-only view
+ * to name a worktree's tmux session after the room ITS Pi will announce.
  */
-function loadLocalConfigFile(cwd: string): LocalConfig {
+export function loadLocalConfigFile(cwd: string): LocalConfig {
   const p = pathFor(cwd);
   if (!existsSync(p)) return {};
   try {

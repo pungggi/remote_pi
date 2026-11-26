@@ -12,6 +12,37 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
+- **Android (Termux) as a session host, stage A3 (plan/173)**: a phone can
+  now be set up as an always-on host with one command. Before, the Termux
+  setup was nine manual steps and nothing restarted the supervisor when it
+  died, so the phone left the mesh at the next reboot or kill (2026-11-25:
+  dark from 21:10 until 11:18).
+  - pi-extension: `remote-pi install` detects Termux and writes the
+    Termux:Boot script `~/.termux/boot/start-piper.sh` (wake lock,
+    supervisor, guard). A script remote-pi did not write is left alone by
+    install; `remote-pi phone-setup` shows its diff and replaces it only
+    after the user agreed, keeping a dated copy. `uninstall` stops both
+    again. `remote-pi phone-setup` checks the environment, installs, starts,
+    waits for the device daemon's relay room and prints a pairing link that
+    the device daemon mints (new supervisor op `pair`). Flags: `--relay`,
+    `--yes`, `--ttl`.
+  - pi-extension: `remote-pi guard` is the Android stand-in for a service
+    manager. Every 30 s it makes a real `status` round trip on the control
+    socket; a missing supervisor is started, a silent one is killed and
+    restarted after two failed checks, a supervisor older than 24 h gets
+    one graceful restart, with a restart-rate limit and one log line per
+    transition. Every number is a setting (`guard.conf`, environment
+    wins). Crashed and wedged children stay with the supervisor's own
+    backoff and the plan/168 ping loop. It retires the interim shell guard
+    the phone ran before (`piper-guard.sh`).
+  - pi-extension: sessions started from the app run in a detached tmux
+    session named after the relay room (`open_terminal_result.method`
+    gains the diagnostic value `tmux`; the app maps unknown values to
+    null). `remote-pi doctor` starts with six Android rows inside Termux.
+  - Not in this change: the app side (device picker, phone icon, "Open in
+    Termux") and a watchdog for the Termux app itself (plan/173 A7, spike
+    pending). Nothing was run on a device yet; the six checks are listed
+    under A3 in the plan.
 - **Timestamps in the chat (plan/172)**: the transcript had no sense of
   time and mixed two clocks. Live frames carried no time, so the app
   stamped arrival on the phone's clock while replayed history used the
@@ -121,6 +152,12 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Fixed
 
+- **`remote-pi daemon status` exits 1 when the supervisor does not answer**
+  (plan/173). It printed `[remote-pi] status failed: Error: supervisor
+  reply timeout` and still exited 0, so an exit-code-based health probe read
+  a wedged supervisor as healthy (found by the phone's interim guard).
+  Offline and reply timeout both answer non-zero now; the slash command
+  still only shows the warning.
 - **Relay: deterministic `rooms` snapshot ordering** (plan/164). `rooms_of` returned `HashMap::into_values()`, so the snapshot serialized in a different order on every call: the per-conn byte-identical dedup could never suppress `rooms_check` replies, the phone app saw every reply as "changed", and the resulting re-poll loop pushed ~60 full snapshots/s onto the same WebSocket that carries `agent_chunk` — starving response streaming. Snapshots are now sorted by `room_id`; regression test covers multi-room suppression (single-room tests could never catch the ordering bug). The firehose 10s window log now also attributes rooms traffic (`rooms_poll_top`, `rooms_sent_conn_top`, `rooms_sent_target_top`). Measured: 623 replies/10s → 3.
 - **`list_models` always shows the current model**: the `← current` marker
   only ever matched when the current model was part of the listed

@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RpcChild, busyTransition, resolvePiBin, resolvePiSpawn, _npmShimTarget, rpcSpawnArgs, type RpcChildExitEvent } from "./rpc_child.js";
+import { writePairStub } from "../test-helpers.js";
+import {
+  RpcChild,
+  busyTransition,
+  parseCustomMessageEnd,
+  parsePairCodeDetails,
+  resolvePiBin, resolvePiSpawn, _npmShimTarget, rpcSpawnArgs, type RpcChildExitEvent } from "./rpc_child.js";
 
 /**
  * Regression for the orphaned-daemon bug: a deliberate `stop()` kills the
@@ -363,5 +369,115 @@ describe("RpcChild — isBusy", () => {
     const child = new RpcChild({ piBin: "/usr/bin/true", extensionPath: "/x", cwd: dir });
     // never spawned → not running → returns passive _busy (false)
     expect(await child.refreshBusy(200)).toBe(false);
+  });
+});
+
+// ── Plan/173 — custom messages + the pairing link ───────────────────────────
+
+describe("parseCustomMessageEnd", () => {
+  const pair = {
+    type: "message_end",
+    message: {
+      role: "custom", customType: "remote-pi:pair-code", content: "QR", display: true, timestamp: 1,
+      details: { uri: "remotepi://pair?t=abc", token: "abc", expiresAt: 1900000000000, roomId: "device", name: "device" },
+    },
+  };
+
+  test("recognises a custom message and returns its details object", () => {
+    expect(parseCustomMessageEnd(JSON.stringify(pair))).toEqual({
+      customType: "remote-pi:pair-code",
+      details: pair.message.details,
+    });
+  });
+
+  test("accepts details restored from the session file as a JSON string", () => {
+    const line = JSON.stringify({ ...pair, message: { ...pair.message, details: JSON.stringify(pair.message.details) } });
+    expect(parseCustomMessageEnd(line)?.details).toEqual(pair.message.details);
+  });
+
+  test("everything else is null: other roles, responses, malformed JSON, no role", () => {
+    expect(parseCustomMessageEnd(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [] } }))).toBeNull();
+    expect(parseCustomMessageEnd(JSON.stringify({ type: "response", command: "prompt", success: true }))).toBeNull();
+    expect(parseCustomMessageEnd("{not json")).toBeNull();
+    expect(parseCustomMessageEnd(JSON.stringify({ type: "message_end", message: { role: "custom" } }))).toBeNull();
+  });
+
+  test("a custom message without usable details carries null details", () => {
+    const line = JSON.stringify({ type: "message_end", message: { role: "custom", customType: "remote-pi:x", details: "[1,2]" } });
+    expect(parseCustomMessageEnd(line)).toEqual({ customType: "remote-pi:x", details: null });
+  });
+});
+
+describe("parsePairCodeDetails", () => {
+  const good = { uri: "remotepi://pair?t=abc&epk=k&n=device&rm=device", token: "abc", expiresAt: 1900000000000, roomId: "device", name: "device" };
+
+  test("returns the four fields the CLI prints / forwards", () => {
+    expect(parsePairCodeDetails(good)).toEqual({
+      uri: good.uri, expiresAt: good.expiresAt, roomId: "device", name: "device",
+    });
+  });
+
+  test("refuses a foreign URI scheme, missing fields and mistyped numbers", () => {
+    expect(parsePairCodeDetails(null)).toBeNull();
+    expect(parsePairCodeDetails({ ...good, uri: "https://evil.example/pair?x" })).toBeNull();
+    expect(parsePairCodeDetails({ ...good, expiresAt: "soon" })).toBeNull();
+    expect(parsePairCodeDetails({ ...good, roomId: "" })).toBeNull();
+    const { name: _n, ...noName } = good;
+    expect(parsePairCodeDetails(noName)).toBeNull();
+  });
+});
+
+describe("RpcChild.requestCustomMessage (plan/173)", () => {
+  let dir: string;
+  let log: string;
+
+  afterEach(() => {
+    delete process.env["STUB_LOG"];
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  test("sends the prompt and resolves with the custom message's details", async () => {
+    dir = mkdtempSync(join(tmpdir(), "pi-pair-"));
+    log = join(dir, "prompts.log");
+    process.env["STUB_LOG"] = log;
+    const stub = writePairStub(dir);
+    const child = new RpcChild({ piBin: stub, extensionPath: "/x", cwd: dir });
+    child.spawn();
+    try {
+      const details = await child.requestCustomMessage("remote-pi:pair-code", "/remote-pi pair --ttl 600", 5000);
+      expect(details).toMatchObject({
+        uri: "remotepi://pair?t=abc&epk=k&n=device&rm=device",
+        expiresAt: 1900000000000,
+        roomId: "device",
+        name: "device",
+      });
+      // The slash command reached the child's stdin verbatim.
+      expect(readFileSync(log, "utf8")).toBe("/remote-pi pair --ttl 600\n");
+    } finally {
+      await child.stop();
+    }
+  });
+
+  test("a stopped child answers null instead of hanging", async () => {
+    dir = mkdtempSync(join(tmpdir(), "pi-pair-off-"));
+    log = join(dir, "prompts.log");
+    process.env["STUB_LOG"] = log;
+    const child = new RpcChild({ piBin: writePairStub(dir), extensionPath: "/x", cwd: dir });
+    child.spawn();
+    // The stub only pairs once, so a request for another type stays pending
+    // until stop(). The same-type request made while the first is in flight
+    // is refused, not queued (no I/O happens between the two sync calls).
+    const first = child.requestCustomMessage("remote-pi:pair-code", "/remote-pi pair --ttl 60", 10_000);
+    expect(await child.requestCustomMessage("remote-pi:pair-code", "/remote-pi pair --ttl 60", 10)).toBeNull();
+    const never = child.requestCustomMessage("remote-pi:never", "x", 10_000);
+    expect(await first).not.toBeNull();
+    await child.stop();
+    expect(await never).toBeNull();
+  });
+
+  test("not running → null without touching a pipe", async () => {
+    dir = mkdtempSync(join(tmpdir(), "pi-pair-none-"));
+    const child = new RpcChild({ piBin: "/usr/bin/true", extensionPath: "/x", cwd: dir });
+    expect(await child.requestCustomMessage("remote-pi:x", "y", 100)).toBeNull();
   });
 });

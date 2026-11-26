@@ -1,18 +1,20 @@
 import { chmodSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { supervisorSockPath } from "./sock_path.js";
 import { addDaemon, listDaemons, migrateRegistryNames, normalizeCwd, removeDaemon } from "./registry.js";
 import { daemonIdForCwd } from "./id.js";
 import { defaultAgentName, loadLocalConfig, type LocalConfig } from "../session/local_config.js";
 import { DEVICE_ROOM, roomIdFor } from "../rooms.js";
-import { ipcAddress, usesNamedPipe } from "../session/ipc.js";
+import { usesNamedPipe } from "../session/ipc.js";
 import { RoomKeeper } from "../session/room_keeper.js";
 import { getOrCreateEd25519Keypair } from "../pairing/storage.js";
 import { resolveRelayUrl } from "../config.js";
 import { readRoomsRegistry } from "../session/rooms_registry.js";
 import type { DaemonControlResult, DaemonControlStatusRow } from "../protocol/types.js";
-import { EXIT_DAEMON_FRESH_SESSION, RpcChild, type RpcChildExitEvent, type RpcChildOptions } from "./rpc_child.js";
+import { clampPairTtlMs } from "../pairing/qr.js";
+import { EXIT_DAEMON_FRESH_SESSION, RpcChild, parsePairCodeDetails, type RpcChildExitEvent, type RpcChildOptions } from "./rpc_child.js";
 import {
   type ControlReply,
   type ControlRequest,
@@ -65,8 +67,6 @@ const DEVICE_DAEMON_ID = DEVICE_ROOM; // "device"
  * the registry and re-spawns everything.
  */
 
-const SUPERVISOR_SOCK_NAME = "supervisor.sock";
-
 /** Backoff schedule for auto-restart after a crash. After exhausting the
  *  schedule the child keeps retrying at the LAST (max) delay — it never
  *  gives up permanently (bug 2026-08-20: one bad pi/npm update made the
@@ -80,12 +80,6 @@ const RESTART_BACKOFFS_MS = [1_000, 5_000, 30_000, 5 * 60_000];
 
 /** Uptime after which a child's crash backoff resets to attempt 0. */
 const STABLE_UPTIME_MS = 10 * 60_000;
-
-function supervisorSockPath(): string {
-  const root = process.env["REMOTE_PI_HOME"] || homedir();
-  // POSIX → ~/.pi/piper/supervisor.sock; Windows → per-user named pipe (plan/40).
-  return ipcAddress("supervisor", join(root, ".pi", "piper", SUPERVISOR_SOCK_NAME));
-}
 
 /** Plan/159 — the home the device daemon would run in. Honors
  *  `REMOTE_PI_HOME` so tests and production agree on "home". */
@@ -363,6 +357,8 @@ export class Supervisor {
       case "cron_enable":  return this._opCronEnable(req.job_id, req.enabled);
       case "cron_run":     return this._opCronRun(req.job_id);
       case "cron_log":     return this._opCronLog(req.job_id, req.tail);
+      // Plan/173 — pairing link minted inside a running daemon.
+      case "pair":          return this._opPair(req.id, req.ttl_ms);
       default: {
         const unknown = (req as { op: string }).op;
         return { ok: false, error: `unknown op: ${unknown}` };
@@ -927,6 +923,42 @@ export class Supervisor {
     } catch (err) {
       process.stderr.write(`[room-keeper] failed to start (keeper disabled): ${String(err)}\n`);
     }
+  }
+
+  /**
+   * Plan/173 — mint a pairing link through a running daemon. `/remote-pi pair`
+   * issues its token in the LISTENING process (the `qrSession` is per Pi
+   * process and `pair_request` is consumed there), so the link cannot be
+   * built by the CLI or here: the daemon runs the command and we forward the
+   * URI its extension posts as a `remote-pi:pair-code` message. Default
+   * target is the device daemon — the one session that is always up on a
+   * phone host, in room `device`, which is also the room the app's Projects
+   * screen talks to.
+   */
+  private async _opPair(id: string | undefined, ttlMs: number | undefined): Promise<ControlReply<unknown>> {
+    const target = id || DEVICE_DAEMON_ID;
+    const slot = this.children.get(target);
+    if (!slot) return { ok: false, error: `no daemon with id ${target}` };
+    if (slot.child.state !== "running") {
+      return { ok: false, error: `daemon ${target} is ${slot.child.state}, not running` };
+    }
+    // Same window as the interactive command: 10 s … 10 min, default 60 s.
+    const seconds = Math.max(1, Math.round(clampPairTtlMs(ttlMs ?? Number.NaN) / 1000));
+    const details = await slot.child.requestCustomMessage(
+      "remote-pi:pair-code",
+      `/remote-pi pair --ttl ${seconds}`,
+    );
+    if (!details) {
+      return {
+        ok: false,
+        error:
+          `daemon ${target} produced no pairing code — its relay connection ` +
+          "may still be coming up; retry once the room is live",
+      };
+    }
+    const pair = parsePairCodeDetails(details);
+    if (!pair) return { ok: false, error: `daemon ${target} sent a malformed pairing code` };
+    return { ok: true, data: { id: target, ...pair } };
   }
 
   /** Plan/168 — serve a `daemon_control` request relayed by the keeper from

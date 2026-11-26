@@ -7047,7 +7047,11 @@ export async function runCli(argv: string[]): Promise<void> {
     if      (op === "start")   { await cmdDaemonStart(stubCtx, cliArgs[1]); }
     else if (op === "stop")    { await cmdDaemonStop(stubCtx, cliArgs[1]); }
     else if (op === "restart") { await cmdDaemonRestart(stubCtx, cliArgs[1]); }
-    else if (op === "status")  { await cmdDaemonStatus(stubCtx); }
+    else if (op === "status")  {
+      // Plan/173 — a status that did not get an answer is a failure for every
+      // caller that gates on the exit code (the phone's health probes).
+      if (!(await cmdDaemonStatus(stubCtx))) process.exitCode = 1;
+    }
     else if (op === "send")    { await cmdDaemonSend(rest, stubCtx); }
     else {
       console.log("Usage: remote-pi daemon <start|stop|restart [<id>]|status|send <id> \"<text>\">");
@@ -7082,6 +7086,24 @@ export async function runCli(argv: string[]): Promise<void> {
     await _cmdClaudeCli(cliArgs);
   } else if (subcmd === "agy") {
     await _cmdAgyCli(cliArgs);
+  } else if (subcmd === "phone-setup") {
+    // Plan/173 — Android/Termux host in one command: checks, install, start,
+    // pairing link. Exit code tells scripts whether the phone is ready.
+    const { parsePhoneSetupArgs, runPhoneSetup, defaultPhoneSetupDeps } = await import("./commands/phone_setup.js");
+    const parsed = parsePhoneSetupArgs(cliArgs);
+    if (parsed.error) {
+      console.log(`[remote-pi] ${parsed.error}`);
+      console.log("Usage: remote-pi phone-setup [--relay <http://pc-ip:3000>] [--ttl <seconds>] [--yes]");
+      process.exitCode = 1;
+    } else {
+      process.exitCode = await runPhoneSetup(parsed.options, defaultPhoneSetupDeps(parsed.options, (l) => console.log(l)));
+    }
+  } else if (subcmd === "guard") {
+    // Plan/173 — normally intercepted by the thin entry BEFORE this runtime
+    // loads (the guard must not depend on it); kept here so `runCli` stays
+    // the complete CLI surface for callers that already hold the runtime.
+    const { runGuardCli } = await import("./daemon/guard.js");
+    process.exitCode = await runGuardCli(argv);
   } else if (subcmd === "install") {
     // CLI mode = user installed via `npm install -g remote-pi`, so the
     // `remote-pi` / `pi-supervisord` bins are already on $PATH via npm's
@@ -7126,6 +7148,8 @@ export async function runCli(argv: string[]): Promise<void> {
       "  install                         Install pi-supervisord as a system service",
       "  uninstall                       Remove the system service",
       "  restart-supervisor              Restart the pi-supervisord process",
+      "  guard run|start|status|stop|once  Keep the supervisor alive on Termux (Android)",
+      "  phone-setup                     Android/Termux: checks, install, start, pairing link",
       "",
       "Devices:",
       "  devices                         List paired phones (peers.json)",

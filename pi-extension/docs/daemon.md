@@ -11,7 +11,10 @@ likely causes and how to fix.
 One command walks the whole failure chain (plan/159): registry sanity,
 home-cwd conflicts, supervisor + fleet state (crashed / crash-looped rows),
 relay `/health`, the `pi` binary, and path-based remote-pi worktree
-packages in pi's global settings.
+packages in pi's global settings. Inside Termux (Android) the report starts
+with six host rows instead: the boot script, the Termux:Boot app, the wake
+lock, `allow-external-apps`, tmux and the guard (plan/173, see
+[`android.md`](./android.md)).
 
 ```bash
 remote-pi doctor
@@ -87,6 +90,22 @@ systemctl --user daemon-reload
 remote-pi install
 ```
 
+### Android (Termux): there is no service manager
+
+Termux has no systemd, launchd or Task Scheduler. `remote-pi install`
+writes `~/.termux/boot/start-piper.sh` instead, and nothing is started by
+install itself: the Termux:Boot app runs that script after each reboot, and
+`remote-pi phone-setup` runs it once to start everything now. Run the setup
+command rather than install on its own:
+
+```bash
+remote-pi phone-setup --relay http://<pc-lan-ip>:3000
+```
+
+`uninstall` signals the guard and the supervisor and removes the script. The
+full picture, including what restarts what on a phone, is in
+[`android.md`](./android.md).
+
 ---
 
 ## 2. Supervisor doesn't start at login
@@ -129,6 +148,26 @@ pi-supervisord
 
 Ctrl-C to stop. If that works but the service doesn't, the problem is
 in the unit/plist environment (PATH, HOME) — re-run `remote-pi install`.
+
+### Android (Termux): nothing starts after a reboot
+
+The boot script runs only when the Termux:Boot app is installed AND was
+opened once (that is what arms it). `remote-pi doctor` reports both as best
+it can. Check in this order:
+
+1. `remote-pi doctor` → the `termux:boot app` row.
+2. The script exists and is executable: `ls -l ~/.termux/boot/start-piper.sh`.
+   A missing executable bit is the most common failure; `remote-pi install`
+   writes it with `chmod 755`.
+3. Run it by hand and read the two logs:
+
+   ```bash
+   sh ~/.termux/boot/start-piper.sh
+   tail -50 ~/.pi/piper/supervisord.log ~/.pi/piper/guard.log
+   ```
+
+4. `remote-pi guard status`: guard, supervisor and device daemon in three
+   lines.
 
 ---
 
@@ -230,6 +269,19 @@ action:
    `rooms.json` `device.lastSeenAt` (>5 min — fed by the daemon's 60 s
    heartbeat tick) bounces ONLY the device child (10 min cooldown), never
    the whole supervisor and never the plan/159 crash-backoff state.
+4. **Guard** (`remote-pi guard`, Termux only — plan/173): the Android
+   stand-in for the service manager and the watchdog in one light process.
+   Same real `status` round-trip every 30 s; a missing supervisor is
+   started, a silent one is killed after two checks and restarted, a
+   supervisor older than 24 h gets one graceful restart, with a restart-rate
+   limit (3 starts per 10 min) plus backoff and one log line per transition.
+   Every number is a setting (`~/.pi/piper/guard.conf` or
+   `REMOTE_PI_GUARD_<KEY>`; `remote-pi guard status` shows the effective
+   values). It leaves crashed and wedged CHILDREN to layers 1 and 2 and
+   restarts a `stopped` device daemon. No `lastSeenAt` bounce here: on a
+   phone the relay is remote, so a stale heartbeat usually means "PC off",
+   not "daemon wedged". `guard stop` waits for a restart in progress
+   (`guard.restarting` marker). Log: `~/.pi/piper/guard.log`.
 
 Net effect: this incident class shrinks from hours of manual surgery to
 minutes of automatic recovery. Measured replays: ping bounce ≈41 s,
@@ -371,6 +423,10 @@ remote-pi install --dry-run      # (not implemented; check ~/Library/LaunchAgent
 
 # Quick liveness check
 remote-pi daemon status
+
+# Termux only: the guard (Android's stand-in for the service manager)
+remote-pi guard status
+tail -50 ~/.pi/piper/guard.log
 ```
 
 If after walking the list you're still stuck, file an issue with the
