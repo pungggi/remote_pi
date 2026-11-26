@@ -723,6 +723,19 @@ describe("lineDiff / renderLineDiff (plan/173)", () => {
 
 // ── Line endings of rendered units (review of the 0.10.0 tarball) ──────────
 
+/** The root of the git checkout the tests run in (a `.git` directory or, in
+ *  a worktree, the `.git` link file), or null outside a checkout. */
+function gitCheckoutRoot(): string | null {
+  let dir = process.cwd();
+  for (let i = 0; i < 10; i++) {
+    if (existsSync(join(dir, ".git"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+  return null;
+}
+
 describe("normalizeUnitText", () => {
   test("every POSIX platform gets LF; Windows keeps its bytes", () => {
     for (const plat of ["linux", "macos", "android"] as const) {
@@ -755,9 +768,15 @@ describe("normalizeUnitText", () => {
     expect(normalizeUnitText(renderTemplate(crlfTemplate("systemd"), vars), "windows")).toContain("\r\n");
   });
 
-  test(".gitattributes pins the POSIX templates and every *.sh to LF", () => {
-    const pkgRoot = dirname(dirname(findTemplate("systemd")));
-    const rules = readFileSync(join(pkgRoot, "..", ".gitattributes"), "utf8");
+  test(".gitattributes pins the POSIX templates and every *.sh to LF", (ctx) => {
+    // Tests run from the repository (vitest over src/). Inside an installed
+    // package there is no checkout to pin, so the test has nothing to say.
+    const root = gitCheckoutRoot();
+    if (root === null) {
+      ctx.skip();
+      return;
+    }
+    const rules = readFileSync(join(root, ".gitattributes"), "utf8");
     for (const rule of [
       "*.sh text eol=lf",
       "pi-extension/service-templates/systemd.service.template text eol=lf",
