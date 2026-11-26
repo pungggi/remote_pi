@@ -567,15 +567,15 @@ export function fsErrorDetail(err: unknown): string {
   if (typeof code === "string" && code.length > 0) return code;
   // Not a coded fs error: keep the message, but no token that contains a
   // path separator survives — absolute (POSIX or Windows), home-, parent- and
-  // dot-relative, with or without spaces between tokens. The code branch
-  // above is the guarantee for fs errors; this is the belt for the rest. A
-  // path with spaces is redacted token by token (`C:\Program Files\x` →
-  // `<path> <path>`), so nothing of it remains. Quoted prose collapses to
-  // `'…'`. Residual risk, accepted: a bare file name without any separator
-  // (`secret.txt`) is the agent's own wording and stays as written.
+  // dot-relative, with or without spaces between tokens, quoted or not. The
+  // code branch above is the guarantee for fs errors; this is the belt for the
+  // rest. A path with spaces is redacted token by token (`C:\Program Files\x`
+  // → `<path> <path>`), so nothing of it remains; prose around it, quotes
+  // and apostrophes included, is left alone. Residual risk, accepted: a bare
+  // file name without any separator (`secret.txt`) is the agent's own wording
+  // and stays as written.
   return (err instanceof Error ? err.message : String(err))
-    .replace(/[^\s'"(),;]*[\\/][^\s'"(),;]*/g, "<path>")
-    .replace(/'[^']*'|"[^"]*"/g, "'…'");
+    .replace(/[^\s'"(),;]*[\\/][^\s'"(),;]*/g, "<path>");
 }
 
 /** Build a `shown:false` tool_result for a failure. As with `show_image`, the

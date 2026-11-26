@@ -161,6 +161,14 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   connection alone is not enough), pairing each machine from the phone,
   explicit `set-relay`, and agent-side verification steps.
 
+### Changed
+
+- **pi-extension needs Node 22.19 or newer** (`engines` declared
+  `>=20.0.0` before). The Pi SDK it loads requires it; on Node 20 the
+  extension could not even be imported (`fs.globSync` is missing), so
+  nothing that worked stops working — `engines` and the README now say
+  what was already true. Found by the first Linux CI run.
+
 ### Fixed
 
 - **`show_file` / `show_image` no longer echo the resolved absolute path in

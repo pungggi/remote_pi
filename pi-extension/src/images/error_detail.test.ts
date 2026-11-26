@@ -3,8 +3,7 @@
  * failure text of show_file / show_image must never contain the resolved
  * absolute path. Node's own fs messages embed it, so the pipeline reports
  * the error code instead — and for errors without a code no token with a
- * path separator survives.
- */
+ * path separator survives. */
 import { describe, expect, test } from "vitest";
 import { fsErrorDetail } from "./pipeline.js";
 
@@ -17,9 +16,9 @@ describe("fsErrorDetail", () => {
     expect(fsErrorDetail(err)).toBe("ENOENT");
   });
 
-  test("absolute paths are redacted, quoted or not, POSIX or Windows", () => {
+  test("absolute paths are redacted, quoted or not, POSIX or Windows; prose stays", () => {
     expect(fsErrorDetail(new Error("could not append to '/home/me/.pi/piper/registry.jsonl': EBUSY"))).toBe(
-      "could not append to '…': EBUSY",
+      "could not append to '<path>': EBUSY",
     );
     expect(fsErrorDetail(new Error("registry at /home/me/.pi/piper/files.json is locked"))).toBe(
       "registry at <path> is locked",
@@ -27,6 +26,12 @@ describe("fsErrorDetail", () => {
     expect(fsErrorDetail(new Error("cannot write C:\\Users\\me\\.pi\\piper\\files.json"))).toBe("cannot write <path>");
     // Parentheses and commas end a token.
     expect(fsErrorDetail(new Error("lock held by /var/lock/piper.lock, retry"))).toBe("lock held by <path>, retry");
+  });
+
+  test("a path right after a quote, parenthesis or `=` is still a path (review on #128)", () => {
+    expect(fsErrorDetail(new Error("path='/home/me/x'"))).toBe("path='<path>'");
+    expect(fsErrorDetail(new Error("(stat /home/me/x)"))).toBe("(stat <path>)");
+    expect(fsErrorDetail(new Error("couldn't open /home/me/x (retry)"))).toBe("couldn't open <path> (retry)");
   });
 
   test("a path with spaces is redacted token by token — nothing of it remains", () => {
@@ -46,10 +51,7 @@ describe("fsErrorDetail", () => {
 
   test("unbalanced quotes cannot smuggle a path through", () => {
     const out = fsErrorDetail(new Error("open '/home/o'brien/secret/key.pem' failed"));
-    expect(out).not.toContain("/home");
-    expect(out).not.toContain("brien");
-    expect(out).not.toContain("key.pem");
-    expect(out).toContain("failed");
+    expect(out).toBe("open '<path>'<path>' failed");
   });
 
   test("prose survives; only tokens with a separator go; bare names stay", () => {
