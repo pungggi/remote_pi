@@ -1,4 +1,4 @@
-# Plan 172 — Android as a session host: pick Pi or AGY, pick PC or phone
+# Plan 173 — Android as a session host: pick Pi or AGY, pick PC or phone
 
 Status: planned 2026-11-24 (conversation with the owner). **Step 0 is done
 (2026-11-25): all three spikes passed**, written up in
@@ -418,7 +418,7 @@ the phone.
 - `pi-extension/README.md`: "Android host" section. `PROTOCOL.md`: `agent`
   and `device_info` rows. `app/assets/CHANGELOG.md`, `pi-extension/CHANGELOG.md`.
 
-## Stage B — Without the PC: the phone's own relay (detail: plan 173)
+## Stage B — Without the PC: the phone's own relay (detail: plan 174)
 
 Depends on S2. Delivers: phone sessions and phone-only mesh with the PC off;
 one mesh again as soon as the PC relay is back.
@@ -457,7 +457,7 @@ one mesh again as soon as the PC relay is back.
   local relay, after exactly one reconnect.
 - Switching the PC five times in a row leaves no stuck "offline" tile.
 
-## Stage C — AGY on the phone (detail: plan 174)
+## Stage C — AGY on the phone (detail: plan 175)
 
 - The route is fixed by S3: proot-distro Debian 13. The launcher gains a
   **prelude** for AGY, run inside the session's tmux window:
@@ -511,15 +511,15 @@ one mesh again as soon as the PC relay is back.
 
 ## Next plans
 
-- **173**: Stage B in detail (relay artifact, managed relay, relay
+- **174**: Stage B in detail (relay artifact, managed relay, relay
   preference, `local` endpoint, mesh fan-out).
-- **174**: Stage C in detail, based on the S3 route.
-- **175**: AGY chat in the app (transcript, tool calls, approvals). Deferred
+- **175**: Stage C in detail, based on the S3 route.
+- **176**: AGY chat in the app (transcript, tool calls, approvals). Deferred
   by decision; the biggest single item.
 - Start AGY with an initial task and receive the result as a mesh message.
 - Switch the model of a running AGY session from the app. AGY ships a
   `remote-control` daemon and an ACP server (see `agy --help`); evaluate them
-  as the channel when planning 175.
+  as the channel when planning 176.
 - List of terminal sessions started from the app, with "stop".
 - Clone a project from the PC to the phone over the mesh (plan 158).
 - AGY on the phone without Termux, if the Linux Terminal route wins.

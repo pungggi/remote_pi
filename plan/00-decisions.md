@@ -38,7 +38,7 @@ Numeração `00-` é proposital: este arquivo carrega antes dos planos numerados
 - **Platform rules stay intact**: `dataSync` remains the service type, with a clean `onTimeout` stop and no FGS-type evasion or automatic restart loop.
 - **FCM/APNs remain unadopted**: this decision supersedes earlier deferred-push notes only for Balanced/UnifiedPush. It adds no Firebase project, embedded FCM distributor, distributor implementation, or iOS push architecture.
 
-### Android as a session host (closed 2026-11-24 — plan 172)
+### Android as a session host (closed 2026-11-24 — plan 173)
 
 - **The phone is a host, not only a remote.** Sessions can run on the Android phone (Pi today, AGY after a spike) and are started from the Piper app like on a PC. Reason: the owner wants to work without the PC and to use the phone as an extra agent in the mesh.
 - **Two choices per start: agent and place.** Pi or AGY, PC or phone. The app offers only what the chosen device reports it can start.
@@ -166,7 +166,7 @@ Estas decisões foram **propositalmente adiadas**. Quando alguém quiser fechar,
 | Versionamento de protocolo (`v` field) | Quando v2 do protocolo surgir e exigir migração |
 | Conta de usuário opcional | Quando aparecer dor multi-device |
 | Push notifications | v2, após MVP validado. **(2026-07-27)** Keep-alive em background já resolvido **separadamente** via foreground service (plano 103), Firebase-free — push só voltaria a importar pra *wake-after-kill*, que o fork não persegue |
-| ~~Multi-relay / federação~~ | ~~Provavelmente nunca. Só se relay público virar gargalo~~ **fechado 2026-11-24 (plano 172)**: dois relays por Owner, **sem federação**. O relay do PC continua sendo o hub preferido; o relay do telefone (Termux) é o hub de fallback enquanto o PC está inalcançável. Detalhe em "Android as a session host" acima |
+| ~~Multi-relay / federação~~ | ~~Provavelmente nunca. Só se relay público virar gargalo~~ **fechado 2026-11-24 (plano 173)**: dois relays por Owner, **sem federação**. O relay do PC continua sendo o hub preferido; o relay do telefone (Termux) é o hub de fallback enquanto o PC está inalcançável. Detalhe em "Android as a session host" acima |
 | Apps nativos (Swift/Kotlin) em vez de Flutter | Provavelmente nunca. Reconsiderar só se Flutter limitar features críticas (ex: integração profunda iOS Keychain). **Desktop: reconsiderado e mantido Flutter — decidido no plano 37, validado em produção (Cockpit 1.13.0; plano encerrado 2026-07-19)** |
 
 ---

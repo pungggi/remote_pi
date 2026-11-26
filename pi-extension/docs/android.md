@@ -1,6 +1,6 @@
 # Android host (Termux): setup and spike notes
 
-Companion to [`plan/172-android-host-sessions.md`](../../plan/172-android-host-sessions.md).
+Companion to [`plan/173-android-host-sessions.md`](../../plan/173-android-host-sessions.md).
 This page collects what the Step 0 spikes prove on a real phone, so the
 implementation and the later `remote-pi phone-setup` command can build on it.
 
