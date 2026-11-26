@@ -135,6 +135,10 @@ tail -100 ~/.pi/remote/supervisord.log
 - **Permission denied on UDS** — `~/.pi/remote/` exists with wrong
   perms (rare; only happens if you ran `pi` as `sudo` once). Delete
   the dir and let it re-create: `rm -rf ~/.pi/remote && remote-pi install`.
+- **`ExecStart=$'\r'` or "command not found" in the journal** — the unit
+  file contains CR characters. Units written by an extension older than the
+  LF fix, from a tarball packed on a Windows checkout, have them. Update
+  remote-pi and re-run `remote-pi install`; new units are always LF.
 
 ### Run the supervisor in the foreground for debugging
 
