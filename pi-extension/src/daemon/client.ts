@@ -7,7 +7,7 @@ import {
   encodeRequest,
   parseReply,
 } from "./control_protocol.js";
-import { getSupervisorSockPath } from "./supervisor.js";
+import { supervisorSockPath } from "./sock_path.js";
 import { usesNamedPipe } from "../session/ipc.js";
 
 /**
@@ -47,7 +47,7 @@ export class SupervisorOfflineError extends Error {
 export async function callSupervisor<Op extends ControlRequest["op"]>(
   req: Extract<ControlRequest, { op: Op }>,
 ): Promise<ControlReplyFor<Op>> {
-  const sockPath = getSupervisorSockPath();
+  const sockPath = supervisorSockPath();
   // POSIX fast-fail on a missing socket file. Windows pipes have no file —
   // skip the check and let `_connect` fail fast if the pipe isn't there.
   if (!usesNamedPipe() && !existsSync(sockPath)) throw new SupervisorOfflineError(sockPath);
@@ -68,7 +68,7 @@ export async function callSupervisor<Op extends ControlRequest["op"]>(
  *  daemons` to decide whether to query runtime state or fall back to
  *  registry-only listing. */
 export async function supervisorOnline(): Promise<boolean> {
-  const sockPath = getSupervisorSockPath();
+  const sockPath = supervisorSockPath();
   if (!usesNamedPipe() && !existsSync(sockPath)) return false;
   try {
     const sock = await _connect(sockPath);

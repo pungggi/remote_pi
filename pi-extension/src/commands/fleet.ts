@@ -491,8 +491,10 @@ export function cmdInstall(ctx: Pick<ExtensionContext, "ui">, opts: { linkCli?: 
   try {
     const result = installService();
     const sections = [
-      `[remote-pi] Supervisor service installed (${result.platform}).`,
-      `  Unit: ${result.unitPath}`,
+      result.platform === "android"
+        ? "[remote-pi] Supervisor autostart installed (Android/Termux)."
+        : `[remote-pi] Supervisor service installed (${result.platform}).`,
+      `  ${result.platform === "android" ? "Boot script" : "Unit"}: ${result.unitPath}`,
       `  Steps:\n${result.log.map((l) => "    " + l).join("\n")}`,
     ];
     if (linkCli) {
@@ -530,8 +532,10 @@ export function cmdUninstall(ctx: Pick<ExtensionContext, "ui">, opts: { linkCli?
   try {
     const result = uninstallService();
     const sections = [
-      `[remote-pi] Supervisor service uninstalled (${result.platform}).`,
-      `  Unit: ${result.unitPath} (${result.removed ? "removed" : "not present"})`,
+      result.platform === "android"
+        ? "[remote-pi] Supervisor autostart removed (Android/Termux)."
+        : `[remote-pi] Supervisor service uninstalled (${result.platform}).`,
+      `  ${result.platform === "android" ? "Boot script" : "Unit"}: ${result.unitPath} (${result.removed ? "removed" : "not present"})`,
       `  Steps:\n${result.log.map((l) => "    " + l).join("\n")}`,
       `  Note: daemons registry (~/.pi/piper/daemons.json) kept — re-install restores everything.`,
     ];

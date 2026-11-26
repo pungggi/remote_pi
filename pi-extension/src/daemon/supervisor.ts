@@ -1,12 +1,13 @@
 import { chmodSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { supervisorSockPath } from "./sock_path.js";
 import { addDaemon, listDaemons, migrateRegistryNames, normalizeCwd, removeDaemon } from "./registry.js";
 import { daemonIdForCwd } from "./id.js";
 import { defaultAgentName, loadLocalConfig, type LocalConfig } from "../session/local_config.js";
 import { DEVICE_ROOM, roomIdFor } from "../rooms.js";
-import { ipcAddress, usesNamedPipe } from "../session/ipc.js";
+import { usesNamedPipe } from "../session/ipc.js";
 import { RoomKeeper } from "../session/room_keeper.js";
 import { getOrCreateEd25519Keypair } from "../pairing/storage.js";
 import { resolveRelayUrl } from "../config.js";
@@ -65,8 +66,6 @@ const DEVICE_DAEMON_ID = DEVICE_ROOM; // "device"
  * the registry and re-spawns everything.
  */
 
-const SUPERVISOR_SOCK_NAME = "supervisor.sock";
-
 /** Backoff schedule for auto-restart after a crash. After exhausting the
  *  schedule the child keeps retrying at the LAST (max) delay — it never
  *  gives up permanently (bug 2026-08-20: one bad pi/npm update made the
@@ -80,12 +79,6 @@ const RESTART_BACKOFFS_MS = [1_000, 5_000, 30_000, 5 * 60_000];
 
 /** Uptime after which a child's crash backoff resets to attempt 0. */
 const STABLE_UPTIME_MS = 10 * 60_000;
-
-function supervisorSockPath(): string {
-  const root = process.env["REMOTE_PI_HOME"] || homedir();
-  // POSIX → ~/.pi/piper/supervisor.sock; Windows → per-user named pipe (plan/40).
-  return ipcAddress("supervisor", join(root, ".pi", "piper", SUPERVISOR_SOCK_NAME));
-}
 
 /** Plan/159 — the home the device daemon would run in. Honors
  *  `REMOTE_PI_HOME` so tests and production agree on "home". */

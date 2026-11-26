@@ -4,6 +4,8 @@ import { delimiter } from "node:path";
 import { homedir, platform, tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { TERMUX_PREFIX, isTermux, termuxBootScriptPath } from "../termux.js";
+import { findGuardPids, findSupervisorPids, signalPid } from "./proc.js";
 
 /**
  * Generates and activates a system service for `pi-supervisord` so the
@@ -16,9 +18,20 @@ import { fileURLToPath } from "node:url";
  *   - **Linux**: writes `~/.config/systemd/user/remote-pi-supervisord.service`
  *     and runs `systemctl --user daemon-reload && systemctl --user enable
  *     --now remote-pi-supervisord.service`.
+ *   - **Android (Termux)** (plan/173): writes `~/.termux/boot/start-piper.sh`,
+ *     the script the Termux:Boot app runs after each boot. There is nothing
+ *     to activate: the script starts the supervisor and the guard, and
+ *     `remote-pi phone-setup` runs it once.
+ *   - **Windows** (plan/40): Task Scheduler task `RemotePiSupervisor`.
  *
  * Uninstall reverses both. Idempotent — re-running install over an existing
  * unit refreshes it (paths could have changed if user moved node_modules).
+ *
+ * **Android (Termux, plan/173)** has no service manager: install writes
+ * `~/.termux/boot/start-piper.sh`, the script the Termux:Boot app runs after
+ * each boot (wake lock, supervisor, guard). Nothing is activated —
+ * `remote-pi phone-setup` runs that same script once to start everything.
+ * Uninstall signals the two processes and removes the script.
  *
  * **What does NOT happen here**: the actual `npm install -g remote-pi` step.
  * The user has to make the supervisor bin reachable on disk before install
@@ -29,10 +42,17 @@ import { fileURLToPath } from "node:url";
 
 // ── Platform detection ─────────────────────────────────────────────────────
 
-export type SupervisorPlatform = "macos" | "linux" | "windows" | "unsupported";
+export type SupervisorPlatform = "macos" | "linux" | "windows" | "android" | "unsupported";
 
-export function detectPlatform(): SupervisorPlatform {
-  switch (platform()) {
+/** Termux reports as `linux` to Node, so it is recognised by its environment
+ *  (`isTermux`) before the platform switch. `env` and `plat` are injectable
+ *  so the Android branch is testable on a desktop. */
+export function detectPlatform(
+  env: NodeJS.ProcessEnv = process.env,
+  plat: NodeJS.Platform = process.platform,
+): SupervisorPlatform {
+  if (isTermux(env, plat)) return "android";
+  switch (plat) {
     case "darwin": return "macos";
     case "linux": return "linux";
     case "win32": return "windows";
@@ -83,7 +103,7 @@ export function findNodeBinary(): string {
   return process.execPath;
 }
 
-export function findTemplate(name: "systemd" | "launchd" | "taskscheduler" | "vbs-launcher"): string {
+export function findTemplate(name: "systemd" | "launchd" | "taskscheduler" | "vbs-launcher" | "termux-boot"): string {
   // Templates ship next to the compiled `dist/` (via `files` in package.json).
   // From `dist/daemon/install.js` go up two levels and into
   // `service-templates/`. In the published npm tarball the layout is the
@@ -94,6 +114,7 @@ export function findTemplate(name: "systemd" | "launchd" | "taskscheduler" | "vb
     name === "systemd" ? "systemd.service.template" :
     name === "launchd" ? "launchd.plist.template" :
     name === "vbs-launcher" ? "task-launcher.vbs.template" :
+    name === "termux-boot" ? "termux-boot.template" :
     "task-scheduler.xml.template";
   return resolve(pkgRoot, "service-templates", file);
 }
@@ -154,6 +175,13 @@ export interface RenderVars {
   /** Windows only: combined stdout/stderr log the hidden supervisor appends to.
    *  Empty on POSIX (templates ignore `{LOG}`). */
   logPath: string;
+  /** Android only: absolute path of the CLI entry (`dist/index.js`). The boot
+   *  script starts the guard through it. Empty elsewhere (templates ignore
+   *  `{REMOTE_PI}`). */
+  remotePi: string;
+  /** Android only: the Termux prefix, put first on the boot script's PATH.
+   *  Empty elsewhere (templates ignore `{PREFIX}`). */
+  prefix: string;
 }
 
 export function defaultRenderVars(): RenderVars {
@@ -165,10 +193,18 @@ export function defaultRenderVars(): RenderVars {
     path: process.env["PATH"] ?? "/usr/local/bin:/usr/bin:/bin",
     vbs: vbsLauncherPath(),
     logPath: supervisordLogPath(),
+    remotePi: findRemotePiScript(),
+    prefix: TERMUX_PREFIX,
   };
 }
 
-/** Replace `{NODE}` / `{SUPERVISOR}` / `{USER}` / `{HOME}` / `{PATH}` / `{VBS}` / `{LOG}`. */
+/** CRLF → LF, for the one artefact Android's sh has to parse. */
+export function toLf(text: string): string {
+  return text.replace(/\r\n/g, "\n");
+}
+
+/** Replace `{NODE}` / `{SUPERVISOR}` / `{USER}` / `{HOME}` / `{PATH}` / `{VBS}` / `{LOG}` /
+ *  `{REMOTE_PI}` / `{PREFIX}`. The last two occur only in the Termux template. */
 export function renderTemplate(template: string, vars: RenderVars): string {
   return template
     .replace(/\{NODE\}/g, vars.node)
@@ -177,7 +213,9 @@ export function renderTemplate(template: string, vars: RenderVars): string {
     .replace(/\{HOME\}/g, vars.home)
     .replace(/\{PATH\}/g, vars.path)
     .replace(/\{VBS\}/g, vars.vbs)
-    .replace(/\{LOG\}/g, vars.logPath);
+    .replace(/\{LOG\}/g, vars.logPath)
+    .replace(/\{REMOTE_PI\}/g, vars.remotePi)
+    .replace(/\{PREFIX\}/g, vars.prefix);
 }
 
 // ── Install / uninstall API ────────────────────────────────────────────────
@@ -189,19 +227,35 @@ export interface InstallResult {
   log: string[];
 }
 
+/** Overrides for tests: the detected platform and where the Android paths
+ *  root. Production leaves both unset. */
+export interface ServiceDeps {
+  platform?: SupervisorPlatform;
+  /** Android: home directory `~/.termux/boot` lives under (default:
+   *  `vars.home`). */
+  home?: string;
+  /** Android uninstall: pid sources + signal sender, injectable so a test
+   *  never signals a real process. */
+  findGuards?: () => number[];
+  findSupervisors?: () => number[];
+  signal?: (pid: number, signal: NodeJS.Signals) => boolean;
+}
+
 /**
- * Writes the unit/plist, runs the platform's activation command. Throws
- * on unsupported OS or when the supervisor script isn't found.
+ * Writes the unit/plist (or the Termux boot script), runs the platform's
+ * activation command. Throws on unsupported OS or when the supervisor script
+ * isn't found.
  *
  * Idempotent: re-running re-writes the unit (paths could have changed)
- * and re-activates via the platform tool's idempotent flag.
+ * and re-activates via the platform tool's idempotent flag. Android has no
+ * activation step: Termux:Boot runs the script after each boot.
  */
-export function installService(vars: RenderVars = defaultRenderVars()): InstallResult {
-  const plat = detectPlatform();
+export function installService(vars: RenderVars = defaultRenderVars(), deps: ServiceDeps = {}): InstallResult {
+  const plat = deps.platform ?? detectPlatform();
   const log: string[] = [];
 
   if (plat === "unsupported") {
-    throw new Error(`unsupported platform: ${platform()}. Only macOS, Linux, and Windows.`);
+    throw new Error(`unsupported platform: ${platform()}. Only macOS, Linux, Windows, and Android (Termux).`);
   }
 
   // Sanity: supervisor script must exist on disk.
@@ -211,8 +265,19 @@ export function installService(vars: RenderVars = defaultRenderVars()): InstallR
       "Run `pnpm build` (dev) or `npm install -g remote-pi` (prod) first.",
     );
   }
+  // Plan/173 — the boot script starts the guard through the CLI entry.
+  if (plat === "android" && !existsSync(vars.remotePi)) {
+    throw new Error(
+      `remote-pi script not found at ${vars.remotePi}. ` +
+      "Run `pnpm build` (dev) or reinstall the extension.",
+    );
+  }
 
-  const templateName = plat === "macos" ? "launchd" : plat === "linux" ? "systemd" : "taskscheduler";
+  const templateName =
+    plat === "macos" ? "launchd" :
+    plat === "linux" ? "systemd" :
+    plat === "android" ? "termux-boot" :
+    "taskscheduler";
   const templatePath = findTemplate(templateName);
   if (!existsSync(templatePath)) {
     throw new Error(`service template missing: ${templatePath}`);
@@ -220,7 +285,11 @@ export function installService(vars: RenderVars = defaultRenderVars()): InstallR
   const tpl = readFileSync(templatePath, "utf8");
   const rendered = renderTemplate(tpl, vars);
 
-  const unitPath = plat === "macos" ? launchdPlistPath() : plat === "linux" ? systemdUnitPath() : taskXmlPath();
+  const unitPath =
+    plat === "macos" ? launchdPlistPath() :
+    plat === "linux" ? systemdUnitPath() :
+    plat === "android" ? termuxBootScriptPath(deps.home ?? vars.home) :
+    taskXmlPath();
   mkdirSync(dirname(unitPath), { recursive: true });
   if (plat === "windows") {
     // `schtasks /Create /XML` requires UTF-16LE + BOM. A UTF-8 file fails with
@@ -228,6 +297,13 @@ export function installService(vars: RenderVars = defaultRenderVars()): InstallR
     // template's `encoding="UTF-16"` declaration. (plan/40 risk #5.)
     const bom = Buffer.from([0xff, 0xfe]); // UTF-16LE byte-order mark
     writeFileSync(unitPath, Buffer.concat([bom, Buffer.from(rendered, "utf16le")]));
+  } else if (plat === "android") {
+    // Android's sh treats CR as part of every token, and a Windows checkout
+    // hands us the template with CRLF: normalise here and only here (the
+    // other platforms keep writing the template exactly as checked out).
+    // 0755 because Termux:Boot executes only scripts with the executable bit.
+    writeFileSync(unitPath, toLf(rendered), { mode: 0o755 });
+    chmodSync(unitPath, 0o755);  // `mode` applies on create only; re-install must repair the bit too
   } else {
     writeFileSync(unitPath, rendered);  // launchd/systemd → UTF-8
   }
@@ -246,6 +322,12 @@ export function installService(vars: RenderVars = defaultRenderVars()): InstallR
     _exec("systemctl", ["--user", "daemon-reload"], log);
     _exec("systemctl", ["--user", "enable", "--now", "remote-pi-supervisord.service"], log);
     log.push("activated via systemctl --user enable --now");
+  } else if (plat === "android") {
+    // No service manager to activate. Termux:Boot runs the script after each
+    // boot; starting everything NOW is `remote-pi phone-setup`'s job (it runs
+    // this very script), so install stays a pure file write.
+    log.push("Termux:Boot runs it after each boot (needs the Termux:Boot app, opened once)");
+    log.push("start now with: remote-pi phone-setup");
   } else {
     // windows — Task Scheduler (plan/40). The action runs `wscript.exe
     // <launcher.vbs>` (not node directly) so the supervisor starts hidden,
@@ -280,15 +362,19 @@ export interface UninstallResult {
   log: string[];
 }
 
-export function uninstallService(): UninstallResult {
-  const plat = detectPlatform();
+export function uninstallService(deps: ServiceDeps = {}): UninstallResult {
+  const plat = deps.platform ?? detectPlatform();
   const log: string[] = [];
 
   if (plat === "unsupported") {
-    throw new Error(`unsupported platform: ${platform()}. Only macOS, Linux, and Windows.`);
+    throw new Error(`unsupported platform: ${platform()}. Only macOS, Linux, Windows, and Android (Termux).`);
   }
 
-  const unitPath = plat === "macos" ? launchdPlistPath() : plat === "linux" ? systemdUnitPath() : taskXmlPath();
+  const unitPath =
+    plat === "macos" ? launchdPlistPath() :
+    plat === "linux" ? systemdUnitPath() :
+    plat === "android" ? termuxBootScriptPath(deps.home ?? homedir()) :
+    taskXmlPath();
 
   if (plat === "macos") {
     const uid = userInfo().uid;
@@ -298,6 +384,13 @@ export function uninstallService(): UninstallResult {
   } else if (plat === "linux") {
     _tryExec("systemctl", ["--user", "disable", "--now", "remote-pi-supervisord.service"], log);
     log.push("deactivated via systemctl --user disable --now");
+  } else if (plat === "android") {
+    // Plan/173 — no service manager to disable. Stop what the boot script
+    // started, the guard first so it does not restart the supervisor we stop
+    // right after. Signals only, like the launchctl/systemctl calls are
+    // fire-and-forget here: the guard drops its pid file on the way out, the
+    // supervisor stops its children and unlinks its socket.
+    _stopTermuxProcesses(log, deps);
   } else {
     // windows — Task Scheduler (plan/40): stop + delete the task. Only
     // `/Delete` modifies the root task store → that's the op that needs admin.
@@ -338,6 +431,20 @@ export function uninstallService(): UninstallResult {
 }
 
 // ── Internals ──────────────────────────────────────────────────────────────
+
+/** Plan/173 — best-effort SIGTERM to the guard loops and supervisors found
+ *  in the process table (Android only; see `daemon/proc.ts`). One log line
+ *  per pid that accepted the signal; none when nothing runs. */
+function _stopTermuxProcesses(log: string[], deps: ServiceDeps): void {
+  const signal = deps.signal ?? signalPid;
+  for (const pid of (deps.findGuards ?? findGuardPids)()) {
+    if (signal(pid, "SIGTERM")) log.push(`guard: SIGTERM pid ${pid}`);
+  }
+  for (const pid of (deps.findSupervisors ?? findSupervisorPids)()) {
+    if (signal(pid, "SIGTERM")) log.push(`supervisor: SIGTERM pid ${pid}`);
+  }
+  log.push("stopped guard + supervisor (Termux has no service manager)");
+}
 
 function _exec(cmd: string, args: string[], log: string[]): void {
   try {
