@@ -227,9 +227,10 @@ export function appendGuardLog(path: string, line: string): void {
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
-/** `KEY=VALUE` lines with `#` comments, an optional `export`, and single or
- *  double quotes around the value — the shape a shell `source`s, because the
- *  interim guard's `guard.conf` was written for bash. */
+/** `KEY=VALUE` lines with `#` comments, an optional `export`, single or
+ *  double quotes around the value, and an inline `# comment` behind the value
+ *  — the shape a shell `source`s, because the interim guard's `guard.conf`
+ *  was written for bash, which reads `KEY=30   # why` as `30`. */
 export function parseConf(text: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const raw of text.split(/\r?\n/)) {
@@ -237,7 +238,7 @@ export function parseConf(text: string): Record<string, string> {
     if (!line || line.startsWith("#")) continue;
     const m = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
     if (!m) continue;
-    let value = m[2]!.trim();
+    let value = stripInlineComment(m[2]!).trim();
     if ((value.startsWith('"') && value.endsWith('"') && value.length >= 2)
       || (value.startsWith("'") && value.endsWith("'") && value.length >= 2)) {
       value = value.slice(1, -1);
@@ -245,6 +246,25 @@ export function parseConf(text: string): Record<string, string> {
     out[m[1]!] = value;
   }
   return out;
+}
+
+/** Cuts an inline comment off a value the way a shell does: a `#` outside
+ *  quotes that begins a word (the start of the value, or right after
+ *  whitespace). A `#` glued to the value (`15,30#x`) and one inside quotes are
+ *  characters of the value; an unbalanced quote runs to the end of the line. */
+export function stripInlineComment(value: string): string {
+  let quote: string | null = null;
+  for (let i = 0; i < value.length; i++) {
+    const c = value[i];
+    if (quote !== null) {
+      if (c === quote) quote = null;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    } else if (c === "#" && (i === 0 || /\s/.test(value[i - 1]!))) {
+      return value.slice(0, i);
+    }
+  }
+  return value;
 }
 
 function seconds(value: string): number | null {
@@ -1053,11 +1073,18 @@ export function guardUsage(): string {
   ].join("\n");
 }
 
-/** Reads the pid file; the pid only when it is alive AND a guard. */
-export function runningGuardPid(pidFile: string = guardPidPath()): number | null {
-  let pid = Number.NaN;
-  try { pid = Number(readFileSync(pidFile, "utf8").trim()); } catch { return null; }
-  return Number.isInteger(pid) && guardProcessAlive(pid) ? pid : null;
+/** The pid of the running guard loop, or null.
+ *
+ *  First the pid file `guard run` holds (the interim guard held it before):
+ *  its pid must be alive AND be the guard loop, so a file left behind by a
+ *  crash or a reboot never passes for a running guard once the OS has handed
+ *  the pid to something else. A guard whose pid file was removed while it
+ *  runs (the loop takes it back on its next watch) is still found by its
+ *  command line: `start` stays a no-op and `status` tells the truth. */
+export function runningGuardPid(pidFile: string = guardPidPath(), procRoot: string = DEFAULT_PROC_ROOT): number | null {
+  const pid = pidFilePid(pidFile);
+  if (pid !== null && guardProcessAlive(pid, procRoot)) return pid;
+  return findGuardPids(procRoot)[0] ?? null;
 }
 
 function pidFilePid(pidFile: string): number | null {

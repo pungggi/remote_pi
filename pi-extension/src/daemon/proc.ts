@@ -87,16 +87,22 @@ export function isSupervisorArgv(argv: string[]): boolean {
 }
 
 /** True when argv is the guard loop: `node …/index.js guard run`
- *  (also through the `remote-pi` symlink). argv[0] must be node, and both
- *  words must be the script's positionals, in that order. The interim shell
- *  guard (`piper-guard.sh`) is deliberately NOT this: it gets retired, never
- *  mistaken for a running instance. */
+ *  (also through the `remote-pi` symlink). argv[0] must be node, and the
+ *  entry script must be followed by exactly `guard run`. The script is not
+ *  assumed to be the first non-option argument: a wrapper may put node
+ *  options with a value of their own before it (`node --require <shim>
+ *  …/index.js guard run`), and reading only the first non-option argument
+ *  made such a guard look dead. The interim shell guard (`piper-guard.sh`)
+ *  is deliberately NOT this: it gets retired, never mistaken for a running
+ *  instance. */
 export function isGuardArgv(argv: string[]): boolean {
   if (!isNodeExecutable(argv[0])) return false;
-  const script = scriptArg(argv);
-  if (script === undefined || !/(^|\/)(index\.js|remote-pi)$/.test(script)) return false;
-  const i = argv.indexOf(script);
-  return argv[i + 1] === "guard" && argv[i + 2] === "run";
+  for (let i = 1; i + 2 < argv.length; i++) {
+    if (/(^|\/)(index\.js|remote-pi)$/.test(argv[i] ?? "") && argv[i + 1] === "guard" && argv[i + 2] === "run") {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** True for the INTERIM guard the phone ran before `remote-pi guard` existed:

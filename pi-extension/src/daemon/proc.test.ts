@@ -82,13 +82,29 @@ describe("argv predicates", () => {
     expect(isSupervisorArgv([])).toBe(false);
   });
 
-  test("the guard is `node …/index.js guard run` with both words as positionals", () => {
+  test("the guard is `node …/index.js guard run` with both words behind the entry script", () => {
     expect(isGuardArgv([NODE, "/x/dist/index.js", "guard", "run"])).toBe(true);
     expect(isGuardArgv([NODE, "/home/u/.local/bin/remote-pi", "guard", "run"])).toBe(true);
     expect(isGuardArgv([NODE, "/x/dist/index.js", "guard", "status"])).toBe(false);
     expect(isGuardArgv([NODE, "/x/dist/index.js", "daemon", "send", "run", "guard"])).toBe(false);
     expect(isGuardArgv(["pi", "explain", "the", "guard", "run"])).toBe(false);
     expect(isGuardArgv(["bash", "-c", "node /x/dist/index.js guard run"])).toBe(false);
+  });
+
+  test("node options with a value of their own before the script (a wrapper's `--require` shim) do not hide the guard", () => {
+    // 0.10.0 read the first non-option argument as the script: that was the
+    // shim, so the running guard looked dead.
+    const SHIM = "/data/data/com.termux/files/home/.pi/piper/android-shim.cjs";
+    expect(isGuardArgv([NODE, "--require", SHIM, "/x/dist/index.js", "guard", "run"])).toBe(true);
+    expect(isGuardArgv([NODE, `--require=${SHIM}`, "--no-warnings", "/x/dist/index.js", "guard", "run"])).toBe(true);
+    expect(isGuardArgv([NODE, "--import", "/x/shim.mjs", "--enable-source-maps", "/home/u/.local/bin/remote-pi", "guard", "run"]))
+      .toBe(true);
+    // The entry script still has to be ours, followed by `guard run`.
+    expect(isGuardArgv([NODE, "--require", SHIM, "/x/dist/index.js", "guard", "status"])).toBe(false);
+    expect(isGuardArgv([NODE, "--require", SHIM, SUP])).toBe(false);
+    // And it still has to be node that runs it.
+    expect(isGuardArgv(["/bin/bash", "--require", SHIM, "/x/dist/index.js", "guard", "run"])).toBe(false);
+    expect(isGuardArgv([])).toBe(false);
   });
 
   test("the interim shell guard is a shell running piper-guard.sh, never a node process mentioning it", () => {
@@ -147,9 +163,12 @@ describe("findPidsMatching / findSupervisorPids / findGuardPids / findInterimGua
     fakeProc(106, ["vim", SUP]);
     fakeProc(107, ["/data/data/com.termux/files/usr/bin/bash", "/home/u/.pi/piper/piper-guard.sh"]);
     fakeProc(108, [NODE, "--max-old-space-size=512", SUP]);
+    // A guard started through a wrapper's `--require` shim, and a shell merely carrying the same words.
+    fakeProc(109, [NODE, "--require", "/home/u/.pi/piper/android-shim.cjs", "/x/remote-pi/dist/index.js", "guard", "run"]);
+    fakeProc(110, ["bash", "--require", "/x/shim.cjs", "/x/remote-pi/dist/index.js", "guard", "run"]);
 
     expect(findSupervisorPids(proc).sort((a, b) => a - b)).toEqual([100, 103, 108]);
-    expect(findGuardPids(proc)).toEqual([101]);
+    expect(findGuardPids(proc).sort((a, b) => a - b)).toEqual([101, 109]);
     expect(findInterimGuardPids(proc)).toEqual([107]);
     // `excludePids` (own pid and parent in production) is always dropped.
     expect(findPidsMatching(isSupervisorArgv, proc, [100, process.pid]).sort((a, b) => a - b)).toEqual([103, 108]);
