@@ -32,18 +32,21 @@ export const TERMUX_BOOT_PACKAGE = "com.termux.boot";
 export const TERMUX_BOOT_SCRIPT = "start-piper.sh";
 
 /**
- * True inside Termux. Termux's own environment carries `TERMUX_VERSION` and a
- * `PREFIX` under the app's data dir; the home directory is the third signal
- * for processes whose environment was stripped (a daemon started by a boot
- * script). A bare `PREFIX` from another tool never matches: it must point at
- * the Termux prefix.
+ * True inside Termux. Termux's node reports `process.platform` as
+ * `"android"` on the phone (a `"linux"` build exists too), so both count as
+ * the OS; that alone is never enough — a plain Linux box is not Termux. At
+ * least one Termux marker must be present: `TERMUX_VERSION`, a `PREFIX` under
+ * the app's data dir, or the app's home directory as our own (for processes
+ * whose environment was stripped, like a daemon started by a boot script).
+ * A bare `PREFIX` from another tool never matches: it must point at the
+ * Termux prefix.
  */
 export function isTermux(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
   home: string = homedir(),
 ): boolean {
-  if (platform !== "linux") return false;
+  if (platform !== "linux" && platform !== "android") return false;
   const version = env["TERMUX_VERSION"];
   if (typeof version === "string" && version.trim().length > 0) return true;
   const prefix = env["PREFIX"];

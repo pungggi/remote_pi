@@ -44,8 +44,9 @@ import { findGuardPids, findSupervisorPids, signalPid } from "./proc.js";
 
 export type SupervisorPlatform = "macos" | "linux" | "windows" | "android" | "unsupported";
 
-/** Termux reports as `linux` to Node, so it is recognised by its environment
- *  (`isTermux`) before the platform switch. `env` and `plat` are injectable
+/** Termux reports to Node as `android` (or `linux`), so it is recognised by
+ *  its environment (`isTermux`) before the platform switch: on `android` the
+ *  switch alone would answer "unsupported". `env` and `plat` are injectable
  *  so the Android branch is testable on a desktop. */
 export function detectPlatform(
   env: NodeJS.ProcessEnv = process.env,
