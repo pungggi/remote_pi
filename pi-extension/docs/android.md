@@ -182,6 +182,15 @@ of every guard start (`remote-pi guard status` shows them too).
 | `START_BACKOFF_S` | 15,30,60,120,300,600 | wait after the k-th start of an outage |
 | `STOP_GRACE_S` | 10 | SIGINT/SIGTERM to SIGKILL |
 
+**The file is the interim guard's.** The phone's `~/.pi/piper/guard.conf` was
+written for the shell guard, so its names are read as aliases:
+`CHECK_INTERVAL_S` → `INTERVAL_S`, `RESTART_GRACE_S` → `STOP_GRACE_S`,
+`RATE_MAX_RESTARTS` → `RESTART_RATE_MAX`, `RATE_WINDOW_S` →
+`RESTART_RATE_WINDOW_S`. When a file holds both names the canonical one wins;
+the environment wins over both. `RATE_BACKOFF_S` has no counterpart (the
+backoff ladder between starts replaced it) and is reported once with that
+hint.
+
 **Stop safety.** A restart sequence (stop old, start new) is marked in
 `~/.pi/piper/guard.restarting`. `remote-pi guard stop` waits while the marker
 exists instead of sending SIGKILL into the middle of it, and the loop itself

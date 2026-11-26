@@ -265,13 +265,38 @@ function listOfSeconds(value: string): number[] | null {
   return out;
 }
 
+/** Setting names of the INTERIM shell guard that mean the same as ours. The
+ *  phone's `~/.pi/piper/guard.conf` is the interim file, so these keep it
+ *  configuring the new guard instead of being reported as unknown. They only
+ *  feed the canonical setting (read-only): when a file holds both names, the
+ *  canonical one wins. */
+export const GUARD_CONF_ALIASES: Readonly<Record<string, string>> = {
+  CHECK_INTERVAL_S: "INTERVAL_S",
+  RESTART_GRACE_S: "STOP_GRACE_S",
+  RATE_MAX_RESTARTS: "RESTART_RATE_MAX",
+  RATE_WINDOW_S: "RESTART_RATE_WINDOW_S",
+};
+
+/** Keys of the interim file that have no counterpart here, with the hint
+ *  that replaces them. Reported once at start, like any ignored setting. */
+export const SUPERSEDED_GUARD_KEYS: Readonly<Record<string, string>> = {
+  RATE_BACKOFF_S: "replaced by START_BACKOFF_S (the backoff between starts)",
+  RESTART_BACKOFF_S: "replaced by START_BACKOFF_S (the backoff between starts)",
+};
+
+/** The canonical name of a setting: itself, or what an interim alias maps to. */
+export function canonicalGuardKey(key: string): string {
+  return GUARD_CONF_ALIASES[key] ?? key;
+}
+
 /**
- * Applies one `KEY=VALUE` setting. Returns false when the key is unknown or
- * the value is not usable; the caller reports those once at start, so a typo
- * in `guard.conf` never silently disables a limit.
+ * Applies one `KEY=VALUE` setting (canonical name or interim alias).
+ * Returns false when the key is unknown or superseded, or the value is not
+ * usable; the caller reports those once at start, so a typo in `guard.conf`
+ * never silently disables a limit.
  */
 export function applyGuardSetting(cfg: GuardConfig, key: string, value: string): boolean {
-  switch (key) {
+  switch (canonicalGuardKey(key)) {
     case "INTERVAL_S": {
       const ms = seconds(value);
       if (ms === null || ms < 1000) return false;
@@ -329,6 +354,8 @@ export interface GuardConfigLoad {
  * Defaults, then `guard.conf`, then the environment. The environment wins on
  * purpose: an override given for one test run must not be silently undone by
  * a file that forgotten settings live in (the interim guard got that wrong).
+ * Inside one source the interim aliases are applied before the canonical
+ * names, so a file that holds both takes the canonical value.
  */
 export function loadGuardConfig(
   env: NodeJS.ProcessEnv = process.env,
@@ -339,19 +366,36 @@ export function loadGuardConfig(
   const ignored: string[] = [];
   if (confText !== null) {
     let changed = false;
-    for (const [key, value] of Object.entries(parseConf(confText))) {
+    for (const [key, value] of orderedEntries(parseConf(confText))) {
       if (applyGuardSetting(config, key, value)) changed = true;
-      else ignored.push(`guard.conf: ${key} (unknown setting or bad value)`);
+      else ignored.push(`guard.conf: ${key} (${ignoredReason(key)})`);
     }
     if (changed) sources.push("guard.conf");
   }
+  const envEntries: Array<[string, string]> = [];
   for (const [name, value] of Object.entries(env)) {
-    if (!name.startsWith(GUARD_CONF_PREFIX) || value === undefined) continue;
-    const key = name.slice(GUARD_CONF_PREFIX.length);
-    if (applyGuardSetting(config, key, value)) sources.push(`env:${name}`);
-    else ignored.push(`${name} (unknown setting or bad value)`);
+    if (name.startsWith(GUARD_CONF_PREFIX) && value !== undefined) {
+      envEntries.push([name.slice(GUARD_CONF_PREFIX.length), value]);
+    }
   }
+  for (const [key, value] of orderedEntries(envEntries)) {
+    if (applyGuardSetting(config, key, value)) sources.push(`env:${GUARD_CONF_PREFIX}${key}`);
+    else ignored.push(`${GUARD_CONF_PREFIX}${key} (${ignoredReason(key)})`);  }
   return { config, sources, ignored };
+}
+
+/** Why a key was not applied: superseded by a new setting, or simply unknown
+ *  (or its value unusable). The reason only; the caller names the key. */
+function ignoredReason(key: string): string {
+  return SUPERSEDED_GUARD_KEYS[key] ?? "unknown setting or bad value";
+}
+
+/** `KEY=VALUE` pairs with the interim aliases first and the canonical names
+ *  last, so that applying them in order lets a canonical name win. */
+function orderedEntries(entries: Record<string, string> | Array<[string, string]>): Array<[string, string]> {
+  const list = Array.isArray(entries) ? entries : Object.entries(entries);
+  const rank = ([key]: [string, string]): number => (key in GUARD_CONF_ALIASES ? 0 : 1);
+  return [...list].sort((a, b) => rank(a) - rank(b));
 }
 
 export function readGuardConfText(): string | null {
@@ -1002,6 +1046,8 @@ export function guardUsage(): string {
     "Settings: ~/.pi/piper/guard.conf (KEY=VALUE) and REMOTE_PI_GUARD_<KEY>:",
     "  INTERVAL_S, FAILS_BEFORE_RESTART, MAX_AGE_S, RESTART_RATE_MAX,",
     "  RESTART_RATE_WINDOW_S, START_BACKOFF_S (comma list), STOP_GRACE_S",
+    "  Interim names are aliases: CHECK_INTERVAL_S, RESTART_GRACE_S,",
+    "  RATE_MAX_RESTARTS, RATE_WINDOW_S (the new name wins; env wins over both)",
     "",
     "On a PC the service manager restarts the supervisor; the guard is for Termux.",
   ].join("\n");

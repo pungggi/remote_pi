@@ -238,6 +238,53 @@ describe("configuration", () => {
   test("a missing guard.conf and no env leave the defaults, with no sources", () => {
     expect(loadGuardConfig({}, null)).toEqual({ config: config(), sources: [], ignored: [] });
   });
+
+  // The phone's ~/.pi/piper/guard.conf is the INTERIM guard's file. Its names
+  // are aliases here, so that file configures the new guard instead of being
+  // reported as five unknown keys.
+  const INTERIM_CONF = [
+    "# piper-guard: settings of the interim guard (2026-11-26)",
+    "# interval of the health check",
+    "CHECK_INTERVAL_S=30",
+    "FAILS_BEFORE_RESTART=2",
+    "MAX_AGE_S=86400",
+    "RESTART_GRACE_S=10",
+    "RATE_MAX_RESTARTS=3",
+    "RATE_WINDOW_S=600",
+    "RATE_BACKOFF_S=1800",
+    "",
+  ].join("\n");
+
+  test("the interim guard.conf configures the new guard: only RATE_BACKOFF_S is reported, with its replacement", () => {
+    const loaded = loadGuardConfig({}, INTERIM_CONF);
+    expect(loaded.config).toEqual(config());                 // the interim values ARE the owner's defaults
+    expect(loaded.sources).toEqual(["guard.conf"]);
+    expect(loaded.ignored).toEqual([
+      "guard.conf: RATE_BACKOFF_S (replaced by START_BACKOFF_S (the backoff between starts))",
+    ]);
+  });
+
+  test("aliases carry real values: CHECK_INTERVAL_S, RESTART_GRACE_S, RATE_MAX_RESTARTS, RATE_WINDOW_S", () => {
+    const loaded = loadGuardConfig({}, "CHECK_INTERVAL_S=45\nRESTART_GRACE_S=4\nRATE_MAX_RESTARTS=5\nRATE_WINDOW_S=120\n");
+    expect(loaded.config).toEqual(config({ intervalMs: 45_000, stopGraceMs: 4_000, rateMax: 5, rateWindowMs: 120_000 }));
+    expect(loaded.ignored).toEqual([]);
+  });
+
+  test("when a file holds both names the canonical one wins, whatever their order", () => {
+    expect(loadGuardConfig({}, "CHECK_INTERVAL_S=45\nINTERVAL_S=20\n").config.intervalMs).toBe(20_000);
+    expect(loadGuardConfig({}, "INTERVAL_S=20\nCHECK_INTERVAL_S=45\n").config.intervalMs).toBe(20_000);
+    expect(loadGuardConfig({}, "RATE_WINDOW_S=120\nRESTART_RATE_WINDOW_S=300\n").config.rateWindowMs).toBe(300_000);
+    expect(loadGuardConfig({}, "RESTART_RATE_WINDOW_S=300\nRATE_WINDOW_S=120\n").config.rateWindowMs).toBe(300_000);
+  });
+
+  test("the environment still wins over both names in the file", () => {
+    const loaded = loadGuardConfig({ REMOTE_PI_GUARD_INTERVAL_S: "20" }, "CHECK_INTERVAL_S=45\nINTERVAL_S=30\n");
+    expect(loaded.config.intervalMs).toBe(20_000);
+    expect(loadGuardConfig({ REMOTE_PI_GUARD_CHECK_INTERVAL_S: "25" }, "").config.intervalMs).toBe(25_000);
+    expect(loadGuardConfig({ REMOTE_PI_GUARD_RATE_BACKOFF_S: "60" }, "").ignored).toEqual([
+      "REMOTE_PI_GUARD_RATE_BACKOFF_S (replaced by START_BACKOFF_S (the backoff between starts))",
+    ]);
+  });
 });
 
 describe("appendGuardLog", () => {
