@@ -3,13 +3,20 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  CLK_TCK,
   findGuardPids,
+  findInterimGuardPids,
   findPidsMatching,
   findSupervisorPids,
   isGuardArgv,
+  isInterimGuardArgv,
+  isNodeExecutable,
   isPidAlive,
   isSupervisorArgv,
   listPids,
+  parseBootTimeMs,
+  parseStartTicks,
+  processStartMs,
   readCmdline,
 } from "./proc.js";
 
@@ -29,6 +36,9 @@ function fakeProc(pid: number, argv: string[]): string {
   return dir;
 }
 
+const NODE = "/data/data/com.termux/files/usr/bin/node";
+const SUP = "/data/data/com.termux/files/usr/lib/node_modules/remote-pi/dist/bin/supervisord.js";
+
 beforeEach(() => {
   proc = mkdtempSync(join(tmpdir(), "pi-proc-"));
   // Non-numeric entries exist in a real /proc and must be ignored.
@@ -41,23 +51,53 @@ afterEach(() => {
 });
 
 describe("argv predicates", () => {
-  test("the supervisor is recognised by its script, also through the symlink", () => {
-    expect(isSupervisorArgv(["/usr/bin/node", "/x/remote-pi/dist/bin/supervisord.js"])).toBe(true);
-    expect(isSupervisorArgv(["/usr/bin/node", "/home/u/.local/bin/pi-supervisord"])).toBe(true);
+  test("only the node executable itself counts as node", () => {
+    expect(isNodeExecutable(NODE)).toBe(true);
+    expect(isNodeExecutable("/usr/bin/nodejs")).toBe(true);
+    expect(isNodeExecutable("node")).toBe(true);
+    expect(isNodeExecutable("C:\\Program Files\\nodejs\\node.exe")).toBe(false); // not a POSIX node
+    expect(isNodeExecutable("/bin/bash")).toBe(false);
+    expect(isNodeExecutable(undefined)).toBe(false);
   });
 
-  test("node itself, the CLI and a daemon child are not the supervisor", () => {
-    expect(isSupervisorArgv(["/usr/bin/supervisord", "/x/index.js"])).toBe(false);
-    expect(isSupervisorArgv(["/usr/bin/node", "/x/remote-pi/dist/index.js", "doctor"])).toBe(false);
-    expect(isSupervisorArgv(["pi", "--mode", "rpc", "-e", "/x/remote-pi/dist/index.js"])).toBe(false);
+  test("the supervisor is the node process running the supervisor script, also through the symlink", () => {
+    expect(isSupervisorArgv([NODE, SUP])).toBe(true);
+    expect(isSupervisorArgv([NODE, "--max-old-space-size=512", SUP])).toBe(true);
+    expect(isSupervisorArgv(["node", "/data/data/com.termux/files/home/.local/bin/pi-supervisord"])).toBe(true);
+    expect(isSupervisorArgv(["node", "supervisord.js"])).toBe(true);
+  });
+
+  test("decoys that merely mention the name are never the supervisor (plan/173 review)", () => {
+    // A launcher shell wrapping the real command.
+    expect(isSupervisorArgv(["/bin/bash", "-c", `nohup ${NODE} ${SUP} >> log 2>&1 &`])).toBe(false);
+    expect(isSupervisorArgv(["/system/bin/sh", "-c", `node ${SUP}`])).toBe(false);
+    // An editor, a grep, a tmux command line.
+    expect(isSupervisorArgv(["vim", SUP])).toBe(false);
+    expect(isSupervisorArgv(["grep", "-n", "supervisord.js", "install.ts"])).toBe(false);
+    expect(isSupervisorArgv(["tmux", "new-session", "-d", "-s", "x", `node ${SUP}`])).toBe(false);
+    // A daemon child whose agent NAME looks like the script.
+    expect(isSupervisorArgv(["pi", "--mode", "rpc", "-e", "/x/index.js", "--name", "supervisord.js"])).toBe(false);
+    // node running something else.
+    expect(isSupervisorArgv([NODE, "/x/remote-pi/dist/index.js", "daemon", "status"])).toBe(false);
+    expect(isSupervisorArgv([])).toBe(false);
   });
 
   test("the guard is `node …/index.js guard run` with both words as positionals", () => {
-    expect(isGuardArgv(["/usr/bin/node", "/x/dist/index.js", "guard", "run"])).toBe(true);
-    expect(isGuardArgv(["/usr/bin/node", "/home/u/.local/bin/remote-pi", "guard", "run"])).toBe(true);
-    expect(isGuardArgv(["/usr/bin/node", "/x/dist/index.js", "guard", "status"])).toBe(false);
-    expect(isGuardArgv(["/usr/bin/node", "/x/dist/index.js", "daemon", "send", "run", "guard"])).toBe(false);
+    expect(isGuardArgv([NODE, "/x/dist/index.js", "guard", "run"])).toBe(true);
+    expect(isGuardArgv([NODE, "/home/u/.local/bin/remote-pi", "guard", "run"])).toBe(true);
+    expect(isGuardArgv([NODE, "/x/dist/index.js", "guard", "status"])).toBe(false);
+    expect(isGuardArgv([NODE, "/x/dist/index.js", "daemon", "send", "run", "guard"])).toBe(false);
     expect(isGuardArgv(["pi", "explain", "the", "guard", "run"])).toBe(false);
+    expect(isGuardArgv(["bash", "-c", "node /x/dist/index.js guard run"])).toBe(false);
+  });
+
+  test("the interim shell guard is a shell running piper-guard.sh, never a node process mentioning it", () => {
+    expect(isInterimGuardArgv(["/data/data/com.termux/files/usr/bin/bash", "/data/data/com.termux/files/home/.pi/piper/piper-guard.sh"])).toBe(true);
+    expect(isInterimGuardArgv(["/system/bin/sh", "-c", "bash ~/.pi/piper/piper-guard.sh"])).toBe(true);
+    expect(isInterimGuardArgv(["dash", "/home/u/.pi/piper/piper-guard.sh"])).toBe(true);
+    expect(isInterimGuardArgv([NODE, "/x/dist/index.js", "guard", "run", "--note", "piper-guard.sh"])).toBe(false);
+    expect(isInterimGuardArgv(["vim", "/home/u/.pi/piper/piper-guard.sh"])).toBe(false);
+    expect(isInterimGuardArgv([NODE, "/x/dist/index.js", "guard", "run"])).toBe(false);
   });
 });
 
@@ -68,11 +108,12 @@ describe("readCmdline / listPids / isPidAlive", () => {
     expect(readCmdline(proc, 999)).toBeNull();
   });
 
-  test("listPids keeps numbers only and can exclude the caller", () => {
+  test("listPids keeps numbers only and can exclude several pids (own pid and parent)", () => {
     fakeProc(7, ["a"]);
     fakeProc(8, ["b"]);
-    expect(listPids(proc).sort((a, b) => a - b)).toEqual([7, 8]);
-    expect(listPids(proc, 7)).toEqual([8]);
+    fakeProc(9, ["c"]);
+    expect(listPids(proc).sort((a, b) => a - b)).toEqual([7, 8, 9]);
+    expect(listPids(proc, 7, 9)).toEqual([8]);
     expect(listPids(join(proc, "nope"))).toEqual([]);
   });
 
@@ -83,21 +124,53 @@ describe("readCmdline / listPids / isPidAlive", () => {
   });
 });
 
-describe("findPidsMatching / findSupervisorPids / findGuardPids", () => {
-  test("finds exactly the matching processes and skips the excluded pid", () => {
-    fakeProc(100, ["/bin/node", "/x/remote-pi/dist/bin/supervisord.js"]);
-    fakeProc(101, ["/bin/node", "/x/remote-pi/dist/index.js", "guard", "run"]);
+describe("findPidsMatching / findSupervisorPids / findGuardPids / findInterimGuardPids", () => {
+  test("finds exactly the matching processes, skips the excluded pids, ignores decoys", () => {
+    fakeProc(100, [NODE, SUP]);
+    fakeProc(101, [NODE, "/x/remote-pi/dist/index.js", "guard", "run"]);
     fakeProc(102, ["pi", "--mode", "rpc", "-e", "/x/remote-pi/dist/index.js", "--name", "supervisord.js"]);
-    fakeProc(103, ["/bin/node", "/home/u/.local/bin/pi-supervisord"]);
-    fakeProc(104, ["/bin/node", "/x/remote-pi/dist/index.js", "daemon", "status"]);
+    fakeProc(103, ["node", "/home/u/.local/bin/pi-supervisord"]);
+    fakeProc(104, [NODE, "/x/remote-pi/dist/index.js", "daemon", "status"]);
+    fakeProc(105, ["bash", "-c", `nohup node ${SUP} >> ~/.pi/piper/boot.log 2>&1 &`]);
+    fakeProc(106, ["vim", SUP]);
+    fakeProc(107, ["/data/data/com.termux/files/usr/bin/bash", "/home/u/.pi/piper/piper-guard.sh"]);
+    fakeProc(108, [NODE, "--max-old-space-size=512", SUP]);
 
-    expect(findSupervisorPids(proc).sort((a, b) => a - b)).toEqual([100, 103]);
+    expect(findSupervisorPids(proc).sort((a, b) => a - b)).toEqual([100, 103, 108]);
     expect(findGuardPids(proc)).toEqual([101]);
-    // `excludePid` is always dropped, even when its argv matches.
-    expect(findPidsMatching(isSupervisorArgv, proc, 100).sort((a, b) => a - b)).toEqual([103]);
+    expect(findInterimGuardPids(proc)).toEqual([107]);
+    // `excludePids` (own pid and parent in production) is always dropped.
+    expect(findPidsMatching(isSupervisorArgv, proc, [100, process.pid]).sort((a, b) => a - b)).toEqual([103, 108]);
   });
 
   test("an unreadable table answers with an empty list, never a throw", () => {
     expect(findSupervisorPids(join(proc, "missing"))).toEqual([]);
+    expect(findGuardPids(join(proc, "missing"))).toEqual([]);
+  });
+});
+
+describe("process age (for the age restart)", () => {
+  test("starttime is field 22, read after the LAST ')' of a comm that may contain spaces and parens", () => {
+    const plain = `318 (node) S 100 1 1 0 -1 4194560 1234 0 0 0 10 5 0 0 20 0 3 0 4500 1 ...`;
+    expect(parseStartTicks(plain)).toBe(4500);
+    const awkward = `7 (a weird (name) ) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 77 1 ...`;
+    expect(parseStartTicks(awkward)).toBe(77);
+    expect(parseStartTicks("no closing paren")).toBeNull();
+  });
+
+  test("btime is read from /proc/stat; other lines are ignored", () => {
+    expect(parseBootTimeMs("cpu  1 2 3\ncpu0 1 2 3\nbtime 1700000000\nprocesses 5\n")).toBe(1_700_000_000_000);
+    expect(parseBootTimeMs("cpu 1 2 3")).toBeNull();
+  });
+
+  test("processStartMs = btime + ticks / CLK_TCK, or null when the files are missing", () => {
+    writeFileSync(join(proc, "stat"), "cpu 1 2 3\nbtime 1700000000\n");
+    const dir = fakeProc(55, [NODE, SUP]);
+    // 4500 ticks after boot at 100 Hz = 45 s.
+    writeFileSync(join(dir, "stat"), `55 (node) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 4500 1 ...\n`);
+    expect(processStartMs(55, proc)).toBe(1_700_000_000_000 + 45_000);
+    expect(processStartMs(55, proc, 50)).toBe(1_700_000_000_000 + 90_000);
+    expect(CLK_TCK).toBe(100);
+    expect(processStartMs(56, proc)).toBeNull();
   });
 });

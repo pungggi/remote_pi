@@ -3,36 +3,46 @@
  * recorded side effects: no processes are signalled, no supervisor started,
  * no socket opened except in the one probe test (an isolated pipe / socket,
  * the same way supervisor.test.ts isolates its own).
+ *
+ * Owner decision of 2026-11-26 under test: check every 30 s, restart after
+ * TWO failed checks, one graceful restart after 24 h of uptime, with a
+ * restart-rate limit — every number a setting, the environment winning over
+ * guard.conf.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
-  DEVICE_RESTART_BUDGET,
-  DEVICE_RESTART_COOLDOWN_MS,
-  GUARD_INTERVAL_MS,
-  SUPERVISOR_BACKOFF_MS,
-  WEDGE_MISSES,
+  DEFAULT_GUARD_CONFIG,
   acquireGuardLock,
   appendGuardLog,
   classifyDevice,
+  createGuardState,
+  describeGuardConfig,
   deviceTransitionLine,
+  fileMarker,
   fleetHealthy,
   formatLogLine,
-  guardProcessAlive,
   guardStart,
+  guardProcessAlive,
   guardStatus,
   guardStop,
   humanMs,
+  loadGuardConfig,
+  parseConf,
   probeStatus,
   releaseGuardLock,
+  retireInterimGuard,
   runGuardCli,
+  runGuardLoop,
   settleBeforeFirstTick,
+  startAllowedAt,
   tick,
-  createGuardState,
+  timeOfDay,
+  type GuardConfig,
   type GuardDeps,
   type GuardState,
 } from "./guard.js";
@@ -41,39 +51,52 @@ import { ipcAddress } from "../session/ipc.js";
 
 const SOCK = "/data/data/com.termux/files/home/.pi/piper/supervisor.sock";
 const MIN = 60_000;
+const HOUR = 60 * MIN;
 
 function deviceRow(state: DaemonInfo["state"] = "running"): DaemonInfo[] {
   return [{ id: "device", cwd: "/home", name: "device", state }];
 }
 
+function config(overrides: Partial<GuardConfig> = {}): GuardConfig {
+  return { ...DEFAULT_GUARD_CONFIG, startBackoffMs: [...DEFAULT_GUARD_CONFIG.startBackoffMs], ...overrides };
+}
+
 /** Fake clock + recorded effects. `rows` is the probe script: values are
  *  consumed one per probe, the last one repeats. */
-function harness(rows: Array<DaemonInfo[] | null>) {
+function harness(rows: Array<DaemonInfo[] | null>, cfg: GuardConfig = config()) {
   let now = 1_700_000_000_000;
   const out = {
     lines: [] as string[],
     starts: [] as number[],
-    deviceStarts: [] as number[],
     signals: [] as Array<[number, string]>,
     probes: 0,
     pids: [] as number[],
     alive: new Set<number>(),
     startOk: true,
+    deviceStarts: [] as number[],
     deviceStartOk: true,
     sleepMs: [] as number[],
+    ages: new Map<number, number>(),
+    marker: [] as string[],
+    /** Pids that ignore SIGTERM/SIGINT (the SIGSTOP shape of 2026-11-22). */
+    frozen: new Set<number>(),
   };
   const script = [...rows];
   const deps: GuardDeps = {
+    config: cfg,
     now: () => now,
     probe: async () => {
       out.probes += 1;
       return script.length > 1 ? script.shift()! : script[0]!;
     },
     supervisorPids: () => out.pids,
+    processAge: (pid) => out.ages.get(pid) ?? null,
     isAlive: (pid) => out.alive.has(pid),
     signal: (pid, sig) => {
       out.signals.push([pid, sig]);
-      if (sig === "SIGTERM") out.alive.delete(pid);
+      // A healthy supervisor honours SIGINT/SIGTERM; a frozen one ignores it.
+      if ((sig === "SIGTERM" || sig === "SIGINT") && !out.frozen?.has(pid)) out.alive.delete(pid);
+      if (sig === "SIGKILL") out.alive.delete(pid);
       return true;
     },
     sleep: async (ms) => {
@@ -89,6 +112,10 @@ function harness(rows: Array<DaemonInfo[] | null>) {
     },
     log: (line) => out.lines.push(line),
     sockPath: SOCK,
+    marker: {
+      set: (text) => out.marker.push(`set:${text}`),
+      clear: () => out.marker.push("clear"),
+    },
   };
   return {
     deps,
@@ -101,24 +128,40 @@ function harness(rows: Array<DaemonInfo[] | null>) {
 }
 
 const messages = (lines: string[]): string[] => lines.map((l) => l.replace(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d /, ""));
+const markerEvents = (out: { marker: string[] }): string[] => out.marker.map((m) => m.split(":")[0]!);
 
 let tmp: string;
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "pi-guard-"));
+  process.env["REMOTE_PI_HOME"] = tmp;
 });
 
 afterEach(() => {
+  delete process.env["REMOTE_PI_HOME"];
   rmSync(tmp, { recursive: true, force: true });
 });
 
 describe("pure helpers", () => {
-  test("formatLogLine is the watchdog's local-time layout; humanMs reads naturally", () => {
-    const line = formatLogLine(new Date(2026, 10, 26, 9, 5, 7).getTime(), "supervisor: down");
-    expect(line).toMatch(/^2026-11-26 09:05:07 supervisor: down$/);
+  test("formatLogLine is the watchdog's local-time layout; timeOfDay is HH:MM", () => {
+    const at = new Date(2026, 10, 26, 9, 5, 7).getTime();
+    expect(formatLogLine(at, "supervisor: down")).toMatch(/^2026-11-26 09:05:07 supervisor: down$/);
+    expect(timeOfDay(at)).toBe("09:05");
+  });
+
+  test("humanMs reads naturally up to days of uptime", () => {
     expect(humanMs(15_000)).toBe("15 s");
     expect(humanMs(60_000)).toBe("1 min");
     expect(humanMs(600_000)).toBe("10 min");
+    expect(humanMs(24 * HOUR)).toBe("24 h");
+    expect(humanMs(24 * HOUR + 90 * MIN)).toBe("25 h 30 min");
+  });
+
+  test("describeGuardConfig names every setting with the owner's defaults", () => {
+    expect(describeGuardConfig(config())).toBe(
+      "check every 30 s; restart after 2 silent probes; age restart above 24 h; at most 3 start(s) per 10 min; "
+      + "start backoff 15 s, 30 s, 1 min, 2 min, 5 min, 10 min; stop grace 10 s",
+    );
   });
 
   test("classifyDevice reads the device row and fleetHealthy wants it up", () => {
@@ -140,13 +183,60 @@ describe("pure helpers", () => {
     expect(deviceTransitionLine("running", "missing")).toMatch(/registry entry may cover the home cwd/);
   });
 
-  test("the constants keep the owner's bounds: at least every 60 s, bounded restarts", () => {
-    expect(GUARD_INTERVAL_MS).toBeLessThanOrEqual(60_000);
-    expect(SUPERVISOR_BACKOFF_MS[0]).toBe(0);
-    expect(SUPERVISOR_BACKOFF_MS[SUPERVISOR_BACKOFF_MS.length - 1]).toBe(600_000);
-    expect(WEDGE_MISSES).toBeGreaterThan(1);
-    expect(DEVICE_RESTART_COOLDOWN_MS).toBeGreaterThanOrEqual(30_000);
-    expect(DEVICE_RESTART_BUDGET).toBeLessThan(10);
+  test("the owner's bounds are the defaults: every 60 s at most, two fails, 24 h, rate-limited", () => {
+    expect(DEFAULT_GUARD_CONFIG.intervalMs).toBeLessThanOrEqual(60_000);
+    expect(DEFAULT_GUARD_CONFIG.failsBeforeRestart).toBe(2);
+    expect(DEFAULT_GUARD_CONFIG.maxAgeMs).toBe(24 * HOUR);
+    expect(DEFAULT_GUARD_CONFIG.rateMax).toBeGreaterThan(0);
+    expect(DEFAULT_GUARD_CONFIG.rateWindowMs).toBeGreaterThan(0);
+  });
+});
+
+describe("configuration", () => {
+  test("parseConf reads what a shell would source: KEY=VALUE, export, quotes, comments", () => {
+    expect(parseConf("# comment\nINTERVAL_S=30\nexport FAILS_BEFORE_RESTART=\"2\"\n  MAX_AGE_S='86400' \nSTART_BACKOFF_S=\"15,30\"\nnot a setting\n")).toEqual({
+      INTERVAL_S: "30",
+      FAILS_BEFORE_RESTART: "2",
+      MAX_AGE_S: "86400",
+      START_BACKOFF_S: "15,30",
+    });
+  });
+
+  test("defaults, then guard.conf, then the environment — the environment wins", () => {
+    const loaded = loadGuardConfig(
+      { REMOTE_PI_GUARD_INTERVAL_S: "20", REMOTE_PI_GUARD_MAX_AGE_S: "0" },
+      "INTERVAL_S=45\nFAILS_BEFORE_RESTART=4\nMAX_AGE_S=7200\nRESTART_RATE_MAX=5\nRESTART_RATE_WINDOW_S=120\nSTART_BACKOFF_S=5,10\nSTOP_GRACE_S=3\n",
+    );
+    expect(loaded.config).toEqual({
+      intervalMs: 20_000,          // env beats the file's 45
+      failsBeforeRestart: 4,       // file
+      maxAgeMs: 0,                 // env: off
+      rateMax: 5,
+      rateWindowMs: 120_000,
+      startBackoffMs: [5_000, 10_000],
+      stopGraceMs: 3_000,
+    });
+    expect(loaded.sources).toEqual(["guard.conf", "env:REMOTE_PI_GUARD_INTERVAL_S", "env:REMOTE_PI_GUARD_MAX_AGE_S"]);
+    expect(loaded.ignored).toEqual([]);
+  });
+
+  test("unknown names and unusable values are ignored AND reported, never silently dropped", () => {
+    const loaded = loadGuardConfig(
+      { REMOTE_PI_GUARD_FAILS_BEFORE_RESTART: "two", REMOTE_PI_GUARD_WAT: "1" },
+      "INTERVAL_S=0\nSOMETHING_ELSE=1\nRESTART_RATE_WINDOW_S=0\n",
+    );
+    expect(loaded.config).toEqual(config());
+    expect(loaded.ignored).toEqual([
+      "guard.conf: INTERVAL_S (unknown setting or bad value)",
+      "guard.conf: SOMETHING_ELSE (unknown setting or bad value)",
+      "guard.conf: RESTART_RATE_WINDOW_S (unknown setting or bad value)",
+      "REMOTE_PI_GUARD_FAILS_BEFORE_RESTART (unknown setting or bad value)",
+      "REMOTE_PI_GUARD_WAT (unknown setting or bad value)",
+    ]);
+  });
+
+  test("a missing guard.conf and no env leave the defaults, with no sources", () => {
+    expect(loadGuardConfig({}, null)).toEqual({ config: config(), sources: [], ignored: [] });
   });
 });
 
@@ -157,7 +247,7 @@ describe("appendGuardLog", () => {
     appendGuardLog(file, "b\n");
     expect(readFileSync(file, "utf8")).toBe("a\nb\n");
     writeFileSync(file, Array.from({ length: 5000 }, (_, i) => `line ${i} ${"x".repeat(300)}`).join("\n") + "\n");
-    expect(statSync(file).size).toBeGreaterThan(1024 * 1024);
+    expect(readFileSync(file).length).toBeGreaterThan(1024 * 1024);
     appendGuardLog(file, "after");
     const kept = readFileSync(file, "utf8").trim().split("\n");
     // Exactly the newest 200 lines survive, newest last.
@@ -165,12 +255,28 @@ describe("appendGuardLog", () => {
     expect(kept[0]).toBe("line 4801 " + "x".repeat(300));
     expect(kept[198]).toBe("line 4999 " + "x".repeat(300));
     expect(kept[199]).toBe("after");
-    expect(readFileSync(file, "utf8").endsWith("after\n")).toBe(true);
+  });
+});
+
+describe("startAllowedAt", () => {
+  test("the backoff and the rate window combine; any values stay sound", () => {
+    const state = createGuardState();
+    // Nothing started yet: allowed now.
+    expect(startAllowedAt(state, config())).toBe(0);
+    // Window full: the oldest of the last `rateMax` starts must leave it.
+    state.startTimes = [0, 10_000, 20_000];
+    state.nextStartAt = 15_000;
+    expect(startAllowedAt(state, config())).toBe(600_000);
+    // A backoff LONGER than the window simply wins.
+    state.nextStartAt = 7_000_000;
+    expect(startAllowedAt(state, config())).toBe(7_000_000);
+    // rateMax 0 disables the limiter.
+    expect(startAllowedAt({ ...state, nextStartAt: 15_000 }, config({ rateMax: 0 }))).toBe(15_000);
   });
 });
 
 describe("guardProcessAlive / acquireGuardLock", () => {
-  test("a pid only counts as the guard when alive AND running `… guard run`", () => {
+  test("a pid only counts as the guard when alive AND running `node … guard run`", () => {
     const proc = join(tmp, "proc");
     const put = (pid: number, argv: string[]) => {
       mkdirSync(join(proc, String(pid)), { recursive: true });
@@ -179,10 +285,8 @@ describe("guardProcessAlive / acquireGuardLock", () => {
     put(10, ["/bin/node", "/x/dist/index.js", "guard", "run"]);
     put(11, ["/bin/node", "/x/dist/index.js", "daemon", "status"]);
     put(12, ["/bin/node", "/x/dist/index.js", "guard", "status"]);
-    expect(guardProcessAlive(10, proc)).toBe(true);
-    expect(guardProcessAlive(11, proc)).toBe(false);
-    expect(guardProcessAlive(12, proc)).toBe(false);
-    expect(guardProcessAlive(99, proc)).toBe(false);
+    put(13, ["/bin/bash", "/home/u/.pi/piper/piper-guard.sh"]);
+    for (const pid of [10, 11, 12, 13]) expect(guardProcessAlive(pid, proc)).toBe(pid === 10);
   });
 
   test("the lock is exclusive, survives a stale file, and is released by its owner only", () => {
@@ -190,17 +294,15 @@ describe("guardProcessAlive / acquireGuardLock", () => {
     const running = new Set([777]);
     const isGuardRunning = (pid: number) => running.has(pid);
     expect(acquireGuardLock(pidFile, 111, isGuardRunning)).toBe("acquired");
-    // A live guard holds it.
     running.add(111);
     expect(acquireGuardLock(pidFile, 222, isGuardRunning)).toBe("already-running");
-    // The guard died: the stale file (pid 111 no longer a guard) is replaced.
+    // The guard died: the stale file is replaced.
     running.delete(111);
     expect(acquireGuardLock(pidFile, 222, isGuardRunning)).toBe("acquired");
     expect(readFileSync(pidFile, "utf8")).toBe("222\n");
     // A foreign process reusing a dead guard's pid does not block either.
     writeFileSync(pidFile, "777\n");
     expect(acquireGuardLock(pidFile, 333, (pid) => pid === 111)).toBe("acquired");
-    // Release removes the file only when it still names the releasing pid.
     writeFileSync(pidFile, "444\n");
     releaseGuardLock(pidFile, 333);
     expect(readFileSync(pidFile, "utf8")).toBe("444\n");
@@ -266,23 +368,22 @@ describe("settleBeforeFirstTick", () => {
   });
 });
 
-describe("tick — supervisor", () => {
+describe("tick — supervisor gone", () => {
   test("healthy from the start: one line per fact at first sight, then silence", async () => {
     const h = harness([deviceRow()]);
-    const first = await tick(h.state, h.deps);
-    expect(first.action).toEqual({ kind: "none" });
+    expect((await tick(h.state, h.deps)).action).toEqual({ kind: "none" });
     expect(messages(h.out.lines)).toEqual([
       "supervisor: up (1 fleet row(s))",
       "device daemon: running",
     ]);
-    h.advance(GUARD_INTERVAL_MS);
-    const second = await tick(h.state, h.deps);
-    expect(second.action).toEqual({ kind: "none" });
+    h.advance(30_000);
+    expect((await tick(h.state, h.deps)).action).toEqual({ kind: "none" });
     expect(h.out.lines).toHaveLength(2);
     expect(h.out.starts).toHaveLength(0);
+    expect(h.out.marker).toEqual([]);
   });
 
-  test("supervisor gone: announced once, restarted at once, then only on the backoff ladder", async () => {
+  test("gone: announced once, started at once, then backoff AND the rate limit apply", async () => {
     const h = harness([null]);
     const t0 = h.state;
     const a = await tick(t0, h.deps);
@@ -292,166 +393,273 @@ describe("tick — supervisor", () => {
       "supervisor: start #1 (next attempt in 15 s if it does not answer)",
     ]);
     expect(h.out.starts).toHaveLength(1);
+    // Every start is a marked stop-and-start sequence.
+    expect(markerEvents(h.out)).toEqual(["set", "clear"]);
 
     // +30 s: the 15 s wait is over → start #2, now 30 s wait.
     h.advance(30_000);
     expect((await tick(t0, h.deps)).action).toEqual({ kind: "start-supervisor" });
     expect(messages(h.out.lines).at(-1)).toBe("supervisor: start #2 (next attempt in 30 s if it does not answer)");
-
-    // +30 s: due again → start #3, now 1 min wait.
+    // +30 s: due → start #3. Three starts inside the 10 min window: the limit.
     h.advance(30_000);
     expect((await tick(t0, h.deps)).action).toEqual({ kind: "start-supervisor" });
     expect(messages(h.out.lines).at(-1)).toBe("supervisor: start #3 (next attempt in 1 min if it does not answer)");
 
-    // +30 s: inside the 1 min wait → silent, nothing started.
+    // +30 s (t = 90 s): backoff would allow at 150 s, the window only at 600 s → wait, said once.
     h.advance(30_000);
     expect((await tick(t0, h.deps)).action).toEqual({ kind: "none" });
-    expect(h.out.lines).toHaveLength(4);
+    expect(messages(h.out.lines).at(-1)).toBe(
+      `supervisor: restart postponed by the start limit (3 per 10 min) until ${timeOfDay(h.deps.now() + 600_000 - 90_000)}`,
+    );
+    const linesBefore = h.out.lines.length;
+    for (let t = 120_000; t < 600_000; t += 30_000) {
+      h.advance(30_000);
+      expect((await tick(t0, h.deps)).action).toEqual({ kind: "none" });
+    }
+    expect(h.out.lines).toHaveLength(linesBefore); // silent while it waits
     expect(h.out.starts).toHaveLength(3);
 
-    // +30 s: due → start #4 (2 min). Five starts in the first two minutes.
+    // t = 600 s: the first start left the window → start #4.
     h.advance(30_000);
     expect((await tick(t0, h.deps)).action).toEqual({ kind: "start-supervisor" });
-    expect(messages(h.out.lines).at(-1)).toContain("start #4 (next attempt in 2 min");
-
-    // The ladder keeps growing up to the cap: one tick skipped, then due.
-    for (const [advance, expected] of [
-      [60_000, null],
-      [60_000, "start #5 (next attempt in 5 min"],
-      [300_000, "start #6 (next attempt in 10 min"],
-      [300_000, null],
-      [300_000, "start #7 (next attempt in 10 min"],
-    ] as const) {
-      h.advance(advance);
-      const r = await tick(t0, h.deps);
-      if (expected === null) {
-        expect(r.action).toEqual({ kind: "none" });
-      } else {
-        expect(r.action).toEqual({ kind: "start-supervisor" });
-        expect(messages(h.out.lines).at(-1)).toContain(expected);
-      }
-    }
-    expect(h.out.starts).toHaveLength(7);
-
-    // It answers again: one line with the outage length; the ladder is
-    // forgiven after 10 stable minutes and the numbering starts over.
-    h.next(deviceRow());
-    h.advance(600_000);
-    await tick(t0, h.deps);
-    expect(messages(h.out.lines).at(-2)).toMatch(/^supervisor: back up after \d+ min \(1 fleet row\(s\)\)$/);
-    expect(messages(h.out.lines).at(-1)).toBe("device daemon: running");
-    expect(t0.starts).toBe(7);
-    h.advance(10 * MIN);
-    await tick(t0, h.deps);
-    expect(t0.starts).toBe(0);
-    expect(t0.nextStartAt).toBe(0);
-    h.next(null);
-    await tick(t0, h.deps);
-    expect(messages(h.out.lines).at(-1)).toContain("start #1 (");
+    expect(h.out.starts).toHaveLength(4);
+    expect(messages(h.out.lines).at(-1)).toBe("supervisor: start #4 (next attempt in 2 min if it does not answer)");
   });
 
-  test("a present but silent supervisor is killed after WEDGE_MISSES probes, then restarted", async () => {
-    const h = harness([null, null, null, null]);
-    h.out.pids = [31337];
-    h.out.alive.add(31337);
-    const a = await tick(h.state, h.deps);
-    expect(a.action).toEqual({ kind: "none" });
-    expect(messages(h.out.lines)).toEqual([
-      `supervisor: no reply (pid 31337 still present; restarted after ${WEDGE_MISSES} silent probes)`,
-    ]);
-    h.advance(GUARD_INTERVAL_MS);
-    const b = await tick(h.state, h.deps);
-    expect(b.action).toEqual({ kind: "none" });
-    expect(h.out.lines).toHaveLength(1); // no transition, no action → no line
-    expect(h.out.signals).toEqual([]);
-
-    h.advance(GUARD_INTERVAL_MS);
-    const c = await tick(h.state, h.deps);
-    expect(c.action).toEqual({ kind: "start-supervisor" });
-    expect(h.out.signals).toEqual([[31337, "SIGTERM"]]);
-    expect(messages(h.out.lines).slice(1)).toEqual([
-      "supervisor: pid 31337 alive but silent for 3 probes → kill",
-      "supervisor: start #1 (next attempt in 15 s if it does not answer)",
-    ]);
-    expect(h.out.starts).toHaveLength(1);
-  });
-
-  test("a supervisor that ignores SIGTERM gets SIGKILL after the grace period", async () => {    const h = harness([null, null, null, null]);
-    h.out.pids = [4];
-    h.out.alive.add(4);
-    const stubborn = { ...h.deps, signal: (pid: number, sig: string) => { h.out.signals.push([pid, sig]); return true; } };
-    await tick(h.state, stubborn);
-    await tick(h.state, stubborn);
-    await tick(h.state, stubborn);
-    expect(h.out.signals).toEqual([[4, "SIGTERM"], [4, "SIGKILL"]]);
-    // 25 polls of 200 ms make the 5 s grace.
-    expect(h.out.sleepMs.filter((ms) => ms === 200)).toHaveLength(25);
-  });
-
-  test("the replacement starts at once, even inside a long backoff", async () => {
-    const h = harness([null]);
+  test("without a rate limit the backoff ladder alone paces the starts", async () => {
+    const h = harness([null], config({ rateMax: 0 }));
     const t0 = h.state;
-    // An outage that already burned six starts: the next one would wait 10 min.
-    t0.supervisor = "down";
-    t0.downSince = h.deps.now() - 600_000;
-    t0.starts = 6;
-    t0.nextStartAt = h.deps.now() + 600_000;
-    h.out.pids = [5];
-    h.out.alive.add(5);
-    await tick(t0, h.deps);
-    await tick(t0, h.deps);
-    const c = await tick(t0, h.deps);
-    expect(h.out.signals).toEqual([[5, "SIGTERM"]]);
-    expect(c.action).toEqual({ kind: "start-supervisor" });
-    expect(messages(h.out.lines).at(-1)).toContain("start #7 (next attempt in 10 min");
+    await tick(t0, h.deps);                       // #1 → wait 15 s
+    h.advance(30_000); await tick(t0, h.deps);    // #2 → wait 30 s
+    h.advance(30_000); await tick(t0, h.deps);    // #3 → wait 1 min
+    h.advance(30_000);
+    expect((await tick(t0, h.deps)).action).toEqual({ kind: "none" });  // t = 90 s < 150 s
+    h.advance(30_000);
+    expect((await tick(t0, h.deps)).action).toEqual({ kind: "start-supervisor" }); // #4 at 120 s → wait 2 min
+    h.advance(120_000);
+    expect((await tick(t0, h.deps)).action).toEqual({ kind: "start-supervisor" }); // #5 → 5 min
+    expect(messages(h.out.lines).at(-1)).toBe("supervisor: start #5 (next attempt in 5 min if it does not answer)");
+    expect(h.out.lines.filter((l) => l.includes("postponed"))).toHaveLength(0);
   });
 
-  test("a supervisor that was just started gets three fresh probes before it can be called wedged", async () => {
-    const h = harness([null]);
-    const t0 = h.state;
-    h.out.pids = [7];
-    h.out.alive.add(7);
-    await tick(t0, h.deps);
-    h.advance(30_000);
-    await tick(t0, h.deps);
-    h.advance(30_000);
-    const c = await tick(t0, h.deps);
-    expect(c.action).toEqual({ kind: "start-supervisor" });
-    expect(t0.misses).toBe(0);
-
-    // Its replacement is alive but still booting: two silent probes spare it.
-    h.out.pids = [8];
-    h.out.alive.add(8);
-    h.advance(30_000);
-    expect((await tick(t0, h.deps)).action).toEqual({ kind: "none" });
-    h.advance(30_000);
-    expect((await tick(t0, h.deps)).action).toEqual({ kind: "none" });
-    expect(h.out.signals).toEqual([[7, "SIGTERM"]]);
-    expect(h.out.starts).toHaveLength(1);
-    // The third silent probe does kill it, and starts the next one.
-    h.advance(30_000);
-    expect((await tick(t0, h.deps)).action).toEqual({ kind: "start-supervisor" });
-    expect(h.out.signals).toEqual([[7, "SIGTERM"], [8, "SIGTERM"]]);
-  });
-
-  test("a supervisor that cannot be started is said so once, not on every retry", async () => {
+  test("a failing start is said so once, not on every retry", async () => {
     const h = harness([null]);
     h.out.startOk = false;
-    const a = await tick(h.state, h.deps);
-    expect(a.action).toEqual({ kind: "none" });
+    expect((await tick(h.state, h.deps)).action).toEqual({ kind: "none" });
     expect(messages(h.out.lines)[1]).toMatch(/^supervisor: could not start \(script or node missing — reinstall remote-pi\); retrying in 15 s$/);
     h.advance(60_000);
     await tick(h.state, h.deps);
     expect(h.out.lines).toHaveLength(2);
     expect(h.out.starts).toHaveLength(2);
   });
+
+  test("back up: one line with the outage length; the ladder is forgiven after 10 stable minutes", async () => {
+    const h = harness([null]);
+    const t0 = h.state;
+    await tick(t0, h.deps);
+    h.next(deviceRow());
+    h.advance(2 * MIN);
+    await tick(t0, h.deps);
+    expect(messages(h.out.lines).slice(-2)).toEqual([
+      "supervisor: back up after 2 min (1 fleet row(s))",
+      "device daemon: running",
+    ]);
+    expect(t0.backoffIndex).toBe(1);
+    h.advance(10 * MIN);
+    await tick(t0, h.deps);
+    expect(t0.backoffIndex).toBe(0);
+    expect(t0.nextStartAt).toBe(0);
+    h.next(null);
+    await tick(t0, h.deps);
+    expect(messages(h.out.lines).at(-1)).toContain("start #1 (");
+  });
+});
+
+describe("tick — supervisor wedged (alive, silent)", () => {
+  test("TWO silent probes (the owner's number), then kill + restart; the first probe only reports", async () => {
+    const h = harness([null]);
+    h.out.pids = [31337];
+    h.out.alive.add(31337);
+    expect((await tick(h.state, h.deps)).action).toEqual({ kind: "none" });
+    expect(messages(h.out.lines)).toEqual([
+      "supervisor: no reply (pid 31337 still present; restarted after 2 silent probes)",
+    ]);
+    expect(h.out.signals).toEqual([]);
+    h.advance(30_000);
+    const b = await tick(h.state, h.deps);
+    expect(b.action).toEqual({ kind: "start-supervisor" });
+    expect(h.out.signals).toEqual([[31337, "SIGTERM"]]);
+    expect(messages(h.out.lines).slice(1)).toEqual([
+      "supervisor: pid 31337 alive but silent for 2 probes → kill",
+      "supervisor: start #1 (next attempt in 15 s if it does not answer)",
+    ]);
+    expect(h.state.misses).toBe(0);
+  });
+
+  test("FAILS_BEFORE_RESTART is a setting: with 3 the kill waits for the third probe", async () => {
+    const h = harness([null, null, null, null], config({ failsBeforeRestart: 3 }));
+    h.out.pids = [5];
+    h.out.alive.add(5);
+    expect((await tick(h.state, h.deps)).action).toEqual({ kind: "none" });
+    h.advance(30_000);
+    expect((await tick(h.state, h.deps)).action).toEqual({ kind: "none" });
+    expect(h.out.signals).toEqual([]);
+    h.advance(30_000);
+    expect((await tick(h.state, h.deps)).action).toEqual({ kind: "start-supervisor" });
+    expect(h.out.signals).toEqual([[5, "SIGTERM"]]);
+  });
+
+  test("a supervisor that ignores SIGTERM gets SIGKILL after the stop grace", async () => {
+    const h = harness([null, null, null]);
+    h.out.pids = [4];
+    h.out.alive.add(4);
+    h.out.frozen.add(4);
+    await tick(h.state, h.deps);
+    await tick(h.state, h.deps);
+    expect(h.out.signals).toEqual([[4, "SIGTERM"], [4, "SIGKILL"]]);
+    // 50 polls of 200 ms make the 10 s grace.
+    expect(h.out.sleepMs.filter((ms) => ms === 200)).toHaveLength(50);
+  });
+
+  test("nothing is killed before the start limit allows the replacement", async () => {
+    const h = harness([null]);
+    const t0 = h.state;
+    t0.supervisor = "down";
+    t0.startTimes = [h.deps.now() - 30_000, h.deps.now() - 20_000, h.deps.now() - 10_000];
+    t0.backoffIndex = 3;
+    t0.nextStartAt = 0;
+    h.out.pids = [5];
+    h.out.alive.add(5);
+    t0.misses = 1;
+    await tick(t0, h.deps);   // miss 2: wedged, but the limit is exhausted
+    expect(h.out.signals).toEqual([]);
+    expect(h.out.starts).toEqual([]);
+    expect(messages(h.out.lines).at(-1)).toMatch(/^supervisor: restart postponed by the start limit \(3 per 10 min\) until /);
+    // Silent on the next tick, still nothing killed.
+    h.advance(30_000);
+    await tick(t0, h.deps);
+    expect(h.out.signals).toEqual([]);
+    expect(h.out.lines.filter((l) => l.includes("postponed"))).toHaveLength(1);
+  });
+
+  test("the replacement gets its own silent probes before it can be called wedged", async () => {
+    const h = harness([null]);
+    const t0 = h.state;
+    h.out.pids = [7];
+    h.out.alive.add(7);
+    await tick(t0, h.deps);
+    h.advance(30_000);
+    expect((await tick(t0, h.deps)).action).toEqual({ kind: "start-supervisor" });
+    expect(t0.misses).toBe(0);
+    // Its replacement is alive but still booting: one silent probe spares it,
+    // the second (two fails) does not.
+    h.out.pids = [8];
+    h.out.alive.add(8);
+    h.advance(30_000);
+    expect((await tick(t0, h.deps)).action).toEqual({ kind: "none" });
+    expect(h.out.signals).toEqual([[7, "SIGTERM"]]);
+    expect(h.out.starts).toHaveLength(1);
+  });
+});
+
+describe("tick — age restart", () => {
+  test("a supervisor older than MAX_AGE gets ONE graceful restart: SIGINT, grace, SIGKILL, start", async () => {
+    const h = harness([deviceRow()], config({ maxAgeMs: 5_000 }));   // tiny override for the test
+    const t0 = h.state;
+    h.out.pids = [21];
+    h.out.alive.add(21);
+    h.out.ages.set(21, 6_000);
+    const a = await tick(t0, h.deps);
+    expect(a.action).toEqual({ kind: "age-restart" });
+    expect(messages(h.out.lines).slice(-1)).toEqual(["supervisor: age restart (uptime 6 s, limit 5 s)"]);
+    expect(h.out.signals).toEqual([[21, "SIGINT"]]);
+    expect(h.out.starts).toHaveLength(1);
+    expect(markerEvents(h.out)).toEqual(["set", "clear"]);
+    // The restart counts like any other start: backoff + rate window.
+    expect(t0.nextStartAt).toBe(h.deps.now() + 15_000);
+    expect(t0.startTimes).toHaveLength(1);
+    expect(t0.ageRestarted).toEqual([21]);
+
+    // Its replacement is young: no second restart, no line.
+    h.out.pids = [22];
+    h.out.alive.add(22);
+    h.out.ages.set(22, 1_000);
+    h.advance(30_000);
+    expect((await tick(t0, h.deps)).action).toEqual({ kind: "none" });
+    expect(h.out.starts).toHaveLength(1);
+  });
+
+  test("with the default 24 h and a 25 h process the restart happens; with 23 h it does not", async () => {
+    const old = harness([deviceRow()]);
+    old.out.pids = [1];
+    old.out.ages.set(1, 25 * HOUR);
+    expect((await tick(old.state, old.deps)).action).toEqual({ kind: "age-restart" });
+    expect(messages(old.out.lines).at(-1)).toBe("supervisor: age restart (uptime 25 h, limit 24 h)");
+
+    const young = harness([deviceRow()]);
+    young.out.pids = [2];
+    young.out.ages.set(2, 23 * HOUR);
+    expect((await tick(young.state, young.deps)).action).toEqual({ kind: "none" });
+    expect(young.out.lines.some((l) => l.includes("age restart"))).toBe(false);
+  });
+
+  test("a frozen old supervisor: SIGINT is ignored, SIGKILL follows after the grace, then the start", async () => {
+    const h = harness([deviceRow()], config({ maxAgeMs: 5_000, stopGraceMs: 2_000 }));
+    h.out.pids = [9];
+    h.out.alive.add(9);
+    h.out.frozen.add(9);
+    h.out.ages.set(9, 60_000);
+    expect((await tick(h.state, h.deps)).action).toEqual({ kind: "age-restart" });
+    expect(h.out.signals).toEqual([[9, "SIGINT"], [9, "SIGKILL"]]);
+    expect(h.out.starts).toHaveLength(1);
+  });
+
+  test("MAX_AGE_S = 0 turns the age restart off", async () => {
+    const h = harness([deviceRow()], config({ maxAgeMs: 0 }));
+    h.out.pids = [3];
+    h.out.ages.set(3, 100 * HOUR);
+    expect((await tick(h.state, h.deps)).action).toEqual({ kind: "none" });
+    expect(h.out.signals).toEqual([]);
+  });
+
+  test("the age restart waits for the start limit like any other start, said once", async () => {
+    const h = harness([deviceRow()], config({ maxAgeMs: 5_000 }));
+    const t0 = h.state;
+    t0.startTimes = [h.deps.now() - 1000, h.deps.now() - 500, h.deps.now() - 100];
+    h.out.pids = [4];
+    h.out.ages.set(4, 60_000);
+    expect((await tick(t0, h.deps)).action).toEqual({ kind: "none" });
+    expect(h.out.signals).toEqual([]);
+    expect(messages(h.out.lines).at(-1)).toMatch(/^supervisor: age restart \(uptime 1 min\) postponed by the start limit until /);
+    h.advance(30_000);
+    await tick(t0, h.deps);
+    expect(h.out.lines.filter((l) => l.includes("postponed"))).toHaveLength(1);
+  });
+
+  test("without a readable process age the observed uptime is used, and the restart cannot loop", async () => {
+    const h = harness([deviceRow()], config({ maxAgeMs: 5 * MIN }));
+    const t0 = h.state;
+    h.out.pids = [6];
+    // First observation at t0: age 0 → nothing.
+    await tick(t0, h.deps);
+    expect(h.out.starts).toHaveLength(0);
+    // Six minutes later the OBSERVED uptime (process age unknown) exceeds the limit.
+    h.advance(6 * MIN);
+    expect((await tick(t0, h.deps)).action).toEqual({ kind: "age-restart" });
+    expect(messages(h.out.lines).at(-1)).toBe("supervisor: age restart (uptime 6 min, limit 5 min)");
+    // The graceful stop did not work (pid 6 still there, age unknown): the
+    // same incarnation is never age-restarted twice.
+    h.out.alive.add(6);
+    h.advance(30_000);
+    expect((await tick(t0, h.deps)).action).toEqual({ kind: "none" });
+    expect(h.out.starts).toHaveLength(1);
+  });
 });
 
 describe("tick — device daemon", () => {
   test("crashed and starting are logged on transition only; the supervisor owns the restart", async () => {
     const h = harness([deviceRow("crashed"), deviceRow("starting"), deviceRow(), deviceRow()]);
-    const a = await tick(h.state, h.deps);
-    expect(a.action).toEqual({ kind: "none" });
+    expect((await tick(h.state, h.deps)).action).toEqual({ kind: "none" });
     expect(messages(h.out.lines)[1]).toMatch(/^device daemon: crashed \(/);
     await tick(h.state, h.deps);
     await tick(h.state, h.deps);
@@ -483,34 +691,28 @@ describe("tick — device daemon", () => {
     expect(messages(h.out.lines)[2]).toBe("device daemon: stopped → start requested");
     expect(h.out.deviceStarts).toHaveLength(1);
 
-    // Still stopped 30 s later: inside the cooldown → nothing.
     h.advance(30_000);
     expect((await tick(t0, h.deps)).action).toEqual({ kind: "none" });
     expect(h.out.deviceStarts).toHaveLength(1);
     expect(h.out.lines).toHaveLength(3);
 
-    // 60 s after the first request: second one.
     h.advance(30_000);
     expect((await tick(t0, h.deps)).action).toEqual({ kind: "restart-device" });
     expect(h.out.deviceStarts).toHaveLength(2);
-    h.advance(DEVICE_RESTART_COOLDOWN_MS);
+    h.advance(60_000);
     expect((await tick(t0, h.deps)).action).toEqual({ kind: "restart-device" });
     expect(h.out.deviceStarts).toHaveLength(3);
 
-    // Budget exhausted: said once, then silence until the daemon runs again.
-    h.advance(DEVICE_RESTART_COOLDOWN_MS);
-    const d = await tick(t0, h.deps);
-    expect(d.action).toEqual({ kind: "none" });
+    h.advance(60_000);
+    expect((await tick(t0, h.deps)).action).toEqual({ kind: "none" });
     expect(messages(h.out.lines).at(-1)).toBe(
-      `device daemon: 3 starts in 10 min did not keep it up — leaving it alone (remote-pi doctor)`,
+      "device daemon: 3 starts in 10 min did not keep it up — leaving it alone (remote-pi doctor)",
     );
-    h.advance(DEVICE_RESTART_COOLDOWN_MS);
+    h.advance(60_000);
     await tick(t0, h.deps);
     expect(h.out.deviceStarts).toHaveLength(3);
-    expect(messages(h.out.lines).at(-1)).toContain("leaving it alone");
 
-    // It runs once more (someone fixed it) → the budget line is re-armed, so
-    // the next exhaustion is announced again instead of staying silent.
+    // It runs once more (someone fixed it) → the budget line is re-armed.
     h.next(deviceRow(), deviceRow("stopped"));
     await tick(t0, h.deps);
     await tick(t0, h.deps);
@@ -524,9 +726,58 @@ describe("tick — device daemon", () => {
   test("a start refused by the supervisor is reported as such", async () => {
     const h = harness([deviceRow("stopped")]);
     h.out.deviceStartOk = false;
-    const a = await tick(h.state, h.deps);
-    expect(a.action).toEqual({ kind: "restart-device" });
+    expect((await tick(h.state, h.deps)).action).toEqual({ kind: "restart-device" });
     expect(messages(h.out.lines)[2]).toBe("device daemon: stopped → start refused by the supervisor");
+  });
+});
+
+describe("retireInterimGuard", () => {
+  function retireDeps(opts: { pid: number | null; interim: boolean; alive: boolean; scriptExists: boolean; ignoreTerm?: boolean }) {
+    const calls: string[] = [];
+    let alive = opts.alive;
+    let renamed = false;
+    const deps = {
+      pidFilePid: () => opts.pid,
+      isInterim: () => opts.interim,
+      signal: (pid: number, sig: string) => { calls.push(`${sig} ${pid}`); if (sig === "SIGKILL" || (sig === "SIGTERM" && !opts.ignoreTerm)) alive = false; return true; },
+      isAlive: () => alive,
+      sleep: async () => undefined,
+      rename: (from: string) => { if (!opts.scriptExists) return false; renamed = true; calls.push(`rename ${from}`); return true; },
+      now: () => new Date(2026, 10, 26, 14, 30, 15).getTime(),
+      log: (line: string) => calls.push(line),
+    };
+    return { deps, calls, renamed: () => renamed };
+  }
+
+  test("stops the live interim guard by its pid, then renames its script out of reach", async () => {
+    const d = retireDeps({ pid: 777, interim: true, alive: true, scriptExists: true });
+    const lines = await retireInterimGuard(d.deps);
+    expect(d.calls.filter((c) => c.startsWith("SIG"))).toEqual(["SIGTERM 777"]);
+    expect(d.renamed()).toBe(true);
+    expect(lines.map((l) => l.replace(/^\S+ \S+ /, ""))).toEqual([
+      "interim guard: stopping pid 777 (remote-pi guard takes over)",
+      "interim guard: stopped (pid 777)",
+      `interim guard: script renamed to ${join(tmp, ".pi", "piper", "piper-guard.sh.replaced-20261126-143015")} (remote-pi guard run is the only guard now)`,
+    ]);
+  });
+
+  test("a frozen interim guard gets SIGKILL after the grace", async () => {
+    const d = retireDeps({ pid: 777, interim: true, alive: true, scriptExists: false, ignoreTerm: true });
+    await retireInterimGuard(d.deps);
+    expect(d.calls.filter((c) => c.startsWith("SIG"))).toEqual(["SIGTERM 777", "SIGKILL 777"]);
+  });
+
+  test("a pid file that names anything else is left alone; the script is still renamed", async () => {
+    const d = retireDeps({ pid: 5, interim: false, alive: true, scriptExists: true });
+    const lines = await retireInterimGuard(d.deps);
+    expect(d.calls.filter((c) => c.startsWith("SIG"))).toEqual([]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("script renamed to");
+  });
+
+  test("nothing to retire: no lines", async () => {
+    const d = retireDeps({ pid: null, interim: true, alive: false, scriptExists: false });
+    expect(await retireInterimGuard(d.deps)).toEqual([]);
   });
 });
 
@@ -561,56 +812,130 @@ describe("guardStart / guardStatus / guardStop", () => {
     expect(spawns).toBe(1);
     expect(calls[0]).toMatchObject({ args: [expect.stringMatching(/index\.js$/), "guard", "run"], detached: true });
 
-    checks = -100;
     const failed = await guardStart({ spawnFn: fakeSpawn, sleep: async () => undefined, runningPid: () => null, logPath: join(tmp, "guard.log") });
     expect(failed.ok).toBe(false);
     expect(failed.message).toContain("did not take its lock");
   });
 
-  test("status: three lines in the log's vocabulary", async () => {
-    const lines = await guardStatus({ runningPid: () => 9, probe: async () => deviceRow("crashed"), sockPath: SOCK });
+  test("status: four lines in the log's vocabulary, the last one the effective settings", async () => {
+    const lines = await guardStatus({ runningPid: () => 9, probe: async () => deviceRow("crashed"), sockPath: SOCK, config: config() });
     expect(lines[0]).toMatch(/^guard:\s+running \(pid 9\) — .*guard\.log$/);
     expect(lines[1]).toBe("supervisor: up (1 fleet row(s))");
     expect(lines[2]).toMatch(/^device:\s+crashed \(/);
-    const down = await guardStatus({ runningPid: () => null, probe: async () => null, sockPath: SOCK });
-    expect(down).toEqual([
+    expect(lines[3]).toBe(`settings:  ${describeGuardConfig(config())}`);
+    const down = await guardStatus({ runningPid: () => null, probe: async () => null, sockPath: SOCK, config: config() });
+    expect(down.slice(0, 3)).toEqual([
       expect.stringMatching(/^guard:\s+not running/),
       `supervisor: no reply on ${SOCK}`,
       "device:     unknown (supervisor silent)",
     ]);
   });
 
-  test("stop: SIGTERM the running guard, escalate to SIGKILL when it lingers", async () => {
+  test("stop: waits for a restart in progress instead of shooting into it", async () => {
     const signalled: Array<[number, string]> = [];
     let alive = true;
-    let polls = 0;
+    let waitedMs = 0;
+    let inRestart = true;
     const stopped = await guardStop({
       runningPid: () => (alive ? 77 : null),
       signal: (pid, sig) => { signalled.push([pid, sig]); return true; },
       isAlive: () => alive,
-      // Lingers through the whole SIGTERM grace (40 polls), dies on SIGKILL.
-      sleep: async () => { polls += 1; alive = !(signalled.length > 1 && polls > 41); },
+      sleep: async (ms) => {
+        waitedMs += ms;
+        // The guard finishes its restart about 25 s after the SIGTERM.
+        if (waitedMs >= 25_000) { inRestart = false; alive = false; }
+      },
+      restartInProgress: () => inRestart,
     });
     expect(stopped).toEqual({ ok: true, message: "guard stopped (pid 77)" });
+    expect(signalled).toEqual([[77, "SIGTERM"]]); // no SIGKILL
+    expect(waitedMs).toBeGreaterThanOrEqual(25_000);
+  });
+
+  test("stop: a guard that lingers WITHOUT a restart gets SIGKILL after the grace", async () => {
+    const signalled: Array<[number, string]> = [];
+    let alive = true;
+    let waitedMs = 0;
+    const stopped = await guardStop({
+      runningPid: () => (alive ? 77 : null),
+      signal: (pid, sig) => { signalled.push([pid, sig]); if (sig === "SIGKILL") alive = false; return true; },
+      isAlive: () => alive,
+      sleep: async (ms) => { waitedMs += ms; },
+      restartInProgress: () => false,
+    });
+    expect(stopped).toEqual({ ok: true, message: "guard stopped (pid 77, needed SIGKILL)" });
     expect(signalled).toEqual([[77, "SIGTERM"], [77, "SIGKILL"]]);
-    expect(await guardStop({ runningPid: () => null, signal: () => true, isAlive: () => false, sleep: async () => undefined }))
+    // The 10 s grace, plus the settle pause after the SIGKILL.
+    expect(waitedMs).toBe(10_100);
+    expect(await guardStop({ runningPid: () => null, signal: () => true, isAlive: () => false, sleep: async () => undefined, restartInProgress: () => false }))
       .toEqual({ ok: true, message: "guard is not running" });
+  });
+
+  test("the marker is a file that exists exactly while a restart runs", () => {
+    const marker = fileMarker(join(tmp, "piper", "guard.restarting"));
+    expect(marker.exists()).toBe(false);
+    marker.set("guard pid 1");
+    expect(marker.exists()).toBe(true);
+    expect(readFileSync(join(tmp, "piper", "guard.restarting"), "utf8")).toBe("guard pid 1\n");
+    marker.clear();
+    expect(marker.exists()).toBe(false);
+    marker.clear(); // idempotent
+  });
+});
+
+describe("runGuardLoop", () => {
+  test("logs the effective settings at start; a stop during a restart waits for the restart to finish", async () => {
+    const cfg = config({ intervalMs: 5_000, failsBeforeRestart: 1 });
+    const h = harness([null], cfg);
+    h.out.pids = [31];
+    h.out.alive.add(31);
+    h.out.frozen.add(31);               // ignores SIGTERM → the sequence polls in terminatePid
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    let sleeps = 0;
+    h.deps.sleep = async () => {
+      sleeps += 1;
+      // The first four sleeps belong to the startup grace; the fifth is
+      // inside the restart sequence.
+      if (sleeps > 4) await gate;
+    };
+    const loop = runGuardLoop({ config: cfg, deps: { ...h.deps }, wireSignals: false });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(messages(h.out.lines)[0]).toBe(`guard started (pid ${process.pid}): ${describeGuardConfig(cfg)}`);
+    expect(messages(h.out.lines).at(-1)).toBe("supervisor: pid 31 alive but silent for 1 probes → kill");
+    expect(h.out.starts).toHaveLength(0);
+    expect(h.out.marker).toEqual([expect.stringMatching(/^set:/)]);
+
+    // A TERM now must not abort the restart: stop waits for the tick.
+    let stopped = false;
+    const stopping = loop.stop().then(() => { stopped = true; });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(stopped).toBe(false);
+
+    release();
+    await stopping;
+    expect(h.out.starts).toHaveLength(1);
+    expect(h.out.marker.at(-1)).toBe("clear");
+    expect(messages(h.out.lines).slice(-2)).toEqual([
+      "supervisor: start #1 (next attempt in 15 s if it does not answer)",
+      `guard stopped (pid ${process.pid})`,
+    ]);
   });
 });
 
 describe("runGuardCli", () => {
-  test("no or unknown subcommand prints the usage and exits 1", async () => {
+  test("no or unknown subcommand prints the usage (with the settings) and exits 1", async () => {
     const errs: string[] = [];
     const out: string[] = [];
     expect(await runGuardCli(["node", "index.js", "guard"], { out: (l) => out.push(l), err: (l) => errs.push(l) })).toBe(1);
     expect(await runGuardCli(["node", "index.js", "guard", "wat"], { out: (l) => out.push(l), err: (l) => errs.push(l) })).toBe(1);
     expect(errs).toHaveLength(2);
     expect(errs[0]).toContain("Usage: remote-pi guard <run|start|status|stop|once>");
+    expect(errs[0]).toContain("INTERVAL_S, FAILS_BEFORE_RESTART, MAX_AGE_S");
     expect(out).toHaveLength(0);
   });
 
   test("run and start refuse outside Termux (a PC has a service manager)", async ({ skip }) => {
-    // On a Termux host these really run; the refusal is the behaviour under test.
     if (process.env["TERMUX_VERSION"]) skip();
     const errs: string[] = [];
     expect(await runGuardCli(["node", "index.js", "guard", "run"], { out: () => undefined, err: (l) => errs.push(l) })).toBe(1);
