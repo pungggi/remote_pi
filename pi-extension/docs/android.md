@@ -117,7 +117,9 @@ guard brings a stopped device daemon back within 30 s, so stop it first.
 **Coming from the interim setup:** if the phone already has a
 `~/.termux/boot/start-piper.sh` that this version did not write, the command
 prints the diff and asks before replacing it, and keeps a dated copy next to
-it. The interim guard (`~/.pi/piper/piper-guard.sh`) is retired by
+it. On its own, `remote-pi install` refuses to touch such a file: only
+`phone-setup` passes the permission to replace it, and only after that
+question. The interim guard (`~/.pi/piper/piper-guard.sh`) is retired by
 `remote-pi guard run` when the boot script starts it: stopped by its pid,
 script renamed. The output says whether both happened.
 

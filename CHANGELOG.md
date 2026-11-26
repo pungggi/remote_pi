@@ -19,10 +19,10 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   dark from 21:10 until 11:18).
   - pi-extension: `remote-pi install` detects Termux and writes the
     Termux:Boot script `~/.termux/boot/start-piper.sh` (wake lock,
-    supervisor, guard); an existing script is never clobbered: a dated
-    copy is kept and its diff reported. `uninstall` stops both again.
-    `remote-pi phone-setup` checks the environment, shows the diff and asks
-    before replacing a boot script it did not write, installs, starts,
+    supervisor, guard). A script remote-pi did not write is left alone by
+    install; `remote-pi phone-setup` shows its diff and replaces it only
+    after the user agreed, keeping a dated copy. `uninstall` stops both
+    again. `remote-pi phone-setup` checks the environment, installs, starts,
     waits for the device daemon's relay room and prints a pairing link that
     the device daemon mints (new supervisor op `pair`). Flags: `--relay`,
     `--yes`, `--ttl`.
