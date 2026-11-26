@@ -159,6 +159,12 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Fixed
 
+- **`show_file` / `show_image` no longer echo the resolved absolute path in
+  a failure message.** Node's fs error text embeds it (`stat '/…/doc.md'`),
+  so the model-visible result carried the absolute path although both tools
+  echo only the agent-supplied path in `details.path`. The error code is
+  reported instead (found by the first Linux CI run; the test compared
+  JSON, where backslash escaping had hidden the leak on Windows).
 - **pi-extension: service units are always LF, templates and shell scripts
   stay LF in every checkout** (found while packing 0.10.0). A tarball packed
   on a Windows checkout shipped CRLF service templates, and `remote-pi
