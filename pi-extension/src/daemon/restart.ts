@@ -71,6 +71,9 @@ export const RESTART_WAIT_MS = 30_000;
 const POLL_MS = 500;
 /** SIGTERM to SIGKILL escalation for the old supervisor in the fallback. */
 const KILL_GRACE_MS = 10_000;
+/** Upper bound for one socket-owner lookup in the CLI (the probe's own budget
+ *  is 2 s on Windows; this only guarantees progress if it ever hangs). */
+export const OWNER_TIMEOUT_MS = 8_000;
 /** After a hard kill (Windows has no graceful signal) the old children exit
  *  on their own when stdio closes; the 2026-11-26 replay took about 6 s. */
 const CHILDREN_WAIT_MS = 15_000;
@@ -120,14 +123,23 @@ function fingerprint(rows: DaemonInfo[] | null): string {
   return rows.map((d) => `${d.id}:${d.pid ?? "-"}`).sort().join(",");
 }
 
-/** The current identity: one `status` round trip, and the socket owner's pid
- *  when somebody answered. (While nobody answers the owner is asked for only
- *  where it is needed, the kill fallback, to save the Windows probe a spawn
- *  per poll.) */
+/** The identity before anything runs: one `status` round trip and, when
+ *  somebody answered, the socket owner's pid. (The poll that follows never
+ *  asks for the owner unless its cheap `status` answer already looks like a
+ *  new incarnation — the owner query spawns a probe on Windows.) */
 async function identify(deps: Pick<RestartDeps, "status" | "owner">): Promise<SupervisorIdentity> {
   const rows = await deps.status();
   const pid = rows === null ? null : (await deps.owner())?.pid ?? null;
   return { pid, rows };
+}
+
+/** Does this `status` answer possibly belong to a new incarnation? Cheaper
+ *  than the owner query: it only compares the children's pids. */
+function mayBeNew(before: SupervisorIdentity, rows: DaemonInfo[] | null): boolean {
+  if (rows === null) return false;
+  if (before.rows === null) return true;
+  const now = fingerprint(rows);
+  return now !== "" && now !== fingerprint(before.rows);
 }
 
 /** Did `after` describe a different incarnation than `before`? The socket
@@ -151,6 +163,13 @@ function human(ms: number): string {
   return `${(ms / 1000).toFixed(1)} s`;
 }
 
+/** The identity for a report: the poll leaves the socket owner unqueried
+ *  while nothing changes, so name it here (one probe) when somebody answers. */
+async function named(deps: Pick<RestartDeps, "owner">, seen: SupervisorIdentity): Promise<SupervisorIdentity> {
+  if (seen.pid !== null || seen.rows === null) return seen;
+  return { pid: (await deps.owner())?.pid ?? null, rows: seen.rows };
+}
+
 async function waitForChange(
   deps: RestartDeps,
   before: SupervisorIdentity,
@@ -159,9 +178,14 @@ async function waitForChange(
   const started = deps.now();
   const deadline = started + waitMs;
   for (;;) {
-    const after = await identify(deps);
-    if (incarnationChanged(before, after)) return { changed: true, after, elapsedMs: deps.now() - started };
-    if (deps.now() >= deadline) return { changed: false, after, elapsedMs: deps.now() - started };
+    const rows = await deps.status();
+    if (mayBeNew(before, rows)) {
+      // A candidate: one owner query settles whether it is really a new
+      // supervisor (a respawned child alone does not count).
+      const after: SupervisorIdentity = { pid: (await deps.owner())?.pid ?? null, rows };
+      if (incarnationChanged(before, after)) return { changed: true, after, elapsedMs: deps.now() - started };
+    }
+    if (deps.now() >= deadline) return { changed: false, after: { pid: null, rows }, elapsedMs: deps.now() - started };
     await deps.sleep(POLL_MS);
   }
 }
@@ -228,20 +252,42 @@ export async function restartSupervisor(deps: RestartDeps): Promise<RestartResul
   let seen = await waitForChange(deps, before, waitMs);
   if (seen.changed) {
     const message = `Supervisor restarted: ${describe(before)} → ${describe(seen.after)} (${human(seen.elapsedMs)}).`;
-    deps.log(`[remote-pi] ${message}`);
     return { ok: true, message, before, after: seen.after };
   }
 
+  // Nothing new answered. Name who IS answering for the report (the poll
+  // leaves the socket owner unqueried while nothing changes).
+  const stalled = await named(deps, seen.after);
+  deps.log(`  no new supervisor after ${human(seen.elapsedMs)}: ${describe(stalled)}`);
+
   // The service commands did not replace the running instance: a second
   // launcher (a hand-started process) is still holding the socket and the
-  // service's own instance yielded to it. Fall back to the plan/168 kill path.
-  const oldPid = before.pid ?? (await deps.owner())?.pid ?? null;
-  deps.log(`  no new supervisor after ${human(seen.elapsedMs)}: ${describe(seen.after)}`);
+  // service's own instance yielded to it. Before anything is stopped, make
+  // sure that shape really holds: the OLD processes must still be alive. If
+  // they are gone and the answer still looks unchanged, the answer came from
+  // somewhere else and a kill would hit the wrong thing.
+  const oldPids = [before.pid, ...(before.rows ?? []).map((d) => d.pid)].filter(
+    (p): p is number => p !== null && p !== undefined,
+  );
+  if (before.rows !== null && oldPids.length > 0 && !oldPids.some((p) => deps.pidAlive(p))) {
+    return {
+      ok: false,
+      before,
+      after: stalled,
+      message:
+        `restart-supervisor: cannot tell whether the supervisor was restarted: its previous processes (pid ` +
+        `${oldPids.join(", ")}) are gone, yet the control socket still reports the same fleet (${describe(stalled)}). ` +
+        "Nothing was stopped.",
+    };
+  }
+  // Fall back to the plan/168 kill path. The pid to stop is the one named
+  // before, else whoever serves the socket now.
+  const oldPid = before.pid ?? stalled.pid ?? (await deps.owner())?.pid ?? null;
   if (oldPid === null) {
     return {
       ok: false,
       before,
-      after: seen.after,
+      after: stalled,
       message:
         "restart-supervisor: the supervisor was NOT restarted (no new instance answered and the running " +
         "one could not be identified to stop it). Stop the running pi-supervisord by hand, then run this " +
@@ -276,16 +322,16 @@ export async function restartSupervisor(deps: RestartDeps): Promise<RestartResul
     const message =
       `Supervisor restarted through the fallback: ${describe(before)} → ${describe(seen.after)} (${human(seen.elapsedMs)}). ` +
       "The service did not own the running instance; keep ONE launcher (only the service should start the supervisor).";
-    deps.log(`[remote-pi] ${message}`);
     return { ok: true, message, before, after: seen.after };
   }
+  const still = await named(deps, seen.after);
   return {
     ok: false,
     before,
-    after: seen.after,
+    after: still,
     message:
       `restart-supervisor: the supervisor was NOT restarted (after stopping pid ${oldPid} and starting the service, ` +
-      `${describe(seen.after)} after ${human(seen.elapsedMs)}). See ~/.pi/piper/supervisord.log.`,
+      `${describe(still)} after ${human(seen.elapsedMs)}). See ~/.pi/piper/supervisord.log.`,
   };
 }
 
@@ -306,12 +352,18 @@ export function defaultRestartDeps(overrides: Partial<RestartDeps> = {}): Restar
       // describeSocketOwner unrefs its probe so a diagnosis can never keep a pi
       // session alive. A CLI process has nothing else on its event loop, so
       // without a handle here node would exit mid-restart — with code 0,
-      // before the answer arrived.
+      // before the answer arrived. The probe races its own budget (2 s on
+      // Windows); the explicit bound here keeps the CLI independent of that.
       const keepAlive = setInterval(() => undefined, 1_000);
+      let guard: ReturnType<typeof setTimeout> | undefined;
       try {
-        const owner = await describeSocketOwner(supervisorSockPath());
+        const owner = await Promise.race([
+          describeSocketOwner(supervisorSockPath()),
+          new Promise<null>((resolve) => { guard = setTimeout(() => resolve(null), OWNER_TIMEOUT_MS); }),
+        ]);
         return owner === null ? null : { pid: owner.pid };
       } finally {
+        if (guard !== undefined) clearTimeout(guard);
         clearInterval(keepAlive);
       }
     },

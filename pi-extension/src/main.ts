@@ -7089,7 +7089,11 @@ export async function runCli(argv: string[]): Promise<void> {
     // not reported as success, and the exit code says what really happened.
     const { restartSupervisor, defaultRestartDeps } = await import("./daemon/restart.js");
     const result = await restartSupervisor(defaultRestartDeps());
-    if (!result.ok) {
+    // Progress lines went to stdout; the verdict is printed exactly once —
+    // stdout and exit 0 when a new supervisor answered, stderr and exit 1
+    // otherwise (the Cockpit reads the exit code).
+    if (result.ok) console.log(`[remote-pi] ${result.message}`);
+    else {
       console.error(`[remote-pi] ${result.message}`);
       process.exitCode = 1;
     }

@@ -44,18 +44,26 @@ function harness(opts: {
   supervisorDies?: "term" | "kill" | "never";
   /** How long after the supervisor died its children exit (stdio EOF). */
   childrenExitMs?: number;
+  /** Whether the OLD processes (supervisor + children) exist at all. */
+  oldProcessesAlive?: boolean;
 }) {
   let now = 1_000_000;
   const log: string[] = [];
   const runs: string[] = [];
   const kills: Array<[number, string]> = [];
+  let ownerCalls = 0;
   const alive = new Set<number>();
-  for (const pid of [opts.before.pid, ...(opts.before.rows ?? []).map((d) => d.pid)]) {
-    if (pid !== null && pid !== undefined) alive.add(pid);
+  if (opts.oldProcessesAlive !== false) {
+    for (const pid of [opts.before.pid, ...(opts.before.rows ?? []).map((d) => d.pid)]) {
+      if (pid !== null && pid !== undefined) alive.add(pid);
+    }
   }
   let phase: "steps" | "fallback" = "steps";
   let probes = -1;
-  let probing = false;
+  // Set by status(), consumed by the owner() of the same probe. Anything
+  // else that happens in between (a kill, a command, a wait) clears it, so
+  // an owner() that follows is the flow's standalone lookup in the fallback.
+  let paired = false;
   let supervisorDiedAt: number | null = null;
 
   const current = (): Script => {
@@ -68,22 +76,25 @@ function harness(opts: {
     sockPath: SOCK,
     status: async () => {
       probes += 1;
-      probing = true;            // the matching owner() belongs to this probe
+      paired = true;
       return current().rows;
     },
     owner: async () => {
-      if (!probing) return (opts.ownerAlone ?? (() => null))();
-      probing = false;
+      ownerCalls += 1;
+      if (!paired) return opts.ownerAlone ? opts.ownerAlone() : null;
+      paired = false;
       const pid = current().pid;
       return pid === null ? null : { pid };
     },
     run: (cmd: string, args: string[]) => {
+      paired = false;
       const line = `${cmd} ${args.join(" ")}`;
       runs.push(line);
       if (cmd === "schtasks" && args[0] === "/Run" && phase === "steps") phase = "fallback";
       return opts.run ? opts.run(cmd, args) : { ok: true, detail: "" };
     },
     kill: (pid: number, signal: string) => {
+      paired = false;
       kills.push([pid, signal]);
       if (opts.supervisorDies === "never") return true;
       if (opts.supervisorDies === "kill" && signal === "SIGTERM") return true;
@@ -91,8 +102,12 @@ function harness(opts: {
       supervisorDiedAt = now;
       return true;
     },
-    pidAlive: (pid: number) => alive.has(pid),
+    pidAlive: (pid: number) => {
+      paired = false;
+      return alive.has(pid);
+    },
     sleep: async (ms: number) => {
+      paired = false;
       now += ms;
       if (supervisorDiedAt !== null && now - supervisorDiedAt >= (opts.childrenExitMs ?? 6_000)) {
         for (const d of opts.before.rows ?? []) if (d.pid !== undefined) alive.delete(d.pid);
@@ -102,7 +117,7 @@ function harness(opts: {
     log: (line: string) => log.push(line),
     waitMs: opts.waitMs ?? 5_000,
   };
-  return { deps, log, runs, kills, clockMs: () => now };
+  return { deps, log, runs, kills, clockMs: () => now, ownerCalls: () => ownerCalls };
 }
 
 const OLD: Script = { pid: 13772, rows: rows(["device", 27180], ["ab12cd34", 27190]) };
@@ -155,7 +170,9 @@ describe("restartSupervisor — the honest path", () => {
     expect(h.runs).toEqual([`schtasks /End /TN ${TASK}`, `schtasks /Run /TN ${TASK}`]);
     expect(h.kills).toEqual([]);
     expect(r.message).toBe("Supervisor restarted: pid 13772, 2 fleet row(s) → pid 15000, 2 fleet row(s) (0.5 s).");
-    expect(h.log).toContain(`[remote-pi] ${r.message}`);
+    // The verdict is printed once by the CLI (main.ts), not by the flow itself.
+    expect(h.log.some((l) => l.includes("Supervisor restarted"))).toBe(false);
+    expect(h.ownerCalls()).toBe(2);   // the identity before, and the one candidate
   });
 
   test("supervisor down before: the service command starts it, reported as such", async () => {
@@ -230,6 +247,12 @@ describe("restartSupervisor — the incident of 2026-11-26 (status never changes
     expect(h.kills).toEqual([[13772, "SIGTERM"]]);
     expect(r.message).toContain("Supervisor restarted through the fallback: pid 13772, 2 fleet row(s) → pid 15000, 2 fleet row(s)");
     expect(r.message).toContain("The service did not own the running instance; keep ONE launcher");
+    expect(h.log.some((l) => l.includes("Supervisor restarted"))).toBe(false);
+    // Review on #127: while nothing changed the poll cost one status round
+    // trip per tick; the socket owner was asked for for the identity before,
+    // for the report ("no new supervisor … pid 13772"), and for the one
+    // candidate after the second /Run — never per tick.
+    expect(h.ownerCalls()).toBe(3);
     expect(h.log).toContain("  no new supervisor after 5.0 s: pid 13772, 2 fleet row(s)");
     expect(h.log).toContain("  the service did not own the running instance → stopping pid 13772 and starting the service again");
     expect(h.log).toContain("  old daemons exited");
@@ -272,6 +295,28 @@ describe("restartSupervisor — the incident of 2026-11-26 (status never changes
     expect(h.kills).toEqual([[13772, "SIGTERM"], [13772, "SIGKILL"]]);
     expect(h.runs.filter((l) => l.includes("/Run"))).toHaveLength(1);
     expect(r.message).toBe("restart-supervisor: the supervisor was NOT restarted (pid 13772 survived SIGTERM and SIGKILL).");
+  });
+
+  test("review on #127: old processes already gone + same fleet reported → nothing is stopped, said so", async () => {
+    // macOS shape (owner unknown), the children's pids read the same as before,
+    // but none of the old processes exists any more: the unchanged answer
+    // cannot be trusted as "the foreign instance survives".
+    const h = harness({
+      platform: "darwin",
+      before: { pid: null, rows: OLD.rows },
+      probe: () => ({ pid: null, rows: OLD.rows }),
+      oldProcessesAlive: false,
+    });
+    const r = await restartSupervisor(h.deps);
+    expect(r.ok).toBe(false);
+    expect(h.kills).toEqual([]);
+    expect(r.message).toBe(
+      "restart-supervisor: cannot tell whether the supervisor was restarted: its previous processes (pid 27180, 27190) " +
+        "are gone, yet the control socket still reports the same fleet (pid unknown, 2 fleet row(s)). Nothing was stopped.",
+    );
+    // The identity before and the report's naming attempt; no poll ever
+    // asked for the owner because no tick looked like a new incarnation.
+    expect(h.ownerCalls()).toBe(2);
   });
 
   test("no pid to stop (owner unknown and status frozen): honest failure with the manual steps, no kill", async () => {
