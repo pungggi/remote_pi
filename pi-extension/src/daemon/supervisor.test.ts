@@ -54,17 +54,17 @@ async function ask<R = ControlReply<unknown>>(req: ControlRequest): Promise<R> {
   });
 }
 
-/** Per-test isolated supervisor socket. On win32 a unique named pipe (the
- *  real daemon's per-user pipe would otherwise collide — see supervisor.ts);
- *  on POSIX a socket file under the temp home. */
+/** Per-test isolated supervisor socket, unique per call. On win32 a unique
+ *  named pipe (the real daemon's per-user pipe would otherwise collide — see
+ *  supervisor.ts); on POSIX a socket file under the temp home. */
 function isolatedSupervisorSock(): string {
-  // Unique address per test. On win32 a named pipe (reuse ipcAddress escaping;
-  //  the real daemon's per-user pipe would otherwise collide — see supervisor.ts);
-  //  on POSIX a socket file under the temp home.
+  // Unique address per call: a test that boots a SECOND supervisor next to
+  // the default one needs its own socket on POSIX too — the default's path
+  // is held, and the second instance would refuse to start (plan/173).
   const id = randomUUID().slice(0, 8);
   return usesNamedPipe()
     ? ipcAddress(`supervisor-test-${id}`, "(pipe)")
-    : join(testHome, "supervisor.sock");
+    : join(testHome, `supervisor-${id}.sock`);
 }
 
 beforeEach(async () => {
@@ -695,8 +695,19 @@ describe("Supervisor — pair op (plan/173)", () => {
       }>;
     };
     const slot = internals.children.get("device")!;
-    // Same shape as the ping-loop fake above: afterEach calls stop() on it.
-    slot.child = { state, pid: 4242, restartCount: 0, ping: async () => true, stop: async () => undefined, requestCustomMessage };
+    // Same shape as the ping-loop fake above, plus the lifecycle no-ops the
+    // supervisor may call on a slot when the REAL child's exit event lands
+    // after the swap (`noteRestart`, `spawn`, the EventEmitter surface):
+    // afterEach calls stop() on it too.
+    slot.child = {
+      state, pid: 4242, restartCount: 0, isBusy: false, uptimeMs: undefined,
+      ping: async () => true,
+      stop: async () => undefined,
+      requestCustomMessage,
+      noteRestart: () => undefined,
+      spawn: () => undefined,
+      on: () => undefined, once: () => undefined, off: () => undefined, emit: () => false,
+    };
   }
 
   test("forwards the URI the daemon minted, with a 10 minute TTL on request", async () => {

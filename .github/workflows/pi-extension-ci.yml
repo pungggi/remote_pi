@@ -1,0 +1,131 @@
+# CI for pi-extension/ — typecheck, tests, build and the LF gate.
+#
+# Why this file exists (2026-11-26): nothing ran when only pi-extension/**
+# changed (app-debug.yml is limited to app/**), so a test that depended on the
+# checkout's line endings and service units with CRLF reached the 0.10.0
+# tarball (fixed in #126).
+#
+# Legs: ubuntu-latest with Node 22 (LTS) and Node 24 (the owner's version),
+# plus windows-latest with Node 22 — the owner's development platform,
+# checked out with core.autocrlf=true like any Windows clone, which is where
+# line-ending bugs show. Node 20 is no leg: the Pi SDK needs >= 22.19, so the
+# extension cannot load there at all (package.json engines says the same
+# since the first run of this workflow said it with globSync errors).
+#
+# The LF gate runs on Linux only: that checkout is LF, like the checkout a
+# release tarball has to be built from. It checks exactly what the npm package
+# ships (package.json "files") plus every *.sh in the repository.
+
+name: pi-extension-ci
+
+on:
+  pull_request:
+    paths:
+      - "pi-extension/**"
+      - ".github/workflows/pi-extension-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "pi-extension/**"
+      - ".github/workflows/pi-extension-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pi-extension-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: ${{ matrix.os }} · node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: pi-extension
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, node: 22 }
+          - { os: ubuntu-latest, node: 24 }
+          - { os: windows-latest, node: 22 }
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+
+      # pnpm 12.8.1, the version every local run and the 0.10.0 build used.
+      # Pinned here rather than through `packageManager` in package.json:
+      # with that field pnpm 12 adds ITSELF to the lockfile
+      # (`packageManagerDependencies`, ~160 lines of @pnpm/exe.* platform
+      # packages) and `--frozen-lockfile` fails until it does — cost without
+      # benefit for a package that is installed from a tarball. The action
+      # caches the store keyed by the lockfile.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 12.8.1
+          cache: true
+          cache_dependency_path: pi-extension/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # No timeout overrides on purpose: a flaky test on a slow runner should
+      # show up here first. If a leg needs a longer vitest timeout, add it
+      # with a comment naming the test and the runner that showed it.
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: LF gate (release artefacts must not contain CR)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # What `npm pack` ships (package.json "files": dist, agy-plugin,
+          # skills, service-templates, docs, README.md, LICENSE), plus the
+          # extension's own shell scripts. Binary extensions are skipped.
+          # Every shipped path must exist: a missing one means the build or
+          # the checkout is broken, and a gate that skips it proves nothing.
+          shipped_paths=(dist agy-plugin skills service-templates docs README.md LICENSE)
+          missing=()
+          for p in "${shipped_paths[@]}"; do
+            [[ -e "$p" ]] || missing+=("$p")
+          done
+          if ((${#missing[@]} > 0)); then
+            echo "::error::LF gate: expected package content is missing: ${missing[*]}"
+            exit 1
+          fi
+          mapfile -t shipped < <(find "${shipped_paths[@]}" -type f | sort)
+          mapfile -t scripts < <(find . -type f -name '*.sh' -not -path './node_modules/*' | sort)
+          bad=()
+          checked=0
+          for f in "${shipped[@]}" "${scripts[@]}"; do
+            case "$f" in
+              *.png|*.jpg|*.jpeg|*.gif|*.webp|*.ico|*.pdf|*.ttf|*.otf|*.woff|*.woff2|*.node|*.jar|*.keystore) continue ;;
+            esac
+            checked=$((checked + 1))
+            # Count the CR bytes: byte-exact on every platform (grep in text
+            # mode strips CR on Windows, which would hide exactly this).
+            cr=$(tr -cd '\r' < "$f" | wc -c)
+            if ((cr > 0)); then
+              bad+=("$f")
+            fi
+          done
+          if ((${#bad[@]} > 0)); then
+            echo "::error::CR found where the release must be LF (build from an LF checkout; see .gitattributes and toLf/normalizeUnitText):"
+            printf '  %s\n' "${bad[@]}"
+            exit 1
+          fi
+          echo "LF gate: $checked text files checked, no CR"

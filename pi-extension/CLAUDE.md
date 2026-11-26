@@ -15,7 +15,7 @@ Protocolo, identidades, ACK, roteamento cross-PC e trust model: ver
 
 ## Stack
 
-- Node 20+ / TypeScript 6
+- Node 22.19+ (mínimo do SDK do Pi) / TypeScript 6
 - **Module system**: ESM only (NodeNext). Imports com extensão `.js` mesmo em `.ts`
 - Package manager: **pnpm** (não usar npm/yarn)
 - Crypto: libsodium-wrappers (Curve25519 + ChaCha20-Poly1305)
@@ -27,6 +27,7 @@ Protocolo, identidades, ACK, roteamento cross-PC e trust model: ver
 - `pnpm typecheck` — `tsc --noEmit`, deve passar zero erros
 - `pnpm build` — `tsc`, gera `dist/`
 - `pnpm dev` — `tsx src/index.ts`, executa direto sem build
+- CI (`.github/workflows/pi-extension-ci.yml`, no PR e no push pra main que tocam `pi-extension/**`): install, typecheck, test, build e o LF gate (ubuntu com Node 22 e 24, windows com Node 22). O pnpm vem pinado no workflow (`version: 12.8.1`, a versão dos builds locais e do tarball 0.10.0)
 
 ## Configuração do relay
 

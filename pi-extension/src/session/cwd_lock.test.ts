@@ -17,11 +17,13 @@ function tmpCwd(): string {
  *  `<home>/.pi/remote/locks/<12-char>.sock`, and on macOS `os.tmpdir()` is a
  *  deep `/var/folders/…/T/` path that pushes the socket past the ~104-char UDS
  *  path limit → `bind` fails → `acquireCwdLock` returns `ok:false` and these
- *  tests fail (and break `prepublishOnly`). `/tmp` keeps the full path short. */
+ *  tests fail (and break `prepublishOnly`). `/tmp` keeps the full path short.
+ *  Windows has no `/tmp` on a clean machine and uses named pipes (no length
+ *  limit), so there `os.tmpdir()` is right. */
 let testHome: string;
 
 beforeEach(() => {
-  testHome = mkdtempSync("/tmp/rp-cwdlock-");
+  testHome = mkdtempSync(process.platform === "win32" ? join(tmpdir(), "rp-cwdlock-") : "/tmp/rp-cwdlock-");
   process.env["REMOTE_PI_HOME"] = testHome;
 });
 
