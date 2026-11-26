@@ -144,7 +144,11 @@ describe("describeSocketOwner (windows named pipe — fork addition)", () => {
       server.listen(sockPath);
       await once(server, "listening");
 
-      const owner = await describeSocketOwner(sockPath);
+      // The production budget (2 s) is for a live diagnosis. This test is
+      // about the answer, and a cold powershell.exe start on a fresh Windows
+      // runner takes longer than that (it flaked on 2026-11-26). The test's
+      // own timeout is the bound here.
+      const owner = await describeSocketOwner(sockPath, 12_000);
 
       // The kernel names the server end even though the listener never
       // answered anything — that is the whole point of the diagnosis.
