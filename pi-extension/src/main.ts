@@ -96,6 +96,7 @@ import {
 } from "./extension_ui_bridge.js";
 import { DEVICE_ROOM, roomIdFor } from "./rooms.js";
 import { registerAgentTools } from "./session/tools.js";
+import { readPackageVersion } from "./version.js";
 import {
   resolveCurrentSessionFile,
   refreshIndex,
@@ -3155,22 +3156,13 @@ function _installAutoListener(relay: RelayClient): () => void {
 }
 
 /**
- * Plan/27 Wave A: lazily resolve the pi-extension package version from
- * disk so the `pair_ok.harness.version` field reflects what's actually
- * shipped. The lookup is best-effort — a parse failure (or running this
- * file out-of-tree) falls back to "0.0.0" which is still semver-valid
- * and the app tolerates it. Cached at module load.
+ * Plan/27 Wave A: the pi-extension package version, so the
+ * `pair_ok.harness.version` field reflects what's actually shipped. Read
+ * from disk next to this module, best-effort (see `readPackageVersion`).
+ * Cached at module load.
  */
 function _readExtensionVersion(): string {
-  try {
-    const here = fileURLToPath(import.meta.url);
-    // dist/index.js → ../package.json. src/index.ts under tsx → also one level up.
-    const pkgPath = join(here, "..", "..", "package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string };
-    return typeof pkg.version === "string" ? pkg.version : "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
+  return readPackageVersion(import.meta.url);
 }
 const _HARNESS = {
   name: "Pi coding agent",
