@@ -581,17 +581,19 @@ describe("Supervisor — plan/159 resilience", () => {
     const entry = addDaemon(tmp, "twin");
     const sv = supervisor as unknown as { children: Map<string, object> };
     expect(sv.children.has(entry.id)).toBe(false);
-    sv.children.set("occupant", {
-      id: "occupant",
-      cwd: entry.cwd,
-      name: "occupant",
-      transient: true,
-      restartTimer: null,
-      restartAttempt: 0,
-      spawnedAt: Date.now(),
-      child: { state: "running" },
-    });
+    // The slot goes in inside the try: whatever fails from here on, the
+    // finally removes it before afterEach stops the supervisor.
     try {
+      sv.children.set("occupant", {
+        id: "occupant",
+        cwd: entry.cwd,
+        name: "occupant",
+        transient: true,
+        restartTimer: null,
+        restartAttempt: 0,
+        spawnedAt: Date.now(),
+        child: { state: "running" },
+      });
       const start = await ask({ op: "start", id: entry.id }) as ControlReply<{ started: boolean }>;
       // The same answer the device and transient paths give for a refused spawn.
       expect(start).toEqual({ ok: false, error: `daemon ${entry.id} was not spawned (another daemon owns its cwd)` });
@@ -612,17 +614,17 @@ describe("Supervisor — plan/159 resilience", () => {
     const sv = supervisor as unknown as { children: Map<string, object> };
     // The transient's slot, held in "running": the real child would crash
     // at once here (piBin is node), which is the race the test above had.
-    sv.children.set(entry.id, {
-      id: entry.id,
-      cwd: entry.cwd,
-      name: "transient",
-      transient: true,
-      restartTimer: null,
-      restartAttempt: 0,
-      spawnedAt: Date.now(),
-      child: { state: "running" },
-    });
     try {
+      sv.children.set(entry.id, {
+        id: entry.id,
+        cwd: entry.cwd,
+        name: "transient",
+        transient: true,
+        restartTimer: null,
+        restartAttempt: 0,
+        spawnedAt: Date.now(),
+        child: { state: "running" },
+      });
       const r = await ask({ op: "start", id: entry.id }) as ControlReply<{ started: boolean; state: string }>;
       expect(r).toEqual({ ok: true, data: { id: entry.id, state: "running", started: false } });
     } finally {
