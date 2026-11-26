@@ -564,7 +564,9 @@ function isValidUtf8(bytes: Buffer): boolean {
 function fsErrorDetail(err: unknown): string {
   const code = (err as { code?: unknown } | null)?.code;
   if (typeof code === "string" && code.length > 0) return code;
-  // Not a coded fs error: keep the message, drop anything quoted (a path).
+  // Not a coded fs error: best effort — keep the message but drop quoted
+  // segments (Node quotes the paths it mentions). A path without quotes
+  // would pass here; the code branch above is the real guarantee for fs errors.
   return (err instanceof Error ? err.message : String(err)).replace(/'[^']*'|"[^"]*"/g, "'…'");
 }
 

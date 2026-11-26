@@ -94,10 +94,21 @@ jobs:
         run: |
           set -euo pipefail
           # What `npm pack` ships (package.json "files": dist, agy-plugin,
-          # skills, service-templates, docs, README.md, LICENSE), plus every
-          # shell script in the repository. Binary extensions are skipped.
-          mapfile -t shipped < <(find dist agy-plugin skills service-templates docs README.md LICENSE -type f | sort)
-          mapfile -t scripts < <(git -C .. ls-files '*.sh' | sed 's#^#../#')
+          # skills, service-templates, docs, README.md, LICENSE), plus the
+          # extension's own shell scripts. Binary extensions are skipped.
+          # Every shipped path must exist: a missing one means the build or
+          # the checkout is broken, and a gate that skips it proves nothing.
+          shipped_paths=(dist agy-plugin skills service-templates docs README.md LICENSE)
+          missing=()
+          for p in "${shipped_paths[@]}"; do
+            [[ -e "$p" ]] || missing+=("$p")
+          done
+          if ((${#missing[@]} > 0)); then
+            echo "::error::LF gate: expected package content is missing: ${missing[*]}"
+            exit 1
+          fi
+          mapfile -t shipped < <(find "${shipped_paths[@]}" -type f | sort)
+          mapfile -t scripts < <(find . -type f -name '*.sh' -not -path './node_modules/*' | sort)
           bad=()
           checked=0
           for f in "${shipped[@]}" "${scripts[@]}"; do

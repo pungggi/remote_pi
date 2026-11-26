@@ -269,7 +269,7 @@ describe("show_file tool (plan/126)", () => {
     const result = await tool.execute("call-7", { path: join(dir, "nope.md") });
 
     expect(result.details?.shown).toBe(false);
-    expect(result.details?.error as string).toContain("cannot read");
+    expect(result.details?.error).toContain("cannot read");
   });
 
   test("missing path argument → shown:false 'missing file path'", async () => {
@@ -304,7 +304,7 @@ describe("show_file tool (plan/126)", () => {
     // this leak on Windows; the Linux CI run caught it (PR #128).
     expect(result.details?.error ?? "").not.toContain(resolved);
     expect(result.content?.[0]?.text ?? "").not.toContain(resolved);
-    expect(result.details?.error as string).toContain("cannot read");
+    expect(result.details?.error).toContain("cannot read");
   });
 
   test("result details never carry the file content / data field", async () => {

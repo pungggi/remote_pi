@@ -140,7 +140,7 @@ describe("show_image tool (plan/114)", () => {
     const result = await tool.execute("call-4", { path: join(dir, "nope.png") });
 
     expect(result.details?.shown).toBe(false);
-    expect(result.details?.error as string).toContain("cannot read");
+    expect(result.details?.error).toContain("cannot read");
   });
 
   test("file over 4 MiB cap → shown:false 'too large', rejected before decode", async () => {
@@ -182,6 +182,6 @@ describe("show_image tool (plan/114)", () => {
     // this leak on Windows; the Linux CI run caught it (PR #128).
     expect(result.details?.error ?? "").not.toContain(resolved);
     expect(result.content?.[0]?.text ?? "").not.toContain(resolved);
-    expect(result.details?.error as string).toContain("cannot read");
+    expect(result.details?.error).toContain("cannot read");
   });
 });
