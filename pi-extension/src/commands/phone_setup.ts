@@ -24,12 +24,18 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { isWebSocketScheme, isValidRelayUrl, resolveRelayUrl, saveConfig } from "../config.js";
 import { resolvePiSpawn } from "../daemon/rpc_child.js";
-import { installService } from "../daemon/install.js";
-import { guardStart, probeStatus, runningGuardPid } from "../daemon/guard.js";
+import {
+  installService,
+  isGeneratedBootScript,
+  lineDiff,
+  previewTermuxBootScript,
+  renderLineDiff,
+} from "../daemon/install.js";
+import { guardStart, interimGuardScriptPath, probeStatus, runningGuardPid } from "../daemon/guard.js";
 import { callSupervisor } from "../daemon/client.js";
 import type { DaemonInfo } from "../daemon/control_protocol.js";
 import { readRoomsRegistry } from "../session/rooms_registry.js";
@@ -146,7 +152,14 @@ export interface PhoneSetupDeps {
   setRelay: (url: string) => void;
   fetchText: (url: string, timeoutMs: number) => Promise<string | null>;
   readSettingsPackages: () => string[] | null;
-  install: () => { ok: true; unitPath: string; log: string[] } | { ok: false; error: string };
+  install: () => { ok: true; unitPath: string; log: string[]; backup?: string; diff?: string[] } | { ok: false; error: string };
+  /** The boot script currently on disk, or null. */
+  existingBootScript: () => string | null;
+  /** The boot script this version would write (for the diff). */
+  renderedBootScript: () => string;
+  /** The interim shell guard's script is still in place (checked before the
+   *  boot script runs; `remote-pi guard run` retires it). */
+  interimGuardPresent: () => boolean;
   bootScriptPath: string;
   wakeLock: () => boolean;
   /** Runs the boot script (`sh <script>`), inheriting the terminal. */
@@ -234,11 +247,17 @@ export function defaultPhoneSetupDeps(opts: PhoneSetupOptions, log: (line: strin
     install: () => {
       try {
         const result = installService();
-        return { ok: true, unitPath: result.unitPath, log: result.log };
+        return { ok: true, unitPath: result.unitPath, log: result.log, backup: result.backup, diff: result.diff };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
     },
+    existingBootScript: () => {
+      const path = termuxBootScriptPath();
+      return existsSync(path) ? readFileSync(path, "utf8") : null;
+    },
+    renderedBootScript: () => previewTermuxBootScript(),
+    interimGuardPresent: () => existsSync(interimGuardScriptPath()),
     bootScriptPath: termuxBootScriptPath(),
     wakeLock: () => spawnSync("termux-wake-lock", [], { encoding: "utf8", timeout: 5000 }).status === 0,
     runBootScript: (path) => spawnSync("sh", [path], { stdio: "inherit" }).status === 0,
@@ -401,15 +420,51 @@ export async function runPhoneSetup(opts: PhoneSetupOptions, deps: PhoneSetupDep
 
   // ── setup ──
   report.heading("Setup");
+
+  // An existing boot script that is not ours (the phone ran an interim one
+  // before this release existed) is shown, never silently replaced: diff on
+  // screen, a dated copy on disk, and a question unless --yes answered it.
+  const existingScript = deps.existingBootScript();
+  const renderedScript = deps.renderedBootScript();
+  if (existingScript !== null && existingScript !== renderedScript) {
+    report.text("");
+    report.text("  An existing boot script differs from the one this version writes (- old, + new):");
+    for (const line of renderLineDiff(lineDiff(existingScript, renderedScript))) report.text(line);
+    report.text("");
+    if (!isGeneratedBootScript(existingScript)) {
+      const replace = await deps.confirm(
+        "Replace the existing boot script? A dated copy is kept next to it (start-piper.sh.bak-<timestamp>).",
+        true,
+      );
+      if (!replace) {
+        report.line("fail", "boot script", `kept ${deps.bootScriptPath}; nothing was changed. Remove or rename it yourself, then run this again`);
+        return 1;
+      }
+    }
+    report.text("  The existing script is kept as start-piper.sh.bak-<timestamp>.");
+    report.text("");
+  }
+  if (deps.interimGuardPresent()) {
+    report.text("  The interim guard (~/.pi/piper/piper-guard.sh) is retired by `remote-pi guard run`: stopped by its pid, script renamed.");
+    report.text("");
+  }
+
   const wasUp = await deps.supervisorWasUp();
   const startedAt = deps.now();
+  const interimWasPresent = deps.interimGuardPresent();
 
   const installed = deps.install();
   if (!installed.ok) {
     report.line("fail", "boot script", `remote-pi install failed: ${installed.error}`);
     return 1;
   }
-  report.line("ok", "boot script", `${installed.unitPath} (Termux:Boot runs it after each reboot)`);
+  report.line(
+    "ok",
+    "boot script",
+    installed.backup
+      ? `${installed.unitPath} written; the previous version is kept at ${installed.backup}`
+      : `${installed.unitPath} (Termux:Boot runs it after each reboot)`,
+  );
 
   const awake = deps.wakeLock();
   report.line(awake ? "ok" : "warn", "wake lock", awake ? "termux-wake-lock taken (the boot script takes it again at boot)" : "termux-wake-lock failed — Android may doze Termux");
@@ -434,6 +489,15 @@ export async function runPhoneSetup(opts: PhoneSetupOptions, deps: PhoneSetupDep
     "guard",
     guard !== null ? `running (pid ${guard}) — restarts the supervisor when it is gone` : "not running — start it with: remote-pi guard start",
   );
+  if (interimWasPresent) {
+    report.line(
+      deps.interimGuardPresent() ? "warn" : "ok",
+      "interim guard",
+      deps.interimGuardPresent()
+        ? "still in place — see ~/.pi/piper/guard.log (`remote-pi guard run` stops and renames it on start)"
+        : "retired: remote-pi guard is the only guard now (its log lines are in ~/.pi/piper/guard.log)",
+    );
+  }
 
   report.text("     waiting for the device daemon to reach the relay (up to 120 s)…");
   const deadline = deps.now() + DEVICE_ROOM_WAIT_MS;
@@ -473,6 +537,7 @@ export async function runPhoneSetup(opts: PhoneSetupOptions, deps: PhoneSetupDep
   for (const hint of [
     "Start a session from the app: it runs here in a tmux session (attach: tmux attach -t <room>).",
     "Survives reboots through Termux:Boot; the guard restarts the supervisor when it dies (remote-pi guard status).",
+    "Guard settings: ~/.pi/piper/guard.conf and REMOTE_PI_GUARD_<KEY>; `remote-pi guard status` shows the effective values.",
     "Logs: ~/.pi/piper/supervisord.log, guard.log, daemons/device.log. Health: remote-pi doctor.",
     "One-time Android settings (adb, from the PC) keep Android from killing Termux — see docs/android.md.",
     "Stop on purpose: remote-pi guard stop && remote-pi daemon stop",

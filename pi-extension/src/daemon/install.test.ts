@@ -16,9 +16,13 @@ import {
   findRemotePiScript,
   findTemplate,
   installService,
+  isGeneratedBootScript,
   isOnPath,
   launchdPlistPath,
+  lineDiff,
   linkCliBinaries,
+  previewTermuxBootScript,
+  renderLineDiff,
   renderTemplate,
   systemdUnitPath,
   toLf,
@@ -582,5 +586,94 @@ describe("installService / uninstallService (android)", () => {
     expect(result.removed).toBe(false);
     expect(signalled).toEqual([]);
     expect(result.log.some((l) => l.startsWith("guard: SIGTERM"))).toBe(false);
+  });
+
+  // Plan/173 review — the phone already had an interim boot script when this
+  // release arrived. It is never silently clobbered: dated copy + diff.
+  test("an existing boot script that differs is kept as a dated copy, with its diff in the log", () => {
+    mkdirSync(dirname(script()), { recursive: true });
+    const interim = [
+      "#!/data/data/com.termux/files/usr/bin/sh",
+      "# interim script written by hand on 2026-11-26",
+      "termux-wake-lock",
+      "nohup pi-supervisord >> ~/.pi/piper/boot.log 2>&1 &",
+      "",
+    ].join("\n");
+    writeFileSync(script(), interim);
+
+    const at = new Date(2026, 10, 26, 14, 30, 15).getTime();
+    const result = installService(vars, { platform: "android", home: tmpHome, now: () => at });
+
+    const backup = `${script()}.bak-20261126-143015`;
+    expect(result.backup).toBe(backup);
+    expect(readFileSync(backup, "utf8")).toBe(interim);          // byte-for-byte copy
+    expect(readFileSync(script(), "utf8")).toBe(previewTermuxBootScript(vars)); // and ours is in place
+    expect(result.log).toContain(`existing ${script()} differs: kept a copy at ${backup}`);
+    expect(result.diff).toBeDefined();
+    // Log order: the notice, the diff, then the "wrote" line.
+    expect(result.log[0]).toBe(`existing ${script()} differs: kept a copy at ${backup}`);
+    expect(result.log.slice(1, 1 + result.diff!.length)).toEqual(result.diff);
+    expect(result.log[1 + result.diff!.length]).toBe(`wrote ${script()}`);
+
+    // The diff reads like a diff: the shebang is shared, the interim's own
+    // lines carry `-`, ours carry `+`, and no CR survives.
+    expect(result.diff![0]).toBe("    … (1 unchanged line)");
+    expect(result.diff).toContain("    - # interim script written by hand on 2026-11-26");
+    expect(result.diff).toContain("    - nohup pi-supervisord >> ~/.pi/piper/boot.log 2>&1 &");
+    expect(result.diff!.some((l) => l.startsWith("    + # start-piper.sh"))).toBe(true);
+    expect(result.diff!.some((l) => l.includes("+ nohup ") && l.includes("guard run"))).toBe(true);
+    expect(result.diff!.every((l) => !l.startsWith("    - # start-piper"))).toBe(true);
+    expect(result.diff!.join("\n")).not.toContain("\r");
+  });
+
+  test("our own earlier script is refreshed with a copy too; an identical one leaves no copy", () => {
+    installService(vars, { platform: "android", home: tmpHome, now: () => 1 });
+    // Identical: nothing to back up, no diff.
+    const same = installService(vars, { platform: "android", home: tmpHome, now: () => 2 });
+    expect(same.backup).toBeUndefined();
+    expect(same.diff).toBeUndefined();
+    // An older generated version (one line removed) is still ours: replaced,
+    // with a dated copy, and recognised as generated.
+    const ours = readFileSync(script(), "utf8");
+    const older = ours.split("\n").filter((l) => !l.includes("Guard:")) .join("\n");
+    writeFileSync(script(), older);
+    expect(isGeneratedBootScript(older)).toBe(true);
+    const refreshed = installService(vars, { platform: "android", home: tmpHome, now: () => new Date(2026, 10, 26, 15, 0, 0).getTime() });
+    expect(refreshed.backup).toBe(`${script()}.bak-20261126-150000`);
+    expect(readFileSync(refreshed.backup!, "utf8")).toBe(older);
+    expect(readFileSync(script(), "utf8")).toBe(ours);
+    expect(isGeneratedBootScript(readFileSync(script(), "utf8"))).toBe(true);
+    expect(isGeneratedBootScript("#!/bin/sh\necho hi\n")).toBe(false);
+  });
+});
+
+describe("lineDiff / renderLineDiff (plan/173)", () => {
+  test("keeps the common lines, marks removed and added ones, trailing newlines do not count", () => {
+    expect(lineDiff("a\nb\nc\n", "a\nB\nc\nd\n")).toEqual([
+      { type: "same", text: "a" },
+      { type: "minus", text: "b" },
+      { type: "plus", text: "B" },
+      { type: "same", text: "c" },
+      { type: "plus", text: "d" },
+    ]);
+    expect(lineDiff("", "x")).toEqual([{ type: "plus", text: "x" }]);
+    expect(lineDiff("x", "x")).toEqual([{ type: "same", text: "x" }]);
+    expect(lineDiff("a\nb", "a\nb")).toEqual([
+      { type: "same", text: "a" },
+      { type: "same", text: "b" },
+    ]);
+  });
+
+  test("rendering folds unchanged runs into one marker and prefixes - and +", () => {
+    const out = renderLineDiff([
+      { type: "same", text: "shebang" },
+      { type: "same", text: "comment" },
+      { type: "same", text: "other" },
+      { type: "minus", text: "old" },
+      { type: "plus", text: "new" },
+      { type: "same", text: "tail" },
+    ]);
+    expect(out).toEqual(["    … (3 unchanged lines)", "    - old", "    + new", "    … (1 unchanged line)"]);
+    expect(renderLineDiff([])).toEqual([]);
   });
 });
