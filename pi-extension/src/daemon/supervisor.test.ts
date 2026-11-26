@@ -695,8 +695,19 @@ describe("Supervisor — pair op (plan/173)", () => {
       }>;
     };
     const slot = internals.children.get("device")!;
-    // Same shape as the ping-loop fake above: afterEach calls stop() on it.
-    slot.child = { state, pid: 4242, restartCount: 0, ping: async () => true, stop: async () => undefined, requestCustomMessage };
+    // Same shape as the ping-loop fake above, plus the lifecycle no-ops the
+    // supervisor may call on a slot when the REAL child's exit event lands
+    // after the swap (`noteRestart`, `spawn`, the EventEmitter surface):
+    // afterEach calls stop() on it too.
+    slot.child = {
+      state, pid: 4242, restartCount: 0, isBusy: false, uptimeMs: undefined,
+      ping: async () => true,
+      stop: async () => undefined,
+      requestCustomMessage,
+      noteRestart: () => undefined,
+      spawn: () => undefined,
+      on: () => undefined, once: () => undefined, off: () => undefined, emit: () => false,
+    };
   }
 
   test("forwards the URI the daemon minted, with a 10 minute TTL on request", async () => {

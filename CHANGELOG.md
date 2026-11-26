@@ -16,9 +16,13 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   `.github/workflows/pi-extension-ci.yml` runs install, typecheck, test,
   build and an LF gate (release artefacts must not contain CR) on every
   pull request and push to `main` that touches the extension: ubuntu with
-  Node 20 and 22, windows with Node 22. Before, nothing ran when only the
+  Node 22 and 24, windows with Node 22. Before, nothing ran when only the
   extension changed, which is how a line-ending-dependent test and CRLF
   service units reached the tarball. pnpm 12.8.1 is pinned in the workflow.
+  The first runs also settled two facts the local runs could not: Node 20
+  cannot load the extension at all (the Pi SDK needs >= 22.19), so
+  `engines` now says so; and a handful of tests only passed on the owner's
+  machine (see Fixed).
 - **Android (Termux) as a session host, stage A3 (plan/173)**: a phone can
   now be set up as an always-on host with one command. Before, the Termux
   setup was nine manual steps and nothing restarted the supervisor when it
