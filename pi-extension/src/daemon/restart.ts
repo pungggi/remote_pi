@@ -87,10 +87,11 @@ export interface SupervisorIdentity {
   rows: DaemonInfo[] | null;
 }
 
-/** Result of one OS command: ok, or why it failed. */
+/** Result of one OS command: ok, or why it failed. `status` is the command's
+ *  exit code (null when it was killed) so the CLI can hand it to its caller. */
 export type RunOutcome =
   | { ok: true; detail: string }
-  | { ok: false; reason: "not-runnable" | "failed"; detail: string };
+  | { ok: false; reason: "not-runnable" | "failed"; detail: string; status?: number | null };
 
 /** Everything the restart touches, injectable so the whole flow — including
  *  "the status never changes" — is a unit test with no processes. */
@@ -116,6 +117,10 @@ export interface RestartResult {
   message: string;
   before: SupervisorIdentity;
   after: SupervisorIdentity;
+  /** The process exit code the CLI should use. 1 unless an OS command of
+   *  the service failed with a code of its own — that code is passed on, as
+   *  the command always did (a caller may read schtasks-specific codes). */
+  exitCode: number;
 }
 
 function fingerprint(rows: DaemonInfo[] | null): string {
@@ -179,7 +184,13 @@ async function waitForChange(
   const deadline = started + waitMs;
   for (;;) {
     const rows = await deps.status();
-    if (mayBeNew(before, rows)) {
+    // Two cheap candidates, neither needing the owner probe: different children,
+    // or the OLD supervisor's pid is gone while somebody still answers — a
+    // restart whose children kept their pids, or whose fleet has not spawned
+    // yet (an empty fleet is not "new" by fingerprint). Only then is the
+    // socket owner asked (one probe spawn on Windows per candidate).
+    const oldGone = before.pid !== null && rows !== null && !deps.pidAlive(before.pid);
+    if (mayBeNew(before, rows) || oldGone) {
       // A candidate: one owner query settles whether it is really a new
       // supervisor (a respawned child alone does not count).
       const after: SupervisorIdentity = { pid: (await deps.owner())?.pid ?? null, rows };
@@ -190,7 +201,12 @@ async function waitForChange(
   }
 }
 
-function runSteps(deps: Pick<RestartDeps, "run" | "log">, steps: RestartStep[]): string | null {
+/** Runs the steps; on failure returns the message and the exit code the CLI
+ *  should hand to its caller. */
+function runSteps(
+  deps: Pick<RestartDeps, "run" | "log">,
+  steps: RestartStep[],
+): { message: string; exitCode: number } | null {
   for (const step of steps) {
     const r = deps.run(step.cmd, step.args);
     const line = `${step.cmd} ${step.args.join(" ")}`;
@@ -200,8 +216,11 @@ function runSteps(deps: Pick<RestartDeps, "run" | "log">, steps: RestartStep[]):
         continue;
       }
       return r.reason === "not-runnable"
-        ? `${line} not runnable (${r.detail}). Is the service installed? Run \`remote-pi install\`.`
-        : `${line} failed (${r.detail})`;
+        ? {
+            message: `${line} not runnable (${r.detail}). Is the service installed? Run \`remote-pi install\`.`,
+            exitCode: 1,
+          }
+        : { message: `${line} failed (${r.detail})`, exitCode: r.status === null || r.status === undefined ? 1 : r.status };
     }
     deps.log(`  ${line} → ok${r.detail ? ` (${r.detail})` : ""}`);
   }
@@ -237,6 +256,7 @@ export async function restartSupervisor(deps: RestartDeps): Promise<RestartResul
       message: `restart-supervisor is not supported on '${deps.platform}' yet. Restart pi-supervisord manually.`,
       before: { pid: null, rows: null },
       after: { pid: null, rows: null },
+      exitCode: 1,
     };
   }
   const waitMs = deps.waitMs ?? RESTART_WAIT_MS;
@@ -246,13 +266,13 @@ export async function restartSupervisor(deps: RestartDeps): Promise<RestartResul
 
   const stepError = runSteps(deps, steps);
   if (stepError) {
-    return { ok: false, message: `restart-supervisor failed: ${stepError}`, before, after: before };
+    return { ok: false, message: `restart-supervisor failed: ${stepError.message}`, exitCode: stepError.exitCode, before, after: before };
   }
 
   let seen = await waitForChange(deps, before, waitMs);
   if (seen.changed) {
     const message = `Supervisor restarted: ${describe(before)} → ${describe(seen.after)} (${human(seen.elapsedMs)}).`;
-    return { ok: true, message, before, after: seen.after };
+    return { ok: true, message, before, after: seen.after, exitCode: 0 };
   }
 
   // Nothing new answered. Name who IS answering for the report (the poll
@@ -278,6 +298,7 @@ export async function restartSupervisor(deps: RestartDeps): Promise<RestartResul
         `restart-supervisor: cannot tell whether the supervisor was restarted: its previous processes (pid ` +
         `${oldPids.join(", ")}) are gone, yet the control socket still reports the same fleet (${describe(stalled)}). ` +
         "Nothing was stopped.",
+      exitCode: 1,
     };
   }
   // Fall back to the plan/168 kill path. The pid to stop is the one named
@@ -293,6 +314,7 @@ export async function restartSupervisor(deps: RestartDeps): Promise<RestartResul
         "one could not be identified to stop it). Stop the running pi-supervisord by hand, then run this " +
         "again. On Windows: Get-CimInstance Win32_Process -Filter \"Name = 'node.exe'\" | Where-Object " +
         "{ $_.CommandLine -match 'supervisord\\.js' } | ForEach-Object { Stop-Process -Id $_.ProcessId }.",
+      exitCode: 1,
     };
   }
   deps.log(`  the service did not own the running instance → stopping pid ${oldPid} and starting the service again`);
@@ -302,6 +324,7 @@ export async function restartSupervisor(deps: RestartDeps): Promise<RestartResul
       before,
       after: seen.after,
       message: `restart-supervisor: the supervisor was NOT restarted (pid ${oldPid} survived SIGTERM and SIGKILL).`,
+      exitCode: 1,
     };
   }
   // Let the old children notice stdio EOF and exit, so the new supervisor
@@ -315,14 +338,14 @@ export async function restartSupervisor(deps: RestartDeps): Promise<RestartResul
   }
   const startError = runSteps(deps, startSupervisorCommand(deps.platform, deps.uid) ?? []);
   if (startError) {
-    return { ok: false, message: `restart-supervisor failed: ${startError}`, before, after: seen.after };
+    return { ok: false, message: `restart-supervisor failed: ${startError.message}`, exitCode: startError.exitCode, before, after: seen.after };
   }
   seen = await waitForChange(deps, before, waitMs);
   if (seen.changed) {
     const message =
       `Supervisor restarted through the fallback: ${describe(before)} → ${describe(seen.after)} (${human(seen.elapsedMs)}). ` +
       "The service did not own the running instance; keep ONE launcher (only the service should start the supervisor).";
-    return { ok: true, message, before, after: seen.after };
+    return { ok: true, message, before, after: seen.after, exitCode: 0 };
   }
   const still = await named(deps, seen.after);
   return {
@@ -332,6 +355,7 @@ export async function restartSupervisor(deps: RestartDeps): Promise<RestartResul
     message:
       `restart-supervisor: the supervisor was NOT restarted (after stopping pid ${oldPid} and starting the service, ` +
       `${describe(still)} after ${human(seen.elapsedMs)}). See ~/.pi/piper/supervisord.log.`,
+    exitCode: 1,
   };
 }
 
@@ -371,7 +395,7 @@ export function defaultRestartDeps(overrides: Partial<RestartDeps> = {}): Restar
       const r = spawnSync(cmd, args, { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" });
       const detail = (r.stderr || r.stdout || "").trim();
       if (r.error) return { ok: false, reason: "not-runnable", detail: r.error.message };
-      if (r.status !== 0) return { ok: false, reason: "failed", detail: `exited ${r.status}${detail ? `: ${detail}` : ""}` };
+      if (r.status !== 0) return { ok: false, reason: "failed", detail: `exited ${r.status}${detail ? `: ${detail}` : ""}`, status: r.status };
       return { ok: true, detail };
     },
     kill: (pid, signal) => {

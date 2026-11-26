@@ -160,7 +160,10 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   command now reads the pid serving the control socket before and after the
   service commands, waits for it to change, falls back to stopping a foreign
   instance by pid and starting the service again, and reports and exits by
-  what it saw.
+  what it saw. The restart is also recognised when the fleet kept its pids or
+  has not spawned yet (the old pid is gone while the socket still answers).
+  A service command that fails with a code of its own hands that code on, as
+  the bare command always did.
 - **pi-extension: service units are always LF, templates and shell scripts
   stay LF in every checkout** (found while packing 0.10.0). A tarball packed
   on a Windows checkout shipped CRLF service templates, and `remote-pi

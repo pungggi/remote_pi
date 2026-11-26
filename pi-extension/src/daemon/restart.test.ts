@@ -35,7 +35,8 @@ function harness(opts: {
   /** What every later probe reports. `phase` tells whether the service
    *  commands or the kill fallback have run. */
   probe: (call: number, phase: "steps" | "fallback") => Script;
-  /** `owner()` answers when asked outside a probe (the kill fallback). */
+  /** `owner()` answers when asked outside a probe (the kill fallback).
+   *  Default: whatever the current probe scripts. */
   ownerAlone?: () => { pid: number } | null;
   waitMs?: number;
   run?: (cmd: string, args: string[]) => RunOutcome;
@@ -63,6 +64,8 @@ function harness(opts: {
   // Set by status(), consumed by the owner() of the same probe. Anything
   // else that happens in between (a kill, a command, a wait) clears it, so
   // an owner() that follows is the flow's standalone lookup in the fallback.
+  // A liveness check does not clear it: the poll reads the old pid's liveness
+  // between the two halves of one probe.
   let paired = false;
   let supervisorDiedAt: number | null = null;
 
@@ -81,7 +84,10 @@ function harness(opts: {
     },
     owner: async () => {
       ownerCalls += 1;
-      if (!paired) return opts.ownerAlone ? opts.ownerAlone() : null;
+      if (!paired) {
+        const alone = (opts.ownerAlone ? opts.ownerAlone()?.pid : current().pid) ?? null;
+        return alone === null ? null : { pid: alone };
+      }
       paired = false;
       const pid = current().pid;
       return pid === null ? null : { pid };
@@ -102,10 +108,7 @@ function harness(opts: {
       supervisorDiedAt = now;
       return true;
     },
-    pidAlive: (pid: number) => {
-      paired = false;
-      return alive.has(pid);
-    },
+    pidAlive: (pid: number) => alive.has(pid),
     sleep: async (ms: number) => {
       paired = false;
       now += ms;
@@ -347,5 +350,103 @@ describe("restartSupervisor — the incident of 2026-11-26 (status never changes
     const r = await restartSupervisor(h.deps);
     expect(r.ok).toBe(true);
     expect(h.kills).toEqual([[13772, "SIGTERM"]]);
+  });
+});
+
+describe("restartSupervisor — second review on #127", () => {
+  test("same children, new socket owner: found on the first tick (the old pid is gone, somebody answers)", async () => {
+    // The fleet kept its pids (not respawned yet, or respawned onto the same
+    // ones), so the fingerprint says "nothing new". The old supervisor's pid
+    // being gone while the socket still answers makes it a candidate anyway.
+    for (const [platform, run] of [
+      ["win32", `schtasks /Run /TN ${TASK}`],
+      ["linux", "systemctl --user restart remote-pi-supervisord.service"],
+    ] as const) {
+      const h = harness({
+        platform,
+        before: OLD,
+        probe: () => ({ pid: 15000, rows: OLD.rows }),
+        oldProcessesAlive: false,
+      });
+      const r = await restartSupervisor(h.deps);
+      expect(r.ok).toBe(true);
+      expect(r.exitCode).toBe(0);
+      expect(r.message).toBe("Supervisor restarted: pid 13772, 2 fleet row(s) → pid 15000, 2 fleet row(s) (0.0 s).");
+      expect(h.runs.filter((l) => l === run)).toHaveLength(1);
+      expect(h.kills).toEqual([]);
+      expect(h.ownerCalls()).toBe(2);   // the identity before, and the one candidate
+    }
+  });
+
+  test("the new supervisor answers before its fleet spawned (empty fleet): still a new incarnation", async () => {
+    const h = harness({ before: OLD, probe: () => ({ pid: 15000, rows: [] }), oldProcessesAlive: false });
+    const r = await restartSupervisor(h.deps);
+    expect(r.ok).toBe(true);
+    expect(r.message).toBe("Supervisor restarted: pid 13772, 2 fleet row(s) → pid 15000, 0 fleet row(s) (0.0 s).");
+  });
+
+  test("owner unknown (macOS) and the same children: nothing can prove a restart, the poll runs to its bound, no kill", async () => {
+    const frozen: Script = { pid: null, rows: OLD.rows };
+    const h = harness({ platform: "darwin", before: frozen, probe: () => frozen, ownerAlone: () => null });
+    const r = await restartSupervisor(h.deps);
+    expect(r.ok).toBe(false);
+    expect(r.exitCode).toBe(1);
+    expect(h.clockMs() - 1_000_000).toBeGreaterThanOrEqual(5_000);
+    expect(h.kills).toEqual([]);
+    expect(r.message).toContain("no new instance answered and the running one could not be identified to stop it");
+    // The identity before, the report's naming attempt, the fallback's own
+    // lookup: no tick asked for an owner it cannot make sense of.
+    expect(h.ownerCalls()).toBe(3);
+  });
+
+  test("the old supervisor alive and the fleet unchanged (the incident): the poll still asks nobody", async () => {
+    const h = harness({ before: OLD, probe: () => OLD, supervisorDies: "never" });
+    const r = await restartSupervisor(h.deps);
+    expect(r.ok).toBe(false);
+    expect(r.exitCode).toBe(1);
+    expect(r.message).toBe("restart-supervisor: the supervisor was NOT restarted (pid 13772 survived SIGTERM and SIGKILL).");
+    expect(h.ownerCalls()).toBe(2);   // the identity before and the report; the fallback's lookup never runs (the pid is known)
+  });
+
+  test("a service command that failed with a code of its own hands that code to the caller", async () => {
+    const failed = harness({
+      before: OLD,
+      probe: () => FRESH,
+      run: (cmd, args) =>
+        cmd === "schtasks" && args[0] === "/Run"
+          ? { ok: false, reason: "failed", detail: "exited 2147943712: The operator or administrator has refused the request", status: 2147943712 }
+          : { ok: true, detail: "" },
+    });
+    const r = await restartSupervisor(failed.deps);
+    expect(r.ok).toBe(false);
+    expect(r.exitCode).toBe(2147943712);
+    expect(r.message).toBe(
+      `restart-supervisor failed: schtasks /Run /TN ${TASK} failed (exited 2147943712: The operator or administrator has refused the request)`,
+    );
+
+    // Killed by a signal (status null) or not runnable at all: 1.
+    const signalled = harness({
+      before: OLD,
+      probe: () => FRESH,
+      run: (cmd) => (cmd === "schtasks" ? { ok: false, reason: "failed", detail: "killed by SIGKILL", status: null } : { ok: true, detail: "" }),
+    });
+    // /End fails first but is tolerated; /Run then fails with status null.
+    const r2 = await restartSupervisor(signalled.deps);
+    expect(r2.ok).toBe(false);
+    expect(r2.exitCode).toBe(1);
+
+    const missing = harness({ before: OLD, probe: () => FRESH, run: () => ({ ok: false, reason: "not-runnable", detail: "spawn schtasks ENOENT" }) });
+    const r3 = await restartSupervisor(missing.deps);
+    expect(r3.ok).toBe(false);
+    expect(r3.exitCode).toBe(1);
+  });
+
+  test("a healthy restart and the unsupported platform: exit codes 0 and 1", async () => {
+    const ok = await restartSupervisor(harness({ before: OLD, probe: () => FRESH }).deps);
+    expect(ok.ok).toBe(true);
+    expect(ok.exitCode).toBe(0);
+    const aix = await restartSupervisor(harness({ platform: "aix", before: OLD, probe: () => FRESH }).deps);
+    expect(aix.ok).toBe(false);
+    expect(aix.exitCode).toBe(1);
   });
 });

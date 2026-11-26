@@ -7090,12 +7090,14 @@ export async function runCli(argv: string[]): Promise<void> {
     const { restartSupervisor, defaultRestartDeps } = await import("./daemon/restart.js");
     const result = await restartSupervisor(defaultRestartDeps());
     // Progress lines went to stdout; the verdict is printed exactly once —
-    // stdout and exit 0 when a new supervisor answered, stderr and exit 1
-    // otherwise (the Cockpit reads the exit code).
+    // stdout and exit 0 when a new supervisor answered, stderr and a non-zero
+    // exit otherwise (the Cockpit reads the exit code). A service command that
+    // failed with a code of its own hands that code on, as the bare command
+    // always did (schtasks has codes of its own).
     if (result.ok) console.log(`[remote-pi] ${result.message}`);
     else {
       console.error(`[remote-pi] ${result.message}`);
-      process.exitCode = 1;
+      process.exitCode = result.exitCode;
     }
   } else {
     console.log([
