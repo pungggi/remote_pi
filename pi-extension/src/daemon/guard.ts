@@ -1073,18 +1073,22 @@ export function guardUsage(): string {
   ].join("\n");
 }
 
-/** The pid of the running guard loop, or null.
- *
- *  First the pid file `guard run` holds (the interim guard held it before):
- *  its pid must be alive AND be the guard loop, so a file left behind by a
- *  crash or a reboot never passes for a running guard once the OS has handed
- *  the pid to something else. A guard whose pid file was removed while it
- *  runs (the loop takes it back on its next watch) is still found by its
- *  command line: `start` stays a no-op and `status` tells the truth. */
-export function runningGuardPid(pidFile: string = guardPidPath(), procRoot: string = DEFAULT_PROC_ROOT): number | null {
+/** The pid of the guard that holds the pid-file lock, or null: the file names
+ *  a process that is alive AND runs the guard loop. So a file left behind by
+ *  a crash or a reboot never passes for a running guard once the OS has
+ *  handed the pid to something else. */
+export function guardLockHolderPid(pidFile: string = guardPidPath(), procRoot: string = DEFAULT_PROC_ROOT): number | null {
   const pid = pidFilePid(pidFile);
-  if (pid !== null && guardProcessAlive(pid, procRoot)) return pid;
-  return findGuardPids(procRoot)[0] ?? null;
+  return pid !== null && guardProcessAlive(pid, procRoot) ? pid : null;
+}
+
+/** The pid of the running guard loop, or null: the lock holder, else a guard
+ *  whose pid file was removed while it runs, found by its command line (the
+ *  loop takes the file back on its next watch). For such a guard `start`
+ *  stays a no-op and `status` tells the truth. Only `start`'s own "started"
+ *  answer insists on the lock (`guardLockHolderPid`). */
+export function runningGuardPid(pidFile: string = guardPidPath(), procRoot: string = DEFAULT_PROC_ROOT): number | null {
+  return guardLockHolderPid(pidFile, procRoot) ?? findGuardPids(procRoot)[0] ?? null;
 }
 
 function pidFilePid(pidFile: string): number | null {
@@ -1121,8 +1125,28 @@ function defaultInterimRetireDeps(log: (line: string) => void): InterimRetireDep
   };
 }
 
-/** Starts the loop detached and waits briefly for its pid file. */
-export async function guardStart(deps: { spawnFn?: typeof spawn; sleep: (ms: number) => Promise<void>; runningPid: () => number | null; logPath?: string } = { sleep: (ms) => new Promise((r) => setTimeout(r, ms)), runningPid: runningGuardPid }): Promise<{ ok: boolean; message: string }> {
+/** Starts the loop detached and waits briefly for its lock. */
+export interface GuardStartDeps {
+  spawnFn?: typeof spawn;
+  sleep: (ms: number) => Promise<void>;
+  /** A running guard, with or without its pid file: one found here means
+   *  "already running" and nothing is spawned. */
+  runningPid: () => number | null;
+  /** The guard that holds the pid-file lock. "started" is reported only when
+   *  this answers, so a child that was merely seen and then died (a refused
+   *  `guard run`, a lock held elsewhere) is never a success. Falls back to
+   *  `runningPid` when not given. */
+  lockHolder?: () => number | null;
+  logPath?: string;
+}
+
+export async function guardStart(
+  deps: GuardStartDeps = {
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    runningPid: runningGuardPid,
+    lockHolder: guardLockHolderPid,
+  },
+): Promise<{ ok: boolean; message: string }> {
   const already = deps.runningPid();
   if (already !== null) return { ok: true, message: `guard already running (pid ${already})` };
   const script = findRemotePiScript();
@@ -1147,9 +1171,10 @@ export async function guardStart(deps: { spawnFn?: typeof spawn; sleep: (ms: num
   }
   // The loop takes the lock within a second or two (node boot); give it a
   // moment so the answer is real instead of "probably started".
+  const lockHolder = deps.lockHolder ?? deps.runningPid;
   for (let i = 0; i < 20; i++) {
     await deps.sleep(150);
-    const pid = deps.runningPid();
+    const pid = lockHolder();
     if (pid !== null) return { ok: true, message: `guard started (pid ${pid})` };
   }
   return { ok: false, message: `guard did not take its lock — see ${logPath}` };

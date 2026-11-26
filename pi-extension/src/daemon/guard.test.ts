@@ -26,6 +26,7 @@ import {
   fileMarker,
   fleetHealthy,
   formatLogLine,
+  guardLockHolderPid,
   guardStart,
   guardProcessAlive,
   guardStatus,
@@ -471,6 +472,9 @@ describe("guardProcessAlive / acquireGuardLock", () => {
       expect(runningGuardPid(missing, proc)).toBe(271828);
       // A stale file (a pid that is gone) leads to the same answer.
       expect(runningGuardPid(pidFileWith("1\n"), proc)).toBe(271828);
+      // It does not hold its lock, though: only `start`'s "started" answer
+      //  cares about that, and must not be satisfied by a child merely seen.
+      expect(guardLockHolderPid(missing, proc)).toBeNull();
 
       const start = await guardStart({
         spawnFn: (() => {
@@ -480,6 +484,25 @@ describe("guardProcessAlive / acquireGuardLock", () => {
         runningPid: () => runningGuardPid(missing, proc),
       });
       expect(start).toEqual({ ok: true, message: "guard already running (pid 271828)" });
+    });
+
+    test("start: a spawned child that is seen but never takes the lock is not \"started\"", async () => {
+      // Before the lock holder was asked separately, the command-line scan
+      // saw the child right after its exec and reported success for a loop
+      // that then exited (a refused `guard run`, a lock held elsewhere).
+      let spawned = false;
+      const seenOnly = await guardStart({
+        spawnFn: (() => {
+          spawned = true;
+          return { unref: () => undefined };
+        }) as never,
+        sleep: async () => undefined,
+        runningPid: () => (spawned ? 999 : null),
+        lockHolder: () => null,
+        logPath: join(tmp, "guard.log"),
+      });
+      expect(spawned).toBe(true);
+      expect(seenOnly).toEqual({ ok: false, message: `guard did not take its lock — see ${join(tmp, "guard.log")}` });
     });
 
     test("a stale file whose pid now belongs to something else is no guard, when nothing else is", () => {
