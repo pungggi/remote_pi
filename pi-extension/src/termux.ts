@@ -33,8 +33,8 @@ export const TERMUX_BOOT_SCRIPT = "start-piper.sh";
 
 /**
  * True inside Termux. Termux's node reports `process.platform` as
- * `"android"` on the phone (a `"linux"` build exists too), so both count as
- * the OS; that alone is never enough — a plain Linux box is not Termux. At
+ * `"android"` on the owner's phone (0.10.0 assumed `"linux"`), so both count
+ * as the OS; that alone is never enough — a plain Linux box is not Termux. At
  * least one Termux marker must be present: `TERMUX_VERSION`, a `PREFIX` under
  * the app's data dir, or the app's home directory as our own (for processes
  * whose environment was stripped, like a daemon started by a boot script).
