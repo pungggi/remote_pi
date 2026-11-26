@@ -33,6 +33,9 @@ describe("fsErrorDetail", () => {
     // Parent-relative paths are locations too, on both separators.
     expect(fsErrorDetail(new Error("refused ../private/secret.txt"))).toBe("refused <path>");
     expect(fsErrorDetail(new Error("refused ..\\..\\Users\\me\\x.txt"))).toBe("refused <path>");
+    // So are dot-relative and home-relative paths.
+    expect(fsErrorDetail(new Error("refused ./secrets/key.pem"))).toBe("refused <path>");
+    expect(fsErrorDetail(new Error("cannot read ~/private/key.pem"))).toBe("cannot read <path>");
     // A plain relative path is the agent's own wording and stays.
     expect(fsErrorDetail(new Error("bad entry in pi/piper/files.json"))).toBe("bad entry in pi/piper/files.json");
     // Relative paths and plain words survive: they carry no location.
