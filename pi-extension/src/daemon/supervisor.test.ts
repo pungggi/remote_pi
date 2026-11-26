@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { writePairStub } from "../test-helpers.js";
 import { Supervisor, decideFireAction, _idForCwdForTest } from "./supervisor.js";
 import { daemonLogPath, readDeadMarker, writeDeadMarker } from "./diagnostics.js";
 import { ipcAddress, usesNamedPipe } from "../session/ipc.js";
@@ -666,6 +667,135 @@ describe("Supervisor — daemon_control + ping loop (plan/168)", () => {
       expect(spawnSpy).not.toHaveBeenCalled();
     } finally {
       spawnSpy.mockRestore();
+    }
+  });
+});
+
+// ── Plan/173 — pairing link minted inside the device daemon ─────────────────
+
+describe("Supervisor — pair op (plan/173)", () => {
+  const pairDetails = {
+    uri: "remotepi://pair?t=abc&epk=k&n=device&rm=device",
+    token: "abc",
+    expiresAt: 1900000000000,
+    roomId: "device",
+    name: "device",
+  };
+
+  /** Swaps the (immediately crashing) device child for a fake running one. */
+  function fakeDevice(
+    sv: Supervisor,
+    requestCustomMessage: (type: string, text: string) => Promise<Record<string, unknown> | null>,
+    state: "running" | "crashed" = "running",
+  ) {
+    const internals = sv as unknown as {
+      children: Map<string, {
+        id: string; cwd: string; child: unknown; restartTimer: null;
+        restartAttempt: number; spawnedAt: number; transient: boolean;
+      }>;
+    };
+    const slot = internals.children.get("device")!;
+    // Same shape as the ping-loop fake above: afterEach calls stop() on it.
+    slot.child = { state, pid: 4242, restartCount: 0, ping: async () => true, stop: async () => undefined, requestCustomMessage };
+  }
+
+  test("forwards the URI the daemon minted, with a 10 minute TTL on request", async () => {
+    const request = vi.fn(async () => pairDetails);
+    fakeDevice(supervisor!, request);
+    const r = await ask({ op: "pair", ttl_ms: 600_000 }) as ControlReply<{
+      id: string; uri: string; expiresAt: number; roomId: string; name: string;
+    }>;
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.data).toEqual({
+        id: "device", uri: pairDetails.uri, expiresAt: pairDetails.expiresAt, roomId: "device", name: "device",
+      });
+    }
+    expect(request).toHaveBeenCalledWith("remote-pi:pair-code", "/remote-pi pair --ttl 600");
+  });
+
+  test("the TTL is clamped to the interactive pairing window", async () => {
+    const request = vi.fn(async () => pairDetails);
+    fakeDevice(supervisor!, request);
+    await ask({ op: "pair" });                    // unset → 60 s
+    await ask({ op: "pair", ttl_ms: 1 });          // below the floor → 10 s
+    await ask({ op: "pair", ttl_ms: 99_999_999 }); // above the ceiling → 600 s
+    const texts = request.mock.calls.map((c) => c[1]);
+    expect(texts).toEqual([
+      "/remote-pi pair --ttl 60",
+      "/remote-pi pair --ttl 10",
+      "/remote-pi pair --ttl 600",
+    ]);
+  });
+
+  test("no code from the daemon (relay still down) is a clear refusal", async () => {
+    fakeDevice(supervisor!, async () => null);
+    const r = await ask({ op: "pair" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/produced no pairing code.*relay/u);
+  });
+
+  test("a malformed code is refused rather than printed", async () => {
+    fakeDevice(supervisor!, async () => ({ uri: "https://evil.example/", expiresAt: 1, roomId: "device", name: "device" }));
+    const r = await ask({ op: "pair" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/malformed pairing code/u);
+  });
+
+  test("unknown daemon and non-running daemon are named refusals", async () => {
+    const request = vi.fn(async () => pairDetails);
+    fakeDevice(supervisor!, request, "crashed");
+    const crashed = await ask({ op: "pair" });
+    expect(crashed.ok).toBe(false);
+    if (!crashed.ok) expect(crashed.error).toMatch(/device is crashed, not running/u);
+    const unknown = await ask({ op: "pair", id: "nope" });
+    expect(unknown.ok).toBe(false);
+    if (!unknown.ok) expect(unknown.error).toMatch(/no daemon with id nope/u);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  test("end to end through a real pipe: the daemon's stdin gets the command, its stdout becomes the reply", async () => {
+    // Same harness as rpc_child.test.ts: a stand-in for `pi --mode rpc` that
+    // answers the first prompt with a pair-code custom message.
+    const dir = mkdtempSync(join(tmpdir(), "pi-sv-pair-"));
+    const log = join(dir, "prompts.log");
+    process.env["STUB_LOG"] = log;
+    const sv = new Supervisor({
+      sockPath: isolatedSupervisorSock(),
+      extensionPath: "/no/such/extension.js",
+      piBin: writePairStub(dir),
+      reconcileIntervalMs: 0,
+      pingIntervalMs: 0,
+    });
+    await sv.start();
+    try {
+      const target = (sv as unknown as { sockPath: string }).sockPath;
+      const r = await new Promise<ControlReply<{ uri: string; roomId: string }>>((resolve, reject) => {
+        const conn = createConnection({ path: target });
+        let buf = "";
+        conn.setEncoding("utf8");
+        conn.on("data", (chunk: string) => {
+          buf += chunk;
+          const nl = buf.indexOf("\n");
+          if (nl >= 0) {
+            conn.destroy();
+            try { resolve(parseReply(buf.slice(0, nl)) as typeof r); } catch (e) { reject(e); }
+          }
+        });
+        conn.on("error", reject);
+        conn.write(encodeRequest({ op: "pair", ttl_ms: 600_000 }));
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.data!.uri).toBe("remotepi://pair?t=abc&epk=k&n=device&rm=device");
+        expect(r.data!.roomId).toBe("device");
+      }
+      expect(existsSync(log)).toBe(true);
+      expect(readFileSync(log, "utf8")).toBe("/remote-pi pair --ttl 600\n");
+    } finally {
+      await sv.stop();
+      delete process.env["STUB_LOG"];
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

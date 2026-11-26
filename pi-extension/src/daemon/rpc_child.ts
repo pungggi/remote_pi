@@ -197,6 +197,61 @@ function parseGetStateResponse(line: string): { id?: string; isStreaming?: boole
   };
 }
 
+/** A custom message an extension posted with `pi.sendMessage`, as the RPC
+ *  stream emits it: `message_end` with `role: "custom"`. */
+export interface CustomMessageWire {
+  customType: string;
+  /** The extension's structured payload. The live stream carries it as an
+   *  object; a value restored from the session file arrives as a JSON string,
+   *  so both are accepted. Null when absent or not an object. */
+  details: Record<string, unknown> | null;
+}
+
+function detailsObject(v: unknown): Record<string, unknown> | null {
+  let value: unknown = v;
+  if (typeof value === "string") {
+    try { value = JSON.parse(value); } catch { return null; }
+  }
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/** Plan/173 — recognise one `message_end` line that carries a custom message.
+ *  Every other line (responses, assistant messages, tool calls) answers null. */
+export function parseCustomMessageEnd(line: string): CustomMessageWire | null {
+  let obj: unknown;
+  try { obj = JSON.parse(line); } catch { return null; }
+  if (!obj || typeof obj !== "object") return null;
+  const o = obj as { type?: unknown; message?: { role?: unknown; customType?: unknown; details?: unknown } | null };
+  if (o.type !== "message_end" || !o.message || typeof o.message !== "object") return null;
+  if (o.message.role !== "custom" || typeof o.message.customType !== "string") return null;
+  return { customType: o.message.customType, details: detailsObject(o.message.details) };
+}
+
+/** The `details` of a `remote-pi:pair-code` message (see `_cmdPair`), or null
+ *  when a field is missing or mistyped — the caller then refuses instead of
+ *  printing a link that cannot work. */
+export interface PairCodeDetails {
+  uri: string;
+  expiresAt: number;
+  roomId: string;
+  name: string;
+}
+
+export function parsePairCodeDetails(details: Record<string, unknown> | null): PairCodeDetails | null {
+  if (!details) return null;
+  const uri = details["uri"];
+  const expiresAt = details["expiresAt"];
+  const roomId = details["roomId"];
+  const name = details["name"];
+  if (typeof uri !== "string" || !uri.startsWith("remotepi://pair?")) return null;
+  if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) return null;
+  if (typeof roomId !== "string" || roomId.length === 0) return null;
+  if (typeof name !== "string") return null;
+  return { uri, expiresAt, roomId, name };
+}
+
 /**
  * CLI args for the daemon's `pi --mode rpc` child.
  *
@@ -279,6 +334,11 @@ export class RpcChild extends EventEmitter {
    *  `_statePending`: a ping resolves on RESPONSE PRESENCE (any answer means
    *  the child's event loop is alive), not on the busy payload. */
   private readonly _pongPending = new Map<string, { resolve: (ok: boolean) => void; timer: ReturnType<typeof setTimeout> }>();
+  /** Plan/173 — at most one in-flight waiter per custom message type. */
+  private readonly _customPending = new Map<string, {
+    resolve: (details: Record<string, unknown> | null) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
 
   constructor(private readonly opts: RpcChildOptions) {
     super();
@@ -340,6 +400,14 @@ export class RpcChild extends EventEmitter {
     this._state = "running";
 
     child.stdout?.on("data", (chunk: Buffer) => this._onStdout(chunk));
+    // A child that died between our liveness check and a stdin write makes
+    // that write fail asynchronously (EPIPE). Without a listener the error is
+    // an uncaught exception and takes the whole supervisor down.
+    child.stdin?.on("error", (err) => {
+      process.stderr.write(
+        `[remote-pi-supervisord] stdin write to ${this.opts.cwd} failed: ${String(err)}\n`,
+      );
+    });
     child.stderr?.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       // Forward stderr to our own stderr so `journalctl --user -u remote-pi-supervisord`
@@ -417,6 +485,16 @@ export class RpcChild extends EventEmitter {
   private _handleStdoutLine(line: string): void {
     const t = busyTransition(line);
     if (t !== null) this._busy = t;
+    // Plan/173 — resolve a waiter for the next custom message of this type.
+    const custom = this._customPending.size > 0 ? parseCustomMessageEnd(line) : null;
+    if (custom) {
+      const waiter = this._customPending.get(custom.customType);
+      if (waiter) {
+        clearTimeout(waiter.timer);
+        this._customPending.delete(custom.customType);
+        waiter.resolve(custom.details);
+      }
+    }
     const gs = parseGetStateResponse(line);
     if (gs && gs.id) {
       const pong = this._pongPending.get(gs.id);
@@ -465,6 +543,41 @@ export class RpcChild extends EventEmitter {
         clearTimeout(timer);
         this._pongPending.delete(id);
         resolve(false);
+      }
+    });
+  }
+
+  /**
+   * Plan/173 — ask the child's extension for ONE custom message. `text` goes
+   * out as an RPC prompt: a slash command runs the extension's command handler
+   * without a model turn, and the handler reports through
+   * `pi.sendMessage({ customType })`, which the RPC stream emits as a
+   * `message_end` with `role: "custom"`. Resolves with that message's
+   * `details`, or null on timeout, when the child is not running, or when
+   * another request for the same type is still in flight.
+   *
+   * The canonical use is `/remote-pi pair`: the pairing token only exists in
+   * the process that will consume the app's `pair_request`, so the link must
+   * be minted INSIDE the daemon, never by whoever prints it.
+   */
+  requestCustomMessage(
+    customType: string,
+    text: string,
+    timeoutMs = 15_000,
+  ): Promise<Record<string, unknown> | null> {
+    if (this._state !== "running" || !this.child?.stdin) return Promise.resolve(null);
+    if (this._customPending.has(customType)) return Promise.resolve(null);
+    const id = `req-${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this._customPending.delete(customType);
+        resolve(null);
+      }, timeoutMs);
+      this._customPending.set(customType, { resolve, timer });
+      if (!this.sendPrompt(text, id)) {
+        clearTimeout(timer);
+        this._customPending.delete(customType);
+        resolve(null);
       }
     });
   }
@@ -521,6 +634,11 @@ export class RpcChild extends EventEmitter {
       p.resolve(false);
     }
     this._pongPending.clear();
+    for (const p of this._customPending.values()) {
+      clearTimeout(p.timer);
+      p.resolve(null);
+    }
+    this._customPending.clear();
     this.emit("exit", { code, signal, isCrash } satisfies RpcChildExitEvent);
   }
 
