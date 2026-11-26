@@ -192,13 +192,20 @@ export async function cmdDaemonsList(ctx: Pick<ExtensionContext, "ui">): Promise
   }
 }
 
-export async function cmdDaemonStatus(ctx: Pick<ExtensionContext, "ui">): Promise<void> {
+/** `/remote-pi daemon status` and `remote-pi daemon status`. Resolves FALSE
+ *  when the supervisor did not answer (offline, or a reply timeout — the
+ *  wedged shape of 2026-11-22). The CLI turns that into a non-zero exit code:
+ *  an exit-code-based health probe must never read a silent supervisor as
+ *  healthy. The slash command ignores the result (the warning is the reply). */
+export async function cmdDaemonStatus(ctx: Pick<ExtensionContext, "ui">): Promise<boolean> {
   try {
     const data = await callSupervisor({ op: "status" });
     ctx.ui.notify(`[remote-pi] Fleet status:\n${formatDaemonTable(data.daemons)}`, "info");
+    return true;
   } catch (err) {
-    if (err instanceof SupervisorOfflineError) { notifyOffline(ctx, err); return; }
+    if (err instanceof SupervisorOfflineError) { notifyOffline(ctx, err); return false; }
     ctx.ui.notify(`[remote-pi] status failed: ${String(err)}`, "error");
+    return false;
   }
 }
 

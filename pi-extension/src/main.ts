@@ -7047,7 +7047,11 @@ export async function runCli(argv: string[]): Promise<void> {
     if      (op === "start")   { await cmdDaemonStart(stubCtx, cliArgs[1]); }
     else if (op === "stop")    { await cmdDaemonStop(stubCtx, cliArgs[1]); }
     else if (op === "restart") { await cmdDaemonRestart(stubCtx, cliArgs[1]); }
-    else if (op === "status")  { await cmdDaemonStatus(stubCtx); }
+    else if (op === "status")  {
+      // Plan/173 — a status that did not get an answer is a failure for every
+      // caller that gates on the exit code (the phone's health probes).
+      if (!(await cmdDaemonStatus(stubCtx))) process.exitCode = 1;
+    }
     else if (op === "send")    { await cmdDaemonSend(rest, stubCtx); }
     else {
       console.log("Usage: remote-pi daemon <start|stop|restart [<id>]|status|send <id> \"<text>\">");
