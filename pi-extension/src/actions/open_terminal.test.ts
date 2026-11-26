@@ -7,6 +7,7 @@ vi.mock("node:child_process", () => ({
 
 import { execFileSync, spawn } from "node:child_process";
 import { openTerminalTab } from "./open_terminal.js";
+import { isTermux } from "../termux.js";
 
 function fakeChild() {
   return {
@@ -23,7 +24,30 @@ function finishWithClose(child: ReturnType<typeof fakeChild>, code = 0): void {
   close(code);
 }
 
-describe("openTerminalTab window visibility", () => {
+// Off Windows (and off Termux, which has its own tmux branch in
+// termux.test.ts) openTerminalTab answers "unsupported" and must not spawn
+// anything. This runs on the Linux CI legs, where the wt.exe block above is
+// skipped, so the non-Windows branch keeps its own coverage there (review on
+// #128).
+describe.skipIf(process.platform === "win32" || isTermux())("openTerminalTab off Windows", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  test("answers ok:false unsupported, method none, and spawns nothing", async () => {
+    const outcome = await openTerminalTab("/home/me/project", "pi");
+    expect(outcome.ok).toBe(false);
+    expect(outcome.method).toBe("none");
+    expect(outcome.message).toMatch(/only supported on Windows/);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+});
+
+// The wt.exe path only exists on win32; everywhere else openTerminalTab
+// answers "unsupported" without spawning (the Termux branch is covered in
+// termux.test.ts), so these spawn-shape assertions cannot hold off Windows.
+describe.skipIf(process.platform !== "win32")("openTerminalTab window visibility", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // resolveShell() and resolveWt() both use `where`; a single fake hit is

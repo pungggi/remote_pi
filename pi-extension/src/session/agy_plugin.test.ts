@@ -12,7 +12,12 @@ import {
 import { conversationFilePath, readConversationRecord } from "./conversation_registry.js";
 import { writeInboxState } from "../mcp/inbox_state.js";
 
-describe("ensureAgyMeshPluginInstalled + mesh_hook.mjs + watcher.mjs", () => {
+// These tests spawn the real hook and watcher scripts. On Windows a
+// shell-wrapped hook resolves its session host through a PowerShell probe
+// whose cold start takes seconds on a fresh CI runner (pi-extension-ci,
+// windows leg: the 5 s unit-test default timed out there), so the file gets
+// an integration-test budget. A hung script still fails — at 30 s.
+describe("ensureAgyMeshPluginInstalled + mesh_hook.mjs + watcher.mjs", { timeout: 30_000 }, () => {
   let tempDir = "";
   const prevHome = process.env["REMOTE_PI_HOME"];
 

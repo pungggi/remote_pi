@@ -12,6 +12,17 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
+- **CI for `pi-extension/**`** (found with 0.10.0):
+  `.github/workflows/pi-extension-ci.yml` runs install, typecheck, test,
+  build and an LF gate (release artefacts must not contain CR) on every
+  pull request and push to `main` that touches the extension: ubuntu with
+  Node 22 and 24, windows with Node 22. Before, nothing ran when only the
+  extension changed, which is how a line-ending-dependent test and CRLF
+  service units reached the tarball. pnpm 12.8.1 is pinned in the workflow.
+  The first runs also settled two facts the local runs could not: Node 20
+  cannot load the extension at all (the Pi SDK needs >= 22.19), so
+  `engines` now says so; and a handful of tests only passed on the owner's
+  machine (see Fixed).
 - **Android (Termux) as a session host, stage A3 (plan/173)**: a phone can
   now be set up as an always-on host with one command. Before, the Termux
   setup was nine manual steps and nothing restarted the supervisor when it
@@ -150,8 +161,22 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   connection alone is not enough), pairing each machine from the phone,
   explicit `set-relay`, and agent-side verification steps.
 
+### Changed
+
+- **pi-extension needs Node 22.19 or newer** (`engines` declared
+  `>=20.0.0` before). The Pi SDK it loads requires it; on Node 20 the
+  extension could not even be imported (`fs.globSync` is missing), so
+  nothing that worked stops working — `engines` and the README now say
+  what was already true. Found by the first Linux CI run.
+
 ### Fixed
 
+- **`show_file` / `show_image` no longer echo the resolved absolute path in
+  a failure message.** Node's fs error text embeds it (`stat '/…/doc.md'`),
+  so the model-visible result carried the absolute path although both tools
+  echo only the agent-supplied path in `details.path`. The error code is
+  reported instead (found by the first Linux CI run; the test compared
+  JSON, where backslash escaping had hidden the leak on Windows).
 - **pi-extension: service units are always LF, templates and shell scripts
   stay LF in every checkout** (found while packing 0.10.0). A tarball packed
   on a Windows checkout shipped CRLF service templates, and `remote-pi
