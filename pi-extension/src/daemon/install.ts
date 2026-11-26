@@ -4,7 +4,7 @@ import { delimiter } from "node:path";
 import { homedir, platform, tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TERMUX_PREFIX, fileStamp, isTermux, termuxBootScriptPath } from "../termux.js";
+import { TERMUX_PREFIX, fileStamp, isTermux, piperHome, termuxBootScriptPath } from "../termux.js";
 import { findGuardPids, findSupervisorPids, signalPid } from "./proc.js";
 
 /**
@@ -316,8 +316,8 @@ export interface InstallResult {
  *  root. Production leaves both unset. */
 export interface ServiceDeps {
   platform?: SupervisorPlatform;
-  /** Android: home directory `~/.termux/boot` lives under (default:
-   *  `vars.home`). */
+  /** Android: home directory `~/.termux/boot` lives under (default: the
+   *  daemon's home, `REMOTE_PI_HOME` included — the same one uninstall uses). */
   home?: string;
   /** Android: clock for the backup file name (default: real time). */
   now?: () => number;
@@ -374,12 +374,17 @@ export function installService(vars: RenderVars = defaultRenderVars(), deps: Ser
     throw new Error(`service template missing: ${templatePath}`);
   }
   const tpl = readFileSync(templatePath, "utf8");
-  const rendered = renderTemplate(tpl, vars);
+  // Android: ONE home resolution for install and uninstall alike — the
+  // daemon's (`REMOTE_PI_HOME` aware), the same `remote-pi doctor` and
+  // `remote-pi guard` look under. Install writing under one home while
+  // uninstall deletes from another is the failure this prevents.
+  const androidHome = deps.home ?? piperHome();
+  const rendered = plat === "android" ? renderTemplate(tpl, { ...vars, home: androidHome }) : renderTemplate(tpl, vars);
 
   const unitPath =
     plat === "macos" ? launchdPlistPath() :
     plat === "linux" ? systemdUnitPath() :
-    plat === "android" ? termuxBootScriptPath(deps.home ?? vars.home) :
+    plat === "android" ? termuxBootScriptPath(androidHome) :
     taskXmlPath();
   mkdirSync(dirname(unitPath), { recursive: true });
   let backup: string | undefined;
@@ -488,7 +493,7 @@ export function uninstallService(deps: ServiceDeps = {}): UninstallResult {
   const unitPath =
     plat === "macos" ? launchdPlistPath() :
     plat === "linux" ? systemdUnitPath() :
-    plat === "android" ? termuxBootScriptPath(deps.home ?? homedir()) :
+    plat === "android" ? termuxBootScriptPath(deps.home ?? piperHome()) :
     taskXmlPath();
 
   if (plat === "macos") {

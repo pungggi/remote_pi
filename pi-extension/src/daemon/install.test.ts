@@ -653,6 +653,33 @@ describe("installService / uninstallService (android)", () => {
     expect(isGeneratedBootScript(readFileSync(script(), "utf8"))).toBe(true);
     expect(isGeneratedBootScript("#!/bin/sh\necho hi\n")).toBe(false);
   });
+
+  // Review finding (MEDIUM): install used `vars.home`, uninstall `homedir()`,
+  // and neither looked at REMOTE_PI_HOME — install could write under one home
+  // and uninstall delete from another. Both now use the daemon's resolution.
+  test("install and uninstall resolve the boot script under ONE home, REMOTE_PI_HOME included", () => {
+    const other = mkdtempSync(join(tmpdir(), "pi-boot-home-"));
+    const previous = process.env["REMOTE_PI_HOME"];
+    process.env["REMOTE_PI_HOME"] = other;
+    try {
+      // `vars.home` points somewhere else on purpose: the Android path must
+      // not follow it.
+      const result = installService({ ...vars, home: tmpHome }, { platform: "android" });
+      expect(result.unitPath).toBe(join(other, ".termux", "boot", "start-piper.sh"));
+      expect(result.unitPath).not.toBe(script());
+      expect(readFileSync(result.unitPath, "utf8")).toContain(`export HOME="${other}"`);
+      expect(existsSync(script())).toBe(false);
+
+      const un = uninstallService({ platform: "android", findGuards: () => [], findSupervisors: () => [], signal: () => false });
+      expect(un.unitPath).toBe(result.unitPath);
+      expect(un.removed).toBe(true);
+      expect(existsSync(result.unitPath)).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env["REMOTE_PI_HOME"];
+      else process.env["REMOTE_PI_HOME"] = previous;
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("lineDiff / renderLineDiff (plan/173)", () => {
