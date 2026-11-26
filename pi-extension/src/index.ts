@@ -44,6 +44,7 @@ import { ext, CTRL_PREFIX } from "./extension-state.js";
 export type { RemoteState, RelayConnectivity } from "./extension-state.js";
 import type { BufferMsg, ExtensionState } from "./extension-state.js";
 import { registerAgentTools } from "./session/tools.js";
+import { cliVersionLine, isVersionFlag } from "./version.js";
 import { registerSessionControlTools } from "./session/control_tools.js";
 import { ensureGlobalDirs, skillsDir } from "./session/global_config.js";
 import { effectiveAutoStartRelay, loadLocalConfig, localConfigExists } from "./session/local_config.js";
@@ -880,6 +881,9 @@ export default extension;
 // everything else on a phone host, so it runs on a path that loads neither the
 // runtime nor the SDK (a broken update elsewhere must not take the guard down
 // with it), and it stays small for a process that lives for weeks.
+// `--version` / `-v` takes a path just as short: the version is read from
+// package.json, not from the runtime (which would cost its ~2 s import — and
+// printed the usage instead, before).
 if (_isDirectRun()) {
   if (process.argv[2] === "guard") {
     void import("./daemon/guard.js")
@@ -891,6 +895,8 @@ if (_isDirectRun()) {
           process.exitCode = 1;
         },
       );
+  } else if (isVersionFlag(process.argv[2])) {
+    console.log(cliVersionLine());
   } else {
     void import("./main.js").then((m) => { mainLoaded = m; return m.runCli(process.argv); });
   }

@@ -20,32 +20,62 @@ import {
  * Plan/173 — Termux detection and the two Termux files the Android host
  * reads. Everything is a pure function of env / platform / home, so these
  * run on a desktop; nothing touches the real home directory.
+ *
+ * The phone's node reports `process.platform` as `"android"` (found
+ * 2026-11-26: 0.10.0 required `"linux"`, so every Termux check on the real
+ * device said no and `guard run` refused to start). Every marker below is
+ * therefore proven on BOTH platforms.
  */
 
 const termuxHome = "/data/data/com.termux/files/home";
 
+/** The two platforms Termux's node may report. */
+const TERMUX_PLATFORMS: NodeJS.Platform[] = ["linux", "android"];
+
 describe("isTermux", () => {
-  test("true on linux with TERMUX_VERSION (interactive Termux shell)", () => {
-    expect(isTermux({ TERMUX_VERSION: "118" }, "linux", "/home/x")).toBe(true);
+  test("true with TERMUX_VERSION (interactive Termux shell), on either platform", () => {
+    for (const platform of TERMUX_PLATFORMS) {
+      expect(isTermux({ TERMUX_VERSION: "118" }, platform, "/home/x")).toBe(true);
+    }
   });
 
-  test("true on linux with the Termux PREFIX, even without TERMUX_VERSION", () => {
-    expect(isTermux({ PREFIX: TERMUX_PREFIX }, "linux", termuxHome)).toBe(true);
+  test("true with the Termux PREFIX, even without TERMUX_VERSION, on either platform", () => {
+    for (const platform of TERMUX_PLATFORMS) {
+      expect(isTermux({ PREFIX: TERMUX_PREFIX }, platform, termuxHome)).toBe(true);
+      expect(isTermux({ PREFIX: TERMUX_PREFIX }, platform, "/home/x")).toBe(true);
+    }
   });
 
-  test("true when only the home directory is Termux's (stripped environment)", () => {
-    expect(isTermux({}, "linux", termuxHome)).toBe(true);
+  test("true when only the home directory is Termux's (stripped environment), on either platform", () => {
+    for (const platform of TERMUX_PLATFORMS) {
+      expect(isTermux({}, platform, termuxHome)).toBe(true);
+    }
   });
 
-  test("false for a foreign PREFIX, a bare linux box, and every other OS", () => {
-    expect(isTermux({ PREFIX: "/usr" }, "linux", "/home/x")).toBe(false);
-    expect(isTermux({}, "linux", "/home/x")).toBe(false);
-    expect(isTermux({ TERMUX_VERSION: "118", PREFIX: TERMUX_PREFIX }, "darwin", termuxHome)).toBe(false);
-    expect(isTermux({ TERMUX_VERSION: "118", PREFIX: TERMUX_PREFIX }, "win32", termuxHome)).toBe(false);
+  test("the platform alone is never enough: android or linux without a marker is not Termux", () => {
+    for (const platform of TERMUX_PLATFORMS) {
+      expect(isTermux({}, platform, "/home/x")).toBe(false);
+      expect(isTermux({ PREFIX: "/usr" }, platform, "/home/x")).toBe(false);
+      expect(isTermux({ PREFIX: "/data/data/com.other.app/files/usr" }, platform, "/home/x")).toBe(false);
+    }
+  });
+
+  test("every marker is false on every other OS", () => {
+    for (const platform of ["darwin", "win32", "freebsd"] as NodeJS.Platform[]) {
+      expect(isTermux({ TERMUX_VERSION: "118", PREFIX: TERMUX_PREFIX }, platform, termuxHome)).toBe(false);
+    }
   });
 
   test("a blank TERMUX_VERSION is no signal", () => {
-    expect(isTermux({ TERMUX_VERSION: "  " }, "linux", "/home/x")).toBe(false);
+    for (const platform of TERMUX_PLATFORMS) {
+      expect(isTermux({ TERMUX_VERSION: "  " }, platform, "/home/x")).toBe(false);
+    }
+  });
+
+  test("the real phone: `android`, TERMUX_VERSION and PREFIX set, the app's home", () => {
+    expect(
+      isTermux({ TERMUX_VERSION: "102", PREFIX: `${TERMUX_PREFIX}/`, HOME: termuxHome }, "android", termuxHome),
+    ).toBe(true);
   });
 });
 

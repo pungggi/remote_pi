@@ -36,7 +36,7 @@ import {
   previewTermuxBootScript,
   renderLineDiff,
 } from "../daemon/install.js";
-import { guardStart, interimGuardScriptPath, probeStatus, runningGuardPid } from "../daemon/guard.js";
+import { guardLockHolderPid, guardLogPath, guardStart, interimGuardScriptPath, probeStatus, runningGuardPid } from "../daemon/guard.js";
 import { callSupervisor } from "../daemon/client.js";
 import type { DaemonInfo } from "../daemon/control_protocol.js";
 import { readRoomsRegistry } from "../session/rooms_registry.js";
@@ -50,6 +50,9 @@ import type { DoctorCheck } from "../doctor.js";
 export const PHONE_SETUP_TTL_MS = 600_000;
 /** How long the supervisor may take to answer after the boot script ran. */
 export const SUPERVISOR_WAIT_MS = 30_000;
+/** How long the guard may take to hold its pid file after the boot script ran
+ *  (`waitGuard` starts it itself when it is still missing). */
+export const GUARD_WAIT_MS = 8_000;
 /** How long the device daemon may take to show up in the relay room. */
 export const DEVICE_ROOM_WAIT_MS = 120_000;
 /** One heartbeat interval of the device daemon (plan/168 tick) plus slack. */
@@ -171,6 +174,9 @@ export interface PhoneSetupDeps {
   supervisorWasUp: () => Promise<boolean>;
   waitSupervisor: (timeoutMs: number) => Promise<DaemonInfo[] | null>;
   waitGuard: (timeoutMs: number) => Promise<number | null>;
+  /** Last lines of the guard log for the failure message; null when the log
+   *  cannot be read (told apart from "no lines" in the report). */
+  guardLogTail: (lines: number) => string[] | null;
   deviceRoomLastSeenAt: () => number | undefined;
   pair: (ttlMs: number) => Promise<{ ok: true; link: PairLink } | { ok: false; error: string }>;
   copyToClipboard: (text: string) => boolean;
@@ -272,6 +278,14 @@ export function defaultPhoneSetupDeps(opts: PhoneSetupOptions, log: (line: strin
       }
     },
     supervisorWasUp: async () => (await probeStatus()) !== null,
+    guardLogTail: (lines) => {
+      try {
+        const text = readFileSync(guardLogPath(), "utf8").trimEnd();
+        return text.length === 0 ? [] : text.split("\n").slice(-lines);
+      } catch {
+        return null;
+      }
+    },
     waitSupervisor: async (timeoutMs) => {
       const deadline = Date.now() + timeoutMs;
       for (;;) {
@@ -283,14 +297,25 @@ export function defaultPhoneSetupDeps(opts: PhoneSetupOptions, log: (line: strin
     },
     waitGuard: async (timeoutMs) => {
       const deadline = Date.now() + timeoutMs;
+      // The pid file is cheap to read; the command-line scan behind it walks
+      // all of /proc, so while nobody holds the lock it is asked once a
+      // second, not at every poll.
+      let nextScanAt = 0;
       while (Date.now() < deadline) {
-        const pid = runningGuardPid();
-        if (pid !== null) return pid;
+        const holder = guardLockHolderPid();
+        if (holder !== null) return holder;
+        if (Date.now() >= nextScanAt) {
+          const byArgv = runningGuardPid();
+          if (byArgv !== null) return byArgv;
+          nextScanAt = Date.now() + 1000;
+        }
         await new Promise((r) => setTimeout(r, 250));
       }
       // The script may have lost a race against a stale pid file: asking
       // explicitly is idempotent and either reports or starts the loop.
-      return (await guardStart()).ok ? runningGuardPid() : null;
+      // The same chain as the loop above answers: the lock holder, else a
+      // loop found by its command line (`guard start` reports that one too).
+      return (await guardStart()).ok ? (guardLockHolderPid() ?? runningGuardPid()) : null;
     },
     deviceRoomLastSeenAt: () => readRoomsRegistry().get(DEVICE_ROOM)?.lastSeenAt,
     pair: async (ttlMs) => {
@@ -490,12 +515,27 @@ export async function runPhoneSetup(opts: PhoneSetupOptions, deps: PhoneSetupDep
   }
   report.line("ok", "supervisor", `${wasUp ? "already running" : "started"}, ${rows.length} fleet row(s)`);
 
-  const guard = await deps.waitGuard(8000);
-  report.line(
-    guard !== null ? "ok" : "warn",
-    "guard",
-    guard !== null ? `running (pid ${guard}) — restarts the supervisor when it is gone` : "not running — start it with: remote-pi guard start",
-  );
+  // The guard is not optional on a phone: without it nothing restarts the
+  // supervisor, which is how the fleet of 2026-11-26 stayed down for hours
+  // (plan/173, A7 incident). So its absence is a failure, not a warning.
+  const guard = await deps.waitGuard(GUARD_WAIT_MS);
+  if (guard === null) {
+    report.line(
+      "fail",
+      "guard",
+      `still not running ${GUARD_WAIT_MS / 1000} s after the start and one start attempt — nothing would restart the ` +
+        "supervisor when it is gone. Start it with: remote-pi guard start — last guard.log lines:",
+    );
+    const tail = deps.guardLogTail(12);
+    if (tail === null) {
+      report.text(`     (${guardLogPath()} does not exist or cannot be read)`);
+    } else if (tail.length === 0) {
+      report.text("     (guard.log is empty: the guard did not get as far as writing to it)");
+    }
+    for (const line of tail ?? []) report.text(`     ${line}`);
+    return 1;
+  }
+  report.line("ok", "guard", `running (pid ${guard}) — restarts the supervisor when it is gone`);
   if (interimWasPresent) {
     report.line(
       deps.interimGuardPresent() ? "warn" : "ok",

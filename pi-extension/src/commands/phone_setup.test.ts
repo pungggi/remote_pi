@@ -113,6 +113,8 @@ function harness(overrides: Partial<PhoneSetupDeps> = {}) {
       calls.push("waitGuard");
       return 4242;
     },
+    guardLogTail: (lines) =>
+      ["[2026-11-26 13:16:04] guard: loop exits: guard run belongs on a Termux (Android) host"].slice(-lines),
     deviceRoomLastSeenAt: () => state.lastSeen,
     pair: async (ttl) => {
       calls.push(`pair:${ttl}`);
@@ -356,10 +358,36 @@ describe("runPhoneSetup — where it stops", () => {
     ]);
   });
 
-  test("a missing guard is a warning (the supervisor runs); the device daemon never arriving is fatal", async () => {
+  test("a missing guard is fatal: nothing would restart the supervisor; the log tail says why, no pairing link", async () => {
+    // 0.10.0 on the real phone: `isTermux` was false there, so `guard run`
+    // refused to start and the fleet had no one to restart it.
     const noGuard = harness({ waitGuard: async () => null });
-    expect(await runPhoneSetup(BASE_OPTS, noGuard.deps)).toBe(0);
-    expect(strip(noGuard.lines)).toContain("guard: not running — start it with: remote-pi guard start");
+    expect(await runPhoneSetup(BASE_OPTS, noGuard.deps)).toBe(1);
+    expect(strip(noGuard.lines).slice(-2)).toEqual([
+      "guard: still not running 8 s after the start and one start attempt — nothing would restart the supervisor " +
+        "when it is gone. Start it with: remote-pi guard start — last guard.log lines:",
+      "[2026-11-26 13:16:04] guard: loop exits: guard run belongs on a Termux (Android) host",
+    ]);
+    // It stops here: the device-room wait and the pairing link are skipped.
+    expect(noGuard.calls).not.toContain("sleep:2000");
+    expect(noGuard.calls).not.toContain("pair:600000");
+    // Nothing to show: an empty log and an unreadable one are told apart,
+    // instead of a heading without content.
+    const empty = harness({ waitGuard: async () => null, guardLogTail: () => [] });
+    expect(await runPhoneSetup(BASE_OPTS, empty.deps)).toBe(1);
+    expect(strip(empty.lines).at(-1)).toBe("(guard.log is empty: the guard did not get as far as writing to it)");
+    const unreadable = harness({ waitGuard: async () => null, guardLogTail: () => null });
+    expect(await runPhoneSetup(BASE_OPTS, unreadable.deps)).toBe(1);
+    expect(strip(unreadable.lines).at(-1)).toMatch(/\(.*guard\.log does not exist or cannot be read\)$/);
+    // Twelve lines are asked for and shown, from the end of a longer log.
+    const longer = harness({
+      waitGuard: async () => null,
+      guardLogTail: (lines) => Array.from({ length: 20 }, (_, i) => `[ts] line ${i + 1}`).slice(-lines),
+    });
+    expect(await runPhoneSetup(BASE_OPTS, longer.deps)).toBe(1);
+    const shown = strip(longer.lines);
+    expect(shown.slice(-12)).toEqual(Array.from({ length: 12 }, (_, i) => `[ts] line ${i + 9}`));
+    expect(shown).not.toContain("[ts] line 8");
 
     const dark = harness({ runBootScript: () => true });
     dark.state.lastSeen = dark.state.now - 3_600_000; // yesterday's entry

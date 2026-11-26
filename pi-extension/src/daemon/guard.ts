@@ -227,9 +227,10 @@ export function appendGuardLog(path: string, line: string): void {
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
-/** `KEY=VALUE` lines with `#` comments, an optional `export`, and single or
- *  double quotes around the value — the shape a shell `source`s, because the
- *  interim guard's `guard.conf` was written for bash. */
+/** `KEY=VALUE` lines with `#` comments, an optional `export`, single or
+ *  double quotes around the value, and an inline `# comment` behind the value
+ *  — the shape a shell `source`s, because the interim guard's `guard.conf`
+ *  was written for bash, which reads `KEY=30   # why` as `30`. */
 export function parseConf(text: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const raw of text.split(/\r?\n/)) {
@@ -237,7 +238,7 @@ export function parseConf(text: string): Record<string, string> {
     if (!line || line.startsWith("#")) continue;
     const m = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
     if (!m) continue;
-    let value = m[2]!.trim();
+    let value = stripInlineComment(m[2]!).trim();
     if ((value.startsWith('"') && value.endsWith('"') && value.length >= 2)
       || (value.startsWith("'") && value.endsWith("'") && value.length >= 2)) {
       value = value.slice(1, -1);
@@ -245,6 +246,25 @@ export function parseConf(text: string): Record<string, string> {
     out[m[1]!] = value;
   }
   return out;
+}
+
+/** Cuts an inline comment off a value the way a shell does: a `#` outside
+ *  quotes that begins a word (the start of the value, or right after
+ *  whitespace). A `#` glued to the value (`15,30#x`) and one inside quotes are
+ *  characters of the value; an unbalanced quote runs to the end of the line. */
+export function stripInlineComment(value: string): string {
+  let quote: string | null = null;
+  for (let i = 0; i < value.length; i++) {
+    const c = value[i];
+    if (quote !== null) {
+      if (c === quote) quote = null;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    } else if (c === "#" && (i === 0 || /\s/.test(value[i - 1]!))) {
+      return value.slice(0, i);
+    }
+  }
+  return value;
 }
 
 function seconds(value: string): number | null {
@@ -1053,11 +1073,34 @@ export function guardUsage(): string {
   ].join("\n");
 }
 
-/** Reads the pid file; the pid only when it is alive AND a guard. */
-export function runningGuardPid(pidFile: string = guardPidPath()): number | null {
-  let pid = Number.NaN;
-  try { pid = Number(readFileSync(pidFile, "utf8").trim()); } catch { return null; }
-  return Number.isInteger(pid) && guardProcessAlive(pid) ? pid : null;
+/** The pid of the guard that holds the pid-file lock, or null: the file names
+ *  a process that is alive AND runs the guard loop. So a file left behind by
+ *  a crash or a reboot never passes for a running guard once the OS has
+ *  handed the pid to something else. */
+export function guardLockHolderPid(pidFile: string = guardPidPath(), procRoot: string = DEFAULT_PROC_ROOT): number | null {
+  const pid = pidFilePid(pidFile);
+  return pid !== null && guardProcessAlive(pid, procRoot) ? pid : null;
+}
+
+/** The pid of the running guard loop, or null: the lock holder, else a guard
+ *  whose pid file was removed while it runs, found by its command line (the
+ *  loop takes the file back on its next watch). For such a guard `start`
+ *  stays a no-op and `status` tells the truth. Only `start`'s own "started"
+ *  answer insists on the lock (`guardLockHolderPid`).
+ *
+ *  Two loops without a lock settle themselves within one watch period (the
+ *  one that retakes the lock makes the other leave). Until then the lowest
+ *  pid is reported, so the answer does not depend on the order /proc is
+ *  listed in.
+ *
+ *  Cost: one walk through /proc when nobody holds the lock. Callers that
+ *  poll must throttle it, as `phone-setup` does (once a second); `start`
+ *  polls the lock holder instead, which reads the pid file only. */
+export function runningGuardPid(pidFile: string = guardPidPath(), procRoot: string = DEFAULT_PROC_ROOT): number | null {
+  const holder = guardLockHolderPid(pidFile, procRoot);
+  if (holder !== null) return holder;
+  const byArgv = findGuardPids(procRoot);
+  return byArgv.length === 0 ? null : Math.min(...byArgv);
 }
 
 function pidFilePid(pidFile: string): number | null {
@@ -1094,8 +1137,28 @@ function defaultInterimRetireDeps(log: (line: string) => void): InterimRetireDep
   };
 }
 
-/** Starts the loop detached and waits briefly for its pid file. */
-export async function guardStart(deps: { spawnFn?: typeof spawn; sleep: (ms: number) => Promise<void>; runningPid: () => number | null; logPath?: string } = { sleep: (ms) => new Promise((r) => setTimeout(r, ms)), runningPid: runningGuardPid }): Promise<{ ok: boolean; message: string }> {
+/** Starts the loop detached and waits briefly for its lock. */
+export interface GuardStartDeps {
+  spawnFn?: typeof spawn;
+  sleep: (ms: number) => Promise<void>;
+  /** A running guard, with or without its pid file: one found here means
+   *  "already running" and nothing is spawned. */
+  runningPid: () => number | null;
+  /** The guard that holds the pid-file lock. "started" is reported only when
+   *  this answers, so a child that was merely seen and then died (a refused
+   *  `guard run`, a lock held elsewhere) is never a success. Without it the
+   *  strict `guardLockHolderPid` is used, never the caller's `runningPid`:
+   *  a caller that hands in only that one must not get the weaker answer. */
+  lockHolder?: () => number | null;
+  logPath?: string;
+}
+
+export async function guardStart(
+  deps: GuardStartDeps = {
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    runningPid: runningGuardPid,
+  },
+): Promise<{ ok: boolean; message: string }> {
   const already = deps.runningPid();
   if (already !== null) return { ok: true, message: `guard already running (pid ${already})` };
   const script = findRemotePiScript();
@@ -1120,26 +1183,40 @@ export async function guardStart(deps: { spawnFn?: typeof spawn; sleep: (ms: num
   }
   // The loop takes the lock within a second or two (node boot); give it a
   // moment so the answer is real instead of "probably started".
+  const lockHolder = deps.lockHolder ?? guardLockHolderPid;
   for (let i = 0; i < 20; i++) {
     await deps.sleep(150);
-    const pid = deps.runningPid();
+    const pid = lockHolder();
     if (pid !== null) return { ok: true, message: `guard started (pid ${pid})` };
   }
   return { ok: false, message: `guard did not take its lock — see ${logPath}` };
 }
 
-/** SIGTERM to the running guard and wait. While a restart sequence is in
- *  progress (marker file present) the wait is extended instead of escalating
- *  to SIGKILL: a half-done restart would leave no supervisor at all. */
+/** SIGTERM to the guard that holds the lock and wait. While a restart
+ *  sequence is in progress (marker file present) the wait is extended instead
+ *  of escalating to SIGKILL: a half-done restart would leave no supervisor at
+ *  all.
+ *
+ *  Only the LOCK HOLDER is signalled. A loop found by its command line alone
+ *  (the pid file missing or stale) is named and left alone: nothing proves
+ *  which loop the pid file meant, and `stop` must never guess (fourth review
+ *  on #130). */
+export interface GuardStopDeps {
+  /** The guard that holds the pid-file lock. */
+  runningPid: () => number | null;
+  signal: (pid: number, sig: NodeJS.Signals) => boolean;
+  isAlive: (pid: number) => boolean;
+  sleep: (ms: number) => Promise<void>;
+  restartInProgress: () => boolean;
+  /** Loops found by command line that hold no lock; named when there is no
+   *  lock holder. Absent: none are looked for. */
+  lockless?: () => number[];
+}
+
 export async function guardStop(
-  deps: {
-    runningPid: () => number | null;
-    signal: (pid: number, sig: NodeJS.Signals) => boolean;
-    isAlive: (pid: number) => boolean;
-    sleep: (ms: number) => Promise<void>;
-    restartInProgress: () => boolean;
-  } = {
-    runningPid: runningGuardPid,
+  deps: GuardStopDeps = {
+    runningPid: guardLockHolderPid,
+    lockless: () => findGuardPids(),
     signal: signalPid,
     isAlive: isPidAlive,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -1147,7 +1224,16 @@ export async function guardStop(
   },
 ): Promise<{ ok: boolean; message: string }> {
   const pid = deps.runningPid();
-  if (pid === null) return { ok: true, message: "guard is not running" };
+  if (pid === null) {
+    const stray = (deps.lockless ?? (() => []))();
+    if (stray.length === 0) return { ok: true, message: "guard is not running" };
+    return {
+      ok: false,
+      message:
+        "no guard holds the lock (the pid file is missing or stale); loop(s) found by command line: " +
+        `${[...stray].sort((a, b) => a - b).join(", ")} — nothing was stopped. Restore the pid file, or stop them by hand.`,
+    };
+  }
   if (!deps.signal(pid, "SIGTERM")) return { ok: true, message: "guard is not running" };
   let waitedMs = 0;
   while (deps.isAlive(pid) && waitedMs < DEFAULT_GUARD_CONFIG.stopGraceMs) {
@@ -1263,8 +1349,8 @@ export async function runGuardCli(
     }
     case "stop": {
       const r = await guardStop();
-      io.out(`[remote-pi] ${r.message}`);
-      return 0;
+      (r.ok ? io.out : io.err)(`[remote-pi] ${r.message}`);
+      return r.ok ? 0 : 1;
     }
     case "once": {
       const r = await guardOnce();

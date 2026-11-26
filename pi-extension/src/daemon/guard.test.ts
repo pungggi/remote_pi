@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, createConnection } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   DEFAULT_GUARD_CONFIG,
@@ -26,6 +26,7 @@ import {
   fileMarker,
   fleetHealthy,
   formatLogLine,
+  guardLockHolderPid,
   guardStart,
   guardProcessAlive,
   guardStatus,
@@ -38,8 +39,10 @@ import {
   retireInterimGuard,
   runGuardCli,
   runGuardLoop,
+  runningGuardPid,
   settleBeforeFirstTick,
   startAllowedAt,
+  stripInlineComment,
   tick,
   timeOfDay,
   type GuardConfig,
@@ -48,6 +51,7 @@ import {
 } from "./guard.js";
 import type { DaemonInfo } from "./control_protocol.js";
 import { ipcAddress } from "../session/ipc.js";
+import { findGuardPids } from "./proc.js";
 
 const SOCK = "/data/data/com.termux/files/home/.pi/piper/supervisor.sock";
 const MIN = 60_000;
@@ -202,6 +206,52 @@ describe("configuration", () => {
     });
   });
 
+  test("an inline `# comment` behind a value is cut off the way a shell reads it (the phone's guard.conf)", () => {
+    // The file the phone ran the interim guard with: a header block and a
+    // comment behind every value. 0.10.0 read `30   # …` as the value and
+    // refused every line of it.
+    const phoneConf = [
+      "# ~/.pi/piper/guard.conf — settings in seconds. Lines the new guard does",
+      "# not know are listed at the start of guard.log.",
+      "",
+      "CHECK_INTERVAL_S=30   # how often the supervisor is asked",
+      "FAILS_BEFORE_RESTART=2 # silent answers before a restart",
+      "MAX_AGE_S=86400   # graceful restart after a day",
+      "RESTART_GRACE_S=10  # SIGTERM to SIGKILL grace",
+      "RATE_MAX_RESTARTS=3 # starts allowed per window",
+      "RATE_WINDOW_S=600  # the window",
+      "RATE_BACKOFF_S=1800  # the interim guard's pause after too many restarts",
+      "",
+    ].join("\n");
+    const loaded = loadGuardConfig({}, phoneConf);
+    expect(loaded.config).toEqual({
+      ...DEFAULT_GUARD_CONFIG,
+      intervalMs: 30_000,
+      failsBeforeRestart: 2,
+      maxAgeMs: 24 * HOUR,
+      rateMax: 3,
+      rateWindowMs: 10 * MIN,
+      stopGraceMs: 10_000,
+    });
+    expect(loaded.sources).toEqual(["guard.conf"]);
+    // The one interim key without a counterpart is reported with its hint,
+    // as superseded, not as a bad value.
+    expect(loaded.ignored).toEqual([
+      "guard.conf: RATE_BACKOFF_S (replaced by START_BACKOFF_S (the backoff between starts))",
+    ]);
+  });
+
+  test("stripInlineComment: a `#` starts a comment only outside quotes and at the start of a word", () => {
+    expect(stripInlineComment("30   # why")).toBe("30   ");
+    expect(stripInlineComment("# whole line")).toBe("");
+    expect(stripInlineComment("15,30")).toBe("15,30");
+    expect(stripInlineComment("15,30#glued")).toBe("15,30#glued");
+    expect(stripInlineComment('"a # b" # after')).toBe('"a # b" ');
+    expect(stripInlineComment("'x # y'")).toBe("'x # y'");
+    // An unbalanced quote runs to the end of the line: nothing after it is a comment.
+    expect(stripInlineComment('"open # quote')).toBe('"open # quote');
+  });
+
   test("defaults, then guard.conf, then the environment — the environment wins", () => {
     const loaded = loadGuardConfig(
       { REMOTE_PI_GUARD_INTERVAL_S: "20", REMOTE_PI_GUARD_MAX_AGE_S: "0" },
@@ -333,7 +383,10 @@ describe("guardProcessAlive / acquireGuardLock", () => {
     put(11, ["/bin/node", "/x/dist/index.js", "daemon", "status"]);
     put(12, ["/bin/node", "/x/dist/index.js", "guard", "status"]);
     put(13, ["/bin/bash", "/home/u/.pi/piper/piper-guard.sh"]);
-    for (const pid of [10, 11, 12, 13]) expect(guardProcessAlive(pid, proc)).toBe(pid === 10);
+    // …also behind node options with a value of their own (a wrapper's shim).
+    put(14, ["/bin/node", "--require", "/home/u/.pi/piper/android-shim.cjs", "/x/dist/index.js", "guard", "run"]);
+    put(15, ["/bin/bash", "--require", "/x/index.js", "guard", "run"]);
+    for (const pid of [10, 11, 12, 13, 14, 15]) expect(guardProcessAlive(pid, proc)).toBe(pid === 10 || pid === 14);
   });
 
   test("the lock is exclusive, survives a stale file, and is released by its owner only", () => {
@@ -355,6 +408,157 @@ describe("guardProcessAlive / acquireGuardLock", () => {
     expect(readFileSync(pidFile, "utf8")).toBe("444\n");
     releaseGuardLock(pidFile, 444);
     expect(() => readFileSync(pidFile)).toThrow();
+  });
+
+  // 0.10.1: the phone started the guard through a wrapper (`node --require
+  // <shim> … index.js guard run`), because 0.10.0's Termux check was false on
+  // the real device. Reading only the first non-option argument as the script
+  // then made the running guard look dead: `status` said "not running" and
+  // `start` tried to spawn a second loop, which takes the lock from the live
+  // one as soon as it runs. The pid file is the anchor now; the command line
+  // only has to agree.
+  describe("runningGuardPid: the pid file first, the command line as the fallback", () => {
+    const SHIM_GUARD = ["/bin/node", "--require", "/home/u/.pi/piper/android-shim.cjs", "/x/dist/index.js", "guard", "run"];
+
+    function table(): { proc: string; put: (pid: number, argv: string[]) => void } {
+      const proc = join(tmp, "proc", randomUUID());
+      const put = (pid: number, argv: string[]): void => {
+        mkdirSync(join(proc, String(pid)), { recursive: true });
+        writeFileSync(join(proc, String(pid), "cmdline"), argv.join("\0") + "\0");
+      };
+      return { proc, put };
+    }
+
+    function pidFileWith(text: string): string {
+      const pidFile = join(tmp, "piper", "guard.pid");
+      mkdirSync(dirname(pidFile), { recursive: true });
+      writeFileSync(pidFile, text);
+      return pidFile;
+    }
+
+    test("a guard behind a `--require` shim is running: status, start and the lock agree", async () => {
+      const { proc, put } = table();
+      put(314159, SHIM_GUARD);
+      const pidFile = pidFileWith("314159\n");
+      expect(runningGuardPid(pidFile, proc)).toBe(314159);
+
+      const status = await guardStatus({
+        runningPid: () => runningGuardPid(pidFile, proc),
+        probe: async () => null,
+        sockPath: SOCK,
+        config: config(),
+      });
+      expect(status[0]).toMatch(/^guard:\s+running \(pid 314159\) — .*guard\.log$/);
+
+      let spawns = 0;
+      const start = await guardStart({
+        spawnFn: (() => {
+          spawns += 1;
+          return { unref: () => undefined };
+        }) as never,
+        sleep: async () => undefined,
+        runningPid: () => runningGuardPid(pidFile, proc),
+        logPath: join(tmp, "guard.log"),
+      });
+      expect(start).toEqual({ ok: true, message: "guard already running (pid 314159)" });
+      expect(spawns).toBe(0);
+      // A second `guard run` must not take the lock from the live loop.
+      expect(acquireGuardLock(pidFile, 271828, (pid) => guardProcessAlive(pid, proc))).toBe("already-running");
+    });
+
+    test("the pid file was removed while the guard runs: still found by its command line", async () => {
+      const { proc, put } = table();
+      put(271828, ["/bin/node", "/home/u/.local/bin/remote-pi", "guard", "run"]);
+      const missing = join(tmp, "piper", "gone.pid");
+      expect(runningGuardPid(missing, proc)).toBe(271828);
+      // A stale file (a pid that is gone) leads to the same answer.
+      expect(runningGuardPid(pidFileWith("1\n"), proc)).toBe(271828);
+      // It does not hold its lock, though: only `start`'s "started" answer
+      //  cares about that, and must not be satisfied by a child merely seen.
+      expect(guardLockHolderPid(missing, proc)).toBeNull();
+
+      const start = await guardStart({
+        spawnFn: (() => {
+          throw new Error("a second guard must not be spawned");
+        }) as never,
+        sleep: async () => undefined,
+        runningPid: () => runningGuardPid(missing, proc),
+      });
+      expect(start).toEqual({ ok: true, message: "guard already running (pid 271828)" });
+    });
+
+    test("start: a spawned child that is seen but never takes the lock is not \"started\"", async () => {
+      // Before the lock holder was asked separately, the command-line scan
+      // saw the child right after its exec and reported success for a loop
+      // that then exited (a refused `guard run`, a lock held elsewhere).
+      let spawned = false;
+      const seenOnly = await guardStart({
+        spawnFn: (() => {
+          spawned = true;
+          return { unref: () => undefined };
+        }) as never,
+        sleep: async () => undefined,
+        runningPid: () => (spawned ? 999 : null),
+        lockHolder: () => null,
+        logPath: join(tmp, "guard.log"),
+      });
+      expect(spawned).toBe(true);
+      expect(seenOnly).toEqual({ ok: false, message: `guard did not take its lock — see ${join(tmp, "guard.log")}` });
+    });
+
+    test("a stale file whose pid now belongs to something else is no guard, when nothing else is", () => {
+      const { proc, put } = table();
+      put(173205, ["/system/bin/sh", "-c", "sleep 600"]); // alive, not node
+      put(141421, ["/bin/node", "/x/dist/index.js", "daemon", "status"]); // node, not the guard
+      put(161803, ["/bin/bash", "-c", "node /x/dist/index.js guard run"]); // the words alone are not the loop
+      expect(runningGuardPid(pidFileWith("173205\n"), proc)).toBeNull();
+      expect(runningGuardPid(pidFileWith("141421\n"), proc)).toBeNull();
+      expect(runningGuardPid(pidFileWith("not a pid\n"), proc)).toBeNull();
+      // Without a pid file the command line decides alone.
+      expect(runningGuardPid(join(tmp, "piper", "none.pid"), proc)).toBeNull();
+    });
+
+    test("two loops without a lock: the lowest pid is reported, whatever order /proc lists them in", () => {
+      const { proc, put } = table();
+      put(314159, SHIM_GUARD);
+      put(271828, ["/bin/node", "/x/dist/index.js", "guard", "run"]);
+      expect(runningGuardPid(join(tmp, "piper", "gone.pid"), proc)).toBe(271828);
+      // With a lock holder there is no choice to make.
+      expect(runningGuardPid(pidFileWith("314159\n"), proc)).toBe(314159);
+    });
+
+    test("stop addresses the lock holder only: a stale pid file and two lock-less loops → nothing is signalled, the pids are named", async () => {
+      // Fourth review on #130: `stop` must never guess which loop the pid
+      // file meant. It takes the lock holder alone and reports the rest.
+      const { proc, put } = table();
+      put(271828, ["/bin/node", "/x/dist/index.js", "guard", "run"]);
+      put(314159, SHIM_GUARD);
+      const pidFile = pidFileWith("1\n"); // stale: pid 1 is no guard
+      const signalled: Array<[number, string]> = [];
+      const stopped = await guardStop({
+        runningPid: () => guardLockHolderPid(pidFile, proc),
+        lockless: () => findGuardPids(proc),
+        signal: (pid, sig) => {
+          signalled.push([pid, sig]);
+          return true;
+        },
+        isAlive: () => false,
+        sleep: async () => undefined,
+        restartInProgress: () => false,
+      });
+      expect(stopped).toEqual({
+        ok: false,
+        message:
+          "no guard holds the lock (the pid file is missing or stale); loop(s) found by command line: 271828, 314159 — " +
+          "nothing was stopped. Restore the pid file, or stop them by hand.",
+      });
+      expect(signalled).toEqual([]);
+      // `status` keeps the fallback: it only reports.
+      expect(runningGuardPid(pidFile, proc)).toBe(271828);
+      // Without any loop, the answer stays what it was.
+      expect(await guardStop({ runningPid: () => null, lockless: () => [], signal: () => true, isAlive: () => false, sleep: async () => undefined, restartInProgress: () => false }))
+        .toEqual({ ok: true, message: "guard is not running" });
+    });
   });
 });
 
@@ -852,7 +1056,9 @@ describe("guardStart / guardStatus / guardStop", () => {
     const started = await guardStart({
       spawnFn: fakeSpawn,
       sleep: async () => undefined,
-      runningPid: () => (++checks < 3 ? null : 56),
+      runningPid: () => null,
+      // The lock appears on the third look (node boot).
+      lockHolder: () => (++checks < 3 ? null : 56),
       logPath: join(tmp, "nested", "guard.log"),
     });
     expect(started).toEqual({ ok: true, message: "guard started (pid 56)" });
@@ -862,6 +1068,27 @@ describe("guardStart / guardStatus / guardStop", () => {
     const failed = await guardStart({ spawnFn: fakeSpawn, sleep: async () => undefined, runningPid: () => null, logPath: join(tmp, "guard.log") });
     expect(failed.ok).toBe(false);
     expect(failed.message).toContain("did not take its lock");
+  });
+
+  test("start: without an injected lock holder the real lock decides, so a child merely seen is not \"started\"", async () => {
+    // The default used to fall back to the caller's `runningPid`, which is
+    // the weaker answer the lock holder exists to prevent (review on #130).
+    // No pid file exists under the scratch home, so the real lock is free.
+    let spawned = false;
+    let spawns = 0;
+    const r = await guardStart({
+      spawnFn: (() => {
+        spawned = true;
+        spawns += 1;
+        return { unref: () => undefined };
+      }) as never,
+      sleep: async () => undefined,
+      // A guard is "seen" right after the spawn (the command-line scan).
+      runningPid: () => (spawned ? 999 : null),
+      logPath: join(tmp, "guard.log"),
+    });
+    expect(spawns).toBe(1);
+    expect(r).toEqual({ ok: false, message: `guard did not take its lock — see ${join(tmp, "guard.log")}` });
   });
 
   test("status: four lines in the log's vocabulary, the last one the effective settings", async () => {

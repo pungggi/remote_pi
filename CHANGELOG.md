@@ -191,6 +191,30 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   echo only the agent-supplied path in `details.path`. The error code is
   reported instead (found by the first Linux CI run; the test compared
   JSON, where backslash escaping had hidden the leak on Windows).
+- **The Android host runs on the real phone** (pi-extension). Three defects
+  of 0.10.0, each found on the owner's device on 2026-11-26:
+  - **Termux was not detected.** Termux's node reports `process.platform` as
+    `android`, and the check required `linux`. So `phone-setup`, `install`
+    and `guard run` / `start` all refused on the phone ("not Termux",
+    "unsupported platform"), and the fleet had nothing that restarts it.
+    Both platforms count now; a Termux marker is still required, so a plain
+    Linux box is not taken for Termux.
+  - **A `guard.conf` with comments behind values was rejected.** The phone's
+    file carries `KEY=30   # comment`; every such line was reported as a bad
+    value and the default was used. An inline `# comment` is now cut off
+    the way a shell reads it.
+  - **`guard status` said "not running" for a running guard** that a wrapper
+    had started (`node --require <shim> … index.js guard run`): only the
+    first argument after `node` was read as the script. `guard start` then
+    tried to spawn a second loop instead of reporting the live one. The pid
+    file is the anchor now and the command line only has to agree; a guard
+    whose pid file was removed is still found by its command line.
+
+  `remote-pi phone-setup` now stops with exit 1 when the guard is not
+  running after the start and shows the last `guard.log` lines. It was a
+  warning, which is how the fleet of that day ran without a guard.
+- **`remote-pi --version` and `-v` print the package version.** They printed
+  the usage. The thin CLI entry answers without loading the runtime.
 - **pi-extension: service units are always LF, templates and shell scripts
   stay LF in every checkout** (found while packing 0.10.0). A tarball packed
   on a Windows checkout shipped CRLF service templates, and `remote-pi
