@@ -395,7 +395,7 @@ export async function runPhoneSetup(opts: PhoneSetupOptions, deps: PhoneSetupDep
   report.line(
     external ? "warn" : "ok",
     "allow-external-apps",
-    external ? "on — remote-pi does not need it; consider removing it from ~/.termux/termux.properties" : "off (remote-pi talks through the relay)",
+    external ? "on — remote-pi itself does not need it; leave it on only for the app watchdog (plan/173 A7)" : "off (remote-pi talks through the relay)",
   );
 
   const relay = deps.relayUrl();

@@ -169,7 +169,7 @@ export function androidChecks(deps: AndroidCheckDeps): DoctorCheck[] {
       ? {
           name: "allow-external-apps",
           status: "warn",
-          detail: "on — any app holding Termux's run-command permission can start processes here. remote-pi does not need it; consider removing it from ~/.termux/termux.properties",
+          detail: "on — any app holding Termux's run-command permission can start processes here. remote-pi itself does not need it; leave it on only for the app watchdog (plan/173 A7)",
         }
       : { name: "allow-external-apps", status: "ok", detail: "off (remote-pi talks through the relay and does not need it)" },
   );

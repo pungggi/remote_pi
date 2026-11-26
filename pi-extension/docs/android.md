@@ -49,6 +49,10 @@ With the steps below, a phone behaves like a second PC:
   SDK 28 and uses legacy storage. Without `READ/WRITE_EXTERNAL_STORAGE` it
   cannot read files that `adb push` wrote. Grant it with `pm grant`, or let
   the user run `termux-setup-storage`.
+- **Termux:Boot 0.8.1 (F-Droid) is the version that works.** Install it,
+  then open it once: that is what arms it. The streamed `adb install` was
+  refused with `INSTALL_FAILED_VERIFICATION_FAILURE`; `adb install
+  --no-streaming -r` succeeded.
 - **Let Termux create the exchange directory.** Files that `adb shell` creates
   under `Android/data/com.termux/files/` belong to the shell user and are
   **not readable by Termux** (permission denied). Create the directory from
@@ -110,6 +114,13 @@ device daemon is the one session that is always up on the phone.
 **To stop on purpose:** `remote-pi guard stop && remote-pi daemon stop`. The
 guard brings a stopped device daemon back within 30 s, so stop it first.
 
+**Coming from the interim setup:** if the phone already has a
+`~/.termux/boot/start-piper.sh` that this version did not write, the command
+prints the diff and asks before replacing it, and keeps a dated copy next to
+it. The interim guard (`~/.pi/piper/piper-guard.sh`) is retired by
+`remote-pi guard run` when the boot script starts it: stopped by its pid,
+script renamed. The output says whether both happened.
+
 ## What keeps it alive
 
 Android has no service manager. On a PC systemd, launchd or the Task
@@ -122,7 +133,7 @@ log reading.
 | Child crash backoff | a daemon that exited (1 s, 5 s, 30 s, 5 min; never gives up) | supervisor | `remote-pi daemon status`, `~/.pi/piper/daemons/<id>.log` |
 | Child ping loop (plan/168) | a daemon that is alive but wedged (2 missed pings, about 60 s) | supervisor | `~/.pi/piper/supervisord.log` |
 | App-triggered restart (plan/168) | a wedged device daemon while relay and supervisor live | Piper app, via the room keeper | Projects screen, "Restarting device daemon" |
-| **`remote-pi guard`** | the supervisor itself: gone, or alive but silent | a separate Termux process | `~/.pi/piper/guard.log` |
+| **`remote-pi guard`** | the supervisor itself: gone, alive but silent, or older than 24 h | a separate Termux process | `~/.pi/piper/guard.log` |
 | **Termux:Boot** | everything after a reboot | Android, `~/.termux/boot/start-piper.sh` | the script's comments |
 | Termux app gone | nothing inside Termux can restart it | not built: plan/173 A7 | research and spike |
 
@@ -130,13 +141,13 @@ log reading.
 start`, `status`, `stop` and `once` manage it. Every 30 s it asks the
 supervisor for a real `{"op":"status"}` round trip on the control socket (a
 listening socket proves nothing: the 2026-11-22 wedge answered connects for
-hours). Three rules:
+hours). The owner's rules of 2026-11-26, every number a setting:
 
-- **No process, no reply:** start the supervisor. Waits between starts grow
-  0, 15 s, 30 s, 1 min, 2 min, 5 min, 10 min, and are forgiven after 10
-  stable minutes.
-- **Process there, silent for three probes:** kill it (SIGTERM, then SIGKILL)
-  and start a new one.
+- **No process, no reply:** start the supervisor.
+- **Process there, silent for two checks:** kill it (SIGTERM, grace, then
+  SIGKILL) and start a new one.
+- **Older than 24 h:** one graceful restart (SIGINT, grace, SIGKILL fallback,
+  start), so a long-running supervisor is recycled once a day.
 - **Device daemon row `stopped`:** ask the supervisor to start it, at most
   once a minute and three times in ten minutes.
 
@@ -147,6 +158,53 @@ separate light process with its own entry path, so a broken runtime or SDK
 after an update cannot take the watchdog down with it. `run` and `start`
 refuse outside Termux: one start path per machine, the same rule the Windows
 watchdog follows.
+
+**Restart-rate limit.** At most 3 supervisor starts in 10 minutes, on top of
+the backoff between starts of one outage (15 s, 30 s, 1 min, 2 min, 5 min,
+10 min, forgiven after 10 stable minutes). A start the limit would refuse
+simply waits. A wedged supervisor is not killed before its replacement may
+start: a frozen supervisor is no worse than none. The limit holds for any
+values, also for a backoff shorter than the window.
+
+**Settings.** Defaults, then `~/.pi/piper/guard.conf` (`KEY=VALUE`, the file
+the interim shell guard already used), then `REMOTE_PI_GUARD_<KEY>`. The
+environment wins on purpose: an override given for one test run must not be
+silently undone by a forgotten line in a file. Unknown names and unusable
+values are logged and ignored, and the effective settings are the first line
+of every guard start (`remote-pi guard status` shows them too).
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `INTERVAL_S` | 30 | seconds between health checks |
+| `FAILS_BEFORE_RESTART` | 2 | silent checks of a PRESENT supervisor before it is restarted |
+| `MAX_AGE_S` | 86400 | graceful restart above this uptime; 0 turns it off |
+| `RESTART_RATE_MAX` / `RESTART_RATE_WINDOW_S` | 3 / 600 | starts per window; 0 = no limit |
+| `START_BACKOFF_S` | 15,30,60,120,300,600 | wait after the k-th start of an outage |
+| `STOP_GRACE_S` | 10 | SIGINT/SIGTERM to SIGKILL |
+
+**Stop safety.** A restart sequence (stop old, start new) is marked in
+`~/.pi/piper/guard.restarting`. `remote-pi guard stop` waits while the marker
+exists instead of sending SIGKILL into the middle of it, and the loop itself
+finishes the tick before it stops. A TERM during a restart never leaves the
+phone without a supervisor.
+
+**Process hygiene.** The supervisor is recognised only when `argv[0]` is node
+AND the script argument is the supervisor entry (read from
+`/proc/<pid>/cmdline`). An editor, a `grep`, a tmux command line or a
+`bash -c "node …"` launcher that merely mentions the name never matches. The
+interim shell guard learned this the hard way: `pgrep -f pi-supervisord`
+also found the launcher shell, and `pkill -f` matched its own command text.
+
+**Coming from the interim guard.** Before this release the phone ran
+`~/.pi/piper/piper-guard.sh` (a bash loop with the same `guard.pid`,
+`guard.conf` and `guard.log`). `remote-pi guard run` retires it first: it
+stops the process the pid file names when that is the interim script, and
+renames the script to `piper-guard.sh.replaced-<timestamp>`, so exactly one
+guard implementation remains. `guard.conf` stays: settings with a matching
+name carry over, others are reported as ignored. `remote-pi phone-setup`
+shows the diff between the interim boot script and the generated one, asks
+before replacing a script it did not write, and keeps a dated copy
+(`start-piper.sh.bak-<timestamp>`).
 
 **Outage of 2026-11-25, and what would have caught it.** `pi-supervisord`
 received SIGINT and SIGTERM at 21:10 and the phone booted at about 22:00.
@@ -319,6 +377,15 @@ instead of a throwaway RPC session (step 8).
 - Footprint after a night: relay 6 MB RSS, `agy` about 290 MB while busy.
 - Soak with the phantom-process killer at its default: 35 min without a kill
   (light load), then the settings were applied before the heavy builds.
+- **Interim guard, 2026-11-26** (the shell loop that ran on the phone before
+  `remote-pi guard` existed). Wedged supervisor (SIGSTOP): miss 1 at +25 s,
+  miss 2 at +68 s, SIGINT ignored by the frozen process, 10 s grace, SIGKILL,
+  detached start, device daemon back on the relay after 97 s. A graceful stop
+  of a healthy supervisor via SIGINT takes under 1 s. Age restart with a 5 s
+  override: exactly one restart.
+- Termux on the owner's phone: tmux 3.8, nodejs 26.4.0, openssh, termux-api
+  0.60.0, proot-distro. No cron package and no termux-services (no runit):
+  nothing but a detached loop can restart the supervisor.
 
 ## Still open
 

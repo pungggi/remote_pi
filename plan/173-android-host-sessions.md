@@ -377,8 +377,10 @@ device. Two owner additions of the same day are folded in:
 
 - **Always ready (guard).** If the supervisor dies inside a running Termux,
   it must come back without a human. `remote-pi guard` is a separate light
-  process that probes the supervisor every 30 s and repairs only what no other
-  layer owns. See `pi-extension/docs/android.md`, "What keeps it alive".
+  process that checks the supervisor every 30 s and repairs only what no other
+  layer owns. Owner's rules of the same day: restart after two failed checks,
+  one graceful restart after 24 h of uptime, a restart-rate limit, every
+  number a setting. See `pi-extension/docs/android.md`, "What keeps it alive".
 - **Termux app gone (A7).** Nothing inside Termux can restart the Termux app.
   Researched in A7 below; the owner decides after the spike.
 
@@ -390,13 +392,27 @@ the boot script starts the guard next to the supervisor; doctor starts with six
 Android rows; `openTerminalTab` dispatches to tmux on Termux and names the
 session after the relay room.
 
+The phone ran an interim setup while this was built (a hand-written boot
+script and a bash guard loop, `~/.pi/piper/piper-guard.sh`, sharing `guard.pid`,
+`guard.conf` and `guard.log`). The release migrates it deliberately: an
+existing boot script is diffed and copied to `start-piper.sh.bak-<timestamp>`
+before it is replaced, `phone-setup` asks before replacing a script it did not
+write, and `guard run` stops the interim guard by its pid and renames its
+script. `remote-pi daemon status` now exits non-zero when the supervisor does
+not answer (the interim guard found that an exit-code probe had read a
+wedged supervisor as healthy).
+
 **To verify on the device after merge (all of it, in this order)**
 
-1. `remote-pi install` writes `~/.termux/boot/start-piper.sh` (executable,
-   LF). `remote-pi doctor` shows the six Android rows.
-2. `remote-pi phone-setup --relay http://<pc-ip>:3000` ends with a pairing
-   link; pasting it into the app pairs the phone host (the app lists it as a
-   device; the nickname prefill will be Termux's hostname until A4/A5).
+1. Run `remote-pi phone-setup --relay http://<pc-ip>:3000` ONCE on the phone.
+   It shows the diff against the interim boot script and asks; a dated copy
+   is kept. It ends with a pairing link; pasting it into the app pairs the
+   phone host (the app lists it as a device; the nickname prefill will be
+   Termux's hostname until A4/A5).
+2. `~/.termux/boot/start-piper.sh` is the generated one (executable, LF), the
+   interim copy sits next to it. `remote-pi doctor` shows the six Android
+   rows. `remote-pi guard status` lists one running guard; the interim
+   `piper-guard.sh` is renamed to `.replaced-<timestamp>`.
 3. "Start session" on the phone starts `pi` in a tmux session named after the
    room; the tile goes live; `tmux attach -t <room>` shows the terminal.
 4. `kill -9` the supervisor: the guard restarts it within one or two ticks
@@ -547,8 +563,9 @@ the Piper app on the same phone.
 - **Why `allow-external-apps` is acceptable only here:** it is required by
   `RUN_COMMAND`. The permission `RUN_COMMAND` is granted to Piper alone, which
   is the actual gate: every app holding it can run commands in Termux, every
-  app without it cannot. `remote-pi doctor` reports the setting as a warning
-  today; with this option it changes to "on, required by the app watchdog".
+  app without it cannot. The owner's phone already has the setting on
+  (checked 2026-11-26). `remote-pi doctor` and `phone-setup` report it as a
+  warning with the hint to leave it on only for this option.
 
 **Confidence.** After a process kill (low memory, phantom-process trimming,
 a crash): medium-high, about 70 %, because nothing puts the app in the

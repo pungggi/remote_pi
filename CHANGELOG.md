@@ -19,17 +19,22 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   dark from 21:10 until 11:18).
   - pi-extension: `remote-pi install` detects Termux and writes the
     Termux:Boot script `~/.termux/boot/start-piper.sh` (wake lock,
-    supervisor, guard); `uninstall` stops both again. `remote-pi
-    phone-setup` checks the environment, installs, starts, waits for the
-    device daemon's relay room and prints a pairing link that the device
-    daemon mints (new supervisor op `pair`). Flags: `--relay`, `--yes`,
-    `--ttl`.
+    supervisor, guard); an existing script is never clobbered: a dated
+    copy is kept and its diff reported. `uninstall` stops both again.
+    `remote-pi phone-setup` checks the environment, shows the diff and asks
+    before replacing a boot script it did not write, installs, starts,
+    waits for the device daemon's relay room and prints a pairing link that
+    the device daemon mints (new supervisor op `pair`). Flags: `--relay`,
+    `--yes`, `--ttl`.
   - pi-extension: `remote-pi guard` is the Android stand-in for a service
     manager. Every 30 s it makes a real `status` round trip on the control
     socket; a missing supervisor is started, a silent one is killed and
-    restarted, with backoff and one log line per transition. Crashed and
-    wedged children stay with the supervisor's own backoff and the plan/168
-    ping loop.
+    restarted after two failed checks, a supervisor older than 24 h gets
+    one graceful restart, with a restart-rate limit and one log line per
+    transition. Every number is a setting (`guard.conf`, environment
+    wins). Crashed and wedged children stay with the supervisor's own
+    backoff and the plan/168 ping loop. It retires the interim shell guard
+    the phone ran before (`piper-guard.sh`).
   - pi-extension: sessions started from the app run in a detached tmux
     session named after the relay room (`open_terminal_result.method`
     gains the diagnostic value `tmux`; the app maps unknown values to
@@ -147,6 +152,12 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Fixed
 
+- **`remote-pi daemon status` exits 1 when the supervisor does not answer**
+  (plan/173). It printed `[remote-pi] status failed: Error: supervisor
+  reply timeout` and still exited 0, so an exit-code-based health probe read
+  a wedged supervisor as healthy (found by the phone's interim guard).
+  Offline and reply timeout both answer non-zero now; the slash command
+  still only shows the warning.
 - **Relay: deterministic `rooms` snapshot ordering** (plan/164). `rooms_of` returned `HashMap::into_values()`, so the snapshot serialized in a different order on every call: the per-conn byte-identical dedup could never suppress `rooms_check` replies, the phone app saw every reply as "changed", and the resulting re-poll loop pushed ~60 full snapshots/s onto the same WebSocket that carries `agent_chunk` — starving response streaming. Snapshots are now sorted by `room_id`; regression test covers multi-room suppression (single-room tests could never catch the ordering bug). The firehose 10s window log now also attributes rooms traffic (`rooms_poll_top`, `rooms_sent_conn_top`, `rooms_sent_target_top`). Measured: 623 replies/10s → 3.
 - **`list_models` always shows the current model**: the `← current` marker
   only ever matched when the current model was part of the listed

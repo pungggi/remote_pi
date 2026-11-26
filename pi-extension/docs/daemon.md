@@ -272,12 +272,16 @@ action:
 4. **Guard** (`remote-pi guard`, Termux only — plan/173): the Android
    stand-in for the service manager and the watchdog in one light process.
    Same real `status` round-trip every 30 s; a missing supervisor is
-   started, a silent one is killed after three probes and restarted, with
-   backoff (15 s … 10 min) and one log line per transition. It leaves
-   crashed and wedged CHILDREN to layers 1 and 2 and restarts a `stopped`
-   device daemon. No `lastSeenAt` bounce here: on a phone the relay is
-   remote, so a stale heartbeat usually means "PC off", not "daemon wedged".
-   Log: `~/.pi/piper/guard.log`.
+   started, a silent one is killed after two checks and restarted, a
+   supervisor older than 24 h gets one graceful restart, with a restart-rate
+   limit (3 starts per 10 min) plus backoff and one log line per transition.
+   Every number is a setting (`~/.pi/piper/guard.conf` or
+   `REMOTE_PI_GUARD_<KEY>`; `remote-pi guard status` shows the effective
+   values). It leaves crashed and wedged CHILDREN to layers 1 and 2 and
+   restarts a `stopped` device daemon. No `lastSeenAt` bounce here: on a
+   phone the relay is remote, so a stale heartbeat usually means "PC off",
+   not "daemon wedged". `guard stop` waits for a restart in progress
+   (`guard.restarting` marker). Log: `~/.pi/piper/guard.log`.
 
 Net effect: this incident class shrinks from hours of manual surgery to
 minutes of automatic recovery. Measured replays: ping bounce ≈41 s,

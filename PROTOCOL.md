@@ -303,6 +303,20 @@ espera ≤10 s o daemon real re-anunciar a room (meta presente = vivo; o
 keeper nunca anuncia) e refaz UM `list_projects`. Falha → botão Retry
 restart. Detalhes das camadas de detecção: `pi-extension/docs/daemon.md`.
 
+### `open_terminal_result.method` — value `tmux` (plan/173)
+
+Additive and backward compatible. `method` stays optional and diagnostic
+(`"wt" | "window" | "none"` before). A Termux (Android) host answers
+`"tmux"` because a phone session runs as a detached tmux session named
+after the relay room. An app that predates plan/173 maps an unknown value to
+`null` and loses only that detail; `ok` and `message` are unchanged.
+
+```json
+{ "type": "open_terminal_result", "in_reply_to": "<uuid>", "ok": true,
+  "message": "Opened tmux session <room> at: /path — running pi --continue (attach on the phone with: tmux attach -t <room>)",
+  "method": "tmux" }
+```
+
 ### Thinking levels (enum fixo)
 
 ```
