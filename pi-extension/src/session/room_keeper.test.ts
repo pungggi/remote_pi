@@ -160,7 +160,10 @@ async function waitFor(cond: () => void, ms = 15_000, stepMs = 50): Promise<void
   }
 }
 
-describe("RoomKeeper (plan/140)", () => {
+// The first test waits on real I/O: about 3.8 s for the file alone against
+// the 5 s default, which was exceeded once under load. Same budget as
+// agy_plugin.test.ts; a hung test still fails, at 30 s.
+describe("RoomKeeper (plan/140)", { timeout: 30_000 }, () => {
   it("holds a fresh registry room and answers session_sync from the durable transcript with offline:true", async () => {
     const { keeper, fake, dir, cwd, registryPath } = makeKeeper();
     const agentDir = process.env["PI_CODING_AGENT_DIR"]!;
