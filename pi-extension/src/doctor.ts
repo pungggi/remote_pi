@@ -20,6 +20,10 @@
  *                      settings (breaks INTERACTIVE `pi` in a daemon cwd —
  *                      daemons themselves are protected by `-ne`)
  *
+ * Inside Termux the Android host checks come first (plan/173, see
+ * `android_checks.ts`): boot script, Termux:Boot app, wake lock,
+ * allow-external-apps, tmux and the guard.
+ *
  * Every probe is injectable so tests can drive the failure paths without
  * network, sockets, or the real home directory.
  */
@@ -33,6 +37,8 @@ import { supervisorOnline, callSupervisor, SupervisorOfflineError } from "./daem
 import type { DaemonInfo } from "./daemon/control_protocol.js";
 import { resolveRelayUrl } from "./config.js";
 import { resolvePiSpawn } from "./daemon/rpc_child.js";
+import { isTermux } from "./termux.js";
+import { androidChecks, defaultAndroidCheckDeps, type AndroidCheckDeps } from "./android_checks.js";
 
 export interface DoctorCheck {
   name: string;
@@ -58,6 +64,9 @@ export interface DoctorDeps {
   readSettingsPackages?: () => string[] | null;
   /** Run `pi --version` through the same spawn path the daemon uses. */
   versionCheck?: () => { ok: boolean; detail: string };
+  /** Plan/173 — the Android host checks. Leave unset to use the production
+   *  rule (only inside Termux); pass an object to force them, `null` to skip. */
+  android?: AndroidCheckDeps | null;
 }
 
 // ── Default probe implementations (production) ─────────────────────────────
@@ -132,6 +141,13 @@ export async function runDoctor(deps: DoctorDeps = {}): Promise<DoctorResult> {
   const readSettingsPackages = deps.readSettingsPackages ?? defaultReadSettingsPackages;
   const versionCheck = deps.versionCheck ?? defaultVersionCheck;
   const checks: DoctorCheck[] = [];
+
+  // Plan/173 — on an Android host the boot script and the Termux:Boot app
+  // explain a dark phone faster than anything below, so they come first.
+  const android = deps.android === undefined
+    ? (isTermux() ? defaultAndroidCheckDeps() : null)
+    : deps.android;
+  if (android) checks.push(...androidChecks(android));
 
   // 1 — registry
   const registry = listDaemons();
