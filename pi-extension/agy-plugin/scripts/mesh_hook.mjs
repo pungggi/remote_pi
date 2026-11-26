@@ -110,6 +110,13 @@ function getParentProcessInfo() {
   const pid = process.ppid;
   try {
     if (process.platform === "win32") {
+      // Windows PowerShell 5.1 starts slowly when cold — well over 2 s on a
+      // fresh CI runner or after a boot. A probe that gives up early does not
+      // fail loudly: the shell-wrapped hook then records the transient shell
+      // as the session host, and the conversation record dies with it the
+      // moment the shell exits (seen as a dead record on the windows runner).
+      // The probe runs only on the lazy path (no inbox record shares this
+      // hook's parent), so a generous cap costs nothing in the common case.
       const res = spawnSync(
         "powershell.exe",
         [
@@ -118,7 +125,7 @@ function getParentProcessInfo() {
           "-Command",
           `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { "$($p.ParentProcessId)|$($p.Name)" }`,
         ],
-        { encoding: "utf8", timeout: 2_000 },
+        { encoding: "utf8", timeout: 10_000 },
       );
       const raw = (res.stdout || "").trim();
       const [ppidStr, nameStr] = raw.split("|");
