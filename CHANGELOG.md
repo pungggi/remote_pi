@@ -208,6 +208,17 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   the async serve (dynamic import + disk) and failed 3/3 under full-suite
   load during PR #107's live e2e (green when idle). It now polls with a
   deadline instead of sleeping.
+- **Test: `two ids never share a cwd` raced its own fixture** (found by the
+  extension CI on node 24, the first run on `main`). Daemon ids derive from
+  the cwd, so the registry entry the test added had the SAME id as the
+  transient it had started: the test never reached the collision guard and
+  passed only while that transient child was still `running`. With node as
+  the stand-in for `pi` it exits at once, and on that runner it had crashed
+  before `start` arrived. A second id now sits on the cwd by hand, and the
+  reply of a refused spawn is asserted. Behind it a small gap is closed: for
+  a registry entry, `daemon start <id>` reported a spawn the guard refused
+  as `started: true`. It answers the same error as the device and transient
+  paths.
 
 ## [1.6.2] - 2026-11-08
 

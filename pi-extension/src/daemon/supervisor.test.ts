@@ -565,19 +565,69 @@ describe("Supervisor — plan/159 resilience", () => {
     expect(afterIds.length).toBeGreaterThanOrEqual(beforeIds.length);
   });
 
-  test("two ids never share a cwd: spawn is refused for the loser", async () => {
-    // Simulate a collision: a transient already covers tmp; a registry
-    // entry (different id) for the same cwd must not spawn a second child.
+  test("two ids never share a cwd: the second spawn is refused and reported", async () => {
+    // Daemon ids derive from the cwd (`daemonIdForCwd`), so a registry entry
+    // for a folder a transient covers has the SAME id: `start` on it takes
+    // the "already running" path (next test), never the collision guard. The
+    // guard needs two ids on one cwd: put the second one there by hand, alive
+    // for as long as this test runs.
+    //
+    // Until 2026-11-26 this test started a transient and raced its own
+    // fixture: piBin is node here and the child exits at once, and on a CI
+    // runner it had already crashed when `start` arrived, so the entry was
+    // spawned and the run on main went red.
     const tmp = mkdtempSync(join(tmpdir(), "pi-sv-col-"));
-    const tr = await ask({ op: "start_transient", cwd: tmp }) as ControlReply<{ id: string }>;
-    expect(tr.ok).toBe(true);
     const { addDaemon } = await import("./registry.js");
     const entry = addDaemon(tmp, "twin");
-    const start = await ask({ op: "start", id: entry.id }) as ControlReply<{ started: boolean }>;
-    // The op succeeds (the daemon is "known"), but the spawn is refused —
-    // no second child in the cwd. `started` reports the refusal.
-    expect(start.ok).toBe(true);
-    if (start.ok) expect(start.data!.started).toBe(false);
+    const sv = supervisor as unknown as { children: Map<string, object> };
+    expect(sv.children.has(entry.id)).toBe(false);
+    sv.children.set("occupant", {
+      id: "occupant",
+      cwd: entry.cwd,
+      name: "occupant",
+      transient: true,
+      restartTimer: null,
+      restartAttempt: 0,
+      spawnedAt: Date.now(),
+      child: { state: "running" },
+    });
+    try {
+      const start = await ask({ op: "start", id: entry.id }) as ControlReply<{ started: boolean }>;
+      // The same answer the device and transient paths give for a refused spawn.
+      expect(start).toEqual({ ok: false, error: `daemon ${entry.id} was not spawned (another daemon owns its cwd)` });
+      // No second child in the cwd: the entry got no slot.
+      expect(sv.children.has(entry.id)).toBe(false);
+    } finally {
+      // The supervisor's stop() in afterEach must not meet a fake child.
+      sv.children.delete("occupant");
+    }
+  });
+
+  test("a registry entry for a folder a transient covers has the transient's id: `start` is the no-op \"already running\"", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "pi-sv-same-"));
+    const { addDaemon } = await import("./registry.js");
+    const entry = addDaemon(tmp, "twin");
+    const trId = (await import("./id.js")).daemonIdForCwd(entry.cwd);
+    expect(entry.id).toBe(trId);
+    const sv = supervisor as unknown as { children: Map<string, object> };
+    // The transient's slot, held in "running": the real child would crash
+    // at once here (piBin is node), which is the race the test above had.
+    sv.children.set(entry.id, {
+      id: entry.id,
+      cwd: entry.cwd,
+      name: "transient",
+      transient: true,
+      restartTimer: null,
+      restartAttempt: 0,
+      spawnedAt: Date.now(),
+      child: { state: "running" },
+    });
+    try {
+      const r = await ask({ op: "start", id: entry.id }) as ControlReply<{ started: boolean; state: string }>;
+      expect(r).toEqual({ ok: true, data: { id: entry.id, state: "running", started: false } });
+    } finally {
+      sv.children.delete(entry.id);
+    }
   });
 });
 
