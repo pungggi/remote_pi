@@ -197,7 +197,7 @@ let degradedReason = "connecting to the mesh…";
 // ── MCP server setup ──────────────────────────────────────────────────────────
 
 const mcp = new McpServer(
-  { name: "remote-pi-mesh", version: "0.9.0" },
+  { name: "remote-pi-mesh", version: "0.10.0" },
   {
     capabilities: { experimental: { "claude/channel": {} } },
     instructions: [
