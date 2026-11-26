@@ -21,6 +21,7 @@ import {
   launchdPlistPath,
   lineDiff,
   linkCliBinaries,
+  normalizeUnitText,
   previewTermuxBootScript,
   renderLineDiff,
   renderTemplate,
@@ -38,6 +39,13 @@ import {
  * change real OS state. The smoke test for activation is documented in
  * the README and run manually.
  */
+
+/** Template text with the checkout's line endings removed. On a Windows
+ *  checkout with core.autocrlf the file arrives with CRLF; `.gitattributes`
+ *  pins only FUTURE checkouts, so the test must not depend on either. */
+function templateText(p: string): string {
+  return readFileSync(p, "utf8").replace(/\r\n/g, "\n");
+}
 
 describe("detectPlatform", () => {
   test("returns a known platform", () => {
@@ -134,7 +142,7 @@ describe("findTemplate", () => {
   test("termux-boot template file exists on disk (plan/173)", () => {
     const p = findTemplate("termux-boot");
     expect(p.endsWith("termux-boot.template")).toBe(true);
-    const content = readFileSync(p, "utf8");
+    const content = templateText(p);
     // Termux:Boot requires the absolute interpreter path.
     expect(content.startsWith("#!/data/data/com.termux/files/usr/bin/sh\n")).toBe(true);
     expect(content).toContain("termux-wake-lock");
@@ -710,5 +718,53 @@ describe("lineDiff / renderLineDiff (plan/173)", () => {
     ]);
     expect(out).toEqual(["    … (3 unchanged lines)", "    - old", "    + new", "    … (1 unchanged line)"]);
     expect(renderLineDiff([])).toEqual([]);
+  });
+});
+
+// ── Line endings of rendered units (review of the 0.10.0 tarball) ──────────
+
+describe("normalizeUnitText", () => {
+  test("every POSIX platform gets LF; Windows keeps its bytes", () => {
+    for (const plat of ["linux", "macos", "android"] as const) {
+      expect(normalizeUnitText("a\r\nb\r\n", plat), plat).toBe("a\nb\n");
+    }
+    expect(normalizeUnitText("a\r\nb\r\n", "windows")).toBe("a\r\nb\r\n");
+    expect(normalizeUnitText("a\r\nb\r\n", "unsupported")).toBe("a\r\nb\r\n");
+  });
+
+  test("a CRLF checkout of the templates still renders LF systemd and launchd units", () => {
+    // What core.autocrlf hands over on Windows, whatever this working tree has.
+    const crlfTemplate = (name: "systemd" | "launchd" | "termux-boot"): string =>
+      templateText(findTemplate(name)).replace(/\n/g, "\r\n");
+    const vars = {
+      ...defaultRenderVars(),
+      node: "/usr/local/bin/node",
+      supervisor: "/opt/remote-pi/dist/bin/supervisord.js",
+    };
+    const systemd = normalizeUnitText(renderTemplate(crlfTemplate("systemd"), vars), "linux");
+    expect(systemd).not.toContain("\r");
+    expect(systemd).toContain(`\nExecStart=${vars.node} ${vars.supervisor}\n`);
+    const plist = normalizeUnitText(renderTemplate(crlfTemplate("launchd"), vars), "macos");
+    expect(plist).not.toContain("\r");
+    expect(plist).toContain(`<string>${vars.supervisor}</string>`);
+    const boot = normalizeUnitText(renderTemplate(crlfTemplate("termux-boot"), vars), "android");
+    expect(boot.startsWith("#!/data/data/com.termux/files/usr/bin/sh\n")).toBe(true);
+    expect(boot).not.toContain("\r");
+    // The Windows unit is written as UTF-16 by installService; its template
+    // line endings are the template's own.
+    expect(normalizeUnitText(renderTemplate(crlfTemplate("systemd"), vars), "windows")).toContain("\r\n");
+  });
+
+  test(".gitattributes pins the POSIX templates and every *.sh to LF", () => {
+    const pkgRoot = dirname(dirname(findTemplate("systemd")));
+    const rules = readFileSync(join(pkgRoot, "..", ".gitattributes"), "utf8");
+    for (const rule of [
+      "*.sh text eol=lf",
+      "pi-extension/service-templates/systemd.service.template text eol=lf",
+      "pi-extension/service-templates/launchd.plist.template text eol=lf",
+      "pi-extension/service-templates/termux-boot.template text eol=lf",
+    ]) {
+      expect(rules.split(/\r?\n/), rule).toContain(rule);
+    }
   });
 });

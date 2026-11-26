@@ -1,0 +1,11 @@
+# Shell scripts and the POSIX service templates are executed or parsed on
+# Linux, macOS and Termux, where a CR breaks them: a shebang ending in \r finds
+# no interpreter, and an ExecStart with \r is "command not found". They are LF
+# in the repository and stay LF in every working tree, whatever the machine's
+# core.autocrlf says (a Windows checkout used to hand them over with CRLF).
+# The Windows templates (Task Scheduler XML, VBS launcher) are left to the
+# default: schtasks reads the UTF-16 file install writes, wscript takes both.
+*.sh text eol=lf
+pi-extension/service-templates/systemd.service.template text eol=lf
+pi-extension/service-templates/launchd.plist.template text eol=lf
+pi-extension/service-templates/termux-boot.template text eol=lf

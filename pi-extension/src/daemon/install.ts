@@ -198,9 +198,23 @@ export function defaultRenderVars(): RenderVars {
   };
 }
 
-/** CRLF → LF, for the one artefact Android's sh has to parse. */
+/** CRLF → LF. */
 export function toLf(text: string): string {
   return text.replace(/\r\n/g, "\n");
+}
+
+/**
+ * The rendered unit with the line endings its consumer can parse. systemd,
+ * launchd and Android's sh choke on CR (`ExecStart` with a trailing `\r` is
+ * "command not found", a shebang with `\r` finds no interpreter), so those
+ * three are always LF — whatever the template's line endings in this working
+ * tree. A tarball packed on a Windows checkout used to ship CRLF templates and
+ * wrote CRLF units. The Task Scheduler XML and the VBS launcher keep their
+ * bytes: schtasks reads the UTF-16 file `install` writes and wscript accepts
+ * both line endings.
+ */
+export function normalizeUnitText(text: string, plat: SupervisorPlatform): string {
+  return plat === "windows" || plat === "unsupported" ? text : toLf(text);
 }
 
 /** Replace `{NODE}` / `{SUPERVISOR}` / `{USER}` / `{HOME}` / `{PATH}` / `{VBS}` / `{LOG}` /
@@ -379,7 +393,10 @@ export function installService(vars: RenderVars = defaultRenderVars(), deps: Ser
   // `remote-pi guard` look under. Install writing under one home while
   // uninstall deletes from another is the failure this prevents.
   const androidHome = deps.home ?? piperHome();
-  const rendered = plat === "android" ? renderTemplate(tpl, { ...vars, home: androidHome }) : renderTemplate(tpl, vars);
+  const rendered = normalizeUnitText(
+    plat === "android" ? renderTemplate(tpl, { ...vars, home: androidHome }) : renderTemplate(tpl, vars),
+    plat,
+  );
 
   const unitPath =
     plat === "macos" ? launchdPlistPath() :
@@ -396,11 +413,10 @@ export function installService(vars: RenderVars = defaultRenderVars(), deps: Ser
     const bom = Buffer.from([0xff, 0xfe]); // UTF-16LE byte-order mark
     writeFileSync(unitPath, Buffer.concat([bom, Buffer.from(rendered, "utf16le")]));
   } else if (plat === "android") {
-    // Android's sh treats CR as part of every token, and a Windows checkout
-    // hands us the template with CRLF: normalise here and only here (the
-    // other platforms keep writing the template exactly as checked out).
-    // 0755 because Termux:Boot executes only scripts with the executable bit.
-    const script = toLf(rendered);
+    // `rendered` is LF (normalizeUnitText): Android's sh treats CR as part of
+    // every token. 0755 because Termux:Boot executes only scripts with the
+    // executable bit.
+    const script = rendered;
     // Never clobber what someone else wrote at this path. A script that is
     // not ours is left alone unless `force` is set: `remote-pi phone-setup`
     // shows the diff and asks first. What does get replaced — a foreign
