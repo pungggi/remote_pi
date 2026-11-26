@@ -24,6 +24,12 @@ describe("fsErrorDetail", () => {
       "registry at <path> is locked",
     );
     expect(fsErrorDetail(new Error("cannot write C:\\Users\\me\\.pi\\piper\\files.json"))).toBe("cannot write <path>");
+    // Paths that contain spaces end at the whitespace: the rest is prose as
+    // far as an error message can tell, and what remains is relative.
+    expect(fsErrorDetail(new Error("spawn C:\\Program Files\\nodejs\\node.exe failed"))).toBe("spawn <path> Files\\nodejs\\node.exe failed");
+    expect(fsErrorDetail(new Error("missing /home/me/My Documents/report.pdf"))).toBe("missing <path> Documents/report.pdf");
+    // Parentheses and commas end a path too.
+    expect(fsErrorDetail(new Error("lock held by /var/lock/piper.lock, retry"))).toBe("lock held by <path>, retry");
     // Relative paths and plain words survive: they carry no location.
     expect(fsErrorDetail(new Error("bad entry in pi/piper/files.json (relative)"))).toBe("bad entry in pi/piper/files.json (relative)");
   });

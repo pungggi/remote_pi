@@ -568,9 +568,12 @@ export function fsErrorDetail(err: unknown): string {
   // Not a coded fs error: keep the message, but redact quoted segments and
   // anything that looks like an absolute path (POSIX or Windows). The code
   // branch above is the guarantee for fs errors; this is the belt for the rest.
+  // A path runs to the next whitespace or closing bracket: spaces inside a
+  // path cannot be told from prose, so `C:\Program Files\x` leaves `Files\x`
+  // behind — a relative tail, no longer a location.
   return (err instanceof Error ? err.message : String(err))
     .replace(/'[^']*'|"[^"]*"/g, "'…'")
-    .replace(/(?<![\w.-])(?:[A-Za-z]:)?(?:\/|\\)[\w.-]+(?:[\\/][\w.-]+)+/g, "<path>");
+    .replace(/(?<![\w.-])(?:[A-Za-z]:)?(?:\/|\\)[^\s'"),;]+/g, "<path>");
 }
 
 /** Build a `shown:false` tool_result for a failure. As with `show_image`, the
