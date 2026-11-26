@@ -113,6 +113,7 @@ function harness(overrides: Partial<PhoneSetupDeps> = {}) {
       calls.push("waitGuard");
       return 4242;
     },
+    guardLogTail: () => ["[2026-11-26 13:16:04] guard: loop exits: guard run belongs on a Termux (Android) host"],
     deviceRoomLastSeenAt: () => state.lastSeen,
     pair: async (ttl) => {
       calls.push(`pair:${ttl}`);
@@ -356,10 +357,19 @@ describe("runPhoneSetup — where it stops", () => {
     ]);
   });
 
-  test("a missing guard is a warning (the supervisor runs); the device daemon never arriving is fatal", async () => {
+  test("a missing guard is fatal: nothing would restart the supervisor; the log tail says why, no pairing link", async () => {
+    // 0.10.0 on the real phone: `isTermux` was false there, so `guard run`
+    // refused to start and the fleet had no one to restart it.
     const noGuard = harness({ waitGuard: async () => null });
-    expect(await runPhoneSetup(BASE_OPTS, noGuard.deps)).toBe(0);
-    expect(strip(noGuard.lines)).toContain("guard: not running — start it with: remote-pi guard start");
+    expect(await runPhoneSetup(BASE_OPTS, noGuard.deps)).toBe(1);
+    expect(strip(noGuard.lines).slice(-2)).toEqual([
+      "guard: not running 8 s after the start — nothing would restart the supervisor when it is gone. " +
+        "Start it with: remote-pi guard start — last guard.log lines:",
+      "[2026-11-26 13:16:04] guard: loop exits: guard run belongs on a Termux (Android) host",
+    ]);
+    // It stops here: the device-room wait and the pairing link are skipped.
+    expect(noGuard.calls).not.toContain("sleep:2000");
+    expect(noGuard.calls).not.toContain("pair:600000");
 
     const dark = harness({ runBootScript: () => true });
     dark.state.lastSeen = dark.state.now - 3_600_000; // yesterday's entry

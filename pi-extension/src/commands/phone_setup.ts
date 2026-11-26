@@ -36,7 +36,7 @@ import {
   previewTermuxBootScript,
   renderLineDiff,
 } from "../daemon/install.js";
-import { guardStart, interimGuardScriptPath, probeStatus, runningGuardPid } from "../daemon/guard.js";
+import { guardLogPath, guardStart, interimGuardScriptPath, probeStatus, runningGuardPid } from "../daemon/guard.js";
 import { callSupervisor } from "../daemon/client.js";
 import type { DaemonInfo } from "../daemon/control_protocol.js";
 import { readRoomsRegistry } from "../session/rooms_registry.js";
@@ -50,6 +50,9 @@ import type { DoctorCheck } from "../doctor.js";
 export const PHONE_SETUP_TTL_MS = 600_000;
 /** How long the supervisor may take to answer after the boot script ran. */
 export const SUPERVISOR_WAIT_MS = 30_000;
+/** How long the guard may take to hold its pid file after the boot script ran
+ *  (`waitGuard` starts it itself when it is still missing). */
+export const GUARD_WAIT_MS = 8_000;
 /** How long the device daemon may take to show up in the relay room. */
 export const DEVICE_ROOM_WAIT_MS = 120_000;
 /** One heartbeat interval of the device daemon (plan/168 tick) plus slack. */
@@ -171,6 +174,8 @@ export interface PhoneSetupDeps {
   supervisorWasUp: () => Promise<boolean>;
   waitSupervisor: (timeoutMs: number) => Promise<DaemonInfo[] | null>;
   waitGuard: (timeoutMs: number) => Promise<number | null>;
+  /** Last lines of the guard log, for the failure message. */
+  guardLogTail: (lines: number) => string[];
   deviceRoomLastSeenAt: () => number | undefined;
   pair: (ttlMs: number) => Promise<{ ok: true; link: PairLink } | { ok: false; error: string }>;
   copyToClipboard: (text: string) => boolean;
@@ -272,6 +277,13 @@ export function defaultPhoneSetupDeps(opts: PhoneSetupOptions, log: (line: strin
       }
     },
     supervisorWasUp: async () => (await probeStatus()) !== null,
+    guardLogTail: (lines) => {
+      try {
+        return readFileSync(guardLogPath(), "utf8").trimEnd().split("\n").slice(-lines);
+      } catch {
+        return [];
+      }
+    },
     waitSupervisor: async (timeoutMs) => {
       const deadline = Date.now() + timeoutMs;
       for (;;) {
@@ -490,12 +502,21 @@ export async function runPhoneSetup(opts: PhoneSetupOptions, deps: PhoneSetupDep
   }
   report.line("ok", "supervisor", `${wasUp ? "already running" : "started"}, ${rows.length} fleet row(s)`);
 
-  const guard = await deps.waitGuard(8000);
-  report.line(
-    guard !== null ? "ok" : "warn",
-    "guard",
-    guard !== null ? `running (pid ${guard}) — restarts the supervisor when it is gone` : "not running — start it with: remote-pi guard start",
-  );
+  // The guard is not optional on a phone: without it nothing restarts the
+  // supervisor, which is how the fleet of 2026-11-26 stayed down for hours
+  // (plan/173, A7 incident). So its absence is a failure, not a warning.
+  const guard = await deps.waitGuard(GUARD_WAIT_MS);
+  if (guard === null) {
+    report.line(
+      "fail",
+      "guard",
+      `not running ${GUARD_WAIT_MS / 1000} s after the start — nothing would restart the supervisor when it is gone. ` +
+        "Start it with: remote-pi guard start — last guard.log lines:",
+    );
+    for (const line of deps.guardLogTail(12)) report.text(`     ${line}`);
+    return 1;
+  }
+  report.line("ok", "guard", `running (pid ${guard}) — restarts the supervisor when it is gone`);
   if (interimWasPresent) {
     report.line(
       deps.interimGuardPresent() ? "warn" : "ok",
