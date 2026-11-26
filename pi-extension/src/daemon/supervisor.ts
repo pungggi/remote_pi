@@ -497,7 +497,13 @@ export class Supervisor {
       const state = this.children.get(id)?.child.state ?? "starting";
       return { ok: true, data: { id, state, started: true } };
     }
-    this._spawnEntry(entry.id, entry.cwd, entry.name);
+    // The collision guard inside _spawnEntry may refuse this spawn (another
+    // id owns the cwd). Report it like the two paths above: `started: true`
+    // with no slot behind it sent the caller after a state that never
+    // existed.
+    if (!this._spawnEntry(entry.id, entry.cwd, entry.name)) {
+      return { ok: false, error: `daemon ${entry.id} was not spawned (another daemon owns its cwd)` };
+    }
     const state = this.children.get(id)?.child.state ?? "starting";
     return { ok: true, data: { id, state, started: true } };
   }
