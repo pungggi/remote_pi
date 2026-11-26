@@ -329,27 +329,94 @@ describe("restartSupervisor — the incident of 2026-11-26 (status never changes
     expect(r.ok).toBe(false);
     expect(h.kills).toEqual([]);
     expect(h.runs).toEqual(["launchctl kickstart -k gui/0/ch.pungitore.piper.supervisord"]);
-    expect(r.message).toContain("the supervisor was NOT restarted (no new instance answered and the running one could not be identified to stop it)");
+    expect(r.message).toContain("could not be identified before the attempt, so nothing was stopped");
     expect(r.message).toContain("Stop-Process");
+    expect(r.exitCode).toBe(1);
+    // The identity before and the report's naming: nothing is looked up to kill.
+    expect(h.ownerCalls()).toBe(2);
   });
 
-  test("the pid for the kill is looked up once more when the probes could not name it", async () => {
-    let fresh = false;
+  test("third review: an owner learned only afterwards is not a kill target — a new instance the poll missed stays alive", async () => {
+    // The owner could not be named before the attempt. During the poll a NEW
+    // supervisor took the socket and kept the fleet's pids, so nothing looked
+    // different and the poll never asked for the owner. The report's lookup
+    // after the poll then learns its pid: before, the fallback killed it.
     const h = harness({
       before: { pid: null, rows: OLD.rows },
-      probe: () => (fresh ? { pid: 15000, rows: FRESH.rows } : { pid: null, rows: OLD.rows }),
-      ownerAlone: () => ({ pid: 13772 }),
-      supervisorDies: "term",
+      probe: () => ({ pid: 15000, rows: OLD.rows }),
+    });
+    const r = await restartSupervisor(h.deps);
+    expect(r.ok).toBe(false);
+    expect(r.exitCode).toBe(1);
+    expect(h.kills).toEqual([]);
+    // The service's start command is not repeated either: somebody answers.
+    expect(h.runs).toEqual([`schtasks /End /TN ${TASK}`, `schtasks /Run /TN ${TASK}`]);
+    expect(r.message).toContain("could not be identified before the attempt, so nothing was stopped");
+    // The identity before and the report's naming; no lookup for a kill.
+    expect(h.ownerCalls()).toBe(2);
+  });
+
+  test("third review: the old pid is gone by the time the fallback would kill it → no kill, the service is started, the new instance answers", async () => {
+    let gone = false;
+    let fresh = false;
+    const h = harness({ before: OLD, probe: () => (fresh ? FRESH : OLD) });
+    const realOwner = h.deps.owner;
+    const realAlive = h.deps.pidAlive;
+    let ownerCalls = 0;
+    h.deps.owner = async () => {
+      // The second owner query is the one the report makes after the poll:
+      // the old supervisor dies right there, and a new one is on its way.
+      if (++ownerCalls === 2) {
+        gone = true;
+        fresh = true;
+      }
+      return realOwner();
+    };
+    h.deps.pidAlive = (pid) => (pid === OLD.pid && gone ? false : realAlive(pid));
+    const r = await restartSupervisor(h.deps);
+    expect(r.ok).toBe(true);
+    expect(r.exitCode).toBe(0);
+    expect(h.kills).toEqual([]);
+    expect(h.runs).toEqual([`schtasks /End /TN ${TASK}`, `schtasks /Run /TN ${TASK}`, `schtasks /Run /TN ${TASK}`]);
+    expect(r.message).toBe(
+      "Supervisor started through the fallback: pid 13772, 2 fleet row(s) → pid 15000, 2 fleet row(s) (0.0 s). " +
+        "The service's own restart had not brought it up.",
+    );
+    expect(h.log).toContain("  the old supervisor (pid 13772) is already gone → starting the service");
+  });
+
+  test("owner unknown and nobody answers any more: nothing to stop, the service is started and the new instance answers", async () => {
+    // The socket was silent before the attempt and still is when the poll
+    // ends. Before: a lookup for something to kill, then a failure; a
+    // supervisor that was simply down never got started by the fallback.
+    let up = false;
+    const h = harness({
+      platform: "linux",
+      before: { pid: null, rows: null },
+      probe: () => (up ? FRESH : { pid: null, rows: null }),
     });
     const origRun = h.deps.run;
+    let commands = 0;
     h.deps.run = (cmd, args) => {
-      const out = origRun(cmd, args);
-      if (h.kills.length > 0 && cmd === "schtasks" && args[0] === "/Run") fresh = true;
-      return out;
+      commands += 1;
+      if (commands === 2) up = true; // the start in the fallback brings it up
+      return origRun(cmd, args);
     };
     const r = await restartSupervisor(h.deps);
     expect(r.ok).toBe(true);
-    expect(h.kills).toEqual([[13772, "SIGTERM"]]);
+    expect(r.exitCode).toBe(0);
+    expect(h.kills).toEqual([]);
+    expect(h.runs).toEqual([
+      "systemctl --user restart remote-pi-supervisord.service",
+      "systemctl --user start remote-pi-supervisord.service",
+    ]);
+    expect(r.message).toBe(
+      "Supervisor started through the fallback: not answering (pid unknown) → pid 15000, 2 fleet row(s) (0.0 s). " +
+        "The service's own restart had not brought it up.",
+    );
+    expect(h.log).toContain(
+      "  the control socket does not answer and no pid was identified before the attempt → starting the service",
+    );
   });
 });
 
@@ -393,10 +460,10 @@ describe("restartSupervisor — second review on #127", () => {
     expect(r.exitCode).toBe(1);
     expect(h.clockMs() - 1_000_000).toBeGreaterThanOrEqual(5_000);
     expect(h.kills).toEqual([]);
-    expect(r.message).toContain("no new instance answered and the running one could not be identified to stop it");
-    // The identity before, the report's naming attempt, the fallback's own
-    // lookup: no tick asked for an owner it cannot make sense of.
-    expect(h.ownerCalls()).toBe(3);
+    expect(r.message).toContain("could not be identified before the attempt, so nothing was stopped");
+    // The identity before and the report's naming attempt: no tick asked for
+    // an owner it cannot make sense of, and nothing is looked up to kill.
+    expect(h.ownerCalls()).toBe(2);
   });
 
   test("the old supervisor alive and the fleet unchanged (the incident): the poll still asks nobody", async () => {

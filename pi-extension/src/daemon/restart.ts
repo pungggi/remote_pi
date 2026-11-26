@@ -285,11 +285,12 @@ export async function restartSupervisor(deps: RestartDeps): Promise<RestartResul
   // service's own instance yielded to it. Before anything is stopped, make
   // sure that shape really holds: the OLD processes must still be alive. If
   // they are gone and the answer still looks unchanged, the answer came from
-  // somewhere else and a kill would hit the wrong thing.
+  // somewhere else and a kill would hit the wrong thing. When nobody answers
+  // any more, there is nothing to stop: the service start is all that is left.
   const oldPids = [before.pid, ...(before.rows ?? []).map((d) => d.pid)].filter(
     (p): p is number => p !== null && p !== undefined,
   );
-  if (before.rows !== null && oldPids.length > 0 && !oldPids.some((p) => deps.pidAlive(p))) {
+  if (stalled.rows !== null && before.rows !== null && oldPids.length > 0 && !oldPids.some((p) => deps.pidAlive(p))) {
     return {
       ok: false,
       before,
@@ -301,31 +302,46 @@ export async function restartSupervisor(deps: RestartDeps): Promise<RestartResul
       exitCode: 1,
     };
   }
-  // Fall back to the plan/168 kill path. The pid to stop is the one named
-  // before, else whoever serves the socket now.
-  const oldPid = before.pid ?? stalled.pid ?? (await deps.owner())?.pid ?? null;
-  if (oldPid === null) {
-    return {
-      ok: false,
-      before,
-      after: stalled,
-      message:
-        "restart-supervisor: the supervisor was NOT restarted (no new instance answered and the running " +
-        "one could not be identified to stop it). Stop the running pi-supervisord by hand, then run this " +
-        "again. On Windows: Get-CimInstance Win32_Process -Filter \"Name = 'node.exe'\" | Where-Object " +
-        "{ $_.CommandLine -match 'supervisord\\.js' } | ForEach-Object { Stop-Process -Id $_.ProcessId }.",
-      exitCode: 1,
-    };
+  // Fall back to the plan/168 kill path. The kill may only ever target the
+  // supervisor identified BEFORE the attempt (`before.pid`). A pid learned
+  // now (the owner named for the report above, or a fresh lookup) may belong
+  // to a NEW instance the poll missed because it kept the fleet's pids, so
+  // it is never killed (third review on #127).
+  let oldPid: number | null = null;
+  if (before.pid === null) {
+    if (stalled.rows !== null) {
+      return {
+        ok: false,
+        before,
+        after: stalled,
+        message:
+          "restart-supervisor: the supervisor was NOT restarted (no new instance answered, and the running one " +
+          "could not be identified before the attempt, so nothing was stopped). Run this again; if the owner " +
+          "still cannot be named, stop the running pi-supervisord by hand. On Windows: Get-CimInstance " +
+          "Win32_Process -Filter \"Name = 'node.exe'\" | Where-Object { $_.CommandLine -match 'supervisord\\.js' } | " +
+          "ForEach-Object { Stop-Process -Id $_.ProcessId }.",
+        exitCode: 1,
+      };
+    }
+    // Nobody answers any more and no pid was identified: nothing to stop.
+    deps.log("  the control socket does not answer and no pid was identified before the attempt → starting the service");
+  } else if (!deps.pidAlive(before.pid)) {
+    // Gone between the poll and now: nothing to stop either.
+    deps.log(`  the old supervisor (pid ${before.pid}) is already gone → starting the service`);
+  } else {
+    oldPid = before.pid;
   }
-  deps.log(`  the service did not own the running instance → stopping pid ${oldPid} and starting the service again`);
-  if (!(await stopPid(deps, oldPid, KILL_GRACE_MS))) {
-    return {
-      ok: false,
-      before,
-      after: seen.after,
-      message: `restart-supervisor: the supervisor was NOT restarted (pid ${oldPid} survived SIGTERM and SIGKILL).`,
-      exitCode: 1,
-    };
+  if (oldPid !== null) {
+    deps.log(`  the service did not own the running instance → stopping pid ${oldPid} and starting the service again`);
+    if (!(await stopPid(deps, oldPid, KILL_GRACE_MS))) {
+      return {
+        ok: false,
+        before,
+        after: seen.after,
+        message: `restart-supervisor: the supervisor was NOT restarted (pid ${oldPid} survived SIGTERM and SIGKILL).`,
+        exitCode: 1,
+      };
+    }
   }
   // Let the old children notice stdio EOF and exit, so the new supervisor
   // does not spawn its own next to a process still holding a room lock.
@@ -342,9 +358,11 @@ export async function restartSupervisor(deps: RestartDeps): Promise<RestartResul
   }
   seen = await waitForChange(deps, before, waitMs);
   if (seen.changed) {
-    const message =
-      `Supervisor restarted through the fallback: ${describe(before)} → ${describe(seen.after)} (${human(seen.elapsedMs)}). ` +
-      "The service did not own the running instance; keep ONE launcher (only the service should start the supervisor).";
+    const message = oldPid === null
+      ? `Supervisor started through the fallback: ${describe(before)} → ${describe(seen.after)} (${human(seen.elapsedMs)}). ` +
+        "The service's own restart had not brought it up."
+      : `Supervisor restarted through the fallback: ${describe(before)} → ${describe(seen.after)} (${human(seen.elapsedMs)}). ` +
+        "The service did not own the running instance; keep ONE launcher (only the service should start the supervisor).";
     return { ok: true, message, before, after: seen.after, exitCode: 0 };
   }
   const still = await named(deps, seen.after);
@@ -353,7 +371,8 @@ export async function restartSupervisor(deps: RestartDeps): Promise<RestartResul
     before,
     after: still,
     message:
-      `restart-supervisor: the supervisor was NOT restarted (after stopping pid ${oldPid} and starting the service, ` +
+      `restart-supervisor: the supervisor was NOT restarted (after ` +
+      `${oldPid === null ? "" : `stopping pid ${oldPid} and `}starting the service, ` +
       `${describe(still)} after ${human(seen.elapsedMs)}). See ~/.pi/piper/supervisord.log.`,
     exitCode: 1,
   };
@@ -373,11 +392,19 @@ export function defaultRestartDeps(overrides: Partial<RestartDeps> = {}): Restar
       }
     },
     owner: async () => {
-      // describeSocketOwner unrefs its probe so a diagnosis can never keep a pi
-      // session alive. A CLI process has nothing else on its event loop, so
-      // without a handle here node would exit mid-restart — with code 0,
-      // before the answer arrived. The probe races its own budget (2 s on
-      // Windows); the explicit bound here keeps the CLI independent of that.
+      // describeSocketOwner leaves nothing behind that could hold the process
+      // open (third review on #127, asked for by name): on Linux its walk is
+      // raced against an UNREF'd timer and stops at its own deadline; on
+      // Windows describeWindowsPipeOwner unrefs the powershell child and both
+      // of its pipes, and kills the child when it loses its own 2 s race
+      // (socket_owner_windows.ts). So when the guard below answers null, the
+      // keep-alive interval here is the only thing that still refs the loop,
+      // and the finally clears it.
+      //
+      // The keep-alive exists because a CLI process has nothing else on its
+      // event loop: without a handle here node would exit mid-restart — with
+      // code 0, before the answer arrived. The probe races its own budget (2 s
+      // on Windows); the explicit bound here keeps the CLI independent of that.
       const keepAlive = setInterval(() => undefined, 1_000);
       let guard: ReturnType<typeof setTimeout> | undefined;
       try {

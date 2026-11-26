@@ -182,7 +182,9 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   what it saw. The restart is also recognised when the fleet kept its pids or
   has not spawned yet (the old pid is gone while the socket still answers).
   A service command that fails with a code of its own hands that code on, as
-  the bare command always did.
+  the bare command always did. The fallback stops only the instance that was
+  identified before the attempt; an owner learned afterwards may be a new
+  instance and is left alone.
 - **`show_file` / `show_image` no longer echo the resolved absolute path in
   a failure message.** Node's fs error text embeds it (`stat '/…/doc.md'`),
   so the model-visible result carried the absolute path although both tools
