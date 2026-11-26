@@ -565,18 +565,17 @@ function isValidUtf8(bytes: Buffer): boolean {
 export function fsErrorDetail(err: unknown): string {
   const code = (err as { code?: unknown } | null)?.code;
   if (typeof code === "string" && code.length > 0) return code;
-  // Not a coded fs error: keep the message, but redact quoted segments and
-  // path-like tokens: absolute (POSIX or Windows), home-relative (`~/x`),
-  // parent-relative (`../x`) and dot-relative (`./x`). The code branch above
-  // is the guarantee for fs errors; this is the belt for the rest. A path runs
-  // to the next whitespace, quote, closing parenthesis or comma: spaces inside
-  // a path cannot be told from prose, so `C:\Program Files\x` leaves `Files\x`
-  // behind — a relative tail, no longer a location. Residual risk, accepted: a
-  // plain relative path (`secret.txt`, `pi/piper/x`) is the agent's own
-  // wording and stays as written.
+  // Not a coded fs error: keep the message, but no token that contains a
+  // path separator survives — absolute (POSIX or Windows), home-, parent- and
+  // dot-relative, with or without spaces between tokens. The code branch
+  // above is the guarantee for fs errors; this is the belt for the rest. A
+  // path with spaces is redacted token by token (`C:\Program Files\x` →
+  // `<path> <path>`), so nothing of it remains. Quoted prose collapses to
+  // `'…'`. Residual risk, accepted: a bare file name without any separator
+  // (`secret.txt`) is the agent's own wording and stays as written.
   return (err instanceof Error ? err.message : String(err))
-    .replace(/'[^']*'|"[^"]*"/g, "'…'")
-    .replace(/(?<![\w.-])(?:~|\.\.|\.|[A-Za-z]:)?[\\/][^\s'"),;]+/g, "<path>");
+    .replace(/[^\s'"(),;]*[\\/][^\s'"(),;]*/g, "<path>")
+    .replace(/'[^']*'|"[^"]*"/g, "'…'");
 }
 
 /** Build a `shown:false` tool_result for a failure. As with `show_image`, the

@@ -180,7 +180,7 @@ describe("show_image tool (plan/114)", () => {
     // ...and the resolved absolute form never reaches the model-visible result.
     // Raw strings, not JSON.stringify: backslash escaping inside JSON hid
     // this leak on Windows; the Linux CI run caught it (PR #128).
-    expect(JSON.stringify(result)).not.toContain(resolved);   // any other field too
+    expect(JSON.stringify(result)).not.toContain(resolved);
     expect(result.details?.error ?? "").not.toContain(resolved);
     expect(result.content?.[0]?.text ?? "").not.toContain(resolved);
     expect(result.details?.error).toContain("cannot read");
