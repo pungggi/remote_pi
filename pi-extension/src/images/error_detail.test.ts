@@ -30,6 +30,11 @@ describe("fsErrorDetail", () => {
     expect(fsErrorDetail(new Error("missing /home/me/My Documents/report.pdf"))).toBe("missing <path> Documents/report.pdf");
     // Parentheses and commas end a path too.
     expect(fsErrorDetail(new Error("lock held by /var/lock/piper.lock, retry"))).toBe("lock held by <path>, retry");
+    // Parent-relative paths are locations too, on both separators.
+    expect(fsErrorDetail(new Error("refused ../private/secret.txt"))).toBe("refused <path>");
+    expect(fsErrorDetail(new Error("refused ..\\..\\Users\\me\\x.txt"))).toBe("refused <path>");
+    // A plain relative path is the agent's own wording and stays.
+    expect(fsErrorDetail(new Error("bad entry in pi/piper/files.json"))).toBe("bad entry in pi/piper/files.json");
     // Relative paths and plain words survive: they carry no location.
     expect(fsErrorDetail(new Error("bad entry in pi/piper/files.json (relative)"))).toBe("bad entry in pi/piper/files.json (relative)");
   });
