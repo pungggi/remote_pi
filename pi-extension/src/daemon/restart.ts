@@ -1,0 +1,449 @@
+/**
+ * `remote-pi restart-supervisor` — restarts the `pi-supervisord` PROCESS
+ * through the OS service manager, and PROVES that it did.
+ *
+ * Why the proof (2026-11-26, PR #126 F4): the command used to run its steps
+ * and print "Supervisor restarted." whatever happened. On the owner's PC the
+ * running supervisor had been started by hand through a `cmd.exe /c` wrapper,
+ * not by the scheduled task, so `schtasks /End` had nothing to end and
+ * `schtasks /Run` launched a second instance that refused to start next to
+ * the first ("Refusing to start a second instance", task result 1). Same
+ * pids before and after, exit code 0. The same failure class exists wherever
+ * a second launcher exists: a manual instance survives `systemctl --user
+ * restart` and `launchctl kickstart -k` the same way, because the new
+ * instance yields to it.
+ *
+ * So the sequence is now: read the supervisor's identity, run the service
+ * commands, then poll until the identity changed. If it has not within a
+ * bound, fall back to the plan/168 kill path — stop the old process by pid,
+ * wait for it and its children to go, start the service again — and poll
+ * once more. The exit code is 0 only when a new supervisor was seen.
+ *
+ * Identity of an incarnation: the pid of the process that SERVES the control
+ * socket (asked from the kernel: `GetNamedPipeServerProcessId` on Windows,
+ * the `/proc` socket owner on Linux), plus the children's pids from a real
+ * `status` round trip as a fallback where the owner cannot be named.
+ */
+
+import { spawnSync } from "node:child_process";
+import { setTimeout as sleep } from "node:timers/promises";
+import { callSupervisor } from "./client.js";
+import type { DaemonInfo } from "./control_protocol.js";
+import { LAUNCHD_LABEL, SYSTEMD_UNIT, WINDOWS_TASK_NAME } from "./install.js";
+import { supervisorSockPath } from "./sock_path.js";
+import { describeSocketOwner } from "../session/socket_owner.js";
+
+/** One step of a restart sequence. `ignoreFailure` steps (e.g. `schtasks /End`
+ *  when the task isn't running) don't abort the sequence. */
+export interface RestartStep { cmd: string; args: string[]; ignoreFailure?: boolean }
+
+/** Pure: the OS command sequence that restarts the supervisor service, or null
+ *  when the platform isn't supported. Most platforms are 1 step; Windows is 2
+ *  (`schtasks /End` then `/Run`). Exported for tests. */
+export function restartSupervisorCommand(
+  platform: NodeJS.Platform,
+  uid: number,
+): RestartStep[] | null {
+  if (platform === "darwin") return [{ cmd: "launchctl", args: ["kickstart", "-k", `gui/${uid}/${LAUNCHD_LABEL}`] }];
+  if (platform === "linux") return [{ cmd: "systemctl", args: ["--user", "restart", SYSTEMD_UNIT] }];
+  if (platform === "win32") return [
+    { cmd: "schtasks", args: ["/End", "/TN", WINDOWS_TASK_NAME], ignoreFailure: true },
+    { cmd: "schtasks", args: ["/Run", "/TN", WINDOWS_TASK_NAME] },
+  ];
+  return null;
+}
+
+/** Pure: the command that STARTS the service without touching a running
+ *  instance — the second half of the kill fallback, once the old process is
+ *  gone. `-k` is dropped on macOS on purpose: there is nothing left to kill. */
+export function startSupervisorCommand(platform: NodeJS.Platform, uid: number): RestartStep[] | null {
+  if (platform === "darwin") return [{ cmd: "launchctl", args: ["kickstart", `gui/${uid}/${LAUNCHD_LABEL}`] }];
+  if (platform === "linux") return [{ cmd: "systemctl", args: ["--user", "start", SYSTEMD_UNIT] }];
+  if (platform === "win32") return [{ cmd: "schtasks", args: ["/Run", "/TN", WINDOWS_TASK_NAME] }];
+  return null;
+}
+
+/** How long the service commands get to produce a new supervisor before the
+ *  fallback kicks in, and again after it. Node boot, socket bind and the
+ *  first `status` answer take a few seconds; 30 s leaves room for a slow
+ *  machine without letting a wrong "restarted" go unnoticed for long. */
+export const RESTART_WAIT_MS = 30_000;
+const POLL_MS = 500;
+/** SIGTERM to SIGKILL escalation for the old supervisor in the fallback. */
+const KILL_GRACE_MS = 10_000;
+/** Upper bound for one socket-owner lookup in the CLI (the probe's own budget
+ *  is 2 s on Windows; this only guarantees progress if it ever hangs). */
+export const OWNER_TIMEOUT_MS = 8_000;
+/** After a hard kill (Windows has no graceful signal) the old children exit
+ *  on their own when stdio closes; the 2026-11-26 replay took about 6 s. */
+const CHILDREN_WAIT_MS = 15_000;
+
+/** What one incarnation of the supervisor looks like from outside. */
+export interface SupervisorIdentity {
+  /** Pid of the process serving the control socket, or null when it could
+   *  not be named (no listener, or the platform cannot tell — macOS). */
+  pid: number | null;
+  /** Fleet rows from a real `status` round trip; null = nobody answered. */
+  rows: DaemonInfo[] | null;
+}
+
+/** Result of one OS command: ok, or why it failed. `status` is the command's
+ *  exit code (null when it was killed) so the CLI can hand it to its caller. */
+export type RunOutcome =
+  | { ok: true; detail: string }
+  | { ok: false; reason: "not-runnable" | "failed"; detail: string; status?: number | null };
+
+/** Everything the restart touches, injectable so the whole flow — including
+ *  "the status never changes" — is a unit test with no processes. */
+export interface RestartDeps {
+  platform: NodeJS.Platform;
+  uid: number;
+  sockPath: string;
+  status: () => Promise<DaemonInfo[] | null>;
+  owner: () => Promise<{ pid: number } | null>;
+  run: (cmd: string, args: string[]) => RunOutcome;
+  kill: (pid: number, signal: NodeJS.Signals) => boolean;
+  pidAlive: (pid: number) => boolean;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+  log: (line: string) => void;
+  /** Poll budget for one change; default RESTART_WAIT_MS. */
+  waitMs?: number;
+}
+
+export interface RestartResult {
+  /** True only when a supervisor with a new identity answered. */
+  ok: boolean;
+  message: string;
+  before: SupervisorIdentity;
+  after: SupervisorIdentity;
+  /** The process exit code the CLI should use. 1 unless an OS command of
+   *  the service failed with a code of its own — that code is passed on, as
+   *  the command always did (a caller may read schtasks-specific codes). */
+  exitCode: number;
+}
+
+function fingerprint(rows: DaemonInfo[] | null): string {
+  if (rows === null) return "";
+  return rows.map((d) => `${d.id}:${d.pid ?? "-"}`).sort().join(",");
+}
+
+/** The identity before anything runs: one `status` round trip and, when
+ *  somebody answered, the socket owner's pid. (The poll that follows never
+ *  asks for the owner unless its cheap `status` answer already looks like a
+ *  new incarnation — the owner query spawns a probe on Windows.) */
+async function identify(deps: Pick<RestartDeps, "status" | "owner">): Promise<SupervisorIdentity> {
+  const rows = await deps.status();
+  const pid = rows === null ? null : (await deps.owner())?.pid ?? null;
+  return { pid, rows };
+}
+
+/** Does this `status` answer possibly belong to a new incarnation? Cheaper
+ *  than the owner query: it only compares the children's pids. */
+function mayBeNew(before: SupervisorIdentity, rows: DaemonInfo[] | null): boolean {
+  if (rows === null) return false;
+  if (before.rows === null) return true;
+  const now = fingerprint(rows);
+  return now !== "" && now !== fingerprint(before.rows);
+}
+
+/** Did `after` describe a different incarnation than `before`? The socket
+ *  owner's pid decides wherever it is known on both sides; otherwise the
+ *  children's pids do (a restart respawns every child). A supervisor that was
+ *  down before and answers now counts as changed: it was started. */
+export function incarnationChanged(before: SupervisorIdentity, after: SupervisorIdentity): boolean {
+  if (after.rows === null) return false;
+  if (before.rows === null) return true;
+  if (before.pid !== null && after.pid !== null) return after.pid !== before.pid;
+  const a = fingerprint(after.rows);
+  return a !== "" && a !== fingerprint(before.rows);
+}
+
+function describe(identity: SupervisorIdentity): string {
+  const who = identity.pid === null ? "pid unknown" : `pid ${identity.pid}`;
+  return identity.rows === null ? `not answering (${who})` : `${who}, ${identity.rows.length} fleet row(s)`;
+}
+
+function human(ms: number): string {
+  return `${(ms / 1000).toFixed(1)} s`;
+}
+
+/** The identity for a report: the poll leaves the socket owner unqueried
+ *  while nothing changes, so name it here (one probe) when somebody answers. */
+async function named(deps: Pick<RestartDeps, "owner">, seen: SupervisorIdentity): Promise<SupervisorIdentity> {
+  if (seen.pid !== null || seen.rows === null) return seen;
+  return { pid: (await deps.owner())?.pid ?? null, rows: seen.rows };
+}
+
+async function waitForChange(
+  deps: RestartDeps,
+  before: SupervisorIdentity,
+  waitMs: number,
+): Promise<{ changed: boolean; after: SupervisorIdentity; elapsedMs: number }> {
+  const started = deps.now();
+  const deadline = started + waitMs;
+  for (;;) {
+    const rows = await deps.status();
+    // Two cheap candidates, neither needing the owner probe: different children,
+    // or the OLD supervisor's pid is gone while somebody still answers — a
+    // restart whose children kept their pids, or whose fleet has not spawned
+    // yet (an empty fleet is not "new" by fingerprint). Only then is the
+    // socket owner asked (one probe spawn on Windows per candidate).
+    const oldGone = before.pid !== null && rows !== null && !deps.pidAlive(before.pid);
+    if (mayBeNew(before, rows) || oldGone) {
+      // A candidate: one owner query settles whether it is really a new
+      // supervisor (a respawned child alone does not count).
+      const after: SupervisorIdentity = { pid: (await deps.owner())?.pid ?? null, rows };
+      if (incarnationChanged(before, after)) return { changed: true, after, elapsedMs: deps.now() - started };
+    }
+    if (deps.now() >= deadline) return { changed: false, after: { pid: null, rows }, elapsedMs: deps.now() - started };
+    await deps.sleep(POLL_MS);
+  }
+}
+
+/** Runs the steps; on failure returns the message and the exit code the CLI
+ *  should hand to its caller. */
+function runSteps(
+  deps: Pick<RestartDeps, "run" | "log">,
+  steps: RestartStep[],
+): { message: string; exitCode: number } | null {
+  for (const step of steps) {
+    const r = deps.run(step.cmd, step.args);
+    const line = `${step.cmd} ${step.args.join(" ")}`;
+    if (!r.ok) {
+      if (step.ignoreFailure) {
+        deps.log(`  ${line} → failed, ignored (${r.detail || "nothing to end"})`);
+        continue;
+      }
+      return r.reason === "not-runnable"
+        ? {
+            message: `${line} not runnable (${r.detail}). Is the service installed? Run \`remote-pi install\`.`,
+            exitCode: 1,
+          }
+        : { message: `${line} failed (${r.detail})`, exitCode: r.status === null || r.status === undefined ? 1 : r.status };
+    }
+    deps.log(`  ${line} → ok${r.detail ? ` (${r.detail})` : ""}`);
+  }
+  return null;
+}
+
+/** Waits until `pid` is gone; escalates to SIGKILL after `graceMs`. Resolves
+ *  false when the process outlives both. */
+async function stopPid(
+  deps: Pick<RestartDeps, "kill" | "pidAlive" | "sleep" | "now">,
+  pid: number,
+  graceMs: number,
+): Promise<boolean> {
+  deps.kill(pid, "SIGTERM");
+  const deadline = deps.now() + graceMs;
+  while (deps.pidAlive(pid) && deps.now() < deadline) await deps.sleep(250);
+  if (!deps.pidAlive(pid)) return true;
+  deps.kill(pid, "SIGKILL");
+  const hardDeadline = deps.now() + 3_000;
+  while (deps.pidAlive(pid) && deps.now() < hardDeadline) await deps.sleep(250);
+  return !deps.pidAlive(pid);
+}
+
+/**
+ * Restarts the supervisor and proves it. Never throws; the exit code is the
+ * caller's (`ok`).
+ */
+export async function restartSupervisor(deps: RestartDeps): Promise<RestartResult> {
+  const steps = restartSupervisorCommand(deps.platform, deps.uid);
+  if (!steps) {
+    return {
+      ok: false,
+      message: `restart-supervisor is not supported on '${deps.platform}' yet. Restart pi-supervisord manually.`,
+      before: { pid: null, rows: null },
+      after: { pid: null, rows: null },
+      exitCode: 1,
+    };
+  }
+  const waitMs = deps.waitMs ?? RESTART_WAIT_MS;
+
+  const before = await identify(deps);
+  deps.log(`supervisor before: ${describe(before)}`);
+
+  const stepError = runSteps(deps, steps);
+  if (stepError) {
+    return { ok: false, message: `restart-supervisor failed: ${stepError.message}`, exitCode: stepError.exitCode, before, after: before };
+  }
+
+  let seen = await waitForChange(deps, before, waitMs);
+  if (seen.changed) {
+    const message = `Supervisor restarted: ${describe(before)} → ${describe(seen.after)} (${human(seen.elapsedMs)}).`;
+    return { ok: true, message, before, after: seen.after, exitCode: 0 };
+  }
+
+  // Nothing new answered. Name who IS answering for the report (the poll
+  // leaves the socket owner unqueried while nothing changes).
+  const stalled = await named(deps, seen.after);
+  deps.log(`  no new supervisor after ${human(seen.elapsedMs)}: ${describe(stalled)}`);
+
+  // The service commands did not replace the running instance: a second
+  // launcher (a hand-started process) is still holding the socket and the
+  // service's own instance yielded to it. Before anything is stopped, make
+  // sure that shape really holds: the OLD processes must still be alive. If
+  // they are gone and the answer still looks unchanged, the answer came from
+  // somewhere else and a kill would hit the wrong thing. When nobody answers
+  // any more, there is nothing to stop: the service start is all that is left.
+  const oldPids = [before.pid, ...(before.rows ?? []).map((d) => d.pid)].filter(
+    (p): p is number => p !== null && p !== undefined,
+  );
+  if (stalled.rows !== null && before.rows !== null && oldPids.length > 0 && !oldPids.some((p) => deps.pidAlive(p))) {
+    return {
+      ok: false,
+      before,
+      after: stalled,
+      message:
+        `restart-supervisor: cannot tell whether the supervisor was restarted: its previous processes (pid ` +
+        `${oldPids.join(", ")}) are gone, yet the control socket still reports the same fleet (${describe(stalled)}). ` +
+        "Nothing was stopped.",
+      exitCode: 1,
+    };
+  }
+  // Fall back to the plan/168 kill path. The kill may only ever target the
+  // supervisor identified BEFORE the attempt (`before.pid`). A pid learned
+  // now (the owner named for the report above, or a fresh lookup) may belong
+  // to a NEW instance the poll missed because it kept the fleet's pids, so
+  // it is never killed (third review on #127).
+  let oldPid: number | null = null;
+  if (before.pid === null) {
+    if (stalled.rows !== null) {
+      return {
+        ok: false,
+        before,
+        after: stalled,
+        message:
+          "restart-supervisor: the supervisor was NOT restarted (no new instance answered, and the running one " +
+          "could not be identified before the attempt, so nothing was stopped). Run this again; if the owner " +
+          "still cannot be named, stop the running pi-supervisord by hand. On Windows: Get-CimInstance " +
+          "Win32_Process -Filter \"Name = 'node.exe'\" | Where-Object { $_.CommandLine -match 'supervisord\\.js' } | " +
+          "ForEach-Object { Stop-Process -Id $_.ProcessId }.",
+        exitCode: 1,
+      };
+    }
+    // Nobody answers any more and no pid was identified: nothing to stop.
+    deps.log("  the control socket does not answer and no pid was identified before the attempt → starting the service");
+  } else if (!deps.pidAlive(before.pid)) {
+    // Gone between the poll and now: nothing to stop either.
+    deps.log(`  the old supervisor (pid ${before.pid}) is already gone → starting the service`);
+  } else {
+    oldPid = before.pid;
+  }
+  if (oldPid !== null) {
+    deps.log(`  the service did not own the running instance → stopping pid ${oldPid} and starting the service again`);
+    if (!(await stopPid(deps, oldPid, KILL_GRACE_MS))) {
+      return {
+        ok: false,
+        before,
+        after: seen.after,
+        message: `restart-supervisor: the supervisor was NOT restarted (pid ${oldPid} survived SIGTERM and SIGKILL).`,
+        exitCode: 1,
+      };
+    }
+  }
+  // Let the old children notice stdio EOF and exit, so the new supervisor
+  // does not spawn its own next to a process still holding a room lock.
+  const oldChildren = (before.rows ?? []).map((d) => d.pid).filter((p): p is number => p !== undefined);
+  if (oldChildren.length > 0) {
+    const deadline = deps.now() + CHILDREN_WAIT_MS;
+    while (oldChildren.some((p) => deps.pidAlive(p)) && deps.now() < deadline) await deps.sleep(500);
+    const left = oldChildren.filter((p) => deps.pidAlive(p));
+    deps.log(left.length === 0 ? "  old daemons exited" : `  old daemon pid(s) ${left.join(", ")} still alive after ${human(CHILDREN_WAIT_MS)}`);
+  }
+  const startError = runSteps(deps, startSupervisorCommand(deps.platform, deps.uid) ?? []);
+  if (startError) {
+    return { ok: false, message: `restart-supervisor failed: ${startError.message}`, exitCode: startError.exitCode, before, after: seen.after };
+  }
+  seen = await waitForChange(deps, before, waitMs);
+  if (seen.changed) {
+    const message = oldPid === null
+      ? `Supervisor started through the fallback: ${describe(before)} → ${describe(seen.after)} (${human(seen.elapsedMs)}). ` +
+        "The service's own restart had not brought it up."
+      : `Supervisor restarted through the fallback: ${describe(before)} → ${describe(seen.after)} (${human(seen.elapsedMs)}). ` +
+        "The service did not own the running instance; keep ONE launcher (only the service should start the supervisor).";
+    return { ok: true, message, before, after: seen.after, exitCode: 0 };
+  }
+  const still = await named(deps, seen.after);
+  return {
+    ok: false,
+    before,
+    after: still,
+    message:
+      `restart-supervisor: the supervisor was NOT restarted (after ` +
+      `${oldPid === null ? "" : `stopping pid ${oldPid} and `}starting the service, ` +
+      `${describe(still)} after ${human(seen.elapsedMs)}). See ~/.pi/piper/supervisord.log.`,
+    exitCode: 1,
+  };
+}
+
+/** Production wiring. */
+export function defaultRestartDeps(overrides: Partial<RestartDeps> = {}): RestartDeps {
+  return {
+    platform: process.platform,
+    uid: process.getuid?.() ?? 0,
+    sockPath: supervisorSockPath(),
+    status: async () => {
+      try {
+        return (await callSupervisor({ op: "status" })).daemons;
+      } catch {
+        return null;
+      }
+    },
+    owner: async () => {
+      // describeSocketOwner leaves nothing behind that could hold the process
+      // open (third review on #127, asked for by name): on Linux its walk is
+      // raced against an UNREF'd timer and stops at its own deadline; on
+      // Windows describeWindowsPipeOwner unrefs the powershell child and both
+      // of its pipes, and kills the child when it loses its own 2 s race
+      // (socket_owner_windows.ts). So when the guard below answers null, the
+      // keep-alive interval here is the only thing that still refs the loop,
+      // and the finally clears it.
+      //
+      // The keep-alive exists because a CLI process has nothing else on its
+      // event loop: without a handle here node would exit mid-restart — with
+      // code 0, before the answer arrived. The probe races its own budget (2 s
+      // on Windows); the explicit bound here keeps the CLI independent of that.
+      const keepAlive = setInterval(() => undefined, 1_000);
+      let guard: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const owner = await Promise.race([
+          describeSocketOwner(supervisorSockPath()),
+          new Promise<null>((resolve) => { guard = setTimeout(() => resolve(null), OWNER_TIMEOUT_MS); }),
+        ]);
+        return owner === null ? null : { pid: owner.pid };
+      } finally {
+        if (guard !== undefined) clearTimeout(guard);
+        clearInterval(keepAlive);
+      }
+    },
+    run: (cmd, args) => {
+      const r = spawnSync(cmd, args, { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" });
+      const detail = (r.stderr || r.stdout || "").trim();
+      if (r.error) return { ok: false, reason: "not-runnable", detail: r.error.message };
+      if (r.status !== 0) return { ok: false, reason: "failed", detail: `exited ${r.status}${detail ? `: ${detail}` : ""}`, status: r.status };
+      return { ok: true, detail };
+    },
+    kill: (pid, signal) => {
+      try {
+        process.kill(pid, signal);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    pidAlive: (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    sleep: (ms) => sleep(ms),
+    now: () => Date.now(),
+    log: (line) => console.log(`[remote-pi] ${line}`),
+    ...overrides,
+  };
+}
