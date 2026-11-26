@@ -99,6 +99,18 @@ describe("argv predicates", () => {
     expect(isInterimGuardArgv(["vim", "/home/u/.pi/piper/piper-guard.sh"])).toBe(false);
     expect(isInterimGuardArgv([NODE, "/x/dist/index.js", "guard", "run"])).toBe(false);
   });
+
+  // The AI review suspected the shell test also matches a bare "a" or "k".
+  // As written the trailing "sh" is mandatory; this pins it down.
+  test("interim-guard shell test: every real shell matches, no bare letter or look-alike does", () => {
+    const argv = (shell: string) => [shell, "/home/u/.pi/piper/piper-guard.sh"];
+    for (const shell of ["sh", "ash", "bash", "dash", "zsh", "ksh", "/bin/bash", "/system/bin/sh", "/data/data/com.termux/files/usr/bin/bash"]) {
+      expect(isInterimGuardArgv(argv(shell)), shell).toBe(true);
+    }
+    for (const shell of ["a", "k", "z", "da", "ba", "b", "d", "ash5", "bashx", "myscript.sh", "sh.d", "fish", "node", "/bin/node", ""]) {
+      expect(isInterimGuardArgv(argv(shell)), shell).toBe(false);
+    }
+  });
 });
 
 describe("readCmdline / listPids / isPidAlive", () => {
