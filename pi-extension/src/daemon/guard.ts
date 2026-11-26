@@ -1091,7 +1091,11 @@ export function guardLockHolderPid(pidFile: string = guardPidPath(), procRoot: s
  *  Two loops without a lock settle themselves within one watch period (the
  *  one that retakes the lock makes the other leave). Until then the lowest
  *  pid is reported, so the answer does not depend on the order /proc is
- *  listed in. */
+ *  listed in.
+ *
+ *  Cost: one walk through /proc when nobody holds the lock. Callers that
+ *  poll must throttle it, as `phone-setup` does (once a second); `start`
+ *  polls the lock holder instead, which reads the pid file only. */
 export function runningGuardPid(pidFile: string = guardPidPath(), procRoot: string = DEFAULT_PROC_ROOT): number | null {
   const holder = guardLockHolderPid(pidFile, procRoot);
   if (holder !== null) return holder;

@@ -96,19 +96,21 @@ const PRELOAD_OPTIONS: ReadonlySet<string> = new Set(["--require", "-r", "--impo
  *  exactly `guard run`. That argument is not assumed to sit right behind
  *  `node`: a wrapper may put options before it, with a value of their own
  *  (`node --require <shim> …/index.js guard run`), and reading only the
- *  first non-option argument made such a guard look dead. Options are never
- *  the entry script, nor is the module behind a preload option. An earlier
- *  entry-like argument followed by other words (`index.js daemon status …
- *  index.js guard run`) is the entry of some other command: not the guard.
- *  The interim shell guard (`piper-guard.sh`) is deliberately NOT this: it
- *  gets retired, never mistaken for a running instance. */
+ *  first non-option argument made such a guard look dead. Option TOKENS are
+ *  never the entry script, nor is the module behind a preload option. An
+ *  earlier entry-like argument followed by other words (`index.js daemon
+ *  status … index.js guard run`) is the entry of some other command: not
+ *  the guard. The interim shell guard (`piper-guard.sh`) is deliberately
+ *  NOT this: it gets retired, never mistaken for a running instance. */
 export function isGuardArgv(argv: string[]): boolean {
   if (!isNodeExecutable(argv[0])) return false;
   for (let i = 1; i + 2 < argv.length; i++) {
     const arg = argv[i] ?? "";
-    // An option is never the entry script (also in the `--require=<file>`
-    // form); behind a preload option in its two-argument form stands the
-    // module node loads first, not the script it runs.
+    // An option TOKEN is never the entry script (also in the `--require=<file>`
+    // form), and behind a preload option in its two-argument form stands the
+    // module node loads first, not the script it runs. A value of some other
+    // option that happens to end like the entry script would be taken for it:
+    // not a shape any wrapper uses.
     if (arg.startsWith("-") || PRELOAD_OPTIONS.has(argv[i - 1] ?? "")) continue;
     if (/(^|\/)(index\.js|remote-pi)$/.test(arg)) return argv[i + 1] === "guard" && argv[i + 2] === "run";
   }
