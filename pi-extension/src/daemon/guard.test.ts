@@ -516,6 +516,15 @@ describe("guardProcessAlive / acquireGuardLock", () => {
       // Without a pid file the command line decides alone.
       expect(runningGuardPid(join(tmp, "piper", "none.pid"), proc)).toBeNull();
     });
+
+    test("two loops without a lock: the lowest pid is reported, whatever order /proc lists them in", () => {
+      const { proc, put } = table();
+      put(314159, SHIM_GUARD);
+      put(271828, ["/bin/node", "/x/dist/index.js", "guard", "run"]);
+      expect(runningGuardPid(join(tmp, "piper", "gone.pid"), proc)).toBe(271828);
+      // With a lock holder there is no choice to make.
+      expect(runningGuardPid(pidFileWith("314159\n"), proc)).toBe(314159);
+    });
   });
 });
 

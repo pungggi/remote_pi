@@ -1086,9 +1086,17 @@ export function guardLockHolderPid(pidFile: string = guardPidPath(), procRoot: s
  *  whose pid file was removed while it runs, found by its command line (the
  *  loop takes the file back on its next watch). For such a guard `start`
  *  stays a no-op and `status` tells the truth. Only `start`'s own "started"
- *  answer insists on the lock (`guardLockHolderPid`). */
+ *  answer insists on the lock (`guardLockHolderPid`).
+ *
+ *  Two loops without a lock settle themselves within one watch period (the
+ *  one that retakes the lock makes the other leave). Until then the lowest
+ *  pid is reported, so the answer does not depend on the order /proc is
+ *  listed in. */
 export function runningGuardPid(pidFile: string = guardPidPath(), procRoot: string = DEFAULT_PROC_ROOT): number | null {
-  return guardLockHolderPid(pidFile, procRoot) ?? findGuardPids(procRoot)[0] ?? null;
+  const holder = guardLockHolderPid(pidFile, procRoot);
+  if (holder !== null) return holder;
+  const byArgv = findGuardPids(procRoot);
+  return byArgv.length === 0 ? null : Math.min(...byArgv);
 }
 
 function pidFilePid(pidFile: string): number | null {

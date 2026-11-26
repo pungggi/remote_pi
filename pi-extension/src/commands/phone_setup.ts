@@ -311,7 +311,9 @@ export function defaultPhoneSetupDeps(opts: PhoneSetupOptions, log: (line: strin
       }
       // The script may have lost a race against a stale pid file: asking
       // explicitly is idempotent and either reports or starts the loop.
-      return (await guardStart()).ok ? guardLockHolderPid() : null;
+      // The same chain as the loop above answers: the lock holder, else a
+      // loop found by its command line (`guard start` reports that one too).
+      return (await guardStart()).ok ? (guardLockHolderPid() ?? runningGuardPid()) : null;
     },
     deviceRoomLastSeenAt: () => readRoomsRegistry().get(DEVICE_ROOM)?.lastSeenAt,
     pair: async (ttlMs) => {
@@ -519,10 +521,14 @@ export async function runPhoneSetup(opts: PhoneSetupOptions, deps: PhoneSetupDep
     report.line(
       "fail",
       "guard",
-      `not running ${GUARD_WAIT_MS / 1000} s after the start — nothing would restart the supervisor when it is gone. ` +
-        "Start it with: remote-pi guard start — last guard.log lines:",
+      `still not running ${GUARD_WAIT_MS / 1000} s after the start and one start attempt — nothing would restart the ` +
+        "supervisor when it is gone. Start it with: remote-pi guard start — last guard.log lines:",
     );
-    for (const line of deps.guardLogTail(12)) report.text(`     ${line}`);
+    const tail = deps.guardLogTail(12);
+    if (tail.length === 0) {
+      report.text("     (guard.log has no lines to show: the guard never wrote to it, or it cannot be read)");
+    }
+    for (const line of tail) report.text(`     ${line}`);
     return 1;
   }
   report.line("ok", "guard", `running (pid ${guard}) — restarts the supervisor when it is gone`);

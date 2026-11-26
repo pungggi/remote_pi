@@ -106,6 +106,9 @@ export function isGuardArgv(argv: string[]): boolean {
   if (!isNodeExecutable(argv[0])) return false;
   for (let i = 1; i + 2 < argv.length; i++) {
     const arg = argv[i] ?? "";
+    // An option is never the entry script (also in the `--require=<file>`
+    // form); behind a preload option in its two-argument form stands the
+    // module node loads first, not the script it runs.
     if (arg.startsWith("-") || PRELOAD_OPTIONS.has(argv[i - 1] ?? "")) continue;
     if (/(^|\/)(index\.js|remote-pi)$/.test(arg)) return argv[i + 1] === "guard" && argv[i + 2] === "run";
   }

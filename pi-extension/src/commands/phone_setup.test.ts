@@ -364,13 +364,18 @@ describe("runPhoneSetup — where it stops", () => {
     const noGuard = harness({ waitGuard: async () => null });
     expect(await runPhoneSetup(BASE_OPTS, noGuard.deps)).toBe(1);
     expect(strip(noGuard.lines).slice(-2)).toEqual([
-      "guard: not running 8 s after the start — nothing would restart the supervisor when it is gone. " +
-        "Start it with: remote-pi guard start — last guard.log lines:",
+      "guard: still not running 8 s after the start and one start attempt — nothing would restart the supervisor " +
+        "when it is gone. Start it with: remote-pi guard start — last guard.log lines:",
       "[2026-11-26 13:16:04] guard: loop exits: guard run belongs on a Termux (Android) host",
     ]);
     // It stops here: the device-room wait and the pairing link are skipped.
     expect(noGuard.calls).not.toContain("sleep:2000");
     expect(noGuard.calls).not.toContain("pair:600000");
+    // Nothing to show (the guard never wrote to the log, or it cannot be
+    // read): said so, instead of a heading without content.
+    const mute = harness({ waitGuard: async () => null, guardLogTail: () => [] });
+    expect(await runPhoneSetup(BASE_OPTS, mute.deps)).toBe(1);
+    expect(strip(mute.lines).at(-1)).toBe("(guard.log has no lines to show: the guard never wrote to it, or it cannot be read)");
 
     const dark = harness({ runBootScript: () => true });
     dark.state.lastSeen = dark.state.now - 3_600_000; // yesterday's entry
