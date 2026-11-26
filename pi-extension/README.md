@@ -498,6 +498,12 @@ real name to the peer.
 | `/remote-pi install` | Install `pi-supervisord` as a system service |
 | `/remote-pi uninstall` | Remove the system service (registry preserved) |
 
+Two CLI-only commands for a Termux (Android) host, which has no service
+manager: `remote-pi phone-setup` (checks, install, start, pairing link in
+one run) and `remote-pi guard run\|start\|status\|stop\|once` (the process
+that restarts the supervisor when it is gone). See
+[`docs/android.md`](./docs/android.md).
+
 All commands above work both as Pi slash commands (interactive) and as
 shell-level `remote-pi <subcommand>` when the package is installed
 globally (`npm install -g remote-pi`).
@@ -571,6 +577,11 @@ The `install` command:
   or `~/Library/LaunchAgents/ch.pungitore.piper.supervisord.plist` (macOS)
 - Activates it via `systemctl --user enable --now` or `launchctl bootstrap`
 - The supervisor starts immediately and re-starts on every login
+- On Android (Termux) it writes `~/.termux/boot/start-piper.sh` instead:
+  the Termux:Boot app runs it after each reboot, and `remote-pi guard`
+  restarts the supervisor when it dies. Use `remote-pi phone-setup` there,
+  which installs, starts and prints the pairing link (see
+  [`docs/android.md`](./docs/android.md))
 
 ### Per-folder workflow
 
@@ -622,6 +633,7 @@ registered daemon back. To wipe the registry entirely, `rm
 |---|---|
 | Linux | `journalctl --user -u remote-pi-supervisord -f` |
 | macOS | `tail -f ~/.pi/remote/supervisord.log` |
+| Android (Termux) | `tail -f ~/.pi/piper/supervisord.log` and `~/.pi/piper/guard.log` |
 
 Each spawned daemon's stderr is forwarded into the supervisor's log
 with a `[<cwd>]` prefix, so a single log stream shows every agent.
@@ -634,7 +646,8 @@ with a `[<cwd>]` prefix, so a single log stream shows every agent.
   a folder to daemon.
 - **Pairing still happens interactively.** Daemons don't show a QR
   themselves; the keypair + paired devices come from the prior `pi`
-  session in the same folder.
+  session in the same folder. Exception: on a Termux host,
+  `remote-pi phone-setup` has the device daemon mint a link and prints it.
 - **Single supervisor.** If `pi-supervisord` crashes all daemons go
   down with it. systemd/launchd restarts it within seconds; daemons
   come back automatically.

@@ -12,6 +12,32 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Added
 
+- **Android (Termux) as a session host, stage A3 (plan/173)**: a phone can
+  now be set up as an always-on host with one command. Before, the Termux
+  setup was nine manual steps and nothing restarted the supervisor when it
+  died, so the phone left the mesh at the next reboot or kill (2026-11-25:
+  dark from 21:10 until 11:18).
+  - pi-extension: `remote-pi install` detects Termux and writes the
+    Termux:Boot script `~/.termux/boot/start-piper.sh` (wake lock,
+    supervisor, guard); `uninstall` stops both again. `remote-pi
+    phone-setup` checks the environment, installs, starts, waits for the
+    device daemon's relay room and prints a pairing link that the device
+    daemon mints (new supervisor op `pair`). Flags: `--relay`, `--yes`,
+    `--ttl`.
+  - pi-extension: `remote-pi guard` is the Android stand-in for a service
+    manager. Every 30 s it makes a real `status` round trip on the control
+    socket; a missing supervisor is started, a silent one is killed and
+    restarted, with backoff and one log line per transition. Crashed and
+    wedged children stay with the supervisor's own backoff and the plan/168
+    ping loop.
+  - pi-extension: sessions started from the app run in a detached tmux
+    session named after the relay room (`open_terminal_result.method`
+    gains the diagnostic value `tmux`; the app maps unknown values to
+    null). `remote-pi doctor` starts with six Android rows inside Termux.
+  - Not in this change: the app side (device picker, phone icon, "Open in
+    Termux") and a watchdog for the Termux app itself (plan/173 A7, spike
+    pending). Nothing was run on a device yet; the six checks are listed
+    under A3 in the plan.
 - **Timestamps in the chat (plan/172)**: the transcript had no sense of
   time and mixed two clocks. Live frames carried no time, so the app
   stamped arrival on the phone's clock while replayed history used the

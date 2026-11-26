@@ -9,6 +9,13 @@ implementation and the later `remote-pi phone-setup` command can build on it.
 and runs in Termux. S3: AGY installs, signs in and completes a task inside
 proot-distro.
 
+**Status (2026-11-26):** stage A3 is built: `remote-pi install` writes a
+Termux:Boot script, `remote-pi guard` keeps the supervisor alive,
+`remote-pi phone-setup` replaces the manual steps, sessions from the app run
+in tmux, and `remote-pi doctor` starts with six Android rows. All of it is
+unit-tested on a PC and not yet run on the owner's phone; the checks are
+listed under A3 in the plan.
+
 ## What works today
 
 With the steps below, a phone behaves like a second PC:
@@ -58,7 +65,119 @@ With the steps below, a phone behaves like a second PC:
   phantom-process killer was left at its default during S1; the soak result
   is pending below.
 
-## Setup steps that worked (S1)
+## Setup with `remote-pi phone-setup`
+
+One command inside Termux replaces the manual steps below (plan/173, stage
+A3):
+
+```bash
+remote-pi phone-setup --relay http://<pc-lan-ip>:3000
+```
+
+It refuses to run outside Termux, so a PC keeps `remote-pi install`. Flags:
+`--relay <url>` saves the relay first (the phone cannot reach the PC's
+loopback address), `--yes` answers both prompts for scripts, `--ttl <seconds>`
+bounds the pairing link (default and maximum: 10 minutes).
+
+What it does, in order:
+
+1. **Environment.** Termux, node, `pi --version`, tmux (it offers
+   `pkg install -y tmux`), the Termux:Boot app, `allow-external-apps`, the
+   relay (`/health` must answer), and remote-pi in Pi's `packages`. Anything
+   that would make the pairing link useless stops the run with the fix in the
+   line.
+2. **Setup.** `remote-pi install` writes `~/.termux/boot/start-piper.sh`, the
+   command takes the wake lock, runs that very script, and waits for the
+   supervisor, the guard and the device daemon's relay room.
+3. **Pairing.** The device daemon mints the link. It is printed, and copied
+   with `termux-clipboard-set` when that works.
+4. **Host check.** The six Android rows of `remote-pi doctor`, as a closing
+   report. Exit code 0 means the phone is a working host.
+
+Why the link is printed and not only copied: the F-Droid clipboard bridge is
+broken (see below). Why the device daemon mints it: a pairing token only
+exists in the process that will consume the app's `pair_request`, and the
+device daemon is the one session that is always up on the phone.
+
+**Before the first run:**
+
+- Termux from F-Droid, 0.119.0-beta.3 or newer.
+- Termux:Boot from the same source, opened once. That is what arms it.
+- `pkg install nodejs git`, then Pi and this extension (manual steps 3 to 5
+  below).
+- The one-time adb settings under "Background survival needs three settings".
+
+**To stop on purpose:** `remote-pi guard stop && remote-pi daemon stop`. The
+guard brings a stopped device daemon back within 30 s, so stop it first.
+
+## What keeps it alive
+
+Android has no service manager. On a PC systemd, launchd or the Task
+Scheduler restarts the supervisor. In Termux several layers share that job,
+each owning one failure shape. Knowing which layer owns what saves an hour of
+log reading.
+
+| Layer | Heals | Runs | Where to look |
+|---|---|---|---|
+| Child crash backoff | a daemon that exited (1 s, 5 s, 30 s, 5 min; never gives up) | supervisor | `remote-pi daemon status`, `~/.pi/piper/daemons/<id>.log` |
+| Child ping loop (plan/168) | a daemon that is alive but wedged (2 missed pings, about 60 s) | supervisor | `~/.pi/piper/supervisord.log` |
+| App-triggered restart (plan/168) | a wedged device daemon while relay and supervisor live | Piper app, via the room keeper | Projects screen, "Restarting device daemon" |
+| **`remote-pi guard`** | the supervisor itself: gone, or alive but silent | a separate Termux process | `~/.pi/piper/guard.log` |
+| **Termux:Boot** | everything after a reboot | Android, `~/.termux/boot/start-piper.sh` | the script's comments |
+| Termux app gone | nothing inside Termux can restart it | not built: plan/173 A7 | research and spike |
+
+**The guard.** The boot script starts `remote-pi guard run`; `remote-pi guard
+start`, `status`, `stop` and `once` manage it. Every 30 s it asks the
+supervisor for a real `{"op":"status"}` round trip on the control socket (a
+listening socket proves nothing: the 2026-11-22 wedge answered connects for
+hours). Three rules:
+
+- **No process, no reply:** start the supervisor. Waits between starts grow
+  0, 15 s, 30 s, 1 min, 2 min, 5 min, 10 min, and are forgiven after 10
+  stable minutes.
+- **Process there, silent for three probes:** kill it (SIGTERM, then SIGKILL)
+  and start a new one.
+- **Device daemon row `stopped`:** ask the supervisor to start it, at most
+  once a minute and three times in ten minutes.
+
+It only LOGS the other states (crashed, starting, missing row), once per
+transition. Why: a crash loop belongs to the supervisor's backoff, and a guard
+that restarted on every tick would make that loop hot. The guard is a
+separate light process with its own entry path, so a broken runtime or SDK
+after an update cannot take the watchdog down with it. `run` and `start`
+refuse outside Termux: one start path per machine, the same rule the Windows
+watchdog follows.
+
+**Outage of 2026-11-25, and what would have caught it.** `pi-supervisord`
+received SIGINT and SIGTERM at 21:10 and the phone booted at about 22:00.
+Nothing restarted Termux until the owner opened it at 11:18. Termux:Boot was
+not installed, so the reboot left the phone dark: the boot script plus
+Termux:Boot is the fix for that half. Had Termux stayed up and only the
+supervisor died, the guard would have restarted it within 30 to 60 s.
+
+## Sessions from the app run in tmux
+
+"Start session" and "Open terminal" on the phone start `pi` inside a
+detached tmux session named after the relay room
+(`tmux new-session -d -s <room> -c <folder> '…'`). Why tmux: Termux's
+`RUN_COMMAND` intent failed in the spike, and tmux gives a terminal that no
+window has to be attached to. Attach on the phone with `tmux attach -t
+<room>`. The session ends when `pi` exits, like a terminal tab whose program
+returns. A folder outside `projects.roots` is refused exactly as on a PC.
+
+The device daemon that launches tmux carries its own identity
+(`REMOTE_PI_DIRECT_CONFIG`, room `device`). The launcher removes both from the
+environment and from the command, because the tmux server keeps the
+environment of whichever client started it. Without that, a new `pi` would
+join the phone-filtered `device` room and never appear as a tile.
+
+## Manual steps (fallback for `phone-setup`)
+
+Kept for a phone where the command refuses to run, and as the record of
+what the spike actually did. `remote-pi phone-setup` performs steps 4, 7 and
+8 on its own: `--relay` is step 4, the boot script replaces the manual
+supervisor start of step 7, and the pairing link comes from the device daemon
+instead of a throwaway RPC session (step 8).
 
 1. **adb over WLAN.** `adb pair <ip>:<pair-port> <code>`, then
    `adb connect <ip>:<debug-port>`. Pairing over a Tailscale address failed
@@ -78,11 +197,12 @@ With the steps below, a phone behaves like a second PC:
 6. **Project folder.** `mkdir -p ~/source/<name>` with a git repo and a
    `.pi/remote-pi/config.json` containing
    `{ "agent_name": "<name>", "auto_start_relay": true }`.
-7. **Supervisor.** `nohup pi-supervisord > ~/.pi/piper/supervisord.out 2>&1 &`
-   brings up the room keeper and the device daemon. Termux:Boot is not
-   installed yet, so this is a manual start.
-8. **Pairing without a terminal UI.** Keep an RPC session alive and feed it
-   the pair command:
+7. **Supervisor** (replaced by `remote-pi install` + the boot script).
+   `nohup pi-supervisord > ~/.pi/piper/supervisord.out 2>&1 &` brings up the
+   room keeper and the device daemon. Termux:Boot is not installed yet, so
+   this is a manual start.
+8. **Pairing without a terminal UI** (replaced by `remote-pi phone-setup`).
+   Keep an RPC session alive and feed it the pair command:
 
    ```bash
    : > ~/pair.in
@@ -173,8 +293,11 @@ With the steps below, a phone behaves like a second PC:
   com.termux.RUN_COMMAND …` from a Termux shell reaches the service (the
   system log shows it starting), but Termux logs "Processing plugin execution
   error" and runs nothing, with and without `allow-external-apps = true`,
-  foreground and background. Stage A must find the cause before relying on
-  it for "open terminal on the phone".
+  foreground and background. The exact refusal was never captured; plan/173
+  A7 lists the candidates (`termux.properties` is only read when the Termux
+  app starts, the command path must be inside the Termux home or prefix, the
+  `am` extra types must match) and how to capture it. Stage A3 does not rely
+  on `RUN_COMMAND`: phone sessions run in tmux.
 - **Nothing outside Termux can kill a stuck Termux process.** `adb shell` runs
   as another user. Give every unattended command a hard limit
   (`timeout -k 5 30 …`). In this session the PC agent asked the phone's agent
@@ -199,14 +322,21 @@ With the steps below, a phone behaves like a second PC:
 
 ## Still open
 
-- The exact message `open_terminal` returns on Android today (expected:
-  unsupported).
+- **Stage A3 on the device.** Every piece is built; the six checks listed
+  under A3 in the plan have not been run on the phone.
+- **The Termux app itself.** Nothing inside Termux can restart it after a
+  kill or a swipe-away. Plan/173 A7 has the research, one recommendation and
+  the spike to run before any app code.
+- **Termux:Boot from inside Termux.** `pm list packages` is best-effort
+  (Android may refuse it), and whether the app was OPENED ONCE cannot be
+  read at all. The setup command asks the user to confirm.
+- The exact message `open_terminal` returns on Android when tmux is missing
+  (expected: `tmux is not installed on this phone`).
+- **Attaching from the app.** The tmux session exists; the "Open in Termux"
+  button of stage A5 brings Termux to the front and attaches.
 - **AGY with the mesh plugin inside proot** (`remote-pi agy` needs Node and the
   extension in the distro), which is Stage C.
-- **tmux as the container for phone sessions.** Since `RUN_COMMAND` fails,
-  "open a terminal on the phone" is best built on tmux sessions started by the
-  device daemon and attached from Termux on demand.
 - **Idle battery cost** of an always-on phone host (about 2 % per hour here).
-- **Why `RUN_COMMAND` fails** from inside Termux (see above).
+- **Why `RUN_COMMAND` failed** from inside Termux: the exact refusal was
+  never captured. Plan/173 A7 lists the candidates and how to capture it.
 - **Relay bind address** (Stage B) and the relay preference logic.
-- **Termux:Boot** for autostart, and the app-side start flow of Stage A.
