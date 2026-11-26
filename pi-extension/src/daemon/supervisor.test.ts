@@ -54,17 +54,17 @@ async function ask<R = ControlReply<unknown>>(req: ControlRequest): Promise<R> {
   });
 }
 
-/** Per-test isolated supervisor socket. On win32 a unique named pipe (the
- *  real daemon's per-user pipe would otherwise collide — see supervisor.ts);
- *  on POSIX a socket file under the temp home. */
+/** Per-test isolated supervisor socket, unique per call. On win32 a unique
+ *  named pipe (the real daemon's per-user pipe would otherwise collide — see
+ *  supervisor.ts); on POSIX a socket file under the temp home. */
 function isolatedSupervisorSock(): string {
-  // Unique address per test. On win32 a named pipe (reuse ipcAddress escaping;
-  //  the real daemon's per-user pipe would otherwise collide — see supervisor.ts);
-  //  on POSIX a socket file under the temp home.
+  // Unique address per call: a test that boots a SECOND supervisor next to
+  // the default one needs its own socket on POSIX too — the default's path
+  // is held, and the second instance would refuse to start (plan/173).
   const id = randomUUID().slice(0, 8);
   return usesNamedPipe()
     ? ipcAddress(`supervisor-test-${id}`, "(pipe)")
-    : join(testHome, "supervisor.sock");
+    : join(testHome, `supervisor-${id}.sock`);
 }
 
 beforeEach(async () => {

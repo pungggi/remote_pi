@@ -5,7 +5,7 @@
  * mocked so the policy is exercised as a pure containment function.
  */
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
@@ -31,14 +31,21 @@ describe("remoteCwdAllowed (security fix 2026-08)", () => {
     worktrees = [];
   });
 
+  // `remoteCwdAllowed` resolves the TARGET with realpath, so the target has
+  // to exist — real temp dirs, not `${HOME}/source` (which happens to exist
+  // on some machines and made these two tests pass there only).
   test("allows the project root itself", () => {
-    roots = [`${HOME}${sep}source`];
-    expect(remoteCwdAllowed(`${HOME}${sep}source`)).toBe(true);
+    const root = mkdtempSync(join(tmpdir(), "root-"));
+    roots = [root];
+    expect(remoteCwdAllowed(root)).toBe(true);
   });
 
   test("allows any depth inside a root", () => {
-    roots = [`${HOME}${sep}source`];
-    expect(remoteCwdAllowed(`${HOME}${sep}source${sep}pi${sep}packages${sep}remote_pi`)).toBe(true);
+    const root = mkdtempSync(join(tmpdir(), "root-"));
+    const nested = join(root, "pi", "packages", "remote_pi");
+    mkdirSync(nested, { recursive: true });
+    roots = [root];
+    expect(remoteCwdAllowed(nested)).toBe(true);
   });
 
   test("rejects paths outside all roots", () => {

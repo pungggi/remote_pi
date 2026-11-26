@@ -337,7 +337,7 @@ function handleShowImage(
     bytes = readFileSync(absPath);
     size = s.size;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = fsErrorDetail(err);
     return showImageError(`cannot read ${rawPath}: ${msg}`, rawPath);
   }
 
@@ -557,6 +557,17 @@ function isValidUtf8(bytes: Buffer): boolean {
   return true;
 }
 
+/** Why a read or registration failed, without Node's own message: fs
+ *  errors embed the resolved absolute path (`stat '/home/…/doc.md'`), which
+ *  must never reach the model — failures echo the agent-supplied path only
+ *  (plan/114 and plan/126 reviews). The error CODE says the same thing. */
+function fsErrorDetail(err: unknown): string {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && code.length > 0) return code;
+  // Not a coded fs error: keep the message, drop anything quoted (a path).
+  return (err instanceof Error ? err.message : String(err)).replace(/'[^']*'|"[^"]*"/g, "'…'");
+}
+
 /** Build a `shown:false` tool_result for a failure. As with `show_image`, the
  *  `path` argument MUST be the agent-supplied `rawPath` (never the resolved
  *  `absPath`) so absolute filesystem paths never leak into model context. */
@@ -601,7 +612,7 @@ function handleShowFile(
     size = s.size;
     mtimeMs = s.mtimeMs;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = fsErrorDetail(err);
     return showFileError(`cannot read ${rawPath}: ${msg}`, rawPath);
   }
 
@@ -638,7 +649,7 @@ function handleShowFile(
     try {
       bytes = readFileSync(absPath);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = fsErrorDetail(err);
       return showFileError(`cannot read ${rawPath}: ${msg}`, rawPath);
     }
     if (!isValidUtf8(bytes)) {
@@ -671,7 +682,7 @@ function handleShowFile(
       mtimeMs,
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = fsErrorDetail(err);
     return showFileError(`could not register ${rawPath} for on-demand fetch: ${msg}`, rawPath);
   }
 

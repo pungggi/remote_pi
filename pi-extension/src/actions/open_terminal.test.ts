@@ -23,7 +23,10 @@ function finishWithClose(child: ReturnType<typeof fakeChild>, code = 0): void {
   close(code);
 }
 
-describe("openTerminalTab window visibility", () => {
+// The wt.exe path only exists on win32; everywhere else openTerminalTab
+// answers "unsupported" without spawning (the Termux branch is covered in
+// termux.test.ts), so these spawn-shape assertions cannot hold off Windows.
+describe.skipIf(process.platform !== "win32")("openTerminalTab window visibility", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // resolveShell() and resolveWt() both use `where`; a single fake hit is

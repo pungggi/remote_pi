@@ -178,6 +178,10 @@ describe("show_image tool (plan/114)", () => {
     // Echoes the agent-supplied path verbatim...
     expect(result.details?.path).toBe(rel);
     // ...and the resolved absolute form never reaches the model-visible result.
-    expect(JSON.stringify(result)).not.toContain(resolved);
+    // Raw strings, not JSON.stringify: backslash escaping inside JSON hid
+    // this leak on Windows; the Linux CI run caught it (PR #128).
+    expect(result.details?.error ?? "").not.toContain(resolved);
+    expect(result.content?.[0]?.text ?? "").not.toContain(resolved);
+    expect(result.details?.error as string).toContain("cannot read");
   });
 });
