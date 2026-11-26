@@ -371,11 +371,23 @@ describe("runPhoneSetup — where it stops", () => {
     // It stops here: the device-room wait and the pairing link are skipped.
     expect(noGuard.calls).not.toContain("sleep:2000");
     expect(noGuard.calls).not.toContain("pair:600000");
-    // Nothing to show (the guard never wrote to the log, or it cannot be
-    // read): said so, instead of a heading without content.
-    const mute = harness({ waitGuard: async () => null, guardLogTail: () => [] });
-    expect(await runPhoneSetup(BASE_OPTS, mute.deps)).toBe(1);
-    expect(strip(mute.lines).at(-1)).toBe("(guard.log has no lines to show: the guard never wrote to it, or it cannot be read)");
+    // Nothing to show: an empty log and an unreadable one are told apart,
+    // instead of a heading without content.
+    const empty = harness({ waitGuard: async () => null, guardLogTail: () => [] });
+    expect(await runPhoneSetup(BASE_OPTS, empty.deps)).toBe(1);
+    expect(strip(empty.lines).at(-1)).toBe("(guard.log is empty: the guard did not get as far as writing to it)");
+    const unreadable = harness({ waitGuard: async () => null, guardLogTail: () => null });
+    expect(await runPhoneSetup(BASE_OPTS, unreadable.deps)).toBe(1);
+    expect(strip(unreadable.lines).at(-1)).toMatch(/\(.*guard\.log does not exist or cannot be read\)$/);
+    // Twelve lines are asked for and shown, from the end of a longer log.
+    const longer = harness({
+      waitGuard: async () => null,
+      guardLogTail: (lines) => Array.from({ length: 20 }, (_, i) => `[ts] line ${i + 1}`).slice(-lines),
+    });
+    expect(await runPhoneSetup(BASE_OPTS, longer.deps)).toBe(1);
+    const shown = strip(longer.lines);
+    expect(shown.slice(-12)).toEqual(Array.from({ length: 12 }, (_, i) => `[ts] line ${i + 9}`));
+    expect(shown).not.toContain("[ts] line 8");
 
     const dark = harness({ runBootScript: () => true });
     dark.state.lastSeen = dark.state.now - 3_600_000; // yesterday's entry

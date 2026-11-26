@@ -1192,18 +1192,31 @@ export async function guardStart(
   return { ok: false, message: `guard did not take its lock — see ${logPath}` };
 }
 
-/** SIGTERM to the running guard and wait. While a restart sequence is in
- *  progress (marker file present) the wait is extended instead of escalating
- *  to SIGKILL: a half-done restart would leave no supervisor at all. */
+/** SIGTERM to the guard that holds the lock and wait. While a restart
+ *  sequence is in progress (marker file present) the wait is extended instead
+ *  of escalating to SIGKILL: a half-done restart would leave no supervisor at
+ *  all.
+ *
+ *  Only the LOCK HOLDER is signalled. A loop found by its command line alone
+ *  (the pid file missing or stale) is named and left alone: nothing proves
+ *  which loop the pid file meant, and `stop` must never guess (fourth review
+ *  on #130). */
+export interface GuardStopDeps {
+  /** The guard that holds the pid-file lock. */
+  runningPid: () => number | null;
+  signal: (pid: number, sig: NodeJS.Signals) => boolean;
+  isAlive: (pid: number) => boolean;
+  sleep: (ms: number) => Promise<void>;
+  restartInProgress: () => boolean;
+  /** Loops found by command line that hold no lock; named when there is no
+   *  lock holder. Absent: none are looked for. */
+  lockless?: () => number[];
+}
+
 export async function guardStop(
-  deps: {
-    runningPid: () => number | null;
-    signal: (pid: number, sig: NodeJS.Signals) => boolean;
-    isAlive: (pid: number) => boolean;
-    sleep: (ms: number) => Promise<void>;
-    restartInProgress: () => boolean;
-  } = {
-    runningPid: runningGuardPid,
+  deps: GuardStopDeps = {
+    runningPid: guardLockHolderPid,
+    lockless: () => findGuardPids(),
     signal: signalPid,
     isAlive: isPidAlive,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -1211,7 +1224,16 @@ export async function guardStop(
   },
 ): Promise<{ ok: boolean; message: string }> {
   const pid = deps.runningPid();
-  if (pid === null) return { ok: true, message: "guard is not running" };
+  if (pid === null) {
+    const stray = (deps.lockless ?? (() => []))();
+    if (stray.length === 0) return { ok: true, message: "guard is not running" };
+    return {
+      ok: false,
+      message:
+        "no guard holds the lock (the pid file is missing or stale); loop(s) found by command line: " +
+        `${[...stray].sort((a, b) => a - b).join(", ")} — nothing was stopped. Restore the pid file, or stop them by hand.`,
+    };
+  }
   if (!deps.signal(pid, "SIGTERM")) return { ok: true, message: "guard is not running" };
   let waitedMs = 0;
   while (deps.isAlive(pid) && waitedMs < DEFAULT_GUARD_CONFIG.stopGraceMs) {
@@ -1327,8 +1349,8 @@ export async function runGuardCli(
     }
     case "stop": {
       const r = await guardStop();
-      io.out(`[remote-pi] ${r.message}`);
-      return 0;
+      (r.ok ? io.out : io.err)(`[remote-pi] ${r.message}`);
+      return r.ok ? 0 : 1;
     }
     case "once": {
       const r = await guardOnce();

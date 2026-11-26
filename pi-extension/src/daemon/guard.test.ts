@@ -51,6 +51,7 @@ import {
 } from "./guard.js";
 import type { DaemonInfo } from "./control_protocol.js";
 import { ipcAddress } from "../session/ipc.js";
+import { findGuardPids } from "./proc.js";
 
 const SOCK = "/data/data/com.termux/files/home/.pi/piper/supervisor.sock";
 const MIN = 60_000;
@@ -524,6 +525,39 @@ describe("guardProcessAlive / acquireGuardLock", () => {
       expect(runningGuardPid(join(tmp, "piper", "gone.pid"), proc)).toBe(271828);
       // With a lock holder there is no choice to make.
       expect(runningGuardPid(pidFileWith("314159\n"), proc)).toBe(314159);
+    });
+
+    test("stop addresses the lock holder only: a stale pid file and two lock-less loops → nothing is signalled, the pids are named", async () => {
+      // Fourth review on #130: `stop` must never guess which loop the pid
+      // file meant. It takes the lock holder alone and reports the rest.
+      const { proc, put } = table();
+      put(271828, ["/bin/node", "/x/dist/index.js", "guard", "run"]);
+      put(314159, SHIM_GUARD);
+      const pidFile = pidFileWith("1\n"); // stale: pid 1 is no guard
+      const signalled: Array<[number, string]> = [];
+      const stopped = await guardStop({
+        runningPid: () => guardLockHolderPid(pidFile, proc),
+        lockless: () => findGuardPids(proc),
+        signal: (pid, sig) => {
+          signalled.push([pid, sig]);
+          return true;
+        },
+        isAlive: () => false,
+        sleep: async () => undefined,
+        restartInProgress: () => false,
+      });
+      expect(stopped).toEqual({
+        ok: false,
+        message:
+          "no guard holds the lock (the pid file is missing or stale); loop(s) found by command line: 271828, 314159 — " +
+          "nothing was stopped. Restore the pid file, or stop them by hand.",
+      });
+      expect(signalled).toEqual([]);
+      // `status` keeps the fallback: it only reports.
+      expect(runningGuardPid(pidFile, proc)).toBe(271828);
+      // Without any loop, the answer stays what it was.
+      expect(await guardStop({ runningPid: () => null, lockless: () => [], signal: () => true, isAlive: () => false, sleep: async () => undefined, restartInProgress: () => false }))
+        .toEqual({ ok: true, message: "guard is not running" });
     });
   });
 });

@@ -174,8 +174,9 @@ export interface PhoneSetupDeps {
   supervisorWasUp: () => Promise<boolean>;
   waitSupervisor: (timeoutMs: number) => Promise<DaemonInfo[] | null>;
   waitGuard: (timeoutMs: number) => Promise<number | null>;
-  /** Last lines of the guard log, for the failure message. */
-  guardLogTail: (lines: number) => string[];
+  /** Last lines of the guard log for the failure message; null when the log
+   *  cannot be read (told apart from "no lines" in the report). */
+  guardLogTail: (lines: number) => string[] | null;
   deviceRoomLastSeenAt: () => number | undefined;
   pair: (ttlMs: number) => Promise<{ ok: true; link: PairLink } | { ok: false; error: string }>;
   copyToClipboard: (text: string) => boolean;
@@ -279,9 +280,10 @@ export function defaultPhoneSetupDeps(opts: PhoneSetupOptions, log: (line: strin
     supervisorWasUp: async () => (await probeStatus()) !== null,
     guardLogTail: (lines) => {
       try {
-        return readFileSync(guardLogPath(), "utf8").trimEnd().split("\n").slice(-lines);
+        const text = readFileSync(guardLogPath(), "utf8").trimEnd();
+        return text.length === 0 ? [] : text.split("\n").slice(-lines);
       } catch {
-        return [];
+        return null;
       }
     },
     waitSupervisor: async (timeoutMs) => {
@@ -525,10 +527,12 @@ export async function runPhoneSetup(opts: PhoneSetupOptions, deps: PhoneSetupDep
         "supervisor when it is gone. Start it with: remote-pi guard start — last guard.log lines:",
     );
     const tail = deps.guardLogTail(12);
-    if (tail.length === 0) {
-      report.text("     (guard.log has no lines to show: the guard never wrote to it, or it cannot be read)");
+    if (tail === null) {
+      report.text(`     (${guardLogPath()} does not exist or cannot be read)`);
+    } else if (tail.length === 0) {
+      report.text("     (guard.log is empty: the guard did not get as far as writing to it)");
     }
-    for (const line of tail) report.text(`     ${line}`);
+    for (const line of tail ?? []) report.text(`     ${line}`);
     return 1;
   }
   report.line("ok", "guard", `running (pid ${guard}) — restarts the supervisor when it is gone`);
