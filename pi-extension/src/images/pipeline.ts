@@ -560,14 +560,17 @@ function isValidUtf8(bytes: Buffer): boolean {
 /** Why a read or registration failed, without Node's own message: fs
  *  errors embed the resolved absolute path (`stat '/home/…/doc.md'`), which
  *  must never reach the model — failures echo the agent-supplied path only
- *  (plan/114 and plan/126 reviews). The error CODE says the same thing. */
-function fsErrorDetail(err: unknown): string {
+ *  (plan/114 and plan/126 reviews). The error CODE says the same thing.
+ *  Exported for its own tests. */
+export function fsErrorDetail(err: unknown): string {
   const code = (err as { code?: unknown } | null)?.code;
   if (typeof code === "string" && code.length > 0) return code;
-  // Not a coded fs error: best effort — keep the message but drop quoted
-  // segments (Node quotes the paths it mentions). A path without quotes
-  // would pass here; the code branch above is the real guarantee for fs errors.
-  return (err instanceof Error ? err.message : String(err)).replace(/'[^']*'|"[^"]*"/g, "'…'");
+  // Not a coded fs error: keep the message, but redact quoted segments and
+  // anything that looks like an absolute path (POSIX or Windows). The code
+  // branch above is the guarantee for fs errors; this is the belt for the rest.
+  return (err instanceof Error ? err.message : String(err))
+    .replace(/'[^']*'|"[^"]*"/g, "'…'")
+    .replace(/(?<![\w.-])(?:[A-Za-z]:)?(?:\/|\\)[\w.-]+(?:[\\/][\w.-]+)+/g, "<path>");
 }
 
 /** Build a `shown:false` tool_result for a failure. As with `show_image`, the

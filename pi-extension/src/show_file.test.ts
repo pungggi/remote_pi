@@ -302,6 +302,7 @@ describe("show_file tool (plan/126)", () => {
     expect(result.details?.path).toBe(rel);
     // Raw strings, not JSON.stringify: backslash escaping inside JSON hid
     // this leak on Windows; the Linux CI run caught it (PR #128).
+    expect(JSON.stringify(result)).not.toContain(resolved);   // any other field too
     expect(result.details?.error ?? "").not.toContain(resolved);
     expect(result.content?.[0]?.text ?? "").not.toContain(resolved);
     expect(result.details?.error).toContain("cannot read");
