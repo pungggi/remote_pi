@@ -1731,12 +1731,42 @@ class ThinkingSet extends ClientMessage {
   };
 }
 
+/// Plan/173 — the agent a started terminal runs. Mirrors `AgentKind` in
+/// `pi-extension/src/protocol/types.ts`. `pi` is the default on every
+/// device; `agy` (the Antigravity CLI) only where the device's
+/// [DeviceInfoResult] lists it.
+enum AgentKind {
+  pi('pi'),
+  agy('agy');
+
+  final String wire;
+  const AgentKind(this.wire);
+
+  /// `null` for an unknown wire value (forward-compat: the app never sends
+  /// one, and reading an old extension's reply must not crash).
+  static AgentKind? fromWire(String? raw) {
+    for (final a in values) {
+      if (a.wire == raw) return a;
+    }
+    return null;
+  }
+}
+
 class ListModels extends ClientMessage {
   final String id;
-  ListModels({required this.id});
+
+  /// Plan/173 — which catalogue to list. Omitted/`pi` is Pi's registry (the
+  /// original behaviour); `agy` lists the Antigravity CLI's models of that
+  /// device.
+  final AgentKind? agent;
+  ListModels({required this.id, this.agent});
 
   @override
-  Map<String, dynamic> toJson() => {'type': 'list_models', 'id': id};
+  Map<String, dynamic> toJson() => {
+    'type': 'list_models',
+    'id': id,
+    if (agent != null) 'agent': agent!.wire,
+  };
 }
 
 /// Plan/107 — on-demand git status snapshot request. The pi-extension runs
@@ -1774,12 +1804,26 @@ class OpenTerminalRequest extends ClientMessage {
   final bool runPi;
   final String? worktreePath;
   final String? branch;
+
+  /// Plan/173 — the agent the new terminal runs. Omitted = Pi. `agy` starts
+  /// `remote-pi agy` instead, only together with [runPi] (a bare shell has
+  /// no agent).
+  final AgentKind? agent;
+
+  /// Plan/173 — optional start model for THIS session only (both or
+  /// neither). Pi gets `--model <provider>/<id>`; AGY uses [modelId] alone.
+  /// The session's saved default model is never changed.
+  final String? provider;
+  final String? modelId;
   OpenTerminalRequest({
     required this.id,
     this.cwd,
     this.runPi = true,
     this.worktreePath,
     this.branch,
+    this.agent,
+    this.provider,
+    this.modelId,
   });
 
   @override
@@ -1790,6 +1834,9 @@ class OpenTerminalRequest extends ClientMessage {
     'runPi': runPi,
     if (worktreePath != null) 'worktree_path': worktreePath,
     if (branch != null) 'branch': branch,
+    if (agent != null) 'agent': agent!.wire,
+    if (provider != null) 'provider': provider,
+    if (modelId != null) 'model_id': modelId,
   };
 }
 
@@ -1888,7 +1935,20 @@ class StartSessionRequest extends ClientMessage {
   final String id;
   final String cwd;
   final String? name;
-  StartSessionRequest({required this.id, required this.cwd, this.name});
+
+  /// Plan/173 — the agent to start and its optional one-session model, with
+  /// the same meaning as on [OpenTerminalRequest].
+  final AgentKind? agent;
+  final String? provider;
+  final String? modelId;
+  StartSessionRequest({
+    required this.id,
+    required this.cwd,
+    this.name,
+    this.agent,
+    this.provider,
+    this.modelId,
+  });
 
   @override
   Map<String, dynamic> toJson() => {
@@ -1896,7 +1956,23 @@ class StartSessionRequest extends ClientMessage {
     'id': id,
     'cwd': cwd,
     if (name != null && name!.isNotEmpty) 'name': name,
+    if (agent != null) 'agent': agent!.wire,
+    if (provider != null) 'provider': provider,
+    if (modelId != null) 'model_id': modelId,
   };
+}
+
+/// Plan/173 — ask a paired device what it is and which agents it can start
+/// (host class, terminal kind, agents, extension version). Routed to the
+/// device daemon (room [kDeviceRoom]) like [ListProjectsRequest], so it works
+/// with no live Pi. The reply is [DeviceInfoResult]. Nothing is stored at
+/// pairing time: the app re-reads it whenever it needs the device picker.
+class DeviceInfoRequest extends ClientMessage {
+  final String id;
+  DeviceInfoRequest({required this.id});
+
+  @override
+  Map<String, dynamic> toJson() => {'type': 'device_info_request', 'id': id};
 }
 
 /// Plan/149 — store (or clear, [ghRef] null) the GitHub ref linked to a
@@ -2038,6 +2114,8 @@ sealed class ServerMessage {
       'change_layout_result' => ChangeLayoutResult.fromJson(json),
       // Plan/124 — reply to StartSessionRequest (revive offline session).
       'start_session_result' => StartSessionResult.fromJson(json),
+      // Plan/173 — the paired device describes itself (host, agents, version).
+      'device_info_result' => DeviceInfoResult.fromJson(json),
       // Plan/149 — reply to SetSessionRefRequest.
       'set_session_ref_result' => SetSessionRefResult.fromJson(json),
       // Plan/100 — interactive extension prompt (ask_user via pi-ask). Mirrors
@@ -2991,7 +3069,16 @@ class ModelsList extends ServerMessage {
   /// resolved). `null` is honest absence — the UI should fall back to
   /// the cached `model_select` event from the rooms layer.
   final WireModel? current;
-  ModelsList({required this.inReplyTo, required this.models, this.current});
+
+  /// Plan/173 — present when the request asked for a catalogue other than
+  /// Pi's (`agy`). Null = Pi's registry, the original shape.
+  final AgentKind? agent;
+  ModelsList({
+    required this.inReplyTo,
+    required this.models,
+    this.current,
+    this.agent,
+  });
 
   factory ModelsList.fromJson(Map<String, dynamic> j) {
     final list = (j['models'] as List<dynamic>? ?? const <dynamic>[])
@@ -3002,6 +3089,7 @@ class ModelsList extends ServerMessage {
       inReplyTo: j['in_reply_to'] as String,
       models: list,
       current: cur is Map<String, dynamic> ? WireModel.fromJson(cur) : null,
+      agent: AgentKind.fromWire(j['agent'] as String?),
     );
   }
 }
@@ -3593,6 +3681,122 @@ class StartSessionResult extends ServerMessage {
         roomId: j['room_id'] as String?,
         message: (j['message'] as String?) ?? '',
       );
+}
+
+/// Plan/173 — coarse host class of a paired device. Mirrors `DevicePlatform`
+/// in `pi-extension/src/protocol/types.ts`. The "Open in Termux" action is
+/// offered for [android] only, for one.
+enum DevicePlatform {
+  windows('windows'),
+  android('android'),
+  macos('macos'),
+  linux('linux'),
+  other('other');
+
+  final String wire;
+  const DevicePlatform(this.wire);
+
+  /// Unknown wire values read as [other]: a newer extension's platform must
+  /// not crash an older app, and "nothing special" is the safe reading.
+  static DevicePlatform fromWire(String? raw) {
+    for (final p in values) {
+      if (p.wire == raw) return p;
+    }
+    return DevicePlatform.other;
+  }
+}
+
+/// Plan/173 — how a started terminal appears on the device. Mirrors the
+/// `terminal` field of `WireDeviceHost`: `wt` (Windows Terminal tab),
+/// `window` (console-window fallback), `tmux` (detached tmux session on a
+/// Termux host), `none` (no launcher there).
+enum DeviceTerminal {
+  wt('wt'),
+  window('window'),
+  tmux('tmux'),
+  none('none');
+
+  final String wire;
+  const DeviceTerminal(this.wire);
+
+  static DeviceTerminal fromWire(String? raw) {
+    for (final t in values) {
+      if (t.wire == raw) return t;
+    }
+    return DeviceTerminal.none;
+  }
+}
+
+/// Plan/173 — the device half of [DeviceInfoResult]: machine name, host
+/// class and terminal kind.
+class WireDeviceHost {
+  final DevicePlatform platform;
+
+  /// Machine name (OS hostname).
+  final String label;
+
+  /// How a started terminal appears on this device.
+  final DeviceTerminal terminal;
+  const WireDeviceHost({
+    required this.platform,
+    required this.label,
+    required this.terminal,
+  });
+
+  factory WireDeviceHost.fromJson(Map<String, dynamic> j) => WireDeviceHost(
+    platform: DevicePlatform.fromWire(j['platform'] as String?),
+    label: (j['label'] as String?) ?? '',
+    terminal: DeviceTerminal.fromWire(j['terminal'] as String?),
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      other is WireDeviceHost &&
+      other.platform == platform &&
+      other.label == label &&
+      other.terminal == terminal;
+
+  @override
+  int get hashCode => Object.hash(platform, label, terminal);
+}
+
+/// Plan/173 — reply to [DeviceInfoRequest]. [ok] is false only when the
+/// device could not describe itself; then [agents] is empty, [host] is null
+/// and [message] says why.
+class DeviceInfoResult extends ServerMessage {
+  final String inReplyTo;
+  final bool ok;
+  final WireDeviceHost? host;
+
+  /// Agents this device can start. Always contains `pi` when [ok] is true.
+  final List<AgentKind> agents;
+
+  /// The pi-extension version running on the device.
+  final String version;
+  final String? message;
+  DeviceInfoResult({
+    required this.inReplyTo,
+    required this.ok,
+    this.host,
+    required this.agents,
+    required this.version,
+    this.message,
+  });
+
+  factory DeviceInfoResult.fromJson(Map<String, dynamic> j) {
+    final host = j['host'];
+    return DeviceInfoResult(
+      inReplyTo: j['in_reply_to'] as String,
+      ok: j['ok'] as bool? ?? false,
+      host: host is Map<String, dynamic> ? WireDeviceHost.fromJson(host) : null,
+      agents: (j['agents'] as List<dynamic>? ?? const <dynamic>[])
+          .map((e) => AgentKind.fromWire(e as String?))
+          .whereType<AgentKind>()
+          .toList(),
+      version: (j['version'] as String?) ?? '',
+      message: j['message'] as String?,
+    );
+  }
 }
 
 /// Plan/149 — reply to [SetSessionRefRequest]. `ok:false` carries a

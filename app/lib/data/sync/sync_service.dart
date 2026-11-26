@@ -1858,6 +1858,9 @@ class SyncService extends Service {
       // Plan/124 — start-session (revive) reply is owned by ActionsRepository
       // (Home session menu), not the message sync.
       case StartSessionResult():
+      // Plan/173 — device_info replies are owned by ActionsRepository
+      // (start sheet: device and agent pickers), not the message sync.
+      case DeviceInfoResult():
       // Plan/149 — set-session-ref replies are owned by ActionsRepository,
       // not the message sync.
       case SetSessionRefResult():

@@ -10,6 +10,30 @@ export type PairErrorCode =
  *  one ends. Omitted entirely on idle sends (a normal fresh turn). */
 export type StreamingBehavior = "steer" | "followUp";
 
+// ── Plan/173 — which agent a started terminal runs ──────────────────────────
+
+/** Plan/173 — the agent a started terminal runs. `pi` is the default on
+ *  every device; `agy` (the Antigravity CLI) only where `device_info_result`
+ *  lists it. An unknown value is an error on the extension side, never a
+ *  silent fallback to Pi: the user asked for AGY, and starting Pi instead
+ *  would look like success. */
+export type AgentKind = "pi" | "agy";
+
+/** Plan/173 — coarse host class of a paired device, for the places the app
+ *  branches on it (the "Open in Termux" action is Android-only, for one). */
+export type DevicePlatform = "windows" | "android" | "macos" | "linux" | "other";
+
+/** Plan/173 — how the device describes itself in `device_info_result`. */
+export interface WireDeviceHost {
+  platform: DevicePlatform;
+  /** Machine name (OS hostname). */
+  label: string;
+  /** How a started terminal appears on this device: `wt` (Windows Terminal
+   *  tab), `window` (console-window fallback), `tmux` (a detached tmux
+   *  session on a Termux host) or `none` (no launcher here). */
+  terminal: "wt" | "window" | "tmux" | "none";
+}
+
 export type QueuedMessageItem = {
   id: string;
   text: string;
@@ -221,7 +245,10 @@ export type ClientMessage =
   | { type: "session_compact"; id: string }
   | { type: "model_set"; id: string; provider: string; model_id: string }
   | { type: "thinking_set"; id: string; level: ThinkingLevel }
-  | { type: "list_models"; id: string }
+  // Plan/173 — `agent` selects the catalogue: absent/`pi` is Pi's registry
+  // (unchanged behaviour); `agy` lists the Antigravity CLI's models of that
+  // device. The reply echoes it as `models_list.agent`.
+  | { type: "list_models"; id: string; agent?: AgentKind }
   // Plan/107 — on-demand git status snapshot for the session-info dialog.
   // The Pi runs `git status --porcelain=2 --branch` in the session cwd and
   // replies with `git_status_result` (status null when not a git repo).
@@ -242,6 +269,16 @@ export type ClientMessage =
        *  `git check-ref-format`; also drives the worktree folder name
        *  (`<basename>_<sanitized>`). Falls back to `work/<stamp>` when null. */
       branch?: string | null;
+      /** Plan/173 — the agent the new terminal runs (default `pi`). `agy`
+       *  starts `remote-pi agy` instead; only honored together with `runPi`
+       *  (a bare shell has no agent). */
+      agent?: AgentKind;
+      /** Plan/173 — optional start model for THIS session only (both or
+       *  neither). Pi gets `--model <provider>/<id>`; AGY uses `model_id`
+       *  alone, because it has no provider half. The session's saved default
+       *  model is never changed. */
+      provider?: string | null;
+      model_id?: string | null;
     }
   // Plan/112 — worktree tracking: list tracked worktrees (optionally
   // filtered by base repo path) and remove one by id.
@@ -285,7 +322,20 @@ export type ClientMessage =
   // terminal with `pi --continue` instead of hidden RPC. Both re-announce the
   // same room. `name` scopes custom-named sessions (omit/default → legacy
   // cwd-only room). The request shape is unchanged by plan/152.
-  | { type: "start_session_request"; id: string; cwd: string; name?: string | null }
+  | {
+      type: "start_session_request";
+      id: string;
+      cwd: string;
+      name?: string | null;
+      /** Plan/173 — the agent to start and its optional one-session model,
+       *  with the same meaning as on `open_terminal_request`. */
+      agent?: AgentKind;
+      provider?: string | null;
+      model_id?: string | null;
+    }
+  // Plan/173 — ask the paired device what it is and which agents it can
+  // start (served by the device daemon, so it works with no live pi).
+  | { type: "device_info_request"; id: string }
   // Plan/149 — store (or clear, gh_ref null) the GitHub ref for a session
   // room. Served by BOTH the live session extension (when room_id is its own
   // room: updates room_meta + registry) and the device daemon (any other
@@ -640,7 +690,29 @@ export type ServerMessage =
   // highlight the selected row without a second round-trip.
   | { type: "action_ok"; in_reply_to: string; action: ActionName; result?: DaemonControlResult }
   | { type: "action_error"; in_reply_to: string; action: ActionName; error: string }
-  | { type: "models_list"; in_reply_to: string; models: WireModel[]; current?: WireModel }
+  // Plan/173 — `agent` is present when the request asked for a catalogue
+  // other than Pi's (absent = Pi's registry, the original shape).
+  | {
+      type: "models_list";
+      in_reply_to: string;
+      models: WireModel[];
+      current?: WireModel;
+      agent?: AgentKind;
+    }
+  // Plan/173 — reply to `device_info_request`. `ok` is false only when the
+  // device could not describe itself; then `agents` is empty, `host` is
+  // absent and `message` says why. Nothing is stored at pairing time, so the
+  // app re-reads this whenever it needs the device picker.
+  | {
+      type: "device_info_result";
+      in_reply_to: string;
+      ok: boolean;
+      host?: WireDeviceHost;
+      agents: AgentKind[];
+      /** The pi-extension version running on the device. */
+      version: string;
+      message?: string;
+    }
   // Plan/107 — Reply to `git_status_request`. `status` is null when the cwd
   // isn't a git repo or git is unavailable.
   | { type: "git_status_result"; in_reply_to: string; status: WireGitStatus | null }
@@ -876,6 +948,10 @@ export interface RpControlRequest {
     title?: string;
     /** ask_notice only: number of questions in the flow. */
     question_count?: number;
+    /** Plan/173 — `list_models`: which catalogue (`agy` = the Antigravity CLI
+     *  on the target). `spawn_worktree`: which agent to start in the new
+     *  worktree (`agy` cannot be combined with `headless`). Absent = Pi. */
+    agent?: AgentKind;
   };
 }
 

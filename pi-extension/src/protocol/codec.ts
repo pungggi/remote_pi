@@ -44,6 +44,8 @@ const SERVER_TYPES = new Set<ServerMessage["type"]>([
   "sync_needed",
   // Plan/157 — reset-card redemption reply (app confirm button).
   "plan_reset_card_result",
+  // Plan/173 — the paired device describes itself (host, startable agents).
+  "device_info_result",
 ]);
 
 export class DecodeError extends Error {
