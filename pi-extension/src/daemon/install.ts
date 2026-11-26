@@ -321,6 +321,10 @@ export interface ServiceDeps {
   home?: string;
   /** Android: clock for the backup file name (default: real time). */
   now?: () => number;
+  /** Android: replace a boot script that remote-pi did NOT write. Without
+   *  it install refuses and leaves the file alone; `remote-pi phone-setup`
+   *  passes it only after the user saw the diff and agreed. */
+  force?: boolean;
   /** Android uninstall: pid sources + signal sender, injectable so a test
    *  never signals a real process. */
   findGuards?: () => number[];
@@ -392,13 +396,20 @@ export function installService(vars: RenderVars = defaultRenderVars(), deps: Ser
     // other platforms keep writing the template exactly as checked out).
     // 0755 because Termux:Boot executes only scripts with the executable bit.
     const script = toLf(rendered);
-    // Never clobber what someone else wrote at this path. An interim boot
-    // script (the phone had one before this release existed) is kept as a
-    // dated copy next to itself and its diff against ours goes into the log;
-    // `remote-pi phone-setup` shows that diff and asks before we get here.
+    // Never clobber what someone else wrote at this path. A script that is
+    // not ours is left alone unless `force` is set: `remote-pi phone-setup`
+    // shows the diff and asks first. What does get replaced — a foreign
+    // script under `force`, or our own older version — is kept as a dated
+    // copy next to itself and its diff against ours goes into the log.
     if (existsSync(unitPath)) {
       const existing = readFileSync(unitPath, "utf8");
       if (existing !== script) {
+        if (!isGeneratedBootScript(existing) && !deps.force) {
+          throw new Error(
+            `${unitPath} was not written by remote-pi, so it is left alone. ` +
+            "Run `remote-pi phone-setup` (it shows the diff and asks before replacing it).",
+          );
+        }
         backup = `${unitPath}.bak-${fileStamp((deps.now ?? Date.now)())}`;
         copyFileSync(unitPath, backup);
         diff = renderLineDiff(lineDiff(existing, script));

@@ -29,6 +29,7 @@ import { createInterface } from "node:readline";
 import { isWebSocketScheme, isValidRelayUrl, resolveRelayUrl, saveConfig } from "../config.js";
 import { resolvePiSpawn } from "../daemon/rpc_child.js";
 import {
+  defaultRenderVars,
   installService,
   isGeneratedBootScript,
   lineDiff,
@@ -152,7 +153,7 @@ export interface PhoneSetupDeps {
   setRelay: (url: string) => void;
   fetchText: (url: string, timeoutMs: number) => Promise<string | null>;
   readSettingsPackages: () => string[] | null;
-  install: () => { ok: true; unitPath: string; log: string[]; backup?: string; diff?: string[] } | { ok: false; error: string };
+  install: (opts: { force: boolean }) => { ok: true; unitPath: string; log: string[]; backup?: string; diff?: string[] } | { ok: false; error: string };
   /** The boot script currently on disk, or null. */
   existingBootScript: () => string | null;
   /** The boot script this version would write (for the diff). */
@@ -244,9 +245,11 @@ export function defaultPhoneSetupDeps(opts: PhoneSetupOptions, log: (line: strin
       }
     },
     readSettingsPackages: readPackagesFromSettings,
-    install: () => {
+    install: (opts) => {
       try {
-        const result = installService();
+        // `force` only after the user agreed to replace a script remote-pi
+        // did not write; installService refuses such a file without it.
+        const result = installService(defaultRenderVars(), { force: opts.force });
         return { ok: true, unitPath: result.unitPath, log: result.log, backup: result.backup, diff: result.diff };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -426,6 +429,9 @@ export async function runPhoneSetup(opts: PhoneSetupOptions, deps: PhoneSetupDep
   // screen, a dated copy on disk, and a question unless --yes answered it.
   const existingScript = deps.existingBootScript();
   const renderedScript = deps.renderedBootScript();
+  // `force` lets install replace a script remote-pi did not write — only
+  // after the user saw the diff and agreed.
+  let force = false;
   if (existingScript !== null && existingScript !== renderedScript) {
     report.text("");
     report.text("  An existing boot script differs from the one this version writes (- old, + new):");
@@ -440,6 +446,7 @@ export async function runPhoneSetup(opts: PhoneSetupOptions, deps: PhoneSetupDep
         report.line("fail", "boot script", `kept ${deps.bootScriptPath}; nothing was changed. Remove or rename it yourself, then run this again`);
         return 1;
       }
+      force = true;
     }
     report.text("  The existing script is kept as start-piper.sh.bak-<timestamp>.");
     report.text("");
@@ -453,7 +460,7 @@ export async function runPhoneSetup(opts: PhoneSetupOptions, deps: PhoneSetupDep
   const startedAt = deps.now();
   const interimWasPresent = deps.interimGuardPresent();
 
-  const installed = deps.install();
+  const installed = deps.install({ force });
   if (!installed.ok) {
     report.line("fail", "boot script", `remote-pi install failed: ${installed.error}`);
     return 1;

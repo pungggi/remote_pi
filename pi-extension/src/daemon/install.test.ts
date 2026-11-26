@@ -602,7 +602,15 @@ describe("installService / uninstallService (android)", () => {
     writeFileSync(script(), interim);
 
     const at = new Date(2026, 10, 26, 14, 30, 15).getTime();
-    const result = installService(vars, { platform: "android", home: tmpHome, now: () => at });
+    // Without `force` a script remote-pi did not write is left alone: no
+    // write, no copy, a clear error (the docs promise "never clobbered").
+    expect(() => installService(vars, { platform: "android", home: tmpHome, now: () => at })).toThrow(
+      new RegExp(`${script().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} was not written by remote-pi, so it is left alone`),
+    );
+    expect(readFileSync(script(), "utf8")).toBe(interim);
+    expect(existsSync(`${script()}.bak-20261126-143015`)).toBe(false);
+
+    const result = installService(vars, { platform: "android", home: tmpHome, now: () => at, force: true });
 
     const backup = `${script()}.bak-20261126-143015`;
     expect(result.backup).toBe(backup);
