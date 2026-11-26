@@ -152,6 +152,15 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Fixed
 
+- **pi-extension: service units are always LF, templates and shell scripts
+  stay LF in every checkout** (found while packing 0.10.0). A tarball packed
+  on a Windows checkout shipped CRLF service templates, and `remote-pi
+  install` wrote the rendered systemd unit and launchd plist without
+  normalising them: on Linux `ExecStart` ended in `\r` and the service
+  failed. systemd, launchd and Termux units are now written LF whatever the
+  template's line endings; `.gitattributes` pins the POSIX templates and
+  every `*.sh` to LF in the working tree, and the template test no longer
+  depends on `core.autocrlf`.
 - **`remote-pi daemon status` exits 1 when the supervisor does not answer**
   (plan/173). It printed `[remote-pi] status failed: Error: supervisor
   reply timeout` and still exited 0, so an exit-code-based health probe read
