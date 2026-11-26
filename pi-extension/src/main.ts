@@ -147,7 +147,7 @@ import { addDaemon, listDaemons, removeDaemon } from "./daemon/registry.js";
 import { callSupervisor, supervisorOnline, SupervisorOfflineError } from "./daemon/client.js";
 import type { ControlRequest, DaemonInfo } from "./daemon/control_protocol.js";
 import { EXIT_DAEMON_FRESH_SESSION } from "./daemon/rpc_child.js";
-import { installService, uninstallService, linkCliBinaries, unlinkCliBinaries, LAUNCHD_LABEL, SYSTEMD_UNIT, WINDOWS_TASK_NAME } from "./daemon/install.js";
+import { installService, uninstallService, linkCliBinaries, unlinkCliBinaries } from "./daemon/install.js";
 import {
   defaultAgentName,
   effectiveAutoStartRelay,
@@ -6845,56 +6845,16 @@ export function _mapAgentMessagesToEvents(
  * (not the daemons). The supervisor is a long-running Node process with no
  * hot-reload, so after a `dist` rebuild the old code keeps running until the
  * process is restarted. The Cockpit "Restart supervisor" button shells out to
- * this; the OS-specific restart lives here so the app stays cross-platform.
+ * this; the OS-specific restart lives in `daemon/restart.ts` so the app stays
+ * cross-platform.
  *
- * Restarting the supervisor re-spawns every daemon as a side effect. Exits 0
- * on success, non-zero on failure (the Cockpit detects failure by exit code).
+ * Restarting the supervisor re-spawns every daemon as a side effect. Since
+ * PR #126 the restart is VERIFIED (pid before and after) and falls back to
+ * stopping an instance the service does not own; exits 0 only when a new
+ * supervisor answered (the Cockpit detects failure by exit code).
  */
-/** One step of a restart sequence. `ignoreFailure` steps (e.g. `schtasks /End`
- *  when the task isn't running) don't abort the sequence. */
-export interface RestartStep { cmd: string; args: string[]; ignoreFailure?: boolean }
-
-/** Pure: the OS command sequence that restarts the supervisor service, or null
- *  when the platform isn't supported. Most platforms are 1 step; Windows is 2
- *  (`schtasks /End` then `/Run`). Exported for tests. */
-export function _restartSupervisorCommand(
-  platform: NodeJS.Platform,
-  uid: number,
-): RestartStep[] | null {
-  if (platform === "darwin") return [{ cmd: "launchctl", args: ["kickstart", "-k", `gui/${uid}/${LAUNCHD_LABEL}`] }];
-  if (platform === "linux") return [{ cmd: "systemctl", args: ["--user", "restart", SYSTEMD_UNIT] }];
-  if (platform === "win32") return [
-    { cmd: "schtasks", args: ["/End", "/TN", WINDOWS_TASK_NAME], ignoreFailure: true },
-    { cmd: "schtasks", args: ["/Run", "/TN", WINDOWS_TASK_NAME] },
-  ];
-  return null;
-}
-
-function _restartSupervisor(): void {
-  const uid = process.getuid?.() ?? 0;
-  const steps = _restartSupervisorCommand(process.platform, uid);
-  if (!steps) {
-    console.error(
-      `[remote-pi] restart-supervisor is not supported on '${process.platform}' yet. ` +
-      "Restart pi-supervisord manually.",
-    );
-    process.exit(1);
-  }
-  for (const step of steps) {
-    const r = spawnSync(step.cmd, step.args, { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" });
-    if (r.error) {
-      if (step.ignoreFailure) continue;
-      console.error(`[remote-pi] restart-supervisor failed: ${step.cmd} not runnable (${r.error.message}). Is the service installed? Run \`remote-pi install\`.`);
-      process.exit(1);
-    }
-    if (r.status !== 0 && !step.ignoreFailure) {
-      const detail = (r.stderr || r.stdout || "").trim();
-      console.error(`[remote-pi] restart-supervisor failed (${step.cmd} exited ${r.status})${detail ? `: ${detail}` : ""}.`);
-      process.exit(r.status === null ? 1 : r.status);
-    }
-  }
-  console.log("[remote-pi] Supervisor restarted.");
-}
+export { restartSupervisorCommand as _restartSupervisorCommand } from "./daemon/restart.js";
+export type { RestartStep } from "./daemon/restart.js";
 
 function _isDirectRun(): boolean {
   try {
@@ -7124,7 +7084,15 @@ export async function runCli(argv: string[]): Promise<void> {
     // that left an orphaned `~/.local/bin/remote-pi` behind.
     cmdUninstall(stubCtx, { linkCli: true });
   } else if (subcmd === "restart-supervisor") {
-    _restartSupervisor();
+    // PR #126 (F4) — the restart is verified: the supervisor's pid is read
+    // before and after, a service that does not own the running instance is
+    // not reported as success, and the exit code says what really happened.
+    const { restartSupervisor, defaultRestartDeps } = await import("./daemon/restart.js");
+    const result = await restartSupervisor(defaultRestartDeps());
+    if (!result.ok) {
+      console.error(`[remote-pi] ${result.message}`);
+      process.exitCode = 1;
+    }
   } else {
     console.log([
       "Usage: remote-pi <command>",
