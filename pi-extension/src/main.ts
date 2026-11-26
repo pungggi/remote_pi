@@ -7082,6 +7082,12 @@ export async function runCli(argv: string[]): Promise<void> {
     await _cmdClaudeCli(cliArgs);
   } else if (subcmd === "agy") {
     await _cmdAgyCli(cliArgs);
+  } else if (subcmd === "guard") {
+    // Plan/173 — normally intercepted by the thin entry BEFORE this runtime
+    // loads (the guard must not depend on it); kept here so `runCli` stays
+    // the complete CLI surface for callers that already hold the runtime.
+    const { runGuardCli } = await import("./daemon/guard.js");
+    process.exitCode = await runGuardCli(argv);
   } else if (subcmd === "install") {
     // CLI mode = user installed via `npm install -g remote-pi`, so the
     // `remote-pi` / `pi-supervisord` bins are already on $PATH via npm's
@@ -7126,6 +7132,8 @@ export async function runCli(argv: string[]): Promise<void> {
       "  install                         Install pi-supervisord as a system service",
       "  uninstall                       Remove the system service",
       "  restart-supervisor              Restart the pi-supervisord process",
+      "  guard run|start|status|stop|once  Keep the supervisor alive on Termux (Android)",
+      "  phone-setup                     Android/Termux: checks, install, start, pairing link",
       "",
       "Devices:",
       "  devices                         List paired phones (peers.json)",

@@ -875,6 +875,23 @@ export default extension;
 // pi-loaded extension — so loading the heavy runtime costs nothing here, and
 // `void` (not top-level await) keeps the module await-free for jiti-loaded
 // hosts. Node keeps the process alive until runCli's work settles.
+//
+// Plan/173 — `guard` is the one exception: it is the process that must repair
+// everything else on a phone host, so it runs on a path that loads neither the
+// runtime nor the SDK (a broken update elsewhere must not take the guard down
+// with it), and it stays small for a process that lives for weeks.
 if (_isDirectRun()) {
-  void import("./main.js").then((m) => { mainLoaded = m; return m.runCli(process.argv); });
+  if (process.argv[2] === "guard") {
+    void import("./daemon/guard.js")
+      .then((g) => g.runGuardCli(process.argv))
+      .then(
+        (code) => { process.exitCode = code; },
+        (err) => {
+          console.error(`[remote-pi] guard failed to load: ${String(err)}`);
+          process.exitCode = 1;
+        },
+      );
+  } else {
+    void import("./main.js").then((m) => { mainLoaded = m; return m.runCli(process.argv); });
+  }
 }
