@@ -7082,6 +7082,18 @@ export async function runCli(argv: string[]): Promise<void> {
     await _cmdClaudeCli(cliArgs);
   } else if (subcmd === "agy") {
     await _cmdAgyCli(cliArgs);
+  } else if (subcmd === "phone-setup") {
+    // Plan/173 — Android/Termux host in one command: checks, install, start,
+    // pairing link. Exit code tells scripts whether the phone is ready.
+    const { parsePhoneSetupArgs, runPhoneSetup, defaultPhoneSetupDeps } = await import("./commands/phone_setup.js");
+    const parsed = parsePhoneSetupArgs(cliArgs);
+    if (parsed.error) {
+      console.log(`[remote-pi] ${parsed.error}`);
+      console.log("Usage: remote-pi phone-setup [--relay <http://pc-ip:3000>] [--ttl <seconds>] [--yes]");
+      process.exitCode = 1;
+    } else {
+      process.exitCode = await runPhoneSetup(parsed.options, defaultPhoneSetupDeps(parsed.options, (l) => console.log(l)));
+    }
   } else if (subcmd === "guard") {
     // Plan/173 — normally intercepted by the thin entry BEFORE this runtime
     // loads (the guard must not depend on it); kept here so `runCli` stays
