@@ -68,6 +68,19 @@ export function launcherKind(
   return platform === "win32" ? "windows" : "none";
 }
 
+/**
+ * The tmux session name when a caller gives none: the room the Pi started in
+ * `cwd` will announce. A custom `agent_name` in the folder's FILE config makes
+ * the room name-scoped, exactly as `roomIdFor` does for the session itself.
+ * File config only — this also runs inside the device daemon, whose inline
+ * config (room `device`) is not the folder's. One fallback for every caller,
+ * so a session started from "Start session" and one started from "Open
+ * terminal" in the same folder end up in the same tmux session.
+ */
+export function defaultTermuxSessionName(cwd: string): string {
+  return roomIdFor(cwd, loadLocalConfigFile(cwd).agent_name);
+}
+
 /** Quote a token for a cmd.exe double-quoted context (paths have no "). */
 function cmdQuote(s: string): string {
   return `"${String(s)}"`;
@@ -382,7 +395,7 @@ export function openTerminalTab(
 ): Promise<OpenTerminalOutcome> {
   if (launcherKind(isTermux(), process.platform) === "termux") {
     return startTermuxSession({
-      session: options.sessionName ?? roomIdFor(cwd),
+      session: options.sessionName ?? defaultTermuxSessionName(cwd),
       cwd,
       command,
     }).catch((e: unknown): OpenTerminalOutcome => ({
@@ -624,14 +637,10 @@ export async function handleOpenTerminal(
   }
 
   const runPi = msg.runPi !== false; // default true (matches /ps clone)
-  // Plan/173 — Termux names the tmux session after the room the worktree's
-  // Pi will announce. Read the worktree's FILE config only: this handler also
-  // runs inside the device daemon, whose inline config (room `device`) is
-  // not the worktree's. Other platforms ignore the name.
-  const termuxOptions = isTermux()
-    ? { sessionName: roomIdFor(worktreePath, loadLocalConfigFile(worktreePath).agent_name) }
-    : {};
-  const outcome = await openTerminalTab(worktreePath, runPi ? "pi" : undefined, termuxOptions);
+  // Plan/173 — on Termux the tmux session is named after the room the
+  // worktree's Pi will announce (see `defaultTermuxSessionName`). Other
+  // platforms ignore the name.
+  const outcome = await openTerminalTab(worktreePath, runPi ? "pi" : undefined);
 
   sender.send({
     type: "open_terminal_result",

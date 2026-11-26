@@ -6,6 +6,9 @@
  */
 import { EventEmitter } from "node:events";
 import { describe, expect, test } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import {
   envWithoutDaemonIdentity,
@@ -15,7 +18,8 @@ import {
   tmuxNewSessionArgs,
   tmuxSessionNameOk,
 } from "./termux.js";
-import { launcherKind } from "./open_terminal.js";
+import { defaultTermuxSessionName, launcherKind } from "./open_terminal.js";
+import { roomIdFor } from "../rooms.js";
 
 /** Minimal child double: stderr pipe + error/close events, like spawn's. */
 function fakeChild() {
@@ -170,5 +174,46 @@ describe("launcherKind (openTerminalTab dispatch)", () => {
     expect(launcherKind(false, "win32")).toBe("windows");
     expect(launcherKind(false, "linux")).toBe("none");
     expect(launcherKind(false, "darwin")).toBe("none");
+  });
+});
+
+describe("defaultTermuxSessionName (plan/173 review: one fallback for every caller)", () => {
+  let dir: string;
+
+  const withInlineDaemonConfig = (run: () => void): void => {
+    const previous = process.env["REMOTE_PI_DIRECT_CONFIG"];
+    process.env["REMOTE_PI_DIRECT_CONFIG"] = JSON.stringify({ agent_name: "device", room_id: "device" });
+    try {
+      run();
+    } finally {
+      if (previous === undefined) delete process.env["REMOTE_PI_DIRECT_CONFIG"];
+      else process.env["REMOTE_PI_DIRECT_CONFIG"] = previous;
+    }
+  };
+
+  test("no config → the folder's legacy room; a custom agent_name → the name-scoped room", () => {
+    dir = mkdtempSync(join(tmpdir(), "pi-termux-name-"));
+    try {
+      expect(defaultTermuxSessionName(dir)).toBe(roomIdFor(dir));
+      mkdirSync(join(dir, ".pi", "remote-pi"), { recursive: true });
+      writeFileSync(join(dir, ".pi", "remote-pi", "config.json"), JSON.stringify({ agent_name: "worker", auto_start_relay: true }));
+      expect(defaultTermuxSessionName(dir)).toBe(roomIdFor(dir, "worker"));
+      expect(defaultTermuxSessionName(dir)).not.toBe(roomIdFor(dir));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the device daemon's inline config never leaks into the name (file config only)", () => {
+    dir = mkdtempSync(join(tmpdir(), "pi-termux-name-daemon-"));
+    try {
+      mkdirSync(join(dir, ".pi", "remote-pi"), { recursive: true });
+      writeFileSync(join(dir, ".pi", "remote-pi", "config.json"), JSON.stringify({ agent_name: "worker" }));
+      withInlineDaemonConfig(() => {
+        expect(defaultTermuxSessionName(dir)).toBe(roomIdFor(dir, "worker"));
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
