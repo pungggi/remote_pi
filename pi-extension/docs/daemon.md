@@ -244,6 +244,16 @@ schtasks /change /tn RemotePiSupervisor /disable
 The supervisor's single-instance guard makes races harmless, but two
 launchers double the noise and can mask which path actually started it.
 
+**`remote-pi restart-supervisor` verifies what it did.** It reads the pid
+serving the control socket, runs the service command (`schtasks /End` +
+`/Run`, `systemctl --user restart`, `launchctl kickstart -k`), and waits
+up to 30 s for a new pid. When the running instance was started outside the
+service — a hand-started process the service's own instance yields to — the
+command stops it by pid (SIGTERM, then SIGKILL), waits for its daemons to
+exit, starts the service again and says so in its output. The exit code is 0
+only when a new supervisor answered; a non-zero exit comes with the reason.
+Before, it printed "Supervisor restarted." whatever had happened.
+
 ---
 
 ## 3b. Daemon wedged (hung event loop) — self-healing (plan/168)

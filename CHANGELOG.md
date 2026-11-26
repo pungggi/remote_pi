@@ -152,6 +152,15 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ### Fixed
 
+- **`remote-pi restart-supervisor` exits 0 only when the supervisor was
+  really restarted**. It printed "Supervisor restarted." whatever happened.
+  With a supervisor started outside the service (as on the PC on 2026-11-26),
+  `schtasks /End` ended nothing and `/Run` launched a second instance that
+  refused to start next to the first: same pids before and after, exit 0. The
+  command now reads the pid serving the control socket before and after the
+  service commands, waits for it to change, falls back to stopping a foreign
+  instance by pid and starting the service again, and reports and exits by
+  what it saw.
 - **pi-extension: service units are always LF, templates and shell scripts
   stay LF in every checkout** (found while packing 0.10.0). A tarball packed
   on a Windows checkout shipped CRLF service templates, and `remote-pi
