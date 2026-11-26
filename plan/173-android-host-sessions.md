@@ -491,6 +491,29 @@ SIGTERM at 21:10, the phone booted at about 22:00, and Termux stayed down
 until the owner opened it at 11:18. The only party that can notice AND act is
 the Piper app on the same phone.
 
+**Second incident (2026-11-26, 13:16 to 19:12 CET, not yet analysed).** This
+one has a different shape from the one above, so it is recorded next to it:
+
+- **What died:** the interim fleet (the supervisor and its device daemon,
+  under the interim shell guard), from 13:16 until 19:12 CET.
+- **What survived:** Termux itself, the tmux server and an interactive pi
+  session. The app was not gone: processes inside a living Termux were
+  killed while it was in the background, and others were spared.
+- **Why it matters for A7:** the guard of A3 is a process of the same kind as
+  the fleet. If Android kills it together with the fleet, it can repair
+  nothing, and the watchdog of this section is the only layer left that can
+  act.
+- **Open:** which killer did it (low memory, phantom-process trimming, the
+  vendor's power saving), by what rule tmux and pi were spared, and whether
+  the interim guard died with the fleet or failed to repair it.
+- **To capture before the next reboot:** the log ring buffer does not survive
+  one. Right after the next occurrence, take `adb logcat -v time -d -s
+  ActivityManager:I` (the `am_kill` and `Killing` lines of `com.termux` and
+  its children) and the phantom-process settings (`adb shell settings get
+  global settings_enable_monitor_phantom_procs`, `adb shell device_config get
+  activity_manager max_phantom_processes`).
+- **Until analysed:** no decision. The result feeds the options table below.
+
 **What the platform allows** (checked against the primary sources on
 2026-11-26)
 

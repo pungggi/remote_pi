@@ -92,7 +92,10 @@ What it does, in order:
    line.
 2. **Setup.** `remote-pi install` writes `~/.termux/boot/start-piper.sh`, the
    command takes the wake lock, runs that very script, and waits for the
-   supervisor, the guard and the device daemon's relay room.
+   supervisor, the guard and the device daemon's relay room. Each wait is a
+   stopping point. A phone without a guard has nothing that restarts the
+   supervisor, so since 0.10.1 a guard that does not come up ends the run
+   with exit 1 and the last `guard.log` lines.
 3. **Pairing.** The device daemon mints the link. It is printed, and copied
    with `termux-clipboard-set` when that works.
 4. **Host check.** The six Android rows of `remote-pi doctor`, as a closing
@@ -168,8 +171,9 @@ simply waits. A wedged supervisor is not killed before its replacement may
 start: a frozen supervisor is no worse than none. The limit holds for any
 values, also for a backoff shorter than the window.
 
-**Settings.** Defaults, then `~/.pi/piper/guard.conf` (`KEY=VALUE`, the file
-the interim shell guard already used), then `REMOTE_PI_GUARD_<KEY>`. The
+**Settings.** Defaults, then `~/.pi/piper/guard.conf` (`KEY=VALUE`, a
+`# comment` allowed behind the value, as in a shell; the file the interim
+shell guard already used), then `REMOTE_PI_GUARD_<KEY>`. The
 environment wins on purpose: an override given for one test run must not be
 silently undone by a forgotten line in a file. Unknown names and unusable
 values are logged and ignored, and the effective settings are the first line
