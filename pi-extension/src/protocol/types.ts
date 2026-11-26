@@ -659,13 +659,14 @@ export type ServerMessage =
   // Plan/108 — Reply to `open_terminal_request`. `ok` is false when the
   // platform is unsupported, the path is missing, or the launcher failed.
   // `method` describes what was launched: "wt" (Windows Terminal tab),
-  // "window" (console-window fallback), or "none" (never spawned).
+  // "window" (console-window fallback), "tmux" (detached tmux session on a
+  // Termux host, plan/173), or "none" (never spawned).
   | {
       type: "open_terminal_result";
       in_reply_to: string;
       ok: boolean;
       message: string;
-      method?: "wt" | "window" | "none";
+      method?: "wt" | "window" | "tmux" | "none";
       /** Plan/112 — the newly-created worktree (absent on reopen / failure). */
       worktree?: WireWorktree;
     }

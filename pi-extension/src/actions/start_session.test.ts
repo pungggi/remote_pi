@@ -59,10 +59,11 @@ describe("handleStartSession visible terminal resume", () => {
     await flush();
 
     expect(roomIdFor).toHaveBeenCalledWith("/x", "worker");
+    // Plan/173 — the relay room travels as the tmux session name on Termux.
     expect(openTerminalTab).toHaveBeenCalledWith(
       "/x",
       `pi --session '${sessionId}'`,
-      { newWindow: true },
+      { newWindow: true, sessionName: "room-1" },
     );
     expect(s.sent).toEqual([{
       type: "start_session_result",
@@ -98,7 +99,7 @@ describe("handleStartSession visible terminal resume", () => {
     } as StartMsg);
     await flush();
 
-    expect(openTerminalTab).toHaveBeenCalledWith("/x", "pi --continue", { newWindow: true });
+    expect(openTerminalTab).toHaveBeenCalledWith("/x", "pi --continue", { newWindow: true, sessionName: "room-1" });
     expect(s.sent).toEqual([{
       type: "start_session_result",
       in_reply_to: "legacy-1",
