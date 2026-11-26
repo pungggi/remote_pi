@@ -200,8 +200,16 @@ pi-extension/
   src/actions/agent_models.ts           # NEW: `agy models` probe + parser
   src/actions/open_terminal.ts          # Termux launcher branch, agent param
   src/actions/start_session.ts          # agent param
-  src/actions/termux.ts                 # NEW: tmux session launcher
+  src/actions/termux.ts                 # NEW (A3): tmux session launcher
+  src/android_checks.ts                 # NEW (A3): the six Android host checks
+  src/termux.ts                         # NEW (A3): Termux detection + paths
   src/daemon/install.ts                 # "android" platform: Termux:Boot script
+  src/daemon/guard.ts                   # NEW (A3): `remote-pi guard`, the in-Termux watchdog
+  src/daemon/proc.ts                    # NEW (A3): /proc lookups for the guard
+  src/daemon/sock_path.ts               # NEW (A3): control socket path, shared
+  src/daemon/supervisor.ts               # A3: `pair` op (link minted in the daemon)
+  src/commands/phone_setup.ts           # NEW (A3): the `phone-setup` flow
+  service-templates/termux-boot.template # NEW (A3): what install writes
   src/transport/relay_client.ts         # Stage B: ordered relay list + promotion
   src/config.ts                         # relay_fallbacks, local_relay (Stage B)
   src/doctor.ts                         # Android checks
@@ -363,6 +371,41 @@ the phone.
   exists.
 - `doctor.ts`: Android checks (boot script, `allow-external-apps`, wake lock).
 
+**Status (2026-11-26): built, not yet run on the phone.** The pull request
+with this change ships every piece above and could not touch the owner's
+device. Two owner additions of the same day are folded in:
+
+- **Always ready (guard).** If the supervisor dies inside a running Termux,
+  it must come back without a human. `remote-pi guard` is a separate light
+  process that probes the supervisor every 30 s and repairs only what no other
+  layer owns. See `pi-extension/docs/android.md`, "What keeps it alive".
+- **Termux app gone (A7).** Nothing inside Termux can restart the Termux app.
+  Researched in A7 below; the owner decides after the spike.
+
+What the pull request added beyond the bullets: `uninstall` stops the guard
+and the supervisor again (no service manager to do it); the pairing link is
+minted by the device daemon through a new supervisor op `pair`, because the
+token only exists in the process that will consume the app's `pair_request`;
+the boot script starts the guard next to the supervisor; doctor starts with six
+Android rows; `openTerminalTab` dispatches to tmux on Termux and names the
+session after the relay room.
+
+**To verify on the device after merge (all of it, in this order)**
+
+1. `remote-pi install` writes `~/.termux/boot/start-piper.sh` (executable,
+   LF). `remote-pi doctor` shows the six Android rows.
+2. `remote-pi phone-setup --relay http://<pc-ip>:3000` ends with a pairing
+   link; pasting it into the app pairs the phone host (the app lists it as a
+   device; the nickname prefill will be Termux's hostname until A4/A5).
+3. "Start session" on the phone starts `pi` in a tmux session named after the
+   room; the tile goes live; `tmux attach -t <room>` shows the terminal.
+4. `kill -9` the supervisor: the guard restarts it within one or two ticks
+   and `~/.pi/piper/guard.log` shows one line per transition.
+5. Reboot: with Termux:Boot installed and opened once, supervisor and guard
+   are back without opening Termux.
+6. `open_terminal` on the phone still honours `remoteCwdAllowed` (a folder
+   outside `projects.roots` is refused).
+
 **Acceptance**
 - On the Z Fold 4, `remote-pi phone-setup` ends with a pairing link.
 - Pasting it into the app lists the phone as a device with a phone icon.
@@ -417,6 +460,153 @@ the phone.
 
 - `pi-extension/README.md`: "Android host" section. `PROTOCOL.md`: `agent`
   and `device_info` rows. `app/assets/CHANGELOG.md`, `pi-extension/CHANGELOG.md`.
+
+### A7 — Termux app watchdog: when the Termux APP itself is gone (owner requirement, 2026-11-26)
+
+Status: **researched, not decided** (2026-11-26). No app code in the A3 pull
+request. The owner decides after reading this and the spike results.
+
+**Problem.** The guard (A3) repairs the supervisor from INSIDE a running
+Termux. It cannot act when the Termux app process is gone: Android killed it
+(low memory, phantom-process trimming, Samsung power saving), the user swiped
+it away, or the phone rebooted while Termux:Boot was not armed. Nothing inside
+Termux can start Termux. On 2026-11-25 the supervisor received SIGINT and
+SIGTERM at 21:10, the phone booted at about 22:00, and Termux stayed down
+until the owner opened it at 11:18. The only party that can notice AND act is
+the Piper app on the same phone.
+
+**What the platform allows** (checked against the primary sources on
+2026-11-26)
+
+- **Background activity start (BAL).** Since Android 10 an app may start an
+  activity from the background only in listed cases: it has a visible window,
+  it is the current IME, the launch comes from a `PendingIntent` the SYSTEM
+  sends (a notification tap), it holds `SYSTEM_ALERT_WINDOW`, or it holds the
+  privileged `START_ACTIVITIES_FROM_BACKGROUND`. A foreground service is
+  deliberately NOT on that list. Since Android 14 the SENDER of a
+  `PendingIntent` must opt in, and since Android 15 the CREATOR must opt in
+  too. Source: [Android guide, background-starts](https://developer.android.com/guide/components/activities/background-starts).
+- **Starting a foreground service from the background.** Since Android 12 the
+  CALLING app may not start a foreground service from the background, except
+  in listed cases. Three matter here: the user turned battery optimizations
+  off for the calling app; the calling app can start activities from the
+  background; the user interacts with one of its notifications. Source:
+  [Android guide, restrictions on background start](https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start).
+- **Termux `RUN_COMMAND`.** `RunCommandService` is exported and guarded by
+  `com.termux.permission.RUN_COMMAND`, a `dangerous` permission: the Piper app
+  can request it at runtime, or the user grants it under App info, Additional
+  permissions. It also requires `allow-external-apps=true` in
+  `~/.termux/termux.properties`, and since target SDK 30 a `<queries>` entry
+  for `com.termux`. The command path must be an executable regular file under
+  the Termux home or prefix (`~/` and `$PREFIX/` are accepted). The default
+  runner is a FOREGROUND terminal session, which needs Termux to hold "Draw
+  over apps"; `--ez …BACKGROUND true` runs without any UI. Sources:
+  [Termux wiki, RUN_COMMAND](https://github.com/termux/termux-app/wiki/RUN_COMMAND-Intent),
+  [Termux manifest](https://github.com/termux/termux-app/blob/master/app/src/main/AndroidManifest.xml).
+- **Why the spike's `RUN_COMMAND` failed from inside Termux.** A call from
+  Termux's own uid passes the service permission check (same uid bypasses
+  it), which matches the log showing the service start. "Processing plugin
+  execution error" is `RunCommandService` refusing the request in its own
+  validation. The spike did not record which rule refused it, so these are
+  candidates, not a verdict: (1) `termux.properties` is read when the Termux
+  app starts, so an edited file needs a Termux restart or
+  `termux-reload-settings`; (2) the command path was outside the Termux home
+  or prefix, or not a regular executable file; (3) `am` extra types
+  (`--es`, `--esa`, `--ez`) did not match what the service expects. Source:
+  [RunCommandService.java](https://github.com/termux/termux-app/blob/master/app/src/main/java/com/termux/app/RunCommandService.java).
+- **Termux's own surface.** `TermuxActivity` is exported: an explicit intent
+  opens it. `TermuxService` is not exported. Termux targets SDK 28, so the
+  One UI 6 agreement between Google and Samsung (foreground services of apps
+  targeting Android 14 are left alone) does not cover it.
+- **Samsung One UI.** Besides Android's rules the owner's phone has its own:
+  lists of Sleeping, Deep sleeping and Never sleeping apps, "Put unused apps
+  to sleep" (as little as three days unused), the Battery Guardian module,
+  and "Keep open" in Recents, which keeps ONE app from being terminated when
+  the list is cleared. Device care can also restart the phone on a schedule,
+  which is one candidate for the 21:10 to 22:00 gap. Source:
+  [dontkillmyapp, Samsung](https://dontkillmyapp.com/samsung).
+
+**Options for the Piper app**
+
+| Option | What it does | Needs | Limit |
+|---|---|---|---|
+| **A. Detect + notify** | Heads-up notification "Termux ist gestoppt" whose tap opens Termux (a `PendingIntent` the system sends) and, with Piper in the foreground, sends `RUN_COMMAND` | nothing beyond the notification; creator opt-in for the `PendingIntent` | needs a tap |
+| **B. `RUN_COMMAND` from the background** | Piper's foreground service sends `RUN_COMMAND` with `background=true` for the idempotent `~/.termux/boot/start-piper.sh` | `RUN_COMMAND` granted to Piper, `allow-external-apps=true`, `<queries>`, battery optimizations off for Piper | widens Termux's surface; may not work when Termux is stopped or sleeping |
+| **C. Open Termux over everything** | Start `TermuxActivity` from the background | `SYSTEM_ALERT_WINDOW`, and on Android 14+ the user's "Allow background activity starts" | intrusive: a terminal window over whatever the user does |
+
+**Recommendation: B as the automatic path, A as the visible fallback.**
+
+- **Detect** (below) that the phone's own host is gone, then send ONE
+  `RUN_COMMAND` for the boot script. The script is idempotent by design (A3),
+  so a wrong guess costs nothing.
+- **If the room is still dark after three minutes**, raise the notification of
+  option A. A tap opens Termux and Piper repeats the `RUN_COMMAND` while it is
+  in the foreground.
+- **Why not C:** it solves a rare case at the price of a permission and an
+  interruption every time.
+- **Why `allow-external-apps` is acceptable only here:** it is required by
+  `RUN_COMMAND`. The permission `RUN_COMMAND` is granted to Piper alone, which
+  is the actual gate: every app holding it can run commands in Termux, every
+  app without it cannot. `remote-pi doctor` reports the setting as a warning
+  today; with this option it changes to "on, required by the app watchdog".
+
+**Confidence.** After a process kill (low memory, phantom-process trimming,
+a crash): medium-high, about 70 %, because nothing puts the app in the
+"stopped" state. After the user swiped Termux away on Samsung without
+"Keep open": low, about 30 %, because Samsung force-stops the app there. After
+a reboot: not this plan's job; Termux:Boot (A3) is the fix.
+
+**Detection: how the app knows that the phone's own host is gone**
+
+The app already keeps one relay connection and knows which rooms are live
+(`isRoomLive(epk, kDeviceRoom)`). The signal must separate four states that
+all look like "device room dark":
+
+1. **Relay unreachable** (PC off, no network): the app's own connection is
+   down. No conclusion, no action.
+2. **Device daemon wedged, supervisor alive**: plan/168 applies. The app sends
+   `daemon_control restart` once and the keeper answers.
+3. **Termux gone**: the relay connection is healthy, the device room has been
+   dark for at least three minutes, and `daemon_control` times out (the
+   keeper lives in the supervisor, so its silence means the supervisor is
+   gone too). This is the watchdog trigger.
+4. **Stage B, PC off**: both relays are the phone's. The app probes
+   `http://127.0.0.1:3000/health` locally: that is a direct liveness test of
+   the Termux host that needs no network.
+
+**Spike S4 (before any app code).** Run from `adb shell`, which stands in for
+"another app", then from a debug build of Piper that only adds the
+permission and `<queries>`.
+
+1. **Kill, not stop.** With supervisor and guard running, end the Termux app
+   process WITHOUT the stopped state: `adb shell am kill com.termux` where
+   Android considers it killable, otherwise the low memory killer under load
+   (open several heavy apps). Then send the intent with `background=true` for
+   `~/.termux/boot/start-piper.sh`. Measure: are supervisor and guard back,
+   and how long until the device room is live in the app?
+2. **From the app, in the background.** Same intent sent by Piper with its
+   foreground service running, screen off, once with battery optimizations
+   off for Piper and once on. Measure: does the intent arrive, is there a
+   `ForegroundServiceStartNotAllowedException`?
+3. **Stopped and sleeping states.** Repeat step 1 after `adb shell am stop-app
+   com.termux` (Android 13+; the force-stop a swipe-away causes on Samsung),
+   after swiping Termux away from Recents without and with "Keep open", and
+   after adding Termux to "Never sleeping apps". Measure which of these the
+   intent survives. This decides the confidence above.
+4. **The refusal text.** Repeat the inside-Termux call of the first spike
+   while capturing `adb logcat -v time -s RunCommandService:V
+   TermuxPluginUtils:V TermuxService:V`, once before and once after a Termux
+   restart. Record the exact reason.
+5. **Reboot cause.** After the next unexplained reboot read `adb shell getprop
+   sys.boot.reason` and check Device care, Auto optimization, for a restart
+   schedule. This tells a watchdog from an autostart problem.
+
+**Acceptance (for the spike write-up)**
+
+- `pi-extension/docs/android.md` states for each of the three kill shapes
+  whether `RUN_COMMAND` from another app restarts the host, with timings.
+- The inside-Termux refusal of the first spike has its exact reason.
+- The owner decides: B + A, A only, or nothing.
 
 ## Stage B — Without the PC: the phone's own relay (detail: plan 174)
 
@@ -483,9 +673,14 @@ one mesh again as soon as the PC relay is back.
 - **Same trust model as a PC.** The phone daemon accepts the same requests
   under the same guards: pairing, relay auth, and `remoteCwdAllowed`.
 - **`allow-external-apps=true` widens Termux's surface.** It lets other apps
-  holding Termux's run-command permission start processes in Termux. The
-  Piper app does not need it (it talks through the relay). The setup command
-  explains this and the docs repeat it.
+  holding Termux's run-command permission start processes in Termux. Stage A3
+  does not need it (the Piper app talks through the relay) and the setup
+  command recommends leaving it off. Option B of A7 would need it, granted to
+  the Piper app alone; that is the owner's decision.
+- **The control socket stays owner-only.** The new `pair` op mints a pairing
+  link for whoever can reach `~/.pi/piper/supervisor.sock`. The socket is
+  created `0600`, the same trust as `start_transient`, and no kill-switch
+  applies (nothing remote can call it).
 - **Bind the phone relay to `127.0.0.1`.** Nobody on the WLAN should reach the
   phone's relay by default.
 - **Termux storage is app-private** and covered by device encryption.
@@ -494,6 +689,13 @@ one mesh again as soon as the PC relay is back.
 
 - [x] **Step 0**: S1, S2, S3 written up in `pi-extension/docs/android.md` with
       go/no-go for S2 and S3.
+- [x] **Stage A3 built** (2026-11-26): Termux platform + boot script, guard,
+      tmux launcher, `phone-setup`, doctor rows, `pair` op. Unit-tested on a
+      PC. (Not yet run on the phone: the six checks listed under A3 are open.)
+- [ ] **Stage A3 on the device**: `phone-setup` ends with a link that pairs;
+      Start session runs `pi` in tmux and the tile goes live; `kill -9` of the
+      supervisor is healed by the guard; a reboot brings everything back via
+      Termux:Boot.
 - [ ] **Stage A**: from the app, the user picks PC or phone and Pi or AGY.
       Pi sessions on the phone are chat-capable in the app and can be opened
       in Termux. AGY starts on the PC and on the phone (Stage C for the
