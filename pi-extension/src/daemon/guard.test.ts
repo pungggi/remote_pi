@@ -1013,7 +1013,9 @@ describe("guardStart / guardStatus / guardStop", () => {
     const started = await guardStart({
       spawnFn: fakeSpawn,
       sleep: async () => undefined,
-      runningPid: () => (++checks < 3 ? null : 56),
+      runningPid: () => null,
+      // The lock appears on the third look (node boot).
+      lockHolder: () => (++checks < 3 ? null : 56),
       logPath: join(tmp, "nested", "guard.log"),
     });
     expect(started).toEqual({ ok: true, message: "guard started (pid 56)" });
@@ -1023,6 +1025,27 @@ describe("guardStart / guardStatus / guardStop", () => {
     const failed = await guardStart({ spawnFn: fakeSpawn, sleep: async () => undefined, runningPid: () => null, logPath: join(tmp, "guard.log") });
     expect(failed.ok).toBe(false);
     expect(failed.message).toContain("did not take its lock");
+  });
+
+  test("start: without an injected lock holder the real lock decides, so a child merely seen is not \"started\"", async () => {
+    // The default used to fall back to the caller's `runningPid`, which is
+    // the weaker answer the lock holder exists to prevent (review on #130).
+    // No pid file exists under the scratch home, so the real lock is free.
+    let spawned = false;
+    let spawns = 0;
+    const r = await guardStart({
+      spawnFn: (() => {
+        spawned = true;
+        spawns += 1;
+        return { unref: () => undefined };
+      }) as never,
+      sleep: async () => undefined,
+      // A guard is "seen" right after the spawn (the command-line scan).
+      runningPid: () => (spawned ? 999 : null),
+      logPath: join(tmp, "guard.log"),
+    });
+    expect(spawns).toBe(1);
+    expect(r).toEqual({ ok: false, message: `guard did not take its lock — see ${join(tmp, "guard.log")}` });
   });
 
   test("status: four lines in the log's vocabulary, the last one the effective settings", async () => {

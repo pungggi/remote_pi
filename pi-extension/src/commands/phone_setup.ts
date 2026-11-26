@@ -36,7 +36,7 @@ import {
   previewTermuxBootScript,
   renderLineDiff,
 } from "../daemon/install.js";
-import { guardLogPath, guardStart, interimGuardScriptPath, probeStatus, runningGuardPid } from "../daemon/guard.js";
+import { guardLockHolderPid, guardLogPath, guardStart, interimGuardScriptPath, probeStatus, runningGuardPid } from "../daemon/guard.js";
 import { callSupervisor } from "../daemon/client.js";
 import type { DaemonInfo } from "../daemon/control_protocol.js";
 import { readRoomsRegistry } from "../session/rooms_registry.js";
@@ -295,14 +295,23 @@ export function defaultPhoneSetupDeps(opts: PhoneSetupOptions, log: (line: strin
     },
     waitGuard: async (timeoutMs) => {
       const deadline = Date.now() + timeoutMs;
+      // The pid file is cheap to read; the command-line scan behind it walks
+      // all of /proc, so while nobody holds the lock it is asked once a
+      // second, not at every poll.
+      let nextScanAt = 0;
       while (Date.now() < deadline) {
-        const pid = runningGuardPid();
-        if (pid !== null) return pid;
+        const holder = guardLockHolderPid();
+        if (holder !== null) return holder;
+        if (Date.now() >= nextScanAt) {
+          const byArgv = runningGuardPid();
+          if (byArgv !== null) return byArgv;
+          nextScanAt = Date.now() + 1000;
+        }
         await new Promise((r) => setTimeout(r, 250));
       }
       // The script may have lost a race against a stale pid file: asking
       // explicitly is idempotent and either reports or starts the loop.
-      return (await guardStart()).ok ? runningGuardPid() : null;
+      return (await guardStart()).ok ? guardLockHolderPid() : null;
     },
     deviceRoomLastSeenAt: () => readRoomsRegistry().get(DEVICE_ROOM)?.lastSeenAt,
     pair: async (ttlMs) => {

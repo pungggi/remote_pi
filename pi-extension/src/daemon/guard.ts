@@ -1134,8 +1134,9 @@ export interface GuardStartDeps {
   runningPid: () => number | null;
   /** The guard that holds the pid-file lock. "started" is reported only when
    *  this answers, so a child that was merely seen and then died (a refused
-   *  `guard run`, a lock held elsewhere) is never a success. Falls back to
-   *  `runningPid` when not given. */
+   *  `guard run`, a lock held elsewhere) is never a success. Without it the
+   *  strict `guardLockHolderPid` is used, never the caller's `runningPid`:
+   *  a caller that hands in only that one must not get the weaker answer. */
   lockHolder?: () => number | null;
   logPath?: string;
 }
@@ -1144,7 +1145,6 @@ export async function guardStart(
   deps: GuardStartDeps = {
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     runningPid: runningGuardPid,
-    lockHolder: guardLockHolderPid,
   },
 ): Promise<{ ok: boolean; message: string }> {
   const already = deps.runningPid();
@@ -1171,7 +1171,7 @@ export async function guardStart(
   }
   // The loop takes the lock within a second or two (node boot); give it a
   // moment so the answer is real instead of "probably started".
-  const lockHolder = deps.lockHolder ?? deps.runningPid;
+  const lockHolder = deps.lockHolder ?? guardLockHolderPid;
   for (let i = 0; i < 20; i++) {
     await deps.sleep(150);
     const pid = lockHolder();

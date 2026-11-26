@@ -105,6 +105,19 @@ describe("argv predicates", () => {
     // And it still has to be node that runs it.
     expect(isGuardArgv(["/bin/bash", "--require", SHIM, "/x/dist/index.js", "guard", "run"])).toBe(false);
     expect(isGuardArgv([])).toBe(false);
+    // Not any `…/index.js guard run` anywhere: the FIRST argument that looks
+    // like the entry script decides. An earlier one followed by other words
+    // is the entry of some other command (review on #130).
+    expect(isGuardArgv([NODE, "/x/dist/index.js", "daemon", "status", "--require", "/y/index.js", "guard", "run"]))
+      .toBe(false);
+    expect(isGuardArgv([NODE, "--require", SHIM, "/x/dist/index.js", "daemon", "status", "--require", SHIM, "index.js", "guard", "run"]))
+      .toBe(false);
+    // A shim that is itself named like the entry is still told apart: it is
+    // the module behind the preload option, not the script node runs.
+    expect(isGuardArgv([NODE, "--require", "/x/index.js", "/x/dist/index.js", "guard", "run"])).toBe(true);
+    expect(isGuardArgv([NODE, "--require=/x/index.js", "/x/dist/index.js", "guard", "run"])).toBe(true);
+    // The shim alone, without the entry script, is not the guard.
+    expect(isGuardArgv([NODE, "--require", "/x/index.js", "guard", "run"])).toBe(false);
   });
 
   test("the interim shell guard is a shell running piper-guard.sh, never a node process mentioning it", () => {

@@ -86,21 +86,28 @@ export function isSupervisorArgv(argv: string[]): boolean {
   return script !== undefined && /(^|\/)(supervisord\.js|pi-supervisord)$/.test(script);
 }
 
+/** Node options whose next argument is a module node loads BEFORE the entry
+ *  script: this is where a wrapper puts its shim. */
+const PRELOAD_OPTIONS: ReadonlySet<string> = new Set(["--require", "-r", "--import"]);
+
 /** True when argv is the guard loop: `node …/index.js guard run`
  *  (also through the `remote-pi` symlink). argv[0] must be node, and the
- *  entry script must be followed by exactly `guard run`. The script is not
- *  assumed to be the first non-option argument: a wrapper may put node
- *  options with a value of their own before it (`node --require <shim>
- *  …/index.js guard run`), and reading only the first non-option argument
- *  made such a guard look dead. The interim shell guard (`piper-guard.sh`)
- *  is deliberately NOT this: it gets retired, never mistaken for a running
- *  instance. */
+ *  FIRST argument that looks like the entry script must be followed by
+ *  exactly `guard run`. That argument is not assumed to sit right behind
+ *  `node`: a wrapper may put options before it, with a value of their own
+ *  (`node --require <shim> …/index.js guard run`), and reading only the
+ *  first non-option argument made such a guard look dead. Options are never
+ *  the entry script, nor is the module behind a preload option. An earlier
+ *  entry-like argument followed by other words (`index.js daemon status …
+ *  index.js guard run`) is the entry of some other command: not the guard.
+ *  The interim shell guard (`piper-guard.sh`) is deliberately NOT this: it
+ *  gets retired, never mistaken for a running instance. */
 export function isGuardArgv(argv: string[]): boolean {
   if (!isNodeExecutable(argv[0])) return false;
   for (let i = 1; i + 2 < argv.length; i++) {
-    if (/(^|\/)(index\.js|remote-pi)$/.test(argv[i] ?? "") && argv[i + 1] === "guard" && argv[i + 2] === "run") {
-      return true;
-    }
+    const arg = argv[i] ?? "";
+    if (arg.startsWith("-") || PRELOAD_OPTIONS.has(argv[i - 1] ?? "")) continue;
+    if (/(^|\/)(index\.js|remote-pi)$/.test(arg)) return argv[i + 1] === "guard" && argv[i + 2] === "run";
   }
   return false;
 }

@@ -113,7 +113,8 @@ function harness(overrides: Partial<PhoneSetupDeps> = {}) {
       calls.push("waitGuard");
       return 4242;
     },
-    guardLogTail: () => ["[2026-11-26 13:16:04] guard: loop exits: guard run belongs on a Termux (Android) host"],
+    guardLogTail: (lines) =>
+      ["[2026-11-26 13:16:04] guard: loop exits: guard run belongs on a Termux (Android) host"].slice(-lines),
     deviceRoomLastSeenAt: () => state.lastSeen,
     pair: async (ttl) => {
       calls.push(`pair:${ttl}`);
