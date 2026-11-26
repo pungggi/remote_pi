@@ -1,15 +1,15 @@
 {
-  "version": "1.6.5",
-  "date": "2026-11-24",
-  "notes": "Piper (app) 1.6.5",
+  "version": "1.6.6",
+  "date": "2026-11-26",
+  "notes": "Piper (app) 1.6.6",
   "artifacts": [
     {
       "platform": "android",
       "arch": "universal",
       "format": "apk",
-      "url": "https://github.com/pungggi/remote_pi/releases/download/app-v1.6.5/RemotePi.apk",
-      "sha256": "8dc2a9199258d898b85deafd93627961a078333c8021aacafb54643279d8613b",
-      "size": 99868197
+      "url": "https://github.com/pungggi/remote_pi/releases/download/app-v1.6.6/RemotePi.apk",
+      "sha256": "6b23d73dfa8482cfcf688f655a30867ccf522a94a43f5ea2f16047def0f15e79",
+      "size": 99885033
     }
   ]
 }
