@@ -185,8 +185,13 @@ watchdog follows.
 
 **Restart-rate limit.** At most 3 supervisor starts in 10 minutes, on top of
 the backoff between starts of one outage (15 s, 30 s, 1 min, 2 min, 5 min,
-10 min, forgiven after 10 stable minutes). A start the limit would refuse
-simply waits. A wedged supervisor is not killed before its replacement may
+10 min, forgiven after 10 stable minutes). A start the limit or the backoff
+would refuse simply waits, and the guard says so once per wait, with the
+time the start is allowed: `restart postponed by the start limit (3 per
+10 min) until …` or `start postponed by the start backoff until …`. Why the
+second line matters: a wait on the backoff alone used to be silent, and 27
+minutes without a line on the owner's phone (2026-11-27) read as a dead
+guard. A wedged supervisor is not killed before its replacement may
 start: a frozen supervisor is no worse than none. The limit holds for any
 values, also for a backoff shorter than the window.
 

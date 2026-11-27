@@ -8,25 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
-## [0.10.3] - 2026-11-27
-
-Release of the extension only (`pi-extension`). The app keeps its own
-version line.
-
-### Fixed
-
-- **Termux: the dated copy of a replaced boot script no longer sits in
-  `~/.termux/boot`** (pi-extension, Android). Termux:Boot runs every file of
-  that directory at each boot, in an uncontrolled order, and sets the
-  executable bit itself when it is missing (termux-boot 0.8.1). The copies
-  `remote-pi install` left next to the script (`start-piper.sh.bak-<ts>`)
-  therefore ran at every boot too: the reboot test of 2026-11-27 saw one
-  look for a wrapper that no longer existed and one start a second
-  supervisor that had to refuse. `install` keeps the copy under
-  `~/.pi/piper/boot-backups/` now, `phone-setup` says so, and `doctor`
-  warns while old copies are still in the boot directory, with the command
-  that moves them.
-
 ## [Unreleased]
 
 ### Added
@@ -276,6 +257,38 @@ version line.
   a registry entry, `daemon start <id>` reported a spawn the guard refused
   as `started: true`. It answers the same error as the device and transient
   paths.
+- **The guard says when it is waiting.** When the start backoff holds the
+  next supervisor start, `guard.log` gets one line per wait, `supervisor:
+  start postponed by the start backoff until HH:MM`, as the rate limit
+  always had. Such a wait used to be silent: on 2026-11-27 the owner's
+  phone logged "supervisor: down" and then nothing for 27 minutes
+  (`START_BACKOFF_S=1800`), which read as a dead guard.
+- **`remote-pi doctor` no longer calls the installed package a worktree.**
+  The `pi settings` check flags every path-based remote-pi entry in the
+  global settings as a second copy that would double-load tools. On the
+  owner's phone the only entry is the npm global install the daemon itself
+  runs from (2026-11-27), so the warning was a false positive on every
+  run. The package the running code belongs to is exempt now, symlinks
+  included; any other copy is still flagged.
+
+## [0.10.3] - 2026-11-27
+
+Release of the extension only (`pi-extension`). The app keeps its own
+version line.
+
+### Fixed
+
+- **Termux: the dated copy of a replaced boot script no longer sits in
+  `~/.termux/boot`** (pi-extension, Android). Termux:Boot runs every file of
+  that directory at each boot, in an uncontrolled order, and sets the
+  executable bit itself when it is missing (termux-boot 0.8.1). The copies
+  `remote-pi install` left next to the script (`start-piper.sh.bak-<ts>`)
+  therefore ran at every boot too: the reboot test of 2026-11-27 saw one
+  look for a wrapper that no longer existed and one start a second
+  supervisor that had to refuse. `install` keeps the copy under
+  `~/.pi/piper/boot-backups/` now, `phone-setup` says so, and `doctor`
+  warns while old copies are still in the boot directory, with the command
+  that moves them.
 
 ## [0.10.2] - 2026-11-27
 

@@ -685,12 +685,19 @@ describe("tick — supervisor gone", () => {
     h.advance(30_000); await tick(t0, h.deps);    // #3 → wait 1 min
     h.advance(30_000);
     expect((await tick(t0, h.deps)).action).toEqual({ kind: "none" });  // t = 90 s < 150 s
+    // 2026-11-27: the wait is said once, with the time the start is allowed,
+    // also when only the backoff holds it (27 silent minutes on the owner's
+    // phone read as a dead guard). The same wait is not announced twice.
+    expect((await tick(t0, h.deps)).action).toEqual({ kind: "none" });
+    expect(messages(h.out.lines).filter((l) => l.includes("postponed"))).toEqual([
+      expect.stringMatching(/^supervisor: start postponed by the start backoff until \d{2}:\d{2}$/),
+    ]);
     h.advance(30_000);
     expect((await tick(t0, h.deps)).action).toEqual({ kind: "start-supervisor" }); // #4 at 120 s → wait 2 min
     h.advance(120_000);
     expect((await tick(t0, h.deps)).action).toEqual({ kind: "start-supervisor" }); // #5 → 5 min
     expect(messages(h.out.lines).at(-1)).toBe("supervisor: start #5 (next attempt in 5 min if it does not answer)");
-    expect(h.out.lines.filter((l) => l.includes("postponed"))).toHaveLength(0);
+    expect(messages(h.out.lines).filter((l) => l.includes("postponed"))).toHaveLength(1);
   });
 
   test("a failing start is said so once, not on every retry", async () => {

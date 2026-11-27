@@ -1,8 +1,8 @@
 import { beforeEach, afterEach, describe, expect, test } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { runDoctor, printDoctor, conflictingWorktreePackages } from "./doctor.js";
+import { dirname, join } from "node:path";
+import { runDoctor, printDoctor, conflictingWorktreePackages, ownPackageRoot } from "./doctor.js";
 import { saveRegistry } from "./daemon/registry.js";
 import { daemonIdForCwd } from "./daemon/id.js";
 
@@ -144,6 +144,15 @@ describe("doctor — checks", () => {
     expect(result.healthy).toBe(true);
   });
 
+  test("the installed package itself in settings is not a worktree conflict (the owner's phone)", async () => {
+    saveRegistry({ daemons: [{ cwd: projectCwd, name: "proj" }] });
+    const own = ownPackageRoot()!;
+    const result = await runDoctor({ ...healthyDeps(), readSettingsPackages: () => [own] });
+    const settings = result.checks.find((c) => c.name === "pi settings");
+    expect(settings?.status).toBe("ok");
+    expect(settings?.detail).toBe("no remote-pi worktree packages in global settings");
+  });
+
   test("pi binary spawn failure fails the run", async () => {
     saveRegistry({ daemons: [{ cwd: projectCwd, name: "proj" }] });
     const deps = { ...healthyDeps(), versionCheck: () => ({ ok: false, detail: "ENOENT" }) };
@@ -166,5 +175,30 @@ describe("doctor — conflictingWorktreePackages", () => {
       "../../source/pi/packages/remote_pi_off/pi-extension",
       "C:\\x\\remote-pi\\pi-extension",
     ]);
+  });
+
+  // 2026-11-27: the phone's only settings entry is its npm global install of
+  // remote-pi, and doctor called it a worktree. The copy this code runs from
+  // is not a second copy.
+  test("the package this code runs from is exempt; any other copy is not", () => {
+    const own = ownPackageRoot();
+    expect(own).not.toBeNull();
+    expect(conflictingWorktreePackages([own!], own)).toEqual([]);
+    const other = join(dirname(own!), "remote_pi_other", "pi-extension");
+    expect(conflictingWorktreePackages([own!, other], own)).toEqual([other]);
+    // Without a known own root nothing is exempted.
+    expect(conflictingWorktreePackages([own!], null)).toEqual([own!]);
+  });
+
+  test("a link to the package this code runs from is the same copy", () => {
+    const own = ownPackageRoot()!;
+    const link = join(tmpdir(), `remote-pi-link-${process.pid}`);
+    rmSync(link, { force: true });
+    symlinkSync(own, link, process.platform === "win32" ? "junction" : "dir");
+    try {
+      expect(conflictingWorktreePackages([link], own)).toEqual([]);
+    } finally {
+      rmSync(link, { force: true });
+    }
   });
 });

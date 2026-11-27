@@ -29,9 +29,10 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { listDaemons } from "./daemon/registry.js";
 import { supervisorOnline, callSupervisor, SupervisorOfflineError } from "./daemon/client.js";
 import type { DaemonInfo } from "./daemon/control_protocol.js";
@@ -125,13 +126,35 @@ function defaultVersionCheck(): { ok: boolean; detail: string } {
 
 // ── The check suite ─────────────────────────────────────────────────────────
 
-/** Path-based (non-npm) package entries that look like a remote-pi worktree.
- *  These double-load remote-pi tools in any pi run that reads settings
- *  packages, while the daemon passes its own `-e` — the classic collision. */
-export function conflictingWorktreePackages(packages: string[]): string[] {
-  return packages.filter(
-    (p) => !p.startsWith("npm:") && /remote[-_]pi/i.test(p),
-  );
+/** The package this code runs from (an installed `…/node_modules/remote-pi`
+ *  or a worktree's `pi-extension`), symlinks resolved: two levels above this
+ *  file (`dist/doctor.js`, or `src/doctor.ts` under the test runner). Null
+ *  when the layout is not that one. */
+export function ownPackageRoot(moduleUrl: string = import.meta.url): string | null {
+  try {
+    return realpathSync(join(fileURLToPath(moduleUrl), "..", ".."));
+  } catch {
+    return null;
+  }
+}
+
+/** Path-based (non-npm) package entries that load ANOTHER copy of remote-pi.
+ *  A worktree next to the installed package double-loads remote-pi tools in
+ *  any pi run that reads settings packages, while the daemon passes its own
+ *  `-e`: the classic collision. The package this code runs from is not a
+ *  second copy, so it is not flagged. Found on the owner's phone
+ *  (2026-11-27): its only entry was the npm global install, and doctor
+ *  called it a worktree. */
+export function conflictingWorktreePackages(packages: string[], ownRoot: string | null = ownPackageRoot()): string[] {
+  return packages.filter((p) => {
+    if (p.startsWith("npm:") || !/remote[-_]pi/i.test(p)) return false;
+    if (ownRoot === null) return true;
+    try {
+      return realpathSync(p) !== ownRoot;
+    } catch {
+      return true; // not on disk: still worth the warning
+    }
+  });
 }
 
 export async function runDoctor(deps: DoctorDeps = {}): Promise<DoctorResult> {
