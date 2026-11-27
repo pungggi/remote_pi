@@ -34,8 +34,6 @@ const CACHE_TTL_MS = 5 * 60_000;
 const PEERS_REQUEST_TIMEOUT_MS = 2_000;
 const REANNOUNCE_INTERVAL_MS = 2 * 60_000;
 const BROKER_NAME = "broker";
-
-export { CROSS_PC_DENIED_DELAY_MS } from "./ack_policy.js";
 const LEGACY_RELAY_ID_RE = /^[0-9a-f]{32}$/;
 
 export interface WirePeerInfo {
@@ -623,7 +621,12 @@ export class BrokerRemote implements RemoteRouter, BrokerRemoteLifecycle {
       this.deferredDenials.delete(timer);
       // A detached bridge no longer speaks for this broker.
       if (this.lifecycle !== "active") return;
-      this._sendAck(canonicalFromPc, env.from, normalized.id, ackBody);
+      try {
+        this._sendAck(canonicalFromPc, env.from, normalized.id, ackBody);
+      } catch {
+        // A timer callback has no caller to catch a dead relay connection.
+        this._logMetadataOnly("[broker_remote] event=ack_denied_send_failed");
+      }
     }, CROSS_PC_DENIED_DELAY_MS);
     timer.unref?.();
     this.deferredDenials.add(timer);

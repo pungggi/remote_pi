@@ -133,7 +133,7 @@ export function socketIdentity(sockPath: string): SocketIdentity | null {
 }
 
 /** Whether `stat` describes the socket file `identity` was read from. */
-export function isSocketIdentity(identity: SocketIdentity, stat: Stats): boolean {
+function isSocketIdentity(identity: SocketIdentity, stat: Stats): boolean {
   return stat.isSocket() && stat.dev === identity.dev && stat.ino === identity.ino;
 }
 

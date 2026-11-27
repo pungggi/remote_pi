@@ -113,8 +113,9 @@ export function registerAgentTools(
       "wait for the broker's delivery ACK. Delivery is reliable: a peer that " +
       "is mid-turn still receives the message (its harness enqueues it for " +
       "the next turn), so you never need to retry. Returns one of: `received` " +
-      "(delivered; peer will process it in an upcoming turn), `denied` (peer " +
-      "refused), `timeout` (no ACK in 5s — peer offline / transport error), " +
+      "(delivered; peer will process it in an upcoming turn), `denied` (no " +
+      "broker confirmed the address; cross-PC this is final only after a " +
+      "short grace, and `details.answers` names who denied), `timeout` (no ACK in 5s — peer offline / transport error), " +
       "`sent` (broadcast/multicast — no ACK semantics). Use `re` to mark this " +
       "message as a reply to an incoming envelope's `id` (correlation only).",
     promptSnippet:

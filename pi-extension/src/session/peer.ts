@@ -389,6 +389,9 @@ export class SessionPeer {
           return registration.name;
         }
         this.ownSockIdentity = result.identity;
+        // Restart, also when a peer that already led is re-elected, so the
+        // check compares against the socket bound this time.
+        this._stopLeaderPathCheck();
         this._startLeaderPathCheck();
         return registration.name;
       } catch (err) {
@@ -758,9 +761,9 @@ export class SessionPeer {
 
   /**
    * Issue #140: stand down as leader and rejoin the mesh. The old broker's
-   * clients read its close as a leader loss and re-elect, which now leads them
-   * to whoever owns the path; the reconnect handlers then take the relay
-   * bridge down (MeshNode), so one PC speaks with one broker again.
+   * clients lose their connection and read it as a leader loss, which now
+   * leads them to whoever owns the path; the reconnect handlers then take the
+   * relay bridge down (MeshNode), so one PC speaks with one broker again.
    */
   private async _stepDown(): Promise<void> {
     if (this.stepDownInFlight) return this.stepDownInFlight;
