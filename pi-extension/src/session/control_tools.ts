@@ -36,6 +36,7 @@ import type {
   SessionActionMessage,
 } from "../protocol/types.js";
 import { SAFE_MODEL_TOKEN } from "../protocol/types.js";
+import { parseAgentKind } from "../protocol/agent_selection.js";
 
 const jsonSchema = (s: object) => s as unknown as never;
 
@@ -122,9 +123,15 @@ const AGENT_PARAM = {
     "where the target can start it (its `device_info` lists it).",
 };
 
-/** `agent` travels only when it is AGY, so pre-173 peers see the old shape. */
-function agentField(agent: string | undefined): { agent?: "agy" } {
-  return agent === "agy" ? { agent: "agy" as const } : {};
+/** The `agent` tool parameter, checked. It travels only when it is AGY, so
+ *  pre-173 peers see the old shape. An unknown value is an error on the calling
+ *  side, with the rule and the words of the wire: never a silent fallback to
+ *  Pi. Until the review of #132 it was dropped here and read as Pi, while the
+ *  wire and the control envelope refused it. */
+function agentField(agent: unknown): { ok: true; field: { agent?: "agy" } } | { ok: false; message: string } {
+  const picked = parseAgentKind(agent);
+  if (!picked.ok) return picked;
+  return { ok: true, field: picked.agent === "agy" ? { agent: "agy" as const } : {} };
 }
 
 /** Format the single plan/28 ServerMessage reply into tool text. */
@@ -385,9 +392,15 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
       const peer = deps.getPeer();
       const t = _resolveTarget(peer, target);
       if (t && "error" in t) return { content: [{ type: "text", text: t.error }], details: { ok: false } };
+      // Plan/173 — an unknown agent is refused here, before anything is
+      // dispatched or sent, instead of being read as Pi further down.
+      const pickedAgent = agentField(agent);
+      if (!pickedAgent.ok) {
+        return { content: [{ type: "text", text: pickedAgent.message }], details: { ok: false } };
+      }
       const out = t && "target" in t
-        ? await _remoteControl(peer!, t.target, { op: "list_models", ...agentField(agent) })
-        : _formatLocalReply(await deps.dispatchLocal({ type: "list_models", id: newControlId(), ...agentField(agent) }));
+        ? await _remoteControl(peer!, t.target, { op: "list_models", ...pickedAgent.field })
+        : _formatLocalReply(await deps.dispatchLocal({ type: "list_models", id: newControlId(), ...pickedAgent.field }));
       return { content: [{ type: "text", text: out.text }], details: { ok: out.ok } };
     },
   });
@@ -446,6 +459,12 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
       const peer = deps.getPeer();
       const t = _resolveTarget(peer, target);
       if (t && "error" in t) return { content: [{ type: "text", text: t.error }], details: { ok: false } };
+      // Plan/173 — same rule as list_models: an unknown agent is refused here,
+      // before a worktree could be created for the wrong one.
+      const pickedAgent = agentField(agent);
+      if (!pickedAgent.ok) {
+        return { content: [{ type: "text", text: pickedAgent.message }], details: { ok: false } };
+      }
       if ((provider && !model_id) || (!provider && model_id)) {
         const msg = "spawn_worktree requires both provider and model_id (or neither).";
         return { content: [{ type: "text", text: msg }], details: { ok: false } };
@@ -461,11 +480,11 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
           ...(base ? { base } : {}),
           ...(provider && model_id ? { provider, model_id } : {}),
           ...(headless ? { headless: true } : {}),
-          ...agentField(agent),
+          ...pickedAgent.field,
         });
         return { content: [{ type: "text", text: out.text }], details: { ok: out.ok } };
       }
-      const r = await deps.spawnWorktreeLocal({ base: base ?? null, branch: branch ?? null, provider: provider ?? null, model_id: model_id ?? null, headless: headless === true, ...agentField(agent) });
+      const r = await deps.spawnWorktreeLocal({ base: base ?? null, branch: branch ?? null, provider: provider ?? null, model_id: model_id ?? null, headless: headless === true, ...pickedAgent.field });
       // ai-review #113 L2 — headless replies already carry their own mesh
       // hints (address + agent_send/session_shutdown); appending the generic
       // visible-path line would duplicate (and slightly contradict) them.
