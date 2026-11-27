@@ -159,6 +159,45 @@ describe("handleOpenTerminal with an agent (plan/173)", () => {
     expect(execFileSync).not.toHaveBeenCalled();
   });
 
+  test("runPi:false alone still opens the plain shell, with no command", async () => {
+    const { sent, tmuxArgs } = await start({ type: "open_terminal_request", id: "shell", cwd: PROJ, runPi: false });
+    expect(tmuxArgs).not.toBeNull();
+    // Options as for any session, then the login shell instead of an agent.
+    expect(tmuxArgs?.slice(0, -1)).toEqual([
+      "new-session",
+      "-d",
+      "-s",
+      "room-1",
+      "-c",
+      expect.stringContaining(worktreeFolderOf(PROJ)),
+    ]);
+    const last = tmuxArgs?.at(-1) ?? "";
+    expect(last.startsWith(`${TERMUX_DAEMON_SCRUB}; exec `)).toBe(true);
+    expect(last).toMatch(/bash}" -l$/);
+    expect(last).not.toMatch(/\bpi\b|agy|--model/);
+    expect(sent[0]).toMatchObject({ type: "open_terminal_result", ok: true, method: "tmux" });
+  });
+
+  test("a plain shell cannot start with a model either: refused, nothing dropped", async () => {
+    const { sent, tmuxArgs } = await start({
+      type: "open_terminal_request",
+      id: "shell-model",
+      cwd: PROJ,
+      runPi: false,
+      provider: "zai",
+      model_id: "glm-5.3-flash",
+    });
+    expect(tmuxArgs).toBeNull();
+    expect(sent[0]).toMatchObject({
+      type: "open_terminal_result",
+      ok: false,
+      method: "none",
+      message: expect.stringMatching(/plain shell.*with a model/),
+    });
+    expect(spawn).not.toHaveBeenCalled();
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
   test("an AGY model the device does not offer is refused, and no worktree is left behind", async () => {
     vi.mocked(agyModelIds).mockResolvedValue(["gemini-4-neon-high"]);
     const { sent, tmuxArgs } = await start({

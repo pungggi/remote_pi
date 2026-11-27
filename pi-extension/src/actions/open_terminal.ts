@@ -94,6 +94,25 @@ export async function startModelProblem(selection: AgentSelection): Promise<stri
   return null;
 }
 
+/**
+ * Plan/173 — why `runPi:false` cannot honour the request, or null when it
+ * can. A plain shell has no agent, so it can start neither another agent nor
+ * one with a model. The agent case has been refused since stage A2; the model
+ * case was still opened as a plain shell with the model silently dropped
+ * (found in the review of #132): the app would have read "opened" for a
+ * request half of which never happened.
+ */
+export function plainShellProblem(runPi: boolean, selection: AgentSelection): string | null {
+  if (runPi) return null;
+  if (selection.agent !== "pi") {
+    return `runPi=false opens a plain shell and cannot start ${selection.agent}.`;
+  }
+  if (selection.model) {
+    return "runPi=false opens a plain shell and cannot start with a model; omit provider and model_id.";
+  }
+  return null;
+}
+
 /** Which launcher `openTerminalTab` uses: Termux gets tmux (plan/173), Windows
  *  its Windows Terminal / console code (plan/108), everything else is
  *  unsupported. Pure in the two inputs so the dispatch is testable anywhere. */
@@ -681,15 +700,16 @@ export async function handleOpenTerminal(
     return;
   }
 
-  // Plan/173 — `runPi:false` opens a plain shell; there is no agent to start
-  // in it, so asking for one is a contradiction, not something to ignore.
+  // Plan/173 — `runPi:false` opens a plain shell. It has no agent, so neither
+  // another agent nor a model can start in it: refused, never dropped.
   const runPi = msg.runPi !== false; // default true (matches /ps clone)
-  if (!runPi && selection.agent !== "pi") {
+  const shellProblem = plainShellProblem(runPi, selection);
+  if (shellProblem) {
     sender.send({
       type: "open_terminal_result",
       in_reply_to: msg.id,
       ok: false,
-      message: `runPi=false opens a plain shell and cannot start ${selection.agent}.`,
+      message: shellProblem,
       method: "none",
     });
     return;
