@@ -13,6 +13,10 @@
  *   that broker just gave it and follows it;
  * - a leader whose path is later taken away stands down, and its clients
  *   re-elect onto whoever owns the path now.
+ *
+ * In both cases the old broker is abandoned, not closed: libuv unlinks the file
+ * a server was bound to when the server closes, whatever lies there by then,
+ * so closing would remove the successor's socket.
  */
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { once } from "node:events";
@@ -24,7 +28,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { Broker } from "./broker.js";
 import { SessionPeer } from "./peer.js";
 import { ipcAddress } from "./ipc.js";
-import { removeStaleSock, socketIdentity } from "./leader_election.js";
+import { probe, removeStaleSock, socketIdentity } from "./leader_election.js";
 
 // Only `joinOrLead` is replaced, and only while a test sets `next`; everything
 // else stays real so the POSIX cases can use the actual election.
@@ -94,7 +98,11 @@ describe("SessionPeer: one broker per host (issue #140)", () => {
       // No second broker on this host: the peer is a follower of the real one.
       expect(peer.currentRole()).toBe("follower");
       expect(peer.localBroker()).toBeNull();
-      expect(orphanServer.listening).toBe(false);
+      // The successor keeps its socket: giving up our own broker did not
+      // remove it (closing the listener would have).
+      const reachable = await probe(path);
+      expect(reachable.ok).toBe(true);
+      if (reachable.ok) reachable.socket.destroy();
 
       // The registration the rival gave over the loopback connection stands.
       expect(rival.peerNames()).toEqual(["/tmp/orphan@orphan"]);
@@ -158,7 +166,8 @@ describe("SessionPeer: one broker per host (issue #140)", () => {
     const rivalServer = createServer();
     const rival = new Broker({ server: rivalServer });
     await listen(rivalServer, path);
-    expect(socketIdentity(path)!.ino).not.toBe(own.ino);
+    const rivalIdentity = socketIdentity(path)!;
+    expect(rivalIdentity.ino).not.toBe(own.ino);
 
     try {
       await waitFor(
@@ -169,6 +178,22 @@ describe("SessionPeer: one broker per host (issue #140)", () => {
       expect(leader.localBroker()).toBeNull();
       expect(client.currentRole()).toBe("follower");
       expect(rival.peerNames().sort()).toEqual(["/tmp/client@client", "/tmp/first@first"]);
+      // The old leader abandoned its listener instead of closing it, so the
+      // successor is still the one at the path, and a newcomer follows it.
+      expect(socketIdentity(path)).toEqual(rivalIdentity);
+      const newcomer = new SessionPeer({
+        sockPath: path,
+        name: "late",
+        cwd: "/tmp/late",
+        leaderPathCheckIntervalMs: 0,
+      });
+      try {
+        await newcomer.start();
+        expect(newcomer.currentRole()).toBe("follower");
+        expect(rival.peerNames()).toContain("/tmp/late@late");
+      } finally {
+        await newcomer.leave();
+      }
       // Both were told that the broker changed, as after any leader loss.
       expect(reconnects).toContain("leader:follower");
       expect(reconnects).toContain("client:follower");

@@ -18,6 +18,7 @@ import {
 } from "./leader_election.js";
 import { Broker } from "./broker.js";
 import { CROSS_PC_DENIED_GRACE_MS } from "./ack_policy.js";
+import { usesNamedPipe } from "./ipc.js";
 import { describeRegistrationBlocker, describeSocketOwner } from "./socket_owner.js";
 
 export { CROSS_PC_DENIED_GRACE_MS } from "./ack_policy.js";
@@ -380,11 +381,11 @@ export class SessionPeer {
           // took the path, so nothing can reach our server. That process is
           // the leader. The registration it just gave us over the loopback
           // connection stands: keep that connection as our follower socket and
-          // drop only our own broker.
+          // give up only our own broker. Abandon, not close: see `abandon()`.
           this.role = "follower";
           this.broker = null;
           this.ownSockIdentity = null;
-          try { await broker.close(); } catch { /* best-effort */ }
+          try { broker.abandon(); } catch { /* best-effort */ }
           return registration.name;
         }
         this.ownSockIdentity = result.identity;
@@ -401,7 +402,10 @@ export class SessionPeer {
         // a follower that is still joined reads the drop as a leader loss and
         // re-runs election via _onSocketClose; one already leaving stays put.
         // Either way it recovers, whereas a stranded path never does.
-        try { await broker.close(); } catch { /* best-effort */ }
+        try {
+          if (this._ownsBrokerPath(result.identity)) await broker.close();
+          else broker.abandon();
+        } catch { /* best-effort */ }
         this.broker = null;
         this.role = "follower";
         this.ownSockIdentity = null;
@@ -771,7 +775,9 @@ export class SessionPeer {
       // close is not read as a live-connection drop and answered with a
       // second, concurrent election.
       this.socket = null;
-      try { await broker.close(); } catch { /* ignored */ }
+      // Not `close()`: this leader no longer owns the path (that is why it
+      // stands down), and closing would remove the successor's socket file.
+      try { broker.abandon(); } catch { /* ignored */ }
       if (this.leftFlag) return;
       await this._rejoin();
     })();
@@ -788,6 +794,7 @@ export class SessionPeer {
     // cannot interleave into a double registration.
     while (this.stepDownInFlight) await this.stepDownInFlight;
     this._stopLeaderPathCheck();
+    const own = this.ownSockIdentity;
     this.ownSockIdentity = null;
     for (const [id, slot] of this.pending) {
       clearTimeout(slot.timer);
@@ -803,8 +810,29 @@ export class SessionPeer {
       this.socket = null;
     }
     if (this.broker) {
-      try { await this.broker.close(); } catch { /* ignored */ }
+      try {
+        if (this._ownsBrokerPath(own)) await this.broker.close();
+        else this.broker.abandon();
+      } catch { /* ignored */ }
       this.broker = null;
     }
+  }
+
+  /**
+   * Whether the socket file at our path is still the one this leader's
+   * broker was bound to. It decides between `close()` and `abandon()` (issue
+   * #140): closing a listening server makes libuv unlink whatever lies at the
+   * path by then, so only the owner of the path may close.
+   *
+   * A Windows pipe cannot be removed or rebound under its owner, so its
+   * holder always owns it. On POSIX an unknown identity counts as not owned:
+   * leaving a listener behind costs one descriptor, removing a successor's
+   * socket costs the host its broker.
+   */
+  private _ownsBrokerPath(identity: SocketIdentity | null): boolean {
+    if (usesNamedPipe()) return true;
+    if (!identity) return false;
+    const current = socketIdentity(this.opts.sockPath);
+    return current !== null && current.dev === identity.dev && current.ino === identity.ino;
   }
 }
