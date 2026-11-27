@@ -679,6 +679,9 @@ export class SessionPeer {
         answers: pending.denials,
       });
     }, CROSS_PC_DENIED_GRACE_MS);
+    // The send's own deadline timer keeps the process up until it settles;
+    // this one need not.
+    slot.graceTimer.unref?.();
   }
 
   private _settleAck(id: string, slot: AckSlot, result: AckResult): void {

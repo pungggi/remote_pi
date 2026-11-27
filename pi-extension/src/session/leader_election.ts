@@ -90,7 +90,7 @@ export async function joinOrLead(
     await delay(BASE_BACKOFF_MS + Math.random() * JITTER_MS);
   }
   const detail = lastProbe === null
-    ? ""
+    ? " (no socket was there to probe, yet every bind failed)"
     : lastProbe === "refused"
       ? " (the path stayed taken after every refused probe)"
       : ` (a listener is there but its probe ended in ${lastProbe})`;
