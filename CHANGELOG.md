@@ -10,50 +10,12 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 ---
 ## [Unreleased]
 
+Entries that describe app, relay or extension work together stay here until
+the app cuts a section of its own. The extension-only entries of the 0.10.0
+and 0.10.1 releases moved to their sections on 2026-11-27.
+
 ### Added
 
-- **CI for `pi-extension/**`** (found with 0.10.0):
-  `.github/workflows/pi-extension-ci.yml` runs install, typecheck, test,
-  build and an LF gate (release artefacts must not contain CR) on every
-  pull request and push to `main` that touches the extension: ubuntu with
-  Node 22 and 24, windows with Node 22. Before, nothing ran when only the
-  extension changed, which is how a line-ending-dependent test and CRLF
-  service units reached the tarball. pnpm 12.8.1 is pinned in the workflow.
-  The first runs also settled two facts the local runs could not: Node 20
-  cannot load the extension at all (the Pi SDK needs >= 22.19), so
-  `engines` now says so; and a handful of tests only passed on the owner's
-  machine (see Fixed).
-- **Android (Termux) as a session host, stage A3 (plan/173)**: a phone can
-  now be set up as an always-on host with one command. Before, the Termux
-  setup was nine manual steps and nothing restarted the supervisor when it
-  died, so the phone left the mesh at the next reboot or kill (2026-11-25:
-  dark from 21:10 until 11:18).
-  - pi-extension: `remote-pi install` detects Termux and writes the
-    Termux:Boot script `~/.termux/boot/start-piper.sh` (wake lock,
-    supervisor, guard). A script remote-pi did not write is left alone by
-    install; `remote-pi phone-setup` shows its diff and replaces it only
-    after the user agreed, keeping a dated copy. `uninstall` stops both
-    again. `remote-pi phone-setup` checks the environment, installs, starts,
-    waits for the device daemon's relay room and prints a pairing link that
-    the device daemon mints (new supervisor op `pair`). Flags: `--relay`,
-    `--yes`, `--ttl`.
-  - pi-extension: `remote-pi guard` is the Android stand-in for a service
-    manager. Every 30 s it makes a real `status` round trip on the control
-    socket; a missing supervisor is started, a silent one is killed and
-    restarted after two failed checks, a supervisor older than 24 h gets
-    one graceful restart, with a restart-rate limit and one log line per
-    transition. Every number is a setting (`guard.conf`, environment
-    wins). Crashed and wedged children stay with the supervisor's own
-    backoff and the plan/168 ping loop. It retires the interim shell guard
-    the phone ran before (`piper-guard.sh`).
-  - pi-extension: sessions started from the app run in a detached tmux
-    session named after the relay room (`open_terminal_result.method`
-    gains the diagnostic value `tmux`; the app maps unknown values to
-    null). `remote-pi doctor` starts with six Android rows inside Termux.
-  - Not in this change: the app side (device picker, phone icon, "Open in
-    Termux") and a watchdog for the Termux app itself (plan/173 A7, spike
-    pending). Nothing was run on a device yet; the six checks are listed
-    under A3 in the plan.
 - **Timestamps in the chat (plan/172)**: the transcript had no sense of
   time and mixed two clocks. Live frames carried no time, so the app
   stamped arrival on the phone's clock while replayed history used the
@@ -83,12 +45,6 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   which is too quiet for "a session is blocked on you". Completion
   notifications stay informational on the old channel. The channel is new
   on purpose: Android freezes a channel's importance at creation.
-- **Ask fanout audit trail (plan/171)**: the device daemon now logs every
-  `ask_notice` outcome in `ext-device.log` (`pending_ask out … seq=N
-  recipients=K`, `ask_notice refused … reason="…"`), and the asking session
-  logs `ask_notice sent / refused / failed` in its own room log. The reply
-  carries the broadcast receipt (`seq`, `epoch`, `recipients`). A badge
-  that did not show is now a two-file lookup instead of a guess.
 - **Ask notifications for any session (plan/170)**: an `ask_user` in a
   session the phone was not viewing had no delivery path. The app keeps
   one connection and switches rooms, and only the `device` room (the
@@ -128,135 +84,9 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   button. Outage window for the incident class: hours → minutes (replays:
   ≈41 s ping bounce, ≈105 s wedged-supervisor restart).
 
-- **Headless spawn (plan/167)**: `spawn_worktree {headless:true}` spawns an
-  INVISIBLE worker instead of a terminal window — a transient `pi --mode rpc`
-  child under the Piper supervisor (plan/124 machinery): same worktree, same
-  mesh peer (`<worktree>@<agent_name>`), same `agent_send`/`session_shutdown`
-  workflow, no window. The optional `provider`/`model_id` now also ride the
-  headless path (`start_transient` gained `model`, validated by
-  `SAFE_MODEL_TOKEN` at the surface). While alive the supervisor auto-restarts
-  the worker on crash and RESUMES its session (documented divergence: a reused
-  worktree continues its old conversation, unlike the visible path's fresh
-  session). `session_shutdown` on the worker is a clean exit — no restart, no
-  boot resurrection. Requires the supervisor running; without it the spawn
-  fails with an actionable error (no silent fallback to a terminal). Available
-  on all three surfaces: Pi tool, `$rp_control` envelope, MCP.
-
-- **Mesh `session_shutdown` (plan/166)**: sixth session-control verb — gracefully END a session's process, locally (omit `target`) or on a remote peer. The mesh path passes `defer_if_busy`, so a busy session ACCEPTS the shutdown and exits when its current turn settles — without it, local self-shutdown would always fail (the tool call itself makes the session busy) and busy peers would refuse at the exact moment you want them gone. Reply-before-death is preserved: the ack flushes before the room goes idle and the relay closes. The app's Quit keeps the strict busy-refusal (flag unset) — semantics unchanged. Kill-switch `allow_remote_session_control:false` refuses the op like every other. MCP (`remote-pi-mesh`) gained the remote-only tool.
-
-- **Agent mesh session control (plan/161)**: mesh agents can now manage
-  sessions with five tools — `session_compact`, `session_reset` (fresh
-  context, same process), `model_set`, `list_models`, and `spawn_worktree`
-  (git worktree + fresh `pi` terminal that auto-joins the mesh). Omit
-  `target` to act on your own session (Pi); pass a `list_peers` address to
-  control a remote peer via `$rp_control` envelopes intercepted before the
-  target's LLM turn. Claude/Agy get the same verbs as MCP tools (remote
-  only). Execution reuses the plan/28 typed-action handlers and the
-  plan/108 worktree machinery unchanged. Kill-switch:
-  `allow_remote_session_control: false` in the target's
-  `.pi/remote-pi/config.json` (default on, per the 2026-11-08 ungated
-  decision).
-- **Docs: second-PC setup checklist** in the agent-network skill, distilled
-  from the plan/161 cross-PC live e2e: phone-published membership (a relay
-  connection alone is not enough), pairing each machine from the phone,
-  explicit `set-relay`, and agent-side verification steps.
-
-### Changed
-
-- **pi-extension needs Node 22.19 or newer** (`engines` declared
-  `>=20.0.0` before). The Pi SDK it loads requires it; on Node 20 the
-  extension could not even be imported (`fs.globSync` is missing), so
-  nothing that worked stops working — `engines` and the README now say
-  what was already true. Found by the first Linux CI run.
-
 ### Fixed
 
-- **`remote-pi restart-supervisor` exits 0 only when the supervisor was
-  really restarted**. It printed "Supervisor restarted." whatever happened.
-  With a supervisor started outside the service (as on the PC on 2026-11-26),
-  `schtasks /End` ended nothing and `/Run` launched a second instance that
-  refused to start next to the first: same pids before and after, exit 0. The
-  command now reads the pid serving the control socket before and after the
-  service commands, waits for it to change, falls back to stopping a foreign
-  instance by pid and starting the service again, and reports and exits by
-  what it saw. The restart is also recognised when the fleet kept its pids or
-  has not spawned yet (the old pid is gone while the socket still answers).
-  A service command that fails with a code of its own hands that code on, as
-  the bare command always did. The fallback stops only the instance that was
-  identified before the attempt; an owner learned afterwards may be a new
-  instance and is left alone.
-- **`show_file` / `show_image` no longer echo the resolved absolute path in
-  a failure message.** Node's fs error text embeds it (`stat '/…/doc.md'`),
-  so the model-visible result carried the absolute path although both tools
-  echo only the agent-supplied path in `details.path`. The error code is
-  reported instead (found by the first Linux CI run; the test compared
-  JSON, where backslash escaping had hidden the leak on Windows).
-- **The Android host runs on the real phone** (pi-extension). Three defects
-  of 0.10.0, each found on the owner's device on 2026-11-26:
-  - **Termux was not detected.** Termux's node reports `process.platform` as
-    `android`, and the check required `linux`. So `phone-setup`, `install`
-    and `guard run` / `start` all refused on the phone ("not Termux",
-    "unsupported platform"), and the fleet had nothing that restarts it.
-    Both platforms count now; a Termux marker is still required, so a plain
-    Linux box is not taken for Termux.
-  - **A `guard.conf` with comments behind values was rejected.** The phone's
-    file carries `KEY=30   # comment`; every such line was reported as a bad
-    value and the default was used. An inline `# comment` is now cut off
-    the way a shell reads it.
-  - **`guard status` said "not running" for a running guard** that a wrapper
-    had started (`node --require <shim> … index.js guard run`): only the
-    first argument after `node` was read as the script. `guard start` then
-    tried to spawn a second loop instead of reporting the live one. The pid
-    file is the anchor now and the command line only has to agree; a guard
-    whose pid file was removed is still found by its command line.
-
-  `remote-pi phone-setup` now stops with exit 1 when the guard is not
-  running after the start and shows the last `guard.log` lines. It was a
-  warning, which is how the fleet of that day ran without a guard.
-- **`remote-pi --version` and `-v` print the package version.** They printed
-  the usage. The thin CLI entry answers without loading the runtime.
-- **pi-extension: service units are always LF, templates and shell scripts
-  stay LF in every checkout** (found while packing 0.10.0). A tarball packed
-  on a Windows checkout shipped CRLF service templates, and `remote-pi
-  install` wrote the rendered systemd unit and launchd plist without
-  normalising them: on Linux `ExecStart` ended in `\r` and the service
-  failed. systemd, launchd and Termux units are now written LF whatever the
-  template's line endings; `.gitattributes` pins the POSIX templates and
-  every `*.sh` to LF in the working tree, and the template test no longer
-  depends on `core.autocrlf`.
-- **`remote-pi daemon status` exits 1 when the supervisor does not answer**
-  (plan/173). It printed `[remote-pi] status failed: Error: supervisor
-  reply timeout` and still exited 0, so an exit-code-based health probe read
-  a wedged supervisor as healthy (found by the phone's interim guard).
-  Offline and reply timeout both answer non-zero now; the slash command
-  still only shows the warning.
 - **Relay: deterministic `rooms` snapshot ordering** (plan/164). `rooms_of` returned `HashMap::into_values()`, so the snapshot serialized in a different order on every call: the per-conn byte-identical dedup could never suppress `rooms_check` replies, the phone app saw every reply as "changed", and the resulting re-poll loop pushed ~60 full snapshots/s onto the same WebSocket that carries `agent_chunk` — starving response streaming. Snapshots are now sorted by `room_id`; regression test covers multi-room suppression (single-room tests could never catch the ordering bug). The firehose 10s window log now also attributes rooms traffic (`rooms_poll_top`, `rooms_sent_conn_top`, `rooms_sent_target_top`). Measured: 623 replies/10s → 3.
-- **`list_models` always shows the current model**: the `← current` marker
-  only ever matched when the current model was part of the listed
-  (scoped/enabled) set; a default or router-resolved current rendered as
-  nothing at all. Renderers (Pi tool + MCP) now append a
-  `← current (outside the listed set)` line when the current model is set
-  but absent from the list (gap observed live in the plan/161 e2e).
-- **MCP mesh tools wait for the join instead of hard-failing**: in the first
-  seconds after server spawn, `list_peers`/`agent_send`/`wait_for_message`/
-  session-control answered "Mesh not available yet" (live rig measured
-  2-3 s until ready). They now wait up to 10 s for the async join;
-  `mesh_status` deliberately stays a truthful no-wait snapshot.
-- **Test: room_keeper `session_sync` flake**: the test slept a fixed 1 s for
-  the async serve (dynamic import + disk) and failed 3/3 under full-suite
-  load during PR #107's live e2e (green when idle). It now polls with a
-  deadline instead of sleeping.
-- **Test: `two ids never share a cwd` raced its own fixture** (found by the
-  extension CI on node 24, the first run on `main`). Daemon ids derive from
-  the cwd, so the registry entry the test added had the SAME id as the
-  transient it had started: the test never reached the collision guard and
-  passed only while that transient child was still `running`. With node as
-  the stand-in for `pi` it exits at once, and on that runner it had crashed
-  before `start` arrived. A second id now sits on the cwd by hand, and the
-  reply of a refused spawn is asserted. Behind it a small gap is closed: for
-  a registry entry, `daemon start <id>` reported a spawn the guard refused
-  as `started: true`. It answers the same error as the device and transient
-  paths.
 - **The guard says when it is waiting.** When the start backoff holds the
   next supervisor start, `guard.log` gets one line per wait, `supervisor:
   start postponed by the start backoff until HH:MM`, as the rate limit
@@ -293,9 +123,7 @@ version line.
 ## [0.10.2] - 2026-11-27
 
 Release of the extension only (`pi-extension`). The app keeps its own
-version line. The changes of the 0.10.0 and 0.10.1 extension releases are
-still listed under [Unreleased]: those releases cut no section of their
-own.
+version line.
 
 ### Fixed
 
@@ -321,6 +149,214 @@ own.
   stopped on a mistyped, loopback or unreachable address left the phone
   with a relay it could not reach. The address is probed first now; a
   `--relay` that fails changes nothing.
+
+## [0.10.1] - 2026-11-26
+
+Release of the extension only (`pi-extension`). The app keeps its own
+version line. Only entries that describe extension work alone are here;
+entries that mix app, relay or extension work stay under [Unreleased].
+
+### Added
+
+- **CI for `pi-extension/**`** (found with 0.10.0):
+  `.github/workflows/pi-extension-ci.yml` runs install, typecheck, test,
+  build and an LF gate (release artefacts must not contain CR) on every
+  pull request and push to `main` that touches the extension: ubuntu with
+  Node 22 and 24, windows with Node 22. Before, nothing ran when only the
+  extension changed, which is how a line-ending-dependent test and CRLF
+  service units reached the tarball. pnpm 12.8.1 is pinned in the workflow.
+  The first runs also settled two facts the local runs could not: Node 20
+  cannot load the extension at all (the Pi SDK needs >= 22.19), so
+  `engines` now says so; and a handful of tests only passed on the owner's
+  machine (see Fixed).
+
+### Changed
+
+- **pi-extension needs Node 22.19 or newer** (`engines` declared
+  `>=20.0.0` before). The Pi SDK it loads requires it; on Node 20 the
+  extension could not even be imported (`fs.globSync` is missing), so
+  nothing that worked stops working — `engines` and the README now say
+  what was already true. Found by the first Linux CI run.
+
+### Fixed
+
+- **`remote-pi restart-supervisor` exits 0 only when the supervisor was
+  really restarted**. It printed "Supervisor restarted." whatever happened.
+  With a supervisor started outside the service (as on the PC on 2026-11-26),
+  `schtasks /End` ended nothing and `/Run` launched a second instance that
+  refused to start next to the first: same pids before and after, exit 0. The
+  command now reads the pid serving the control socket before and after the
+  service commands, waits for it to change, falls back to stopping a foreign
+  instance by pid and starting the service again, and reports and exits by
+  what it saw. The restart is also recognised when the fleet kept its pids or
+  has not spawned yet (the old pid is gone while the socket still answers).
+  A service command that fails with a code of its own hands that code on, as
+  the bare command always did. The fallback stops only the instance that was
+  identified before the attempt; an owner learned afterwards may be a new
+  instance and is left alone.
+
+- **`show_file` / `show_image` no longer echo the resolved absolute path in
+  a failure message.** Node's fs error text embeds it (`stat '/…/doc.md'`),
+  so the model-visible result carried the absolute path although both tools
+  echo only the agent-supplied path in `details.path`. The error code is
+  reported instead (found by the first Linux CI run; the test compared
+  JSON, where backslash escaping had hidden the leak on Windows).
+
+- **The Android host runs on the real phone** (pi-extension). Three defects
+  of 0.10.0, each found on the owner's device on 2026-11-26:
+  - **Termux was not detected.** Termux's node reports `process.platform` as
+    `android`, and the check required `linux`. So `phone-setup`, `install`
+    and `guard run` / `start` all refused on the phone ("not Termux",
+    "unsupported platform"), and the fleet had nothing that restarts it.
+    Both platforms count now; a Termux marker is still required, so a plain
+    Linux box is not taken for Termux.
+  - **A `guard.conf` with comments behind values was rejected.** The phone's
+    file carries `KEY=30   # comment`; every such line was reported as a bad
+    value and the default was used. An inline `# comment` is now cut off
+    the way a shell reads it.
+  - **`guard status` said "not running" for a running guard** that a wrapper
+    had started (`node --require <shim> … index.js guard run`): only the
+    first argument after `node` was read as the script. `guard start` then
+    tried to spawn a second loop instead of reporting the live one. The pid
+    file is the anchor now and the command line only has to agree; a guard
+    whose pid file was removed is still found by its command line.
+
+  `remote-pi phone-setup` now stops with exit 1 when the guard is not
+  running after the start and shows the last `guard.log` lines. It was a
+  warning, which is how the fleet of that day ran without a guard.
+
+- **`remote-pi --version` and `-v` print the package version.** They printed
+  the usage. The thin CLI entry answers without loading the runtime.
+
+- **pi-extension: service units are always LF, templates and shell scripts
+  stay LF in every checkout** (found while packing 0.10.0). A tarball packed
+  on a Windows checkout shipped CRLF service templates, and `remote-pi
+  install` wrote the rendered systemd unit and launchd plist without
+  normalising them: on Linux `ExecStart` ended in `\r` and the service
+  failed. systemd, launchd and Termux units are now written LF whatever the
+  template's line endings; `.gitattributes` pins the POSIX templates and
+  every `*.sh` to LF in the working tree, and the template test no longer
+  depends on `core.autocrlf`.
+
+- **Test: `two ids never share a cwd` raced its own fixture** (found by the
+  extension CI on node 24, the first run on `main`). Daemon ids derive from
+  the cwd, so the registry entry the test added had the SAME id as the
+  transient it had started: the test never reached the collision guard and
+  passed only while that transient child was still `running`. With node as
+  the stand-in for `pi` it exits at once, and on that runner it had crashed
+  before `start` arrived. A second id now sits on the cwd by hand, and the
+  reply of a refused spawn is asserted. Behind it a small gap is closed: for
+  a registry entry, `daemon start <id>` reported a spawn the guard refused
+  as `started: true`. It answers the same error as the device and transient
+  paths.
+
+## [0.10.0] - 2026-11-26
+
+Release of the extension only (`pi-extension`). The app keeps its own
+version line. Only entries that describe extension work alone are here;
+entries that mix app, relay or extension work stay under [Unreleased].
+
+### Added
+
+- **Android (Termux) as a session host, stage A3 (plan/173)**: a phone can
+  now be set up as an always-on host with one command. Before, the Termux
+  setup was nine manual steps and nothing restarted the supervisor when it
+  died, so the phone left the mesh at the next reboot or kill (2026-11-25:
+  dark from 21:10 until 11:18).
+  - pi-extension: `remote-pi install` detects Termux and writes the
+    Termux:Boot script `~/.termux/boot/start-piper.sh` (wake lock,
+    supervisor, guard). A script remote-pi did not write is left alone by
+    install; `remote-pi phone-setup` shows its diff and replaces it only
+    after the user agreed, keeping a dated copy. `uninstall` stops both
+    again. `remote-pi phone-setup` checks the environment, installs, starts,
+    waits for the device daemon's relay room and prints a pairing link that
+    the device daemon mints (new supervisor op `pair`). Flags: `--relay`,
+    `--yes`, `--ttl`.
+  - pi-extension: `remote-pi guard` is the Android stand-in for a service
+    manager. Every 30 s it makes a real `status` round trip on the control
+    socket; a missing supervisor is started, a silent one is killed and
+    restarted after two failed checks, a supervisor older than 24 h gets
+    one graceful restart, with a restart-rate limit and one log line per
+    transition. Every number is a setting (`guard.conf`, environment
+    wins). Crashed and wedged children stay with the supervisor's own
+    backoff and the plan/168 ping loop. It retires the interim shell guard
+    the phone ran before (`piper-guard.sh`).
+  - pi-extension: sessions started from the app run in a detached tmux
+    session named after the relay room (`open_terminal_result.method`
+    gains the diagnostic value `tmux`; the app maps unknown values to
+    null). `remote-pi doctor` starts with six Android rows inside Termux.
+  - Not in this change: the app side (device picker, phone icon, "Open in
+    Termux") and a watchdog for the Termux app itself (plan/173 A7, spike
+    pending). Nothing was run on a device yet; the six checks are listed
+    under A3 in the plan.
+
+- **Ask fanout audit trail (plan/171)**: the device daemon now logs every
+  `ask_notice` outcome in `ext-device.log` (`pending_ask out … seq=N
+  recipients=K`, `ask_notice refused … reason="…"`), and the asking session
+  logs `ask_notice sent / refused / failed` in its own room log. The reply
+  carries the broadcast receipt (`seq`, `epoch`, `recipients`). A badge
+  that did not show is now a two-file lookup instead of a guess.
+
+- **Headless spawn (plan/167)**: `spawn_worktree {headless:true}` spawns an
+  INVISIBLE worker instead of a terminal window — a transient `pi --mode rpc`
+  child under the Piper supervisor (plan/124 machinery): same worktree, same
+  mesh peer (`<worktree>@<agent_name>`), same `agent_send`/`session_shutdown`
+  workflow, no window. The optional `provider`/`model_id` now also ride the
+  headless path (`start_transient` gained `model`, validated by
+  `SAFE_MODEL_TOKEN` at the surface). While alive the supervisor auto-restarts
+  the worker on crash and RESUMES its session (documented divergence: a reused
+  worktree continues its old conversation, unlike the visible path's fresh
+  session). `session_shutdown` on the worker is a clean exit — no restart, no
+  boot resurrection. Requires the supervisor running; without it the spawn
+  fails with an actionable error (no silent fallback to a terminal). Available
+  on all three surfaces: Pi tool, `$rp_control` envelope, MCP.
+
+- **Mesh `session_shutdown` (plan/166)**: sixth session-control verb — gracefully END a session's process, locally (omit `target`) or on a remote peer. The mesh path passes `defer_if_busy`, so a busy session ACCEPTS the shutdown and exits when its current turn settles — without it, local self-shutdown would always fail (the tool call itself makes the session busy) and busy peers would refuse at the exact moment you want them gone. Reply-before-death is preserved: the ack flushes before the room goes idle and the relay closes. The app's Quit keeps the strict busy-refusal (flag unset) — semantics unchanged. Kill-switch `allow_remote_session_control:false` refuses the op like every other. MCP (`remote-pi-mesh`) gained the remote-only tool.
+
+- **Agent mesh session control (plan/161)**: mesh agents can now manage
+  sessions with five tools — `session_compact`, `session_reset` (fresh
+  context, same process), `model_set`, `list_models`, and `spawn_worktree`
+  (git worktree + fresh `pi` terminal that auto-joins the mesh). Omit
+  `target` to act on your own session (Pi); pass a `list_peers` address to
+  control a remote peer via `$rp_control` envelopes intercepted before the
+  target's LLM turn. Claude/Agy get the same verbs as MCP tools (remote
+  only). Execution reuses the plan/28 typed-action handlers and the
+  plan/108 worktree machinery unchanged. Kill-switch:
+  `allow_remote_session_control: false` in the target's
+  `.pi/remote-pi/config.json` (default on, per the 2026-11-08 ungated
+  decision).
+
+- **Docs: second-PC setup checklist** in the agent-network skill, distilled
+  from the plan/161 cross-PC live e2e: phone-published membership (a relay
+  connection alone is not enough), pairing each machine from the phone,
+  explicit `set-relay`, and agent-side verification steps.
+
+### Fixed
+
+- **`remote-pi daemon status` exits 1 when the supervisor does not answer**
+  (plan/173). It printed `[remote-pi] status failed: Error: supervisor
+  reply timeout` and still exited 0, so an exit-code-based health probe read
+  a wedged supervisor as healthy (found by the phone's interim guard).
+  Offline and reply timeout both answer non-zero now; the slash command
+  still only shows the warning.
+
+- **`list_models` always shows the current model**: the `← current` marker
+  only ever matched when the current model was part of the listed
+  (scoped/enabled) set; a default or router-resolved current rendered as
+  nothing at all. Renderers (Pi tool + MCP) now append a
+  `← current (outside the listed set)` line when the current model is set
+  but absent from the list (gap observed live in the plan/161 e2e).
+
+- **MCP mesh tools wait for the join instead of hard-failing**: in the first
+  seconds after server spawn, `list_peers`/`agent_send`/`wait_for_message`/
+  session-control answered "Mesh not available yet" (live rig measured
+  2-3 s until ready). They now wait up to 10 s for the async join;
+  `mesh_status` deliberately stays a truthful no-wait snapshot.
+
+- **Test: room_keeper `session_sync` flake**: the test slept a fixed 1 s for
+  the async serve (dynamic import + disk) and failed 3/3 under full-suite
+  load during PR #107's live e2e (green when idle). It now polls with a
+  deadline instead of sleeping.
 
 ## [1.6.2] - 2026-11-08
 
@@ -453,7 +489,6 @@ own.
   lost the entry until an app restart. The gate is now offline-only —
   untracked folders clean up fine (forget + phone copy removed), tap-time
   resolution unchanged.
-
 
 ## [1.5.5] - 2026-11-06
 
