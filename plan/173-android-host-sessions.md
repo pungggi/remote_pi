@@ -377,10 +377,10 @@ was found on the way:
   silently instead of refused: `runPi:false` with a model opened a plain
   shell without the model, and the Pi tools read an unknown `agent` as Pi.
   Both are refused now, like `runPi:false` with AGY already was.
-- **For A4: pass an explicit action timeout.** The app's default is 15 s
-  (`ActionsRepository`), but on a slow device `agy models` may take 30 s and
-  `agy --version` 15 s. The app would show a generic timeout before the
-  extension's explanation arrives.
+- **Open for A4, not in this PR: pass an explicit action timeout.** The app's
+  default is 15 s (`ActionsRepository`), but on a slow device `agy models` may
+  take 30 s and `agy --version` 15 s. Until A4 passes a longer timeout for the
+  AGY calls, the app shows a generic timeout before the extension's answer.
 
 ### A3 — Extension: Termux platform and `remote-pi phone-setup`
 
