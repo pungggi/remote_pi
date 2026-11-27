@@ -1752,6 +1752,29 @@ enum AgentKind {
   }
 }
 
+/// Plan/173 — the token rule of the extension's `SAFE_MODEL_TOKEN`
+/// (`pi-extension/src/protocol/types.ts`): a letter or digit first, then
+/// letters, digits, `.`, `_`, `/`, `-`, and never `..`. Both halves of a
+/// start model end up on a command line there, so the extension refuses
+/// anything else.
+final RegExp safeModelToken = RegExp(r'^(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._/-]*$');
+
+/// Plan/173 — why a start model cannot be sent, or null when it can. Mirrors
+/// the model half of the extension's `parseAgentSelection`: both halves or
+/// neither, and each half a [safeModelToken]. A sender calls it before it
+/// builds an [OpenTerminalRequest] or a [StartSessionRequest] (stage A4), so
+/// a bad token is reported before the round trip instead of after it. The
+/// extension checks the same rule again on the wire.
+String? startModelProblem({String? provider, String? modelId}) {
+  if (provider == null && modelId == null) return null;
+  if (provider == null || modelId == null) {
+    return 'a start model needs both provider and model_id (or neither)';
+  }
+  if (!safeModelToken.hasMatch(provider)) return 'invalid model provider: "$provider"';
+  if (!safeModelToken.hasMatch(modelId)) return 'invalid model id: "$modelId"';
+  return null;
+}
+
 class ListModels extends ClientMessage {
   final String id;
 
@@ -1812,7 +1835,9 @@ class OpenTerminalRequest extends ClientMessage {
 
   /// Plan/173 — optional start model for THIS session only (both or
   /// neither). Pi gets `--model <provider>/<id>`; AGY uses [modelId] alone.
-  /// The session's saved default model is never changed.
+  /// The session's saved default model is never changed. Senders check the
+  /// pair with [startModelProblem] first (stage A4); the extension checks
+  /// again on the wire.
   final String? provider;
   final String? modelId;
   OpenTerminalRequest({

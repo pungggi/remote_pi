@@ -101,6 +101,33 @@ void main() {
     });
   });
 
+  group('startModelProblem: the extension token rule, mirrored', () {
+    test('no model is fine, and so is a well-formed pair', () {
+      expect(startModelProblem(), isNull);
+      expect(startModelProblem(provider: 'zai', modelId: 'glm-5.3-flash'), isNull);
+      expect(startModelProblem(provider: 'google', modelId: 'gemini-4-neon/high'), isNull);
+    });
+
+    test('a model needs both halves', () {
+      const half = 'a start model needs both provider and model_id (or neither)';
+      expect(startModelProblem(provider: 'zai'), half);
+      expect(startModelProblem(modelId: 'glm-5.3-flash'), half);
+    });
+
+    test('forbidden characters in a token are refused with a clear error', () {
+      // What the extension refuses (agent_selection.test.ts): an empty string,
+      // whitespace, shell syntax, a leading slash or dot, dot-dot anywhere,
+      // and a trailing newline.
+      const badTokens = ['', 'a b', 'a;b', 'a&b', 'a|b', '../etc', '/abs', 'a..b', 'a\n'];
+      for (final bad in badTokens) {
+        expect(startModelProblem(provider: 'zai', modelId: bad),
+            'invalid model id: "$bad"');
+        expect(startModelProblem(provider: bad, modelId: 'glm-5.3-flash'),
+            'invalid model provider: "$bad"');
+      }
+    });
+  });
+
   group('DeviceInfoRequest', () {
     test('encodes as device_info_request', () {
       expect(DeviceInfoRequest(id: '01J').toJson(), {
