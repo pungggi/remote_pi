@@ -11,6 +11,8 @@
  *
  *   boot script        Termux:Boot runs it after each reboot. Missing = the
  *                      phone leaves the mesh at the next reboot (2026-11-25).
+ *                      Termux:Boot runs EVERY file of that directory, so old
+ *                      copies left there run too (2026-11-27): a warning.
  *   Termux:Boot app    The thing that runs the script. Install it from F-Droid
  *                      and OPEN IT ONCE — that is what arms it.
  *   wake lock          Keeps Android from dozing Termux. The boot script takes
@@ -26,10 +28,12 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { DoctorCheck } from "./doctor.js";
 import {
+  MOVE_LEGACY_BOOT_BACKUPS,
   TERMUX_BOOT_PACKAGE,
   allowExternalApps,
   findOnPath,
   isExecutable,
+  legacyBootBackupsInBootDir,
   termuxBootScriptPath,
 } from "./termux.js";
 import { runningGuardPid } from "./daemon/guard.js";
@@ -78,6 +82,9 @@ export interface AndroidCheckDeps {
   tmuxVersion: () => string | null;
   /** Pid of the running guard loop, or null. */
   guardRunning: () => number | null;
+  /** Old dated copies that install up to 0.10.2 left in the boot directory
+   *  itself, where Termux:Boot runs them at every boot. Absent = none. */
+  legacyBootBackups?: () => string[];
 }
 
 export function defaultAndroidCheckDeps(): AndroidCheckDeps {
@@ -107,6 +114,7 @@ export function defaultAndroidCheckDeps(): AndroidCheckDeps {
       return res.status === 0 && first ? first : "";
     },
     guardRunning: () => runningGuardPid(),
+    legacyBootBackups: () => legacyBootBackupsInBootDir(),
   };
 }
 
@@ -128,7 +136,17 @@ export function androidChecks(deps: AndroidCheckDeps): DoctorCheck[] {
       detail: `${script} lacks the executable bit — Termux:Boot runs only executable scripts. Fix: chmod +x "${script}"`,
     });
   } else {
-    checks.push({ name: "termux boot script", status: "ok", detail: `${script} (run by Termux:Boot after each reboot)` });
+    const legacy = deps.legacyBootBackups?.() ?? [];
+    checks.push(
+      legacy.length === 0
+        ? { name: "termux boot script", status: "ok", detail: `${script} (run by Termux:Boot after each reboot)` }
+        : {
+            name: "termux boot script",
+            status: "warn",
+            detail: `${script} runs after each reboot, and so do ${legacy.length} old cop${legacy.length === 1 ? "y" : "ies"} ` +
+              `in its directory (${legacy.map((p) => p.split("/").pop()).join(", ")}): Termux:Boot runs every file there. Move them: ${MOVE_LEGACY_BOOT_BACKUPS}`,
+          },
+    );
   }
 
   switch (deps.termuxBootApp()) {

@@ -484,7 +484,7 @@ export async function runPhoneSetup(opts: PhoneSetupOptions, deps: PhoneSetupDep
     report.text("");
     if (!isGeneratedBootScript(existingScript)) {
       const replace = await deps.confirm(
-        "Replace the existing boot script? A dated copy is kept next to it (start-piper.sh.bak-<timestamp>).",
+        "Replace the existing boot script? A dated copy is kept under ~/.pi/piper/boot-backups/ (start-piper.sh.bak-<timestamp>).",
         true,
       );
       if (!replace) {
@@ -493,7 +493,7 @@ export async function runPhoneSetup(opts: PhoneSetupOptions, deps: PhoneSetupDep
       }
       force = true;
     }
-    report.text("  The existing script is kept as start-piper.sh.bak-<timestamp>.");
+    report.text("  The existing script is kept under ~/.pi/piper/boot-backups/ as start-piper.sh.bak-<timestamp>.");
     report.text("");
   }
   if (deps.interimGuardPresent()) {

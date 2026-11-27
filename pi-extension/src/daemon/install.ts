@@ -4,7 +4,7 @@ import { delimiter } from "node:path";
 import { homedir, platform, tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TERMUX_PREFIX, fileStamp, isTermux, piperHome, termuxBootScriptPath } from "../termux.js";
+import { TERMUX_BOOT_SCRIPT, TERMUX_PREFIX, fileStamp, isTermux, piperHome, termuxBootBackupDir, termuxBootScriptPath } from "../termux.js";
 import { findGuardPids, findSupervisorPids, signalPid } from "./proc.js";
 
 /**
@@ -422,7 +422,8 @@ export function installService(vars: RenderVars = defaultRenderVars(), deps: Ser
     // not ours is left alone unless `force` is set: `remote-pi phone-setup`
     // shows the diff and asks first. What does get replaced — a foreign
     // script under `force`, or our own older version — is kept as a dated
-    // copy next to itself and its diff against ours goes into the log.
+    // copy under the boot-backups directory and its diff against ours goes
+    // into the log.
     if (existsSync(unitPath)) {
       const existing = readFileSync(unitPath, "utf8");
       if (existing !== script) {
@@ -432,7 +433,11 @@ export function installService(vars: RenderVars = defaultRenderVars(), deps: Ser
             "Run `remote-pi phone-setup` (it shows the diff and asks before replacing it).",
           );
         }
-        backup = `${unitPath}.bak-${fileStamp((deps.now ?? Date.now)())}`;
+        // Not next to the script: Termux:Boot runs every file of ~/.termux/boot
+        // at boot and sets the executable bit itself, so an old copy there
+        // would run at every boot (reboot test of 2026-11-27).
+        backup = join(termuxBootBackupDir(androidHome), `${TERMUX_BOOT_SCRIPT}.bak-${fileStamp((deps.now ?? Date.now)())}`);
+        mkdirSync(dirname(backup), { recursive: true });
         copyFileSync(unitPath, backup);
         diff = renderLineDiff(lineDiff(existing, script));
         log.push(`existing ${unitPath} differs: kept a copy at ${backup}`);

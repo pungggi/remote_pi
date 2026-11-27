@@ -120,8 +120,8 @@ guard brings a stopped device daemon back within 30 s, so stop it first.
 
 **Coming from the interim setup:** if the phone already has a
 `~/.termux/boot/start-piper.sh` that this version did not write, the command
-prints the diff and asks before replacing it, and keeps a dated copy next to
-it. On its own, `remote-pi install` refuses to touch such a file: only
+prints the diff and asks before replacing it, and keeps a dated copy under
+`~/.pi/piper/boot-backups/`. On its own, `remote-pi install` refuses to touch such a file: only
 `phone-setup` passes the permission to replace it, and only after that
 question. The interim guard (`~/.pi/piper/piper-guard.sh`) is retired by
 `remote-pi guard run` when the boot script starts it: stopped by its pid,
@@ -237,8 +237,24 @@ renames the script to `piper-guard.sh.replaced-<timestamp>`, so exactly one
 guard implementation remains. `guard.conf` stays: settings with a matching
 name carry over, others are reported as ignored. `remote-pi phone-setup`
 shows the diff between the interim boot script and the generated one, asks
-before replacing a script it did not write, and keeps a dated copy
-(`start-piper.sh.bak-<timestamp>`).
+before replacing a script it did not write, and keeps a dated copy under
+`~/.pi/piper/boot-backups/` (`start-piper.sh.bak-<timestamp>`).
+
+**Nothing but the live script belongs in `~/.termux/boot`.** Termux:Boot
+runs every file of that directory at each boot, in a job order nobody
+controls, and it sets the executable bit itself when it is missing
+(termux-boot 0.8.1, `BootReceiver`). An old script there runs at every boot
+with full effect. The reboot test of 2026-11-27 showed it: two dated copies
+that `install` up to 0.10.2 left next to the script ran as well. One looked
+for a wrapper that no longer existed, one started a second supervisor that
+had to refuse. That is harmless only while the old lines lose against the
+live ones. Since 0.10.3 `remote-pi install` keeps the dated copy under
+`~/.pi/piper/boot-backups/`, and `remote-pi doctor` warns while old copies
+sit in the boot directory. To move them by hand:
+
+```bash
+mkdir -p ~/.pi/piper/boot-backups && mv ~/.termux/boot/start-piper.sh.bak-* ~/.pi/piper/boot-backups/
+```
 
 **Outage of 2026-11-25, and what would have caught it.** `pi-supervisord`
 received SIGINT and SIGTERM at 21:10 and the phone booted at about 22:00.

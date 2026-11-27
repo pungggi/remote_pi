@@ -395,8 +395,10 @@ session after the relay room.
 The phone ran an interim setup while this was built (a hand-written boot
 script and a bash guard loop, `~/.pi/piper/piper-guard.sh`, sharing `guard.pid`,
 `guard.conf` and `guard.log`). The release migrates it deliberately: an
-existing boot script is diffed and copied to `start-piper.sh.bak-<timestamp>`
-before it is replaced, `phone-setup` asks before replacing a script it did not
+existing boot script is diffed and copied to
+`~/.pi/piper/boot-backups/start-piper.sh.bak-<timestamp>` before it is
+replaced (not next to itself: Termux:Boot runs every file of its directory,
+see below), `phone-setup` asks before replacing a script it did not
 write, and `guard run` stops the interim guard by its pid and renames its
 script. `remote-pi daemon status` now exits non-zero when the supervisor does
 not answer (the interim guard found that an exit-code probe had read a
@@ -417,6 +419,15 @@ around the shebang. The fix (2026-11-27): the boot script exports
 supervisor starts the device daemon as `node <pi's cli.js>`. Device check 5
 of the list below is the one that would have caught it; a reboot test with
 the owner present closes it.
+
+**Found by that reboot test, 2026-11-27: the dated copies ran too.**
+Termux:Boot executes every file of `~/.termux/boot` and sets the executable
+bit itself (termux-boot 0.8.1), so the two copies `install` had left next
+to the script started at boot as well: one looked for the renamed wrapper,
+one started a second supervisor that had to refuse. Harmless only because
+the old lines lose against the live ones. `install` keeps dated copies
+under `~/.pi/piper/boot-backups/` now, and doctor warns about old copies
+still in the boot directory.
 
 **To verify on the device after merge (all of it, in this order)**
 

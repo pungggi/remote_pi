@@ -4,8 +4,9 @@
  * injected, so this is a pure table test.
  */
 import { describe, expect, test } from "vitest";
-import { androidChecks, callingAndroidUserId, classifyPackageQuery, type AndroidCheckDeps } from "./android_checks.js";
+import { androidChecks, callingAndroidUserId, classifyPackageQuery, defaultAndroidCheckDeps, type AndroidCheckDeps } from "./android_checks.js";
 import { runDoctor } from "./doctor.js";
+import { MOVE_LEGACY_BOOT_BACKUPS } from "./termux.js";
 
 const SCRIPT = "/data/data/com.termux/files/home/.termux/boot/start-piper.sh";
 
@@ -73,6 +74,35 @@ describe("androidChecks", () => {
     const c = androidChecks(healthy({ bootScriptExecutable: () => false }))[0]!;
     expect(c.status).toBe("fail");
     expect(c.detail).toContain(`chmod +x "${SCRIPT}"`);
+  });
+
+  // 2026-11-27, reboot test: Termux:Boot also ran the dated copies that older
+  // installs left in the boot directory. They must be moved, and doctor says so.
+  test("old copies in the boot directory turn the script row into a warning with the move command", () => {
+    const boot = "/data/data/com.termux/files/home/.termux/boot";
+    expect(androidChecks(healthy())[0]!.status).toBe("ok");
+
+    const one = androidChecks(healthy({ legacyBootBackups: () => [`${boot}/start-piper.sh.bak-20261127-124819`] }))[0]!;
+    expect(one.status).toBe("warn");
+    expect(one.detail).toContain(
+      "so do 1 old copy in its directory (start-piper.sh.bak-20261127-124819): Termux:Boot runs every file there");
+    expect(one.detail).toContain(`Move them: ${MOVE_LEGACY_BOOT_BACKUPS}`);
+
+    const two = androidChecks(
+      healthy({ legacyBootBackups: () => [`${boot}/start-piper.sh.bak-20261127-124819`, `${boot}/start-piper.sh.bak-20261126-191759`] }),
+    )[0]!;
+    expect(two.status).toBe("warn");
+    expect(two.detail).toContain(
+      "so do 2 old copies in its directory (start-piper.sh.bak-20261127-124819, start-piper.sh.bak-20261126-191759)",
+    );
+
+    // A missing script keeps its own failure; the row does not bend.
+    const gone = androidChecks(healthy({ bootScriptExists: () => false, legacyBootBackups: () => ["x"] }))[0]!;
+    expect(gone.status).toBe("fail");
+    expect(gone.detail).not.toContain("old cop");
+
+    // The production wiring reads the real boot directory.
+    expect(typeof defaultAndroidCheckDeps().legacyBootBackups).toBe("function");
   });
 
   test("Termux:Boot missing fails with the install instruction; unknown only warns", () => {

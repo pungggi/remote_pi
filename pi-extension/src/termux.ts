@@ -15,7 +15,7 @@
  * spawns a process; callers that need `pm` or `termux-wake-lock` inject that.
  */
 
-import { accessSync, constants, existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 
@@ -64,6 +64,41 @@ export function piperHome(): string {
  *  writes on Android. */
 export function termuxBootScriptPath(home: string = piperHome()): string {
   return join(home, ".termux", "boot", TERMUX_BOOT_SCRIPT);
+}
+
+/**
+ * Where `remote-pi install` keeps the dated copy of a boot script it
+ * replaces. NOT next to it: Termux:Boot runs EVERY file of `~/.termux/boot`
+ * at each boot, in a job order nobody controls, and it sets the executable
+ * bit itself when missing (termux-boot 0.8.1, `BootReceiver`). An old script
+ * there runs at every boot with full effect. Found by the reboot test of
+ * 2026-11-27: two old copies ran next to the live one.
+ */
+export function termuxBootBackupDir(home: string = piperHome()): string {
+  return join(home, ".pi", "piper", "boot-backups");
+}
+
+/** File names install up to 0.10.2 left in the boot directory itself. */
+export const LEGACY_BOOT_BACKUP_PATTERN = /^start-piper\.sh\.bak-\d{8}-\d{6}$/;
+
+/** One command that moves those legacy copies out of the boot directory. */
+export const MOVE_LEGACY_BOOT_BACKUPS =
+  "mkdir -p ~/.pi/piper/boot-backups && mv ~/.termux/boot/start-piper.sh.bak-* ~/.pi/piper/boot-backups/";
+
+/** The legacy copies still sitting in `~/.termux/boot`, sorted by name
+ *  (empty when there are none, or when the directory cannot be read). */
+export function legacyBootBackupsInBootDir(home: string = piperHome()): string[] {
+  const dir = join(home, ".termux", "boot");
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  return names
+    .filter((name) => LEGACY_BOOT_BACKUP_PATTERN.test(name))
+    .sort()
+    .map((name) => join(dir, name));
 }
 
 /** `~/.termux/termux.properties` — the Termux app's own settings file. It
