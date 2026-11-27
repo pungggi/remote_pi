@@ -865,7 +865,8 @@ describe.skipIf(process.platform === "win32")("the Termux boot script under sh",
   }
 
   /** `<argument>|<LD_PRELOAD>|<LD_LIBRARY_PATH>` as the supervisor's and the
-   *  guard's stand-ins wrote it, once both have (they run in the background). */
+   *  guard's stand-ins wrote it, once both have (they run in the background,
+   *  in no defined order). */
   async function inherited(): Promise<string[]> {
     const deadline = Date.now() + 10_000;
     for (;;) {
@@ -880,11 +881,14 @@ describe.skipIf(process.platform === "win32")("the Termux boot script under sh",
     // Termux:Boot: nothing is preloaded in the environment that runs the script.
     const script = installAndRun();
     expect(script).toContain(`[ -e "${prefix}/lib/libtermux-exec.so" ]`);
-    const [first, second] = await inherited();
+    const lines = await inherited();
     const preloaded = `${termuxExec()}|${join(prefix, "lib")}`;
-    // The script starts the supervisor first, then the guard.
-    expect(first).toBe(`${supervisor}|${preloaded}`);
-    expect(second).toBe(`${remotePi}|${preloaded}`);
+    // Two background jobs: which stand-in writes first is not defined, so the
+    // lines are told apart by the argument each was started with.
+    const byArgument = new Map(lines.map((line) => [line.split("|")[0], line.split("|").slice(1).join("|")]));
+    expect([...byArgument.keys()].sort()).toEqual([supervisor, remotePi].sort());
+    expect(byArgument.get(supervisor)).toBe(preloaded);
+    expect(byArgument.get(remotePi)).toBe(preloaded);
   }, 20_000);
 
   test("a value the caller already has is kept", async () => {

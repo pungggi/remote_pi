@@ -355,7 +355,9 @@ describe("termuxPiScript", () => {
     expect(termuxPiScript(join(bin, "pi"), "")).toBe(realpathSync(cli()));
   });
 
-  test("a node shebang counts without an extension; other interpreters and binaries do not", () => {
+  // The next two look `pi` up on a POSIX PATH: a Windows path carries a drive
+  // colon, which the `:` separator would split.
+  test.skipIf(process.platform === "win32")("a node shebang counts without an extension; other interpreters and binaries do not", () => {
     const pi = join(bin, "pi");
     writeFileSync(pi, "#!/usr/bin/env node\n// pi\n");
     chmodSync(pi, 0o755);
@@ -384,7 +386,7 @@ describe("termuxPiScript", () => {
     expect(termuxPiScript("pi", bin)).toBeNull();
   });
 
-  test("the first PATH entry that holds `pi` wins; `.mjs` / `.cjs` count as scripts too", () => {
+  test.skipIf(process.platform === "win32")("the first PATH entry that holds `pi` wins; `.mjs` / `.cjs` count as scripts too", () => {
     const other = join(tmp, "other-bin");
     mkdirSync(other);
     for (const [dir, name] of [[other, "pi"], [bin, "pi"], [other, "pi.mjs"], [other, "pi.cjs"]] as const) {
