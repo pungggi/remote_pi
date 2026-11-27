@@ -8,6 +8,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
 
 ---
+## [0.10.2] - 2026-11-27
+
+Release of the extension only (`pi-extension`). The app keeps its own
+version line. The changes of the 0.10.0 and 0.10.1 extension releases are
+still listed under [Unreleased]: those releases cut no section of their
+own.
+
+### Fixed
+
+- **The phone's device daemon comes back after a reboot** (pi-extension,
+  Android). On 2026-11-26 and again on 2026-11-27 Termux:Boot started the
+  supervisor and the guard, and the device daemon crashed within ten
+  seconds both times: `spawn pi ENOENT`. The phone was off the mesh until
+  the fleet was restarted by hand. Two causes, both fixed:
+  - **The boot script did not preload termux-exec.** npm links `pi` to a
+    script whose shebang is `#!/usr/bin/env node`. Android has no
+    `/usr/bin/env`. A Termux shell starts such scripts only because the app
+    preloads `libtermux-exec.so`, which rewrites the shebang, and
+    Termux:Boot runs without that preload. The script now exports
+    `LD_PRELOAD` itself when it is unset and the library exists in the
+    prefix. A test runs the rendered script under `sh` with a simulated
+    prefix and checks what the supervisor and the guard inherit.
+  - **The supervisor spawned `pi` through that shebang.** Inside Termux it
+    now starts `node <pi's cli.js>` directly, the same way it starts
+    `node <cli.js>` behind the Windows `.cmd` shim. The device daemon then
+    needs no preload, even where the script's line cannot help.
+- **`remote-pi phone-setup --relay` is saved only once it answered.** The
+  value was written to the config before anything was checked, so a run that
+  stopped on a mistyped, loopback or unreachable address left the phone
+  with a relay it could not reach. The address is probed first now; a
+  `--relay` that fails changes nothing.
+
 ## [Unreleased]
 
 ### Added
@@ -257,28 +289,6 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   a registry entry, `daemon start <id>` reported a spawn the guard refused
   as `started: true`. It answers the same error as the device and transient
   paths.
-- **The phone's device daemon comes back after a reboot** (pi-extension,
-  Android). On 2026-11-26 and again on 2026-11-27 Termux:Boot started the
-  supervisor and the guard, and the device daemon crashed within ten
-  seconds both times: `spawn pi ENOENT`. The phone was off the mesh until
-  the fleet was restarted by hand. Two causes, both fixed:
-  - **The boot script did not preload termux-exec.** npm links `pi` to a
-    script whose shebang is `#!/usr/bin/env node`. Android has no
-    `/usr/bin/env`. A Termux shell starts such scripts only because the app
-    preloads `libtermux-exec.so`, which rewrites the shebang, and
-    Termux:Boot runs without that preload. The script now exports
-    `LD_PRELOAD` itself when it is unset and the library exists in the
-    prefix. A test runs the rendered script under `sh` with a simulated
-    prefix and checks what the supervisor and the guard inherit.
-  - **The supervisor spawned `pi` through that shebang.** Inside Termux it
-    now starts `node <pi's cli.js>` directly, the same way it starts
-    `node <cli.js>` behind the Windows `.cmd` shim. The device daemon then
-    needs no preload, even where the script's line cannot help.
-- **`remote-pi phone-setup --relay` is saved only once it answered.** The
-  value was written to the config before anything was checked, so a run that
-  stopped on a mistyped, loopback or unreachable address left the phone
-  with a relay it could not reach. The address is probed first now; a
-  `--relay` that fails changes nothing.
 
 ## [1.6.2] - 2026-11-08
 
