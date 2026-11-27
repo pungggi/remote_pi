@@ -314,3 +314,54 @@ describe("plan/161 session-control tools — remote path", () => {
     expect(r.details).toEqual({ ok: false });
   });
 });
+
+describe("plan/173 agent parameter on the control tools", () => {
+  test("spawn_worktree agent:'agy' flows to the local spawn", async () => {
+    const { pi, tools } = makeMockPi();
+    const deps = makeDeps();
+    registerSessionControlTools(pi, deps);
+    await call(tools.get("spawn_worktree")!, { agent: "agy" });
+    expect(deps.spawnWorktreeLocal).toHaveBeenCalledWith(expect.objectContaining({ agent: "agy" }));
+  });
+
+  test("spawn_worktree with agent:'pi' or none keeps the pre-173 request shape", async () => {
+    const { pi, tools } = makeMockPi();
+    const deps = makeDeps();
+    registerSessionControlTools(pi, deps);
+    await call(tools.get("spawn_worktree")!, { agent: "pi" });
+    await call(tools.get("spawn_worktree")!, {});
+    for (const c of vi.mocked(deps.spawnWorktreeLocal).mock.calls) {
+      expect(c[0]).not.toHaveProperty("agent");
+    }
+  });
+
+  test("list_models agent:'agy' dispatches list_models with the agent locally", async () => {
+    const { pi, tools } = makeMockPi();
+    const deps = makeDeps({
+      dispatchLocal: vi.fn().mockResolvedValue({
+        type: "models_list", in_reply_to: "x", models: [], agent: "agy",
+      } as ServerMessage),
+    });
+    registerSessionControlTools(pi, deps);
+    await call(tools.get("list_models")!, { agent: "agy" });
+    expect(deps.dispatchLocal).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "list_models", agent: "agy" }),
+    );
+  });
+
+  test("list_models with a target carries the agent in the control envelope", async () => {
+    const { pi, tools } = makeMockPi();
+    const peer = makeMockPeer();
+    registerSessionControlTools(pi, makeDeps({ getPeer: () => peer }));
+    await call(tools.get("list_models")!, { target: "pc2:C:\\proj@w1", agent: "agy" });
+    await call(tools.get("list_models")!, { target: "pc2:C:\\proj@w1" });
+    expect(peer.request).toHaveBeenNthCalledWith(
+      1,
+      "pc2:C:\\proj@w1",
+      { $rp_control: { op: "list_models", agent: "agy" } },
+      expect.any(Number),
+    );
+    // No agent requested: the envelope is exactly the pre-173 one.
+    expect(peer.request).toHaveBeenNthCalledWith(2, "pc2:C:\\proj@w1", { $rp_control: { op: "list_models" } }, expect.any(Number));
+  });
+});

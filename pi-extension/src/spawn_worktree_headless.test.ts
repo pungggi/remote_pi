@@ -33,6 +33,17 @@ vi.mock("./session/local_config.js", async (importOriginal) => {
   return { ...orig, loadLocalConfig: cfg.loadLocalConfig };
 });
 
+// Plan/173 — the AGY catalogue is asked before an AGY worktree is created;
+// stubbed so this file never starts agy.
+const agy = vi.hoisted(() => ({
+  agyModelIds: vi.fn(),
+}));
+vi.mock("./actions/agent_models.js", () => ({
+  agyModelIds: agy.agyModelIds,
+  listAgyModels: vi.fn(),
+  probeAgy: vi.fn(),
+}));
+
 const { _spawnWorktreeSession } = await import("./main.js");
 
 const WT_PATH = "C:\\proj_w167";
@@ -132,5 +143,57 @@ describe("plan/167 _spawnWorktreeSession — headless branch", () => {
     expect(r.ok).toBe(true);
     expect(wt.openTerminalTab).toHaveBeenCalledWith(WT_PATH, "pi");
     expect(sv.callSupervisor).not.toHaveBeenCalled();
+  });
+});
+
+describe("plan/173 _spawnWorktreeSession — model and agent", () => {
+  beforeEach(() => {
+    agy.agyModelIds.mockReset().mockResolvedValue(null);
+  });
+
+  test("null model halves — what the Pi tool and the control envelope send — mean no model", async () => {
+    // Regression: `null !== undefined` used to trip the both-or-neither
+    // check, so a model-less spawn through either caller was refused.
+    const r = await _spawnWorktreeSession({
+      base: null, branch: null, provider: null, model_id: null, headless: false, agent: null,
+    });
+    expect(r.ok).toBe(true);
+    expect(wt.openTerminalTab).toHaveBeenCalledWith(WT_PATH, "pi");
+  });
+
+  test("a model starts pi with --model provider/id", async () => {
+    const r = await _spawnWorktreeSession({ provider: "zai", model_id: "glm-5.3-flash" });
+    expect(r.ok).toBe(true);
+    expect(wt.openTerminalTab).toHaveBeenCalledWith(WT_PATH, "pi --model zai/glm-5.3-flash");
+  });
+
+  test("agent:'agy' runs `remote-pi agy` in the worktree, with a canvas up front", async () => {
+    const r = await _spawnWorktreeSession({ agent: "agy" });
+    expect(r.ok).toBe(true);
+    expect(wt.openTerminalTab).toHaveBeenCalledWith(WT_PATH, "remote-pi agy", {
+      size: { cols: 210, rows: 50 },
+    });
+  });
+
+  test("AGY cannot be headless, and nothing is created for it", async () => {
+    const r = await _spawnWorktreeSession({ agent: "agy", headless: true });
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/cannot start AGY headless/);
+    expect(wt.createWorktree).not.toHaveBeenCalled();
+  });
+
+  test("an unknown agent is refused before a worktree is created", async () => {
+    const r = await _spawnWorktreeSession({ agent: "copilot" });
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/unknown agent "copilot"/);
+    expect(wt.createWorktree).not.toHaveBeenCalled();
+  });
+
+  test("an AGY model this device does not offer is refused before a worktree is created", async () => {
+    agy.agyModelIds.mockResolvedValue(["gemini-4-neon-high"]);
+    const r = await _spawnWorktreeSession({ agent: "agy", provider: "google", model_id: "nope" });
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/not one of AGY's models/);
+    expect(wt.createWorktree).not.toHaveBeenCalled();
   });
 });

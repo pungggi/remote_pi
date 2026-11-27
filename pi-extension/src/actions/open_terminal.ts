@@ -30,6 +30,9 @@ import { basename, dirname, join, resolve } from "node:path";
 import type { ClientMessage, WireWorktree } from "../protocol/types.js";
 import type { ActionReplySender } from "./handlers.js";
 import { remoteCwdAllowed } from "./cwd_policy.js";
+import { parseAgentSelection, type AgentSelection } from "../protocol/agent_selection.js";
+import { agyModelIds } from "./agent_models.js";
+import { buildAgentCommand, shellSingleQuote as psSingleQuote } from "./launch.js";
 import { addWorktree, forgetWorktree, listWorktrees } from "./worktree_registry.js";
 import { saveLocalConfig, loadLocalConfigFile } from "../session/local_config.js";
 import { roomIdFor } from "../rooms.js";
@@ -57,6 +60,40 @@ export interface OpenTerminalOutcome {
   method: "wt" | "window" | "tmux" | "none";
 }
 
+/** Plan/173 — the start request's agent triple, or the refusal to reply with. */
+export type StartSelection =
+  | { ok: true; selection: AgentSelection }
+  | { ok: false; message: string };
+
+/** Validate the `agent` / `provider` / `model_id` fields of a start request. */
+export function readStartSelection(msg: {
+  agent?: unknown;
+  provider?: unknown;
+  model_id?: unknown;
+}): StartSelection {
+  return parseAgentSelection(msg);
+}
+
+/**
+ * Plan/173 — model validation at start. The token charset was already
+ * checked; this asks whether the agent OFFERS the id, because a terminal that
+ * dies on an unknown model is invisible to the app. Only when the device can
+ * tell: while AGY's catalogue is unavailable (signed out, offline) the id is
+ * passed through and AGY decides. Pi's own registry belongs to the session
+ * being started, so Pi decides there too.
+ *
+ * Returns the problem, or null when the start may proceed.
+ */
+export async function startModelProblem(selection: AgentSelection): Promise<string | null> {
+  if (selection.agent !== "agy" || !selection.model) return null;
+  const ids = await agyModelIds();
+  if (ids === null) return null;
+  if (!ids.includes(selection.model.model_id)) {
+    return `model "${selection.model.model_id}" is not one of AGY's models on this device`;
+  }
+  return null;
+}
+
 /** Which launcher `openTerminalTab` uses: Termux gets tmux (plan/173), Windows
  *  its Windows Terminal / console code (plan/108), everything else is
  *  unsupported. Pure in the two inputs so the dispatch is testable anywhere. */
@@ -66,6 +103,15 @@ export function launcherKind(
 ): "termux" | "windows" | "none" {
   if (termux) return "termux";
   return platform === "win32" ? "windows" : "none";
+}
+
+/** Plan/173 — how a started terminal appears on THIS device, for
+ *  `device_info_result.host.terminal`. Same dispatch as `openTerminalTab`. */
+export function terminalKindHere(): OpenTerminalOutcome["method"] {
+  const kind = launcherKind(isTermux(), process.platform);
+  if (kind === "termux") return "tmux";
+  if (kind === "windows") return resolveWt() ? "wt" : "window";
+  return "none";
 }
 
 /**
@@ -86,15 +132,10 @@ function cmdQuote(s: string): string {
   return `"${String(s)}"`;
 }
 
-/** Escape a string for safe PowerShell single-quoted interpolation. */
-function psSingleQuote(s: string): string {
-  return `'${String(s).replace(/'/g, "''")}'`;
-}
-
-/** Plan/152 — command that resumes one exact persisted Pi session. Keeping
- *  quoting here ensures the ID cannot alter the PowerShell payload. */
+/** Plan/152 — command that resumes one exact persisted Pi session. Built by
+ *  the shared launcher so every surface spells it the same way. */
 export function piSessionResumeCommand(sessionId: string): string {
-  return `pi --session ${psSingleQuote(sessionId)}`;
+  return buildAgentCommand({ agent: "pi", resume: { kind: "session", id: sessionId } });
 }
 
 /**
@@ -335,6 +376,13 @@ function resolveShell(): string {
 
 let _wtExe: string | null | undefined; // undefined = not yet resolved
 
+/** Test seam — forget the cached shell and Windows Terminal lookups, so a
+ *  test can observe a different `where` answer (plan/173). */
+export function _resetLauncherCachesForTests(): void {
+  _shellCache = null;
+  _wtExe = undefined;
+}
+
 /**
  * Resolve the Windows Terminal CLI once per process: `where wt` → first hit
  * (the App Execution Alias under %LOCALAPPDATA%\Microsoft\WindowsApps).
@@ -388,16 +436,39 @@ function envForSpawnedTerminal(): NodeJS.ProcessEnv {
  * (the relay room; default: the folder's own room). tmux answers with an exit
  * code, so the outcome is real, not assumed.
  */
+export interface OpenTerminalOptions {
+  newWindow?: boolean;
+  sessionName?: string;
+  /** Plan/173 — initial canvas of a detached tmux session. A TUI that draws
+   *  before anyone attaches (AGY) needs a sensible size up front; Pi reads
+   *  the size when the user attaches. */
+  size?: { cols: number; rows: number };
+}
+
+/** Plan/173 — AGY draws its TUI into the detached session before the first
+ *  attach, so it gets the size a phone screen offers. */
+export const AGY_TMUX_SIZE = { cols: 210, rows: 50 } as const;
+
+/** Opens a new terminal at `cwd`, optionally running `command` (e.g. "pi").
+ * Windows mirrors pi-ps `openTab`: WT_SESSION → `wt.exe new-tab`; else
+ * Start-Process window. A 2s safety net assumes success — the target runs
+ * independently of the launcher (detached + unref'd).
+ *
+ * Termux (plan/173): a detached tmux session named after `options.sessionName`
+ * (the relay room; default: the folder's own room). tmux answers with an exit
+ * code, so the outcome is real, not assumed.
+ */
 export function openTerminalTab(
   cwd: string,
   command: string | undefined,
-  options: { newWindow?: boolean; sessionName?: string } = {},
+  options: OpenTerminalOptions = {},
 ): Promise<OpenTerminalOutcome> {
   if (launcherKind(isTermux(), process.platform) === "termux") {
     return startTermuxSession({
       session: options.sessionName ?? defaultTermuxSessionName(cwd),
       cwd,
       command,
+      ...(options.size ? { cols: options.size.cols, rows: options.size.rows } : {}),
     }).catch((e: unknown): OpenTerminalOutcome => ({
       ok: false,
       message: `Failed to launch tmux: ${e instanceof Error ? e.message : String(e)}`,
@@ -409,7 +480,9 @@ export function openTerminalTab(
     if (process.platform !== "win32") {
       resolve({
         ok: false,
-        message: "Opening a terminal is only supported on Windows so far.",
+        message:
+          `Opening a terminal is not supported on ${process.platform} yet ` +
+          "(Windows and Android/Termux are).",
         method: "none",
       });
       return;
@@ -539,9 +612,10 @@ export function openTerminalTab(
 }
 
 /**
- * Replies with `open_terminal_result`. `ok` is false when: the platform isn't
- * Windows, no cwd is resolvable, the path doesn't exist, or the launcher
- * failed. Never throws — every path sends a reply so the app can't time out.
+ * Replies with `open_terminal_result`. `ok` is false when: the platform has
+ * no launcher, the agent or model is invalid, no cwd is resolvable, the path
+ * doesn't exist, or the launcher failed. Never throws — every path sends a
+ * reply so the app can't time out.
  *
  * `sessionCwd` is the Pi's own working directory (from room_meta); used when
  * the request omits `cwd` (pure `/ps clone` behavior — open at the current
@@ -552,6 +626,20 @@ export async function handleOpenTerminal(
   msg: OpenTerminalRequestMsg,
   sessionCwd: string | null,
 ): Promise<void> {
+  // Plan/173 — the agent triple is plain JSON from the relay; a bad value is
+  // refused before anything else is looked at or created.
+  const picked = readStartSelection(msg);
+  if (!picked.ok) {
+    sender.send({
+      type: "open_terminal_result",
+      in_reply_to: msg.id,
+      ok: false,
+      message: picked.message,
+      method: "none",
+    });
+    return;
+  }
+  const { selection } = picked;
   const requested = msg.cwd && msg.cwd.trim() ? msg.cwd.trim() : null;
   const cwd = requested ?? sessionCwd;
 
@@ -591,6 +679,35 @@ export async function handleOpenTerminal(
       method: "none",
     });
     return;
+  }
+
+  // Plan/173 — `runPi:false` opens a plain shell; there is no agent to start
+  // in it, so asking for one is a contradiction, not something to ignore.
+  const runPi = msg.runPi !== false; // default true (matches /ps clone)
+  if (!runPi && selection.agent !== "pi") {
+    sender.send({
+      type: "open_terminal_result",
+      in_reply_to: msg.id,
+      ok: false,
+      message: `runPi=false opens a plain shell and cannot start ${selection.agent}.`,
+      method: "none",
+    });
+    return;
+  }
+  // Plan/173 — refuse a model the agent does not offer BEFORE a worktree is
+  // created, so a refused start leaves nothing behind.
+  if (runPi) {
+    const problem = await startModelProblem(selection);
+    if (problem) {
+      sender.send({
+        type: "open_terminal_result",
+        in_reply_to: msg.id,
+        ok: false,
+        message: problem,
+        method: "none",
+      });
+      return;
+    }
   }
 
   // Plan/112 — reopen: when the request carries a `worktree_path`, skip
@@ -636,11 +753,18 @@ export async function handleOpenTerminal(
     created = wt.entry;
   }
 
-  const runPi = msg.runPi !== false; // default true (matches /ps clone)
+  const command = runPi
+    ? buildAgentCommand({ agent: selection.agent, resume: { kind: "new" }, model: selection.model })
+    : undefined;
   // Plan/173 — on Termux the tmux session is named after the room the
   // worktree's Pi will announce (see `defaultTermuxSessionName`). Other
-  // platforms ignore the name.
-  const outcome = await openTerminalTab(worktreePath, runPi ? "pi" : undefined);
+  // platforms ignore the name. AGY gets a canvas sized before the first
+  // attach because it draws on start.
+  const outcome = await openTerminalTab(
+    worktreePath,
+    command,
+    selection.agent === "agy" ? { size: { ...AGY_TMUX_SIZE } } : {},
+  );
 
   sender.send({
     type: "open_terminal_result",

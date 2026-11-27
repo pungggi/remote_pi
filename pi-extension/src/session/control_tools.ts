@@ -61,6 +61,8 @@ export interface SpawnWorktreeOpts {
   model_id?: string | null;
   /** Plan/167 — transient RPC child under the supervisor (no terminal). */
   headless?: boolean;
+  /** Plan/173 — which agent the new terminal runs (default Pi). */
+  agent?: string | null;
 }
 
 export interface SpawnWorktreeResult {
@@ -110,6 +112,19 @@ export function formatModelLines(
     lines.push(`- ${current.provider}/${current.id} — ${current.name ?? current.id}  ← current (outside the listed set)`);
   }
   return lines;
+}
+
+const AGENT_PARAM = {
+  type: "string",
+  enum: ["pi", "agy"],
+  description:
+    "Agent to use: 'pi' (default) or 'agy', the Antigravity CLI. AGY is only offered " +
+    "where the target can start it (its `device_info` lists it).",
+};
+
+/** `agent` travels only when it is AGY, so pre-173 peers see the old shape. */
+function agentField(agent: string | undefined): { agent?: "agy" } {
+  return agent === "agy" ? { agent: "agy" as const } : {};
 }
 
 /** Format the single plan/28 ServerMessage reply into tool text. */
@@ -360,19 +375,19 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
       "omitted, or a REMOTE peer's registry by address (peers on other machines may " +
       "have different providers/auth configured). Shows the current model. Use before " +
       "model_set or before spawning a worktree session with a specific model.",
-    promptSnippet: "list_models({target?}): models + current of self or a peer. Cheap; call freely.",
+    promptSnippet: "list_models({target?, agent?}): models + current of self or a peer; agent:'agy' = the Antigravity CLI's models there. Cheap; call freely.",
     parameters: jsonSchema({
       type: "object",
-      properties: { target: TargetParam },
+      properties: { target: TargetParam, agent: AGENT_PARAM },
     }),
     execute: async (_id, params) => {
-      const { target } = params as { target?: string };
+      const { target, agent } = params as { target?: string; agent?: string };
       const peer = deps.getPeer();
       const t = _resolveTarget(peer, target);
       if (t && "error" in t) return { content: [{ type: "text", text: t.error }], details: { ok: false } };
       const out = t && "target" in t
-        ? await _remoteControl(peer!, t.target, { op: "list_models" })
-        : _formatLocalReply(await deps.dispatchLocal({ type: "list_models", id: newControlId() }));
+        ? await _remoteControl(peer!, t.target, { op: "list_models", ...agentField(agent) })
+        : _formatLocalReply(await deps.dispatchLocal({ type: "list_models", id: newControlId(), ...agentField(agent) }));
       return { content: [{ type: "text", text: out.text }], details: { ok: out.ok } };
     },
   });
@@ -391,9 +406,10 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
       "`headless:true` (plan/167) spawns an invisible transient worker under the " +
       "Piper supervisor (`pi --mode rpc`) instead of a terminal window — same mesh " +
       "behavior, plus auto-restart with session resume while it lives; requires the " +
-      "supervisor to be running.",
+      "supervisor to be running. `agent:'agy'` starts the Antigravity CLI there instead " +
+      "of Pi (`remote-pi agy`; visible terminal only; its chat is not in the app).",
     promptSnippet:
-      "spawn_worktree({branch?, base?, provider?, model_id?, headless?, target?}): worktree + fresh pi session (auto-joins mesh; headless:true = invisible supervisor worker). Watch list_peers, then agent_send the task.",
+      "spawn_worktree({branch?, base?, provider?, model_id?, headless?, agent?, target?}): worktree + fresh pi session (auto-joins mesh; headless:true = invisible supervisor worker; agent:'agy' = AGY instead of Pi). Watch list_peers, then agent_send the task.",
     parameters: jsonSchema({
       type: "object",
       properties: {
@@ -413,16 +429,18 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
             "Spawn an invisible transient worker (`pi --mode rpc` under the Piper supervisor) " +
             "instead of a visible terminal. Requires the supervisor; end the worker with session_shutdown.",
         },
+        agent: AGENT_PARAM,
         target: TargetParam,
       },
     }),
     execute: async (_id, params) => {
-      const { branch, base, provider, model_id, headless, target } = params as {
+      const { branch, base, provider, model_id, headless, agent, target } = params as {
         branch?: string;
         base?: string;
         provider?: string;
         model_id?: string;
         headless?: boolean;
+        agent?: string;
         target?: string;
       };
       const peer = deps.getPeer();
@@ -443,10 +461,11 @@ export function registerSessionControlTools(pi: ExtensionAPI, deps: SessionContr
           ...(base ? { base } : {}),
           ...(provider && model_id ? { provider, model_id } : {}),
           ...(headless ? { headless: true } : {}),
+          ...agentField(agent),
         });
         return { content: [{ type: "text", text: out.text }], details: { ok: out.ok } };
       }
-      const r = await deps.spawnWorktreeLocal({ base: base ?? null, branch: branch ?? null, provider: provider ?? null, model_id: model_id ?? null, headless: headless === true });
+      const r = await deps.spawnWorktreeLocal({ base: base ?? null, branch: branch ?? null, provider: provider ?? null, model_id: model_id ?? null, headless: headless === true, ...agentField(agent) });
       // ai-review #113 L2 — headless replies already carry their own mesh
       // hints (address + agent_send/session_shutdown); appending the generic
       // visible-path line would duplicate (and slightly contradict) them.
