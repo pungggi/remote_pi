@@ -89,10 +89,12 @@ Em unicast, cada chamada de `agent_send` aguarda um ACK rápido (default 5s) ger
 |---|---|
 | `received` | Peer online aceitou/recebeu a mensagem, inclusive durante um turn; ela será processada no turno atual ou seguinte. |
 | `busy` | Compatibilidade defensiva com um broker líder antigo: a mensagem foi descartada. Não é comportamento atual; reinicie/substitua o líder antigo antes de reenviar. |
-| `denied` | Peer recusou; abandona. |
+| `denied` | Nenhum broker confirmou o endereço. Cross-PC, só é final após uma espera curta em que um `received` vence; `answers` lista os brokers que negaram (pid). |
 | `timeout` | ACK não chegou em 5s; silêncio genuíno não tem reason. |
 
 Os motivos fechados do relay são `offline`, `not_authorized` e `bad_envelope`: `offline → timeout`; `not_authorized | bad_envelope → denied`. O resultado carrega reason/error explícito (`transport_error: <reason>`) quando o relay confiável o informou.
+
+No cross-PC o relay entrega o envelope a TODAS as conexões do PC alvo, e cada broker local responde pelos seus peers. Um `denied` por isso é segurado 500 ms no destino e mais 300 ms no sender, para um `received` chegar primeiro (issue #140). O host deve ter um só broker: a eleição de líder só remove o socket que o próprio probe recusou, e um líder cujo caminho foi tomado se retira. Os motivos do relay não esperam.
 
 **Reply de conteúdo** é assíncrona: peer responde com **outro send normal** carregando `re: <send-id-original>`. Sender vê a reply na inbox no próximo turn. `agent_request` continua disponível apenas como comportamento legado/deprecado; o fluxo preferido é `agent_send` + reply assíncrona.
 

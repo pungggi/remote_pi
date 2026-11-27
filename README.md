@@ -70,7 +70,7 @@ no relay, no network, no extra config.
 Three LLM-facing tools are exposed in the Pi chat:
 
 - `list_peers` — lists local and cross-PC addresses available to the agent
-- `agent_send` — sends a unicast message and waits for a delivery ACK. Compatible ACK values are `received`, `busy`, `denied`, and `timeout`; current brokers return `received`, `denied`, or `timeout`, while `busy` only indicates a dropped message from an old broker leader that must be restarted before resending. Broadcast is `sent` with no ACK. Asynchronous content replies use `re`
+- `agent_send` — sends a unicast message and waits for a delivery ACK. Compatible ACK values are `received`, `busy`, `denied`, and `timeout`; current brokers return `received`, `denied`, or `timeout`, while `busy` only indicates a dropped message from an old broker leader that must be restarted before resending. Broadcast is `sent` with no ACK. Cross-PC, a `denied` is final only after a short grace, and `details.answers` names the brokers that denied. Asynchronous content replies use `re`
 - `agent_request` — request/response with timeout, available only as deprecated legacy behavior
 
 This lets you set up local multi-agent workflows (e.g. a `backend` agent asks a

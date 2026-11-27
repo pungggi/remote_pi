@@ -14,6 +14,7 @@ import {
   uuidv7,
 } from "./envelope.js";
 import type { PiForwardClient } from "../transport/pi_forward_client.js";
+import { CROSS_PC_DENIED_DELAY_MS } from "./ack_policy.js";
 import {
   canonicalizeEd25519PublicKey,
   decodeEd25519PublicKey,
@@ -87,6 +88,8 @@ interface AckBody {
   type: "ack";
   status: RemoteInjectStatus;
   target: string;
+  /** Process of the answering broker, so a sender can name who said no. */
+  pid: number;
 }
 
 interface PendingFill {
@@ -208,6 +211,8 @@ export class BrokerRemote implements RemoteRouter, BrokerRemoteLifecycle {
   private readonly pendingFills = new Map<string, Set<PendingFill>>();
 
   private readonly onIncoming: (env: Envelope, fromPc: string) => void;
+  /** Refusals that have been held back and not sent yet (issue #140). */
+  private readonly deferredDenials = new Set<ReturnType<typeof setTimeout>>();
   private reannounceTimer: ReturnType<typeof setInterval> | null = null;
   private lifecycle: LifecycleState = "dormant";
 
@@ -285,6 +290,7 @@ export class BrokerRemote implements RemoteRouter, BrokerRemoteLifecycle {
       this.reannounceTimer = null;
     }
     this._clearAllPendingFills();
+    this._clearDeferredDenials();
     this.topologyRefreshNeeded.clear();
     if (!wasActive) return;
     this.pi.off("envelope", this.onIncoming);
@@ -597,15 +603,49 @@ export class BrokerRemote implements RemoteRouter, BrokerRemoteLifecycle {
       type: "ack",
       status,
       target: normalized.to,
+      pid: process.pid,
     };
+    if (status === "received") {
+      this._sendAck(canonicalFromPc, env.from, normalized.id, ackBody);
+      return;
+    }
+    // Issue #140: this broker does not own the target. Another broker of the
+    // same PC may, so the refusal is held back to let its `received` arrive
+    // first. The log line names the target and this process, which is what a
+    // sender's `denied` cannot show on its own.
+    this._logMetadataOnly(
+      `[broker_remote] event=ack_denied target=${JSON.stringify(normalized.to)}` +
+        ` id=${normalized.id} pid=${process.pid}`,
+    );
+    const timer = setTimeout(() => {
+      this.deferredDenials.delete(timer);
+      // A detached bridge no longer speaks for this broker.
+      if (this.lifecycle !== "active") return;
+      try {
+        this._sendAck(canonicalFromPc, env.from, normalized.id, ackBody);
+      } catch {
+        // A timer callback has no caller to catch a dead relay connection.
+        this._logMetadataOnly("[broker_remote] event=ack_denied_send_failed");
+      }
+    }, CROSS_PC_DENIED_DELAY_MS);
+    timer.unref?.();
+    this.deferredDenials.add(timer);
+  }
+
+  private _sendAck(toPc: string, to: string, re: string, body: AckBody): void {
     const ackEnv: Envelope = {
       from: `${this.routing.self.legacyPcLabel}:${BROKER_NAME}`,
-      to: env.from,
+      to,
       id: uuidv7(),
-      re: normalized.id,
-      body: ackBody,
+      re,
+      body,
     };
-    this.pi.sendEnvelopeToPi(canonicalFromPc, ackEnv);
+    this.pi.sendEnvelopeToPi(toPc, ackEnv);
+  }
+
+  private _clearDeferredDenials(): void {
+    for (const timer of this.deferredDenials) clearTimeout(timer);
+    this.deferredDenials.clear();
   }
 
   private _setRemoteCache(

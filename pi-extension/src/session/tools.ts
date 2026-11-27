@@ -8,7 +8,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // runtime typebox import.
 const jsonSchema = (s: object) => s as unknown as never;
 import type { TransportErrorReason } from "./envelope.js";
-import type { AckResult, SessionPeer } from "./peer.js";
+import { describeUnconfirmedDenial } from "./ack_policy.js";
+import type { AckAnswer, AckResult, SessionPeer } from "./peer.js";
 
 const NOT_IN_SESSION = "Not in a session. Run /remote-pi join first";
 const ACK_TIMEOUT_MS = 5_000;
@@ -35,6 +36,8 @@ interface SendDetails {
   error?: string;
   target?: string;
   reason?: TransportErrorReason;
+  /** Cross-PC only (issue #140): every broker that denied, with its pid. */
+  answers?: ReadonlyArray<AckAnswer>;
 }
 
 /**
@@ -110,8 +113,9 @@ export function registerAgentTools(
       "wait for the broker's delivery ACK. Delivery is reliable: a peer that " +
       "is mid-turn still receives the message (its harness enqueues it for " +
       "the next turn), so you never need to retry. Returns one of: `received` " +
-      "(delivered; peer will process it in an upcoming turn), `denied` (peer " +
-      "refused), `timeout` (no ACK in 5s — peer offline / transport error), " +
+      "(delivered; peer will process it in an upcoming turn), `denied` (no " +
+      "broker confirmed the address; cross-PC this is final only after a " +
+      "short grace, and `details.answers` names who denied), `timeout` (no ACK in 5s — peer offline / transport error), " +
       "`sent` (broadcast/multicast — no ACK semantics). Use `re` to mark this " +
       "message as a reply to an incoming envelope's `id` (correlation only).",
     promptSnippet:
@@ -186,6 +190,7 @@ export function registerAgentTools(
           ...(ack.target !== undefined ? { target: ack.target } : {}),
           ...(ack.error !== undefined ? { error: ack.error } : {}),
           ...(ack.reason !== undefined ? { reason: ack.reason } : {}),
+          ...(ack.answers !== undefined ? { answers: ack.answers } : {}),
         };
         const text = _formatAck(to, ack, re);
         return { content: [{ type: "text", text }], details };
@@ -332,6 +337,9 @@ function _formatAck(to: string, ack: AckResult, re: string | null | undefined): 
         return `Relay rejected the envelope for "${to}"${reSuffix}${errorSuffix}. ` +
           `Do not blindly retry; correct the envelope first.`;
       }
+      // Cross-PC: these brokers denied the address and none confirmed it in
+      // time (issue #140). Local brokers deny nothing today; that text stays.
+      if (ack.answers && ack.answers.length > 0) return describeUnconfirmedDenial(to, ack);
       return `"${to}" denied the message${reSuffix}. Do not retry; report to user.`;
     case "timeout":
       if (ack.reason === "offline") {

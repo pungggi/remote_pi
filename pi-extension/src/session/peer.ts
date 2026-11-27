@@ -10,9 +10,18 @@ import {
   serialize,
   EnvelopeError,
 } from "./envelope.js";
-import { joinOrLead, type ElectionResult } from "./leader_election.js";
+import {
+  joinOrLead,
+  socketIdentity,
+  type ElectionResult,
+  type SocketIdentity,
+} from "./leader_election.js";
 import { Broker } from "./broker.js";
+import { CROSS_PC_DENIED_GRACE_MS } from "./ack_policy.js";
+import { usesNamedPipe } from "./ipc.js";
 import { describeRegistrationBlocker, describeSocketOwner } from "./socket_owner.js";
+
+export { CROSS_PC_DENIED_GRACE_MS } from "./ack_policy.js";
 
 /**
  * Symmetric peer-in-session API. Hides whether you are leader or follower;
@@ -44,13 +53,28 @@ export interface SessionPeerOptions {
   auditPath?: string;
   /** Per-request default timeout (ms). Override per call if needed. */
   defaultTimeoutMs?: number;
+  /** How often a leader verifies that its socket path still leads to its own
+    broker, in ms (issue #140). Default `LEADER_PATH_CHECK_INTERVAL_MS`; 0
+   * disables the check. */
+  leaderPathCheckIntervalMs?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const ACK_TIMEOUT_MS = 5_000;
 const FAILOVER_RETRY_MS = 100;
 
+/** How often a leader checks that its socket path still leads to its own
+ *  broker (issue #140). Zero disables the check. The timing of a cross-PC
+ *  refusal lives in `ack_policy.ts`, next to the tool text that quotes it. */
+export const LEADER_PATH_CHECK_INTERVAL_MS = 5_000;
+
 export type AckStatus = "received" | "busy" | "denied" | "timeout";
+
+/** One broker's answer to a cross-PC send. `pid` is the answering process. */
+export interface AckAnswer {
+  status: Exclude<AckStatus, "timeout">;
+  pid?: number;
+}
 
 export interface AckResult {
   status: AckStatus;
@@ -60,6 +84,9 @@ export interface AckResult {
   target?: string;
   error?: `transport_error: ${TransportErrorReason}`;
   reason?: TransportErrorReason;
+  /** Every broker answer behind a cross-PC `denied` (issue #140): who said
+ *  it, so the tool text and the session log can name them. */
+  answers?: ReadonlyArray<AckAnswer>;
 }
 
 export class MeshTransportError extends Error {
@@ -76,6 +103,26 @@ interface AckBody {
   type: "ack";
   status: "received" | "busy" | "denied";
   target: string;
+  /** Process of the broker that answered (cross-PC bridges set it). */
+  pid?: number;
+}
+
+/** What the register handshake tells a joining peer. `foreign` is set when a
+ *  leader heard another broker than its own answer (issue #140). */
+interface Registration {
+  name: string;
+  foreign: boolean;
+}
+
+/** One send awaiting its ACK. */
+interface AckSlot {
+  expectedFrom: string;
+  resolve: (result: AckResult) => void;
+  timer: ReturnType<typeof setTimeout>;
+  /** Cross-PC `denied` answers seen so far (issue #140). */
+  denials: AckAnswer[];
+  /** Running while a first `denied` waits out `CROSS_PC_DENIED_GRACE_MS`. */
+  graceTimer: ReturnType<typeof setTimeout> | null;
 }
 
 function hasExactAckType(body: unknown): body is { type: "ack" } {
@@ -107,17 +154,23 @@ function asAckBody(body: unknown): AckBody | null {
     return null;
   }
 
-  const { status, target } = body as {
+  const { status, target, pid } = body as {
     type: "ack";
     status: unknown;
     target: unknown;
+    pid?: unknown;
   };
   if ((status !== "received" && status !== "busy" && status !== "denied")
     || typeof target !== "string") {
     return null;
   }
 
-  return { type: "ack", status, target };
+  return {
+    type: "ack",
+    status,
+    target,
+    ...(typeof pid === "number" && Number.isInteger(pid) && pid > 0 ? { pid } : {}),
+  };
 }
 
 export class SessionPeer {
@@ -140,14 +193,15 @@ export class SessionPeer {
     timer: ReturnType<typeof setTimeout>;
   }>();
   /** Map of in-flight send ids → ACK resolver. Used by `sendWithAck()`. */
-  private readonly ackPending = new Map<string, {
-    expectedFrom: string;
-    resolve: (result: AckResult) => void;
-    timer: ReturnType<typeof setTimeout>;
-  }>();
+  private readonly ackPending = new Map<string, AckSlot>();
   private readonly handlers = new Set<MessageHandler>();
   private readonly reconnectHandlers = new Set<ReconnectHandler>();
   private leftFlag = false;
+  /** The leader's own socket file (issue #140), null while following. */
+  private ownSockIdentity: SocketIdentity | null = null;
+  private leaderPathCheck: ReturnType<typeof setInterval> | null = null;
+  /** A stand-down in progress; `leave` and `rename` wait for it. */
+  private stepDownInFlight: Promise<void> | null = null;
 
   constructor(opts: SessionPeerOptions) {
     this.opts = opts;
@@ -208,7 +262,9 @@ export class SessionPeer {
    * Unicast send + await broker ACK. Returns the ACK status:
    *   - `received` — peer was idle, envelope delivered, will be processed soon
    *   - `busy`     — peer mid-turn, envelope dropped; sender is owner of retry
-   *   - `denied`   — broker/Relay refused delivery (including authorization or envelope failure)
+   *   - `denied`   — broker/Relay refused delivery (including authorization or envelope failure).
+   *                  Cross-PC: only after `CROSS_PC_DENIED_GRACE_MS` without a
+   *                  `received`; `answers` names every broker that denied
    *   - `timeout`  — no ACK within `timeoutMs`, or trusted Relay says offline
    *
    * Only meaningful for unicast non-broadcast addresses. The peer's body-level
@@ -224,20 +280,21 @@ export class SessionPeer {
     const env = envelope(this.assignedName, to, body, re);
     return new Promise<AckResult>((resolve) => {
       const timer = setTimeout(() => {
-        this.ackPending.delete(env.id);
-        resolve({ status: "timeout", id: env.id });
+        const slot = this.ackPending.get(env.id);
+        if (slot) this._settleAck(env.id, slot, { status: "timeout", id: env.id });
+        else resolve({ status: "timeout", id: env.id });
       }, timeoutMs);
       this.ackPending.set(env.id, {
         expectedFrom: expectedAckSender(to),
         resolve,
         timer,
+        denials: [],
+        graceTimer: null,
       });
       this._writeEnvelope(env).catch(() => {
         const slot = this.ackPending.get(env.id);
         if (!slot) return;
-        clearTimeout(slot.timer);
-        this.ackPending.delete(env.id);
-        resolve({ status: "timeout", id: env.id });
+        this._settleAck(env.id, slot, { status: "timeout", id: env.id });
       });
     });
   }
@@ -318,7 +375,25 @@ export class SessionPeer {
       // internal API: easiest is to open a real client connection back to
       // our own server.
       try {
-        return await this._registerAsClient();
+        const registration = await this._registerAsClient(broker.instanceId);
+        if (registration.foreign) {
+          // Issue #140: between our bind and this registration another process
+          // took the path, so nothing can reach our server. That process is
+          // the leader. The registration it just gave us over the loopback
+          // connection stands: keep that connection as our follower socket and
+          // give up only our own broker. Abandon, not close: see `abandon()`.
+          this.role = "follower";
+          this.broker = null;
+          this.ownSockIdentity = null;
+          try { broker.abandon(); } catch { /* best-effort */ }
+          return registration.name;
+        }
+        this.ownSockIdentity = result.identity;
+        // Restart, also when a peer that already led is re-elected, so the
+        // check compares against the socket bound this time.
+        this._stopLeaderPathCheck();
+        this._startLeaderPathCheck();
+        return registration.name;
       } catch (err) {
         // Self-registration failed, so this process cannot act as a peer even
         // though it now owns the broker path. Release the path rather than hold
@@ -330,19 +405,23 @@ export class SessionPeer {
         // a follower that is still joined reads the drop as a leader loss and
         // re-runs election via _onSocketClose; one already leaving stays put.
         // Either way it recovers, whereas a stranded path never does.
-        try { await broker.close(); } catch { /* best-effort */ }
+        try {
+          if (this._ownsBrokerPath(result.identity)) await broker.close();
+          else broker.abandon();
+        } catch { /* best-effort */ }
         this.broker = null;
         this.role = "follower";
+        this.ownSockIdentity = null;
         throw err;
       }
     } else {
       this.role = "follower";
       this._wireSocket(result.socket);
-      return this._registerOver(result.socket);
+      return (await this._registerOver(result.socket)).name;
     }
   }
 
-  private async _registerAsClient(): Promise<string> {
+  private async _registerAsClient(expectInstance?: string): Promise<Registration> {
     const { createConnection } = await import("node:net");
     const sock = createConnection(this.opts.sockPath);
     await new Promise<void>((resolve, reject) => {
@@ -352,7 +431,7 @@ export class SessionPeer {
       sock.once("error", (err) => { sock.destroy(); reject(err); });
     });
     this._wireSocket(sock);
-    return this._registerOver(sock);
+    return this._registerOver(sock, expectInstance);
   }
 
   private _wireSocket(sock: Socket): void {
@@ -364,8 +443,8 @@ export class SessionPeer {
     sock.on("error", () => { /* close will follow */ });
   }
 
-  private _registerOver(sock: Socket): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
+  private _registerOver(sock: Socket, expectInstance?: string): Promise<Registration> {
+    return new Promise<Registration>((resolve, reject) => {
       let settled = false;
       // The first inbound line MUST be the register_ack. Buffer-aware.
       //
@@ -423,7 +502,7 @@ export class SessionPeer {
         // `name_assigned` (clean leaf). Read both with cross-fallback so we work
         // against either a new broker OR a legacy one (only `name_assigned`,
         // where address == name).
-        const ack = raw as { type?: string; name_assigned?: string; address_assigned?: string };
+        const ack = raw as { type?: string; name_assigned?: string; address_assigned?: string; instance?: unknown };
         const name = typeof ack?.name_assigned === "string" ? ack.name_assigned : ack?.address_assigned;
         const address = typeof ack?.address_assigned === "string" ? ack.address_assigned : ack?.name_assigned;
         if (ack && ack.type === "register_ack" && typeof name === "string" && typeof address === "string") {
@@ -433,7 +512,13 @@ export class SessionPeer {
           this.assignedName = name;
           this.assignedAddress = address;
           this._preAckListener = null;
-          resolve(name);
+          resolve({
+            name,
+            // A leader registering back through its own path must hear its own
+            // broker (issue #140). A different instance, or a broker too old
+            // to name itself, means the path was taken over in between.
+            foreign: expectInstance !== undefined && ack.instance !== expectInstance,
+          });
         } else {
           fail(new Error(`expected register_ack, got: ${JSON.stringify(raw)}`));
         }
@@ -515,9 +600,17 @@ export class SessionPeer {
       if (env.re !== null && ackBody) {
         const slot = this.ackPending.get(env.re);
         if (slot && slot.expectedFrom === env.from) {
-          clearTimeout(slot.timer);
-          this.ackPending.delete(env.re);
-          slot.resolve({ status: ackBody.status, id: env.re, target: ackBody.target });
+          if (ackBody.status === "denied" && slot.expectedFrom !== "broker") {
+            // Issue #140: several brokers of the target PC may answer this
+            // send; the one that knows the target has not had its say yet.
+            this._deferRemoteDenial(env.re, slot, ackBody);
+          } else {
+            this._settleAck(env.re, slot, {
+              status: ackBody.status,
+              id: env.re,
+              target: ackBody.target,
+            });
+          }
         }
       }
       return;
@@ -545,9 +638,8 @@ export class SessionPeer {
     const pendingId = correlationId.toLowerCase();
     const slot = this.ackPending.get(pendingId);
     if (!slot) return;
-    clearTimeout(slot.timer);
-    this.ackPending.delete(pendingId);
-    slot.resolve({
+    // The Relay is one voice: its refusal settles at once, with no grace.
+    this._settleAck(pendingId, slot, {
       status: reason === "offline" ? "timeout" : "denied",
       id: pendingId,
       error: `transport_error: ${reason}`,
@@ -565,6 +657,39 @@ export class SessionPeer {
     clearTimeout(slot.timer);
     this.pending.delete(pendingId);
     slot.reject(new MeshTransportError(reason, pendingId));
+  }
+
+  /** Issue #140: a cross-PC `denied` starts the grace instead of settling the
+   *  send. The first one starts the timer; later ones are only recorded. When
+   * the grace runs out the send is still pending, the `denied` is final and
+   * carries every broker that said it. */
+  private _deferRemoteDenial(id: string, slot: AckSlot, ackBody: AckBody): void {
+    slot.denials.push({
+      status: "denied",
+      ...(ackBody.pid !== undefined ? { pid: ackBody.pid } : {}),
+    });
+    if (slot.graceTimer) return;
+    slot.graceTimer = setTimeout(() => {
+      const pending = this.ackPending.get(id);
+      if (!pending) return;
+      this._settleAck(id, pending, {
+        status: "denied",
+        id,
+        target: ackBody.target,
+        answers: pending.denials,
+      });
+    }, CROSS_PC_DENIED_GRACE_MS);
+    // The send's own deadline timer keeps the process up until it settles;
+    // this one need not.
+    slot.graceTimer.unref?.();
+  }
+
+  private _settleAck(id: string, slot: AckSlot, result: AckResult): void {
+    clearTimeout(slot.timer);
+    if (slot.graceTimer) clearTimeout(slot.graceTimer);
+    slot.graceTimer = null;
+    this.ackPending.delete(id);
+    slot.resolve(result);
   }
 
   private _dispatchToHandlers(env: Envelope): void {
@@ -595,26 +720,95 @@ export class SessionPeer {
     // become leader ourselves or rejoin as follower.
     await delay(FAILOVER_RETRY_MS);
     if (this.leftFlag || this.socket !== closedSock) return;
+    await this._rejoin();
+  }
+
+  /** Re-run the election and tell consumers the broker changed: its peers map
+   *  starts empty, so cached state (peer count, relay bridge) must be rebuilt. */
+  private async _rejoin(): Promise<void> {
     try {
       await this._joinOrLead();
-      // The new broker's peers map starts fresh — consumers must re-query
-      // any cached state (peer count, etc.) that depended on the old broker.
       for (const h of this.reconnectHandlers) {
         try { h(); } catch { /* handler errors don't break peer */ }
       }
     } catch { /* election failed; peer stuck in disconnected state */ }
   }
 
+  /**
+   * Issue #140: a leader whose socket path no longer leads to its own broker
+   * cannot be reached by any later joiner, yet it keeps its clients and (via
+   * MeshNode) the relay bridge. The host then has two brokers answering for
+   * it. The election no longer produces that on its own, but an operator's
+   * `rm`, a cleanup script or an unknown race can, so the leader checks. One
+   * `lstat`, no connection: it cannot misfire on a busy broker. POSIX only; a
+   * Windows pipe cannot be removed under its owner.
+   */
+  private _startLeaderPathCheck(): void {
+    const expected = this.ownSockIdentity;
+    const intervalMs = this.opts.leaderPathCheckIntervalMs ?? LEADER_PATH_CHECK_INTERVAL_MS;
+    if (!expected || intervalMs <= 0 || this.leaderPathCheck) return;
+    const timer = setInterval(() => {
+      if (this.role !== "leader" || !this.broker || this.leftFlag) return;
+      const current = socketIdentity(this.opts.sockPath);
+      if (current && current.dev === expected.dev && current.ino === expected.ino) return;
+      void this._stepDown();
+    }, intervalMs);
+    timer.unref?.();
+    this.leaderPathCheck = timer;
+  }
+
+  private _stopLeaderPathCheck(): void {
+    if (this.leaderPathCheck) clearInterval(this.leaderPathCheck);
+    this.leaderPathCheck = null;
+  }
+
+  /**
+   * Issue #140: stand down as leader and rejoin the mesh. The old broker's
+   * clients lose their connection and read it as a leader loss, which now
+   * leads them to whoever owns the path; the reconnect handlers then take the
+   * relay bridge down (MeshNode), so one PC speaks with one broker again.
+   */
+  private async _stepDown(): Promise<void> {
+    if (this.stepDownInFlight) return this.stepDownInFlight;
+    const broker = this.broker;
+    if (!broker || this.role !== "leader" || this.leftFlag) return;
+    const run = (async (): Promise<void> => {
+      this.role = "follower";
+      this.broker = null;
+      this.ownSockIdentity = null;
+      this._stopLeaderPathCheck();
+      // The loopback socket dies with the broker. Detach it first so its
+      // close is not read as a live-connection drop and answered with a
+      // second, concurrent election.
+      this.socket = null;
+      // Not `close()`: this leader no longer owns the path (that is why it
+      // stands down), and closing would remove the successor's socket file.
+      try { broker.abandon(); } catch { /* ignored */ }
+      if (this.leftFlag) return;
+      await this._rejoin();
+    })();
+    this.stepDownInFlight = run;
+    try {
+      await run;
+    } finally {
+      if (this.stepDownInFlight === run) this.stepDownInFlight = null;
+    }
+  }
+
   private async _teardownConn(): Promise<void> {
+    // A stand-down re-elects. Let it finish, so this teardown and that join
+    // cannot interleave into a double registration.
+    while (this.stepDownInFlight) await this.stepDownInFlight;
+    this._stopLeaderPathCheck();
+    const own = this.ownSockIdentity;
+    this.ownSockIdentity = null;
     for (const [id, slot] of this.pending) {
       clearTimeout(slot.timer);
       this.pending.delete(id);
       slot.reject(new Error("peer leaving"));
     }
     for (const [id, slot] of this.ackPending) {
-      clearTimeout(slot.timer);
-      this.ackPending.delete(id);
-      slot.resolve({ status: "timeout", id });
+      this._settleAck(id, slot, { status: "timeout", id });
     }
 
     if (this.socket) {
@@ -622,8 +816,29 @@ export class SessionPeer {
       this.socket = null;
     }
     if (this.broker) {
-      try { await this.broker.close(); } catch { /* ignored */ }
+      try {
+        if (this._ownsBrokerPath(own)) await this.broker.close();
+        else this.broker.abandon();
+      } catch { /* ignored */ }
       this.broker = null;
     }
+  }
+
+  /**
+   * Whether the socket file at our path is still the one this leader's
+   * broker was bound to. It decides between `close()` and `abandon()` (issue
+   * #140): closing a listening server makes libuv unlink whatever lies at the
+   * path by then, so only the owner of the path may close.
+   *
+   * A Windows pipe cannot be removed or rebound under its owner, so its
+   * holder always owns it. On POSIX an unknown identity counts as not owned:
+   * leaving a listener behind costs one descriptor, removing a successor's
+   * socket costs the host its broker.
+   */
+  private _ownsBrokerPath(identity: SocketIdentity | null): boolean {
+    if (usesNamedPipe()) return true;
+    if (!identity) return false;
+    const current = socketIdentity(this.opts.sockPath);
+    return current !== null && current.dev === identity.dev && current.ino === identity.ino;
   }
 }

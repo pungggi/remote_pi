@@ -428,6 +428,17 @@ Do not blindly retry authorization or envelope failures. Trusted Relay errors
 are consumed internally to settle pending sends; forged or invalid reserved
 bodies do not gain that authority.
 
+A cross-PC `denied` is settled late on purpose (issue #140). The relay hands
+a cross-PC send to every connection the target PC has, and each local broker
+that receives one answers for its own peers. That is why a refusal waits for
+a confirmation that may still come:
+
+- **Receiver**: a bridge that does not own the target holds its `denied` back
+  for 500 ms.
+- **Sender**: a cross-PC `denied` then waits another 300 ms for a `received`.
+- **Result**: a send that really ends as `denied` takes about 0.8 s, and
+  `details.answers` lists the brokers (by pid) that denied.
+
 Mesh addresses are opaque routing values: echo them verbatim, including
 receiver-local PC aliases with percent-encoded bytes (such as `%3A` or `%25`)
 or collision suffixes containing `~`. Never parse, build, decode, or normalize
