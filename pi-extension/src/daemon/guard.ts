@@ -634,7 +634,8 @@ export interface GuardState {
   deviceBudgetLogged: boolean;
   /** Set when the supervisor script was missing, so it is logged once. */
   scriptMissingLogged: boolean;
-  /** "Postponed by the start limit" is logged once per wait, not per tick. */
+  /** "Postponed" (by the start limit or by the start backoff) is logged once
+   *  per wait, not per tick. */
   postponedLogged: boolean;
   /** Pids the age restart already replaced; the same incarnation is never
    *  restarted twice even when its process age cannot be read. */
@@ -782,14 +783,16 @@ export async function tick(state: GuardState, deps: GuardDeps): Promise<{ action
     const allowedAt = startAllowedAt(state, cfg);
     if (now0 < allowedAt) {
       // Nothing is killed before its replacement may start: a wedged
-      // supervisor left running is no worse than no supervisor at all. The
-      // backoff alone needs no line (the last start announced it); the rate
-      // limiter does, once per wait.
-      if (!state.postponedLogged && limitedByRate(state, cfg)) {
+      // supervisor left running is no worse than no supervisor at all. A wait
+      // is said once, whichever of the two holds the start. The start line
+      // announced the backoff, but a guard that then logs nothing for half an
+      // hour reads as dead (2026-11-27, the owner's phone: 27 min without a
+      // line between "down" and "start #2").
+      if (!state.postponedLogged) {
         state.postponedLogged = true;
-        log(
-          `supervisor: restart postponed by the start limit (${cfg.rateMax} per ${humanMs(cfg.rateWindowMs)}) until ${timeOfDay(allowedAt)}`,
-        );
+        log(limitedByRate(state, cfg)
+          ? `supervisor: restart postponed by the start limit (${cfg.rateMax} per ${humanMs(cfg.rateWindowMs)}) until ${timeOfDay(allowedAt)}`
+          : `supervisor: start postponed by the start backoff until ${timeOfDay(allowedAt)}`);
       }
       return { action: { kind: "none" }, lines };
     }

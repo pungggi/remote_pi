@@ -257,6 +257,12 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   a registry entry, `daemon start <id>` reported a spawn the guard refused
   as `started: true`. It answers the same error as the device and transient
   paths.
+- **The guard says when it is waiting.** When the start backoff holds the
+  next supervisor start, `guard.log` gets one line per wait, `supervisor:
+  start postponed by the start backoff until HH:MM`, as the rate limit
+  always had. Such a wait used to be silent: on 2026-11-27 the owner's
+  phone logged "supervisor: down" and then nothing for 27 minutes
+  (`START_BACKOFF_S=1800`), which read as a dead guard.
 
 ## [0.10.3] - 2026-11-27
 
