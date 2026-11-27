@@ -224,6 +224,17 @@ describe("agyModelIds", () => {
     replies = [];
   });
 
+  test("a shorter deadline (the check before a start) cuts a hanging call off: null", async () => {
+    replies = [{ code: null, hang: true }, { code: null, hang: true }];
+    const spawnFn = fakeSpawn();
+    const started = Date.now();
+    expect(await agyModelIds({ spawn: spawnFn, now: () => 1, modelsTimeoutMs: 20 })).toBeNull();
+    expect(Date.now() - started).toBeLessThan(5_000);
+    // The cut-off answer is not cached: the next start check asks again.
+    expect(await agyModelIds({ spawn: spawnFn, now: () => 2, modelsTimeoutMs: 20 })).toBeNull();
+    expect(spawnFn).toHaveBeenCalledTimes(2);
+  }, 10_000);
+
   test("the ids when the catalogue is available, null when it is not", async () => {
     replies = [{ code: 0, stdout: REAL_OUTPUT }, { code: 1, stderr: "nope" }];
     const spawnFn = fakeSpawn();

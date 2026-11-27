@@ -376,7 +376,9 @@ was found on the way:
 - **Review of #132 (2026-11-27).** Two contradictions were still dropped
   silently instead of refused: `runPi:false` with a model opened a plain
   shell without the model, and the Pi tools read an unknown `agent` as Pi.
-  Both are refused now, like `runPi:false` with AGY already was.
+  Both are refused now, like `runPi:false` with AGY already was. The
+  re-review added one: the catalogue check before a start has its own 10 s
+  deadline, so a slow `agy models` cannot hold a start for 30 s.
 - **Open for A4, not in this PR: pass an explicit action timeout.** The app's
   default is 15 s (`ActionsRepository`), but on a slow device `agy models` may
   take 30 s and `agy --version` 15 s. Until A4 passes a longer timeout for the

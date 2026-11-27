@@ -274,7 +274,8 @@ as before.
 - **Validation.** An unknown agent is an error, never a fallback to Pi. A
   model needs both halves. Both halves must pass `SAFE_MODEL_TOKEN`. For AGY,
   an id outside the device's catalogue is refused while that catalogue is
-  available; while it is not (signed out, offline) AGY decides itself.
+  available; while it is not (signed out, offline, or too slow to answer
+  before a start) AGY decides itself.
 - **One wire shape.** A model is always `{ provider, id, name }`. For AGY the
   provider is a display grouping derived from the id (`claude-*` →
   `anthropic`, `gemini-*` → `google`, `gpt-*` → `openai`), and only the id

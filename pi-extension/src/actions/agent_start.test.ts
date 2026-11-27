@@ -32,6 +32,7 @@ vi.mock("./open_terminal.js", async (importOriginal) => ({
 }));
 
 import {
+  AGY_START_CHECK_TIMEOUT_MS,
   AGY_TMUX_SIZE,
   _resetLauncherCachesForTests,
   readStartSelection,
@@ -98,6 +99,17 @@ describe("startModelProblem", () => {
     expect(
       await startModelProblem({ agent: "agy", model: { provider: "google", model_id: "gemini-4-neon-high" } }),
     ).toBeNull();
+  });
+
+  test("the check waits less than a picker would: its own deadline, then pass-through", async () => {
+    // A start holds the action channel, and the app gives up on it after
+    // 15 s (start_session) or 30 s (open_terminal); a picker can wait longer.
+    expect(AGY_START_CHECK_TIMEOUT_MS).toBe(10_000);
+    vi.mocked(agyModelIds).mockResolvedValue(null);
+    expect(
+      await startModelProblem({ agent: "agy", model: { provider: "google", model_id: "gemini-4-neon-high" } }),
+    ).toBeNull();
+    expect(agyModelIds).toHaveBeenCalledWith({ modelsTimeoutMs: AGY_START_CHECK_TIMEOUT_MS });
   });
 
   test("while the catalogue is unavailable the id is passed through", async () => {

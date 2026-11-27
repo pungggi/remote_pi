@@ -78,21 +78,33 @@ export function readStartSelection(msg: {
  * Plan/173 — model validation at start. The token charset was already
  * checked; this asks whether the agent OFFERS the id, because a terminal that
  * dies on an unknown model is invisible to the app. Only when the device can
- * tell: while AGY's catalogue is unavailable (signed out, offline) the id is
- * passed through and AGY decides. Pi's own registry belongs to the session
- * being started, so Pi decides there too.
+ * tell: while AGY's catalogue is unavailable (signed out, offline, too slow
+ * before a start) the id is passed through and AGY decides. Pi's own
+ * registry belongs to the session being started, so Pi decides there too.
  *
  * Returns the problem, or null when the start may proceed.
  */
 export async function startModelProblem(selection: AgentSelection): Promise<string | null> {
   if (selection.agent !== "agy" || !selection.model) return null;
-  const ids = await agyModelIds();
+  // A start must not wait for a slow `agy models` as long as a picker can:
+  // past the shorter deadline the catalogue counts as unavailable.
+  const ids = await agyModelIds({ modelsTimeoutMs: AGY_START_CHECK_TIMEOUT_MS });
   if (ids === null) return null;
   if (!ids.includes(selection.model.model_id)) {
     return `model "${selection.model.model_id}" is not one of AGY's models on this device`;
   }
   return null;
 }
+
+/**
+ * Plan/173 — how long the catalogue check before a start may take. Shorter
+ *  than the deadline of a plain `list_models` (30 s, where the user waits for
+ *  a picker): a start holds the action channel, and the app gives up on it
+ *  after 15 s (`start_session`) or 30 s (`open_terminal`). Past this deadline
+ *  the catalogue counts as unavailable and the id is passed through, the rule
+ *  for an unavailable catalogue. A cached catalogue answers at once.
+ */
+export const AGY_START_CHECK_TIMEOUT_MS = 10_000;
 
 /**
  * Plan/173 — why `runPi:false` cannot honour the request, or null when it
