@@ -1,8 +1,9 @@
 import { ChildProcess, execFileSync, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DaemonState } from "./control_protocol.js";
+import { findOnPath, isTermux } from "../termux.js";
 import { defaultAgentName, loadLocalConfig, type LocalConfig } from "../session/local_config.js";
 
 /**
@@ -134,13 +135,23 @@ export interface PiSpawnTarget { command: string; prefixArgs: string[] }
  *
  * Falls back to the bare resolved path when not a parseable shim (e.g. a real
  * `pi.exe`, or POSIX) so `spawn` surfaces any real error honestly.
+ *
+ * Termux gets the same treatment for another reason: there `pi` is a script
+ * whose shebang names `/usr/bin/env`, which Android does not have (see
+ * `termuxPiScript`). `termuxScript` is the JavaScript file to run with node.
  */
 export function resolvePiSpawn(
   piBin: string,
   plat: NodeJS.Platform = process.platform,
   nodeExe: string = process.execPath,
+  /** Termux: the JavaScript file `pi` really is. The default looks only
+   *  inside Termux, so a desktop never consults its own PATH. Null leaves
+   *  `pi` to `spawn`. */
+  termuxScript: string | null = termuxPiScriptFor(piBin),
 ): PiSpawnTarget {
   const resolved = resolvePiBin(piBin, plat);
+  // Termux: `node <cli.js>`, never the shebang (see termuxPiScript).
+  if (termuxScript !== null) return { command: nodeExe, prefixArgs: [termuxScript] };
   if (plat !== "win32") return { command: resolved, prefixArgs: [] };
   if (/\.(cmd|bat)$/i.test(resolved)) {
     const target = _npmShimTarget(resolved);
@@ -162,6 +173,69 @@ export function _npmShimTarget(cmdPath: string): string | null {
   if (!m) return null;
   const target = join(dirname(cmdPath), m[1]);
   return existsSync(target) ? target : null;
+}
+
+/** `resolvePiSpawn`'s Termux default: the lookup inside Termux, null anywhere
+ *  else. Off Termux nothing is resolved, so a desktop's own `pi` is never
+ *  consulted and its `spawn` target stays what it was. */
+function termuxPiScriptFor(piBin: string): string | null {
+  return isTermux(process.env, process.platform) ? termuxPiScript(piBin) : null;
+}
+
+/**
+ * Termux: the JavaScript file `pi` really is, or null when `pi` is to be
+ * spawned as named.
+ *
+ * Why (2026-11-27): npm links `pi` to a `.js` file whose shebang is
+ * `#!/usr/bin/env node`. Starting it means asking the kernel to run
+ * `/usr/bin/env`, which Android does not have. In a Termux shell that works
+ * anyway, because the app preloads `libtermux-exec.so`, which rewrites such
+ * shebangs on the way to `execve`. A supervisor started by Termux:Boot has no
+ * such preload: every `spawn pi` ended in ENOENT and the device daemon crashed
+ * after each boot of the owner's phone. Running the file with node ourselves
+ * needs no preload at all, the same idea as the Windows `.cmd` shim above.
+ *
+ * A bare name is looked up on `envPath` (Android's separator is always `:`),
+ * an explicit path is taken as is, and symlinks are followed. The file counts
+ * as a node script when it ends in `.js`, `.mjs` or `.cjs`, or when its
+ * shebang names node. Anything else (a native binary, a shell script) is left
+ * to `spawn`, which then reports a real error honestly.
+ */
+export function termuxPiScript(piBin: string, envPath: string = process.env["PATH"] ?? ""): string | null {
+  const candidate = /[\\/]/.test(piBin) ? piBin : findOnPath(piBin, envPath, ":");
+  if (candidate === null) return null;
+  let real: string;
+  try {
+    real = realpathSync(candidate);
+  } catch {
+    return null;
+  }
+  if (/\.[cm]?js$/i.test(real)) return real;
+  const interpreter = readShebang(real);
+  return interpreter !== null && /(^|[\/\s])node(js)?(\s|$)/.test(interpreter) ? real : null;
+}
+
+/** The interpreter line of a `#!` file, or null when it does not start with
+ *  one. Only the first bytes are read: pi's bundle is megabytes. */
+function readShebang(path: string): string | null {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch {
+    return null;
+  }
+  try {
+    const buffer = Buffer.alloc(256);
+    const bytes = readSync(fd, buffer, 0, buffer.length, 0);
+    const head = buffer.subarray(0, bytes).toString("latin1");
+    if (!head.startsWith("#!")) return null;
+    const end = head.indexOf("\n");
+    return (end < 0 ? head : head.slice(0, end)).trim();
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
@@ -372,8 +446,8 @@ export class RpcChild extends EventEmitter {
     const sessionName = cfg.agent_name ?? defaultAgentName(this.opts.cwd);
     const useContinue = !this.forceFreshSessionOnNextSpawn;
     this.forceFreshSessionOnNextSpawn = false;
-    // On Windows `prefixArgs` carries pi's cli.js (we spawn node directly); on
-    // POSIX it's empty and `command` is `pi` itself.
+    // On Windows and Termux `prefixArgs` carries pi's cli.js (node is spawned
+    // directly); on other POSIX systems it is empty and `command` is `pi` itself.
     const args = [...piTarget.prefixArgs, ...rpcSpawnArgs(this.opts.extensionPath, sessionName, useContinue, this.opts.model)];
     const env: NodeJS.ProcessEnv = {
       ...process.env,

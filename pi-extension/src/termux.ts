@@ -129,9 +129,14 @@ export function termuxPath(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /** Absolute path of `name` in the first PATH entry that holds an executable
- *  of that name, or null. A PATH lookup only: nothing is executed. */
-export function findOnPath(name: string, envPath: string = process.env["PATH"] ?? ""): string | null {
-  for (const dir of envPath.split(delimiter)) {
+ *  of that name, or null. A PATH lookup only: nothing is executed. `sep` is
+ *  the host's `path.delimiter` unless given: Android's is always `:`. */
+export function findOnPath(
+  name: string,
+  envPath: string = process.env["PATH"] ?? "",
+  sep: string = delimiter,
+): string | null {
+  for (const dir of envPath.split(sep)) {
     const d = dir.replace(/\/+$/, "");
     if (!d) continue;
     const candidate = join(d, name);

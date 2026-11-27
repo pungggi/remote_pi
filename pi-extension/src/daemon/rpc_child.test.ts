@@ -1,14 +1,14 @@
-import { afterEach, describe, expect, test } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { writePairStub } from "../test-helpers.js";
 import {
   RpcChild,
   busyTransition,
   parseCustomMessageEnd,
   parsePairCodeDetails,
-  resolvePiBin, resolvePiSpawn, _npmShimTarget, rpcSpawnArgs, type RpcChildExitEvent } from "./rpc_child.js";
+  resolvePiBin, resolvePiSpawn, termuxPiScript, _npmShimTarget, rpcSpawnArgs, type RpcChildExitEvent } from "./rpc_child.js";
 
 /**
  * Regression for the orphaned-daemon bug: a deliberate `stop()` kills the
@@ -285,6 +285,17 @@ describe("resolvePiSpawn (plan/40 — directly-spawnable target)", () => {
     expect(resolvePiSpawn("/usr/bin/pi", "darwin")).toEqual({ command: "/usr/bin/pi", prefixArgs: [] });
   });
 
+  // 2026-11-27: on the owner's phone every `spawn pi` from a Termux:Boot-started
+  // supervisor ended in ENOENT (shebang `/usr/bin/env node`, no termux-exec).
+  test("Termux → node plus the cli.js behind `pi`; nothing found → the POSIX answer", () => {
+    const node = "/data/data/com.termux/files/usr/bin/node";
+    const cli = "/data/data/com.termux/files/usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js";
+    expect(resolvePiSpawn("pi", "android", node, cli)).toEqual({ command: node, prefixArgs: [cli] });
+    expect(resolvePiSpawn("/usr/bin/pi", "android", node, cli)).toEqual({ command: node, prefixArgs: [cli] });
+    // Null (not resolved, or not Termux): `spawn` reports the real error.
+    expect(resolvePiSpawn("pi", "android", node, null)).toEqual({ command: "pi", prefixArgs: [] });
+  });
+
   test("Windows .cmd shim → spawn node + parsed cli.js (no cmd.exe layer)", () => {
     const tmp = mkdtempSync(join(tmpdir(), "pi-spawn-"));
     try {
@@ -307,6 +318,86 @@ describe("resolvePiSpawn (plan/40 — directly-spawnable target)", () => {
       command: "C:\\tools\\pi.exe",
       prefixArgs: [],
     });
+  });
+});
+
+// ── termuxPiScript: the cli.js behind `pi` (2026-11-27) ─────────────────────
+//
+// npm links `pi` to a `.js` file with the shebang `#!/usr/bin/env node`.
+// Android has no `/usr/bin/env`; in a Termux shell libtermux-exec rewrites
+// the shebang, a supervisor started by Termux:Boot has no such preload.
+describe("termuxPiScript", () => {
+  let tmp: string;
+  let bin: string;
+  let lib: string;
+  const cli = (): string => join(lib, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js");
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "pi-termux-pi-"));
+    bin = join(tmp, "usr", "bin");
+    lib = join(tmp, "usr", "lib");
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(dirname(cli()), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test.skipIf(process.platform === "win32")("`pi` as a symlink to npm's cli.js: the real file, found on a `:`-separated PATH", () => {
+    writeFileSync(cli(), "#!/usr/bin/env node\n");
+    chmodSync(cli(), 0o755);
+    symlinkSync(cli(), join(bin, "pi"));
+    // Empty entries and a trailing slash are tolerated, as in a real PATH.
+    const envPath = `${join(tmp, "nowhere")}/bin::${bin}/:`;
+    expect(termuxPiScript("pi", envPath)).toBe(realpathSync(cli()));
+    // An explicit path needs no PATH.
+    expect(termuxPiScript(join(bin, "pi"), "")).toBe(realpathSync(cli()));
+  });
+
+  test("a node shebang counts without an extension; other interpreters and binaries do not", () => {
+    const pi = join(bin, "pi");
+    writeFileSync(pi, "#!/usr/bin/env node\n// pi\n");
+    chmodSync(pi, 0o755);
+    expect(termuxPiScript("pi", bin)).toBe(realpathSync(pi));
+    writeFileSync(pi, "#!/data/data/com.termux/files/usr/bin/env -S node --flag\n");
+    expect(termuxPiScript("pi", bin)).toBe(realpathSync(pi));
+    // A shell script with an absolute shebang starts by itself: leave it to spawn.
+    writeFileSync(pi, "#!/data/data/com.termux/files/usr/bin/sh\nexit 0\n");
+    expect(termuxPiScript("pi", bin)).toBeNull();
+    // A native binary.
+    writeFileSync(pi, Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+    expect(termuxPiScript("pi", bin)).toBeNull();
+  });
+
+  test("nothing found, an empty PATH, a non-executable and a missing explicit path answer null", () => {
+    expect(termuxPiScript("pi", bin)).toBeNull();
+    expect(termuxPiScript("pi", "")).toBeNull();
+    // Not executable: a PATH lookup skips it, as a shell would.
+    writeFileSync(join(bin, "pi"), "#!/usr/bin/env node\n");
+    if (process.platform !== "win32") expect(termuxPiScript("pi", bin)).toBeNull();
+    expect(termuxPiScript(join(bin, "missing"), "")).toBeNull();
+  });
+
+  test.skipIf(process.platform === "win32")("a dangling link answers null", () => {
+    symlinkSync(join(bin, "nowhere.js"), join(bin, "pi"));
+    expect(termuxPiScript("pi", bin)).toBeNull();
+  });
+
+  test("the first PATH entry that holds `pi` wins; `.mjs` / `.cjs` count as scripts too", () => {
+    const other = join(tmp, "other-bin");
+    mkdirSync(other);
+    for (const [dir, name] of [[other, "pi"], [bin, "pi"], [other, "pi.mjs"], [other, "pi.cjs"]] as const) {
+      const file = join(dir, name);
+      writeFileSync(file, "#!/usr/bin/env node\n");
+      // For a PATH lookup the file must be executable; an explicit path with a
+      // script extension needs neither the bit nor the shebang.
+      chmodSync(file, name === "pi" ? 0o755 : 0o644);
+    }
+    expect(termuxPiScript("pi", `${other}:${bin}`)).toBe(realpathSync(join(other, "pi")));
+    expect(termuxPiScript("pi", `${bin}:${other}`)).toBe(realpathSync(join(bin, "pi")));
+    expect(termuxPiScript(join(other, "pi.mjs"), "")).toBe(realpathSync(join(other, "pi.mjs")));
+    expect(termuxPiScript(join(other, "pi.cjs"), "")).toBe(realpathSync(join(other, "pi.cjs")));
   });
 });
 

@@ -161,6 +161,12 @@ describe("findOnPath / isExecutable", () => {
     expect(findOnPath("nope", "")).toBeNull();
   });
 
+  // A Windows path carries a drive colon; an Android PATH never does.
+  test.skipIf(process.platform === "win32")("the separator can be given: Android's PATH is `:`-separated wherever the test runs", () => {
+    // `delimiter` is `;` on Windows; a Termux PATH must still split on `:`.
+    expect(findOnPath("termux-wake-lock", `${join(dir, "missing")}:${bin}`, ":")).toBe(join(bin, "termux-wake-lock"));
+  });
+
   test("isExecutable: the bit matters on POSIX", () => {
     expect(isExecutable(join(bin, "termux-wake-lock"))).toBe(true);
     expect(isExecutable(join(bin, "missing"))).toBe(false);

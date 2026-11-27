@@ -14,6 +14,14 @@ export PATH="{PREFIX}/bin:{PATH}"
 export PREFIX="{PREFIX}"
 # Shared libraries of Termux packages (node's native modules among them).
 [ -z "$LD_LIBRARY_PATH" ] && export LD_LIBRARY_PATH="{PREFIX}/lib"
+# termux-exec rewrites `#!/usr/bin/env ...` shebangs when a program is started.
+# A Termux shell gets it from the app; Termux:Boot does not. Without it the
+# supervisor's `spawn pi` fails with ENOENT and the device daemon crashes
+# after every boot (2026-11-27). Guarded twice on purpose: a value the caller
+# already has is kept, and nothing is set where termux-exec is not installed.
+if [ -z "$LD_PRELOAD" ] && [ -e "{PREFIX}/lib/libtermux-exec.so" ]; then
+  export LD_PRELOAD="{PREFIX}/lib/libtermux-exec.so"
+fi
 
 PIPER="$HOME/.pi/piper"
 mkdir -p "$PIPER"

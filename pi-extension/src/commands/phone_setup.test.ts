@@ -9,6 +9,7 @@ import {
   clockTime,
   defaultPhoneSetupDeps,
   deviceRoomReached,
+  healthUrl,
   isLoopbackHost,
   parsePhoneSetupArgs,
   runPhoneSetup,
@@ -181,6 +182,11 @@ describe("isLoopbackHost / deviceRoomReached / clockTime", () => {
   test("clockTime is HH:MM", () => {
     expect(clockTime(new Date(2026, 0, 2, 8, 5).getTime())).toBe("08:05");
   });
+
+  test("healthUrl adds /health once, whatever trailing slash the relay carries", () => {
+    expect(healthUrl("http://pc:3000")).toBe("http://pc:3000/health");
+    expect(healthUrl("http://pc:3000/")).toBe("http://pc:3000/health");
+  });
 });
 
 describe("runPhoneSetup — the happy path", () => {
@@ -247,14 +253,53 @@ describe("runPhoneSetup — where it stops", () => {
     expect(strip(h.lines).at(-1)).toMatch(/^termux: this command runs inside Termux/);
   });
 
-  test("--relay is validated, saved, and then used for the health check", async () => {
+  test("--relay is validated, probed, and saved only once it answered", async () => {
     const h = harness();
     expect(await runPhoneSetup({ ...BASE_OPTS, relay: "ws://pc:3000" }, h.deps)).toBe(1);
     expect(h.calls).toEqual([]);
     const ok = harness();
     expect(await runPhoneSetup({ ...BASE_OPTS, relay: "http://10.0.0.5:3000/" }, ok.deps)).toBe(0);
-    expect(ok.calls[0]).toBe("setRelay:http://10.0.0.5:3000/");
-    expect(ok.calls[1]).toBe("fetch:http://10.0.0.5:3000/health");
+    expect(ok.calls.slice(0, 2)).toEqual(["fetch:http://10.0.0.5:3000/health", "setRelay:http://10.0.0.5:3000/"]);
+    // One probe for the value, none for the effective URL: they are the same.
+    expect(ok.calls.filter((c) => c.startsWith("fetch:"))).toEqual(["fetch:http://10.0.0.5:3000/health"]);
+    expect(strip(ok.lines)).toContainEqual("relay: http://10.0.0.5:3000/ healthy");
+  });
+
+  // 2026-11-27: the value used to be saved before anything was checked, so a
+  // run that stopped on a bad address left the phone pointing at it.
+  test("a --relay that does not answer stops the run and is NOT saved", async () => {
+    const fetches: string[] = [];
+    const h = harness({
+      fetchText: async (url) => {
+        fetches.push(`fetch:${url}`);
+        return null;
+      },
+    });
+    expect(await runPhoneSetup({ ...BASE_OPTS, relay: "http://10.0.0.9:3000" }, h.deps)).toBe(1);
+    expect(fetches).toEqual(["fetch:http://10.0.0.9:3000/health"]);
+    expect(h.calls).toEqual([]);
+    expect(h.state.relay).toBe(RELAY);
+    expect(strip(h.lines).at(-1)).toMatch(/^relay: http:\/\/10\.0\.0\.9:3000\/health did not answer/);
+  });
+
+  test("a loopback --relay is refused before it is saved", async () => {
+    for (const url of ["http://127.0.0.1:3000", "http://localhost:3000"]) {
+      const h = harness();
+      expect(await runPhoneSetup({ ...BASE_OPTS, relay: url }, h.deps)).toBe(1);
+      expect(h.calls).toEqual([]);
+      expect(h.state.relay).toBe(RELAY);
+      expect(strip(h.lines).at(-1)).toContain("remote-pi phone-setup --relay http://<pc-ip>:3000");
+    }
+  });
+
+  test("an effective relay other than the --relay value is probed again", async () => {
+    // What was saved can come back normalised by the config; that URL is checked.
+    const h = harness({ relayUrl: () => "http://10.0.0.5" });
+    expect(await runPhoneSetup({ ...BASE_OPTS, relay: "http://10.0.0.5:3000" }, h.deps)).toBe(0);
+    expect(h.calls.filter((c) => c.startsWith("fetch:"))).toEqual([
+      "fetch:http://10.0.0.5:3000/health",
+      "fetch:http://10.0.0.5/health",
+    ]);
   });
 
   test("pi missing stops before anything is changed", async () => {
