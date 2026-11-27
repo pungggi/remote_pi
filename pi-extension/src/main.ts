@@ -5585,6 +5585,15 @@ export function _dispatchSessionAction(
               message: r.message,
             });
           }
+        }).catch((err: unknown) => {
+          // Same net as the Pi branch below: a throw inside the chain must
+          // still answer, or the app waits for its own timeout.
+          sender.send({
+            type: "error",
+            in_reply_to: msg.id,
+            code: "internal_error",
+            message: err instanceof Error ? err.message : String(err),
+          });
         });
         break;
       }

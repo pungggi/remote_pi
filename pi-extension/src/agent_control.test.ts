@@ -134,6 +134,15 @@ describe("plan/173 agent selector on $rp_control", () => {
     expect(String(r.body.rp_control_result.error)).toBe("Please sign in");
   });
 
+  test("a throwing `agy models` call still answers: an error, never a hang", async () => {
+    main._setPiForTest({ stub: true });
+    vi.mocked(listAgyModels).mockRejectedValue(new Error("boom"));
+    const peer = await run({ op: "list_models", agent: "agy" }, true);
+    const r = lastReply(peer);
+    expect(r.body.rp_control_result).toMatchObject({ ok: false, action: "list_models" });
+    expect(String(r.body.rp_control_result.error)).toBe("boom");
+  });
+
   test("spawn_worktree refuses AGY headless before it touches git", async () => {
     main._setPiForTest({ stub: true });
     const peer = await run({ op: "spawn_worktree", agent: "agy", headless: true });
