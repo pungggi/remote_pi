@@ -164,7 +164,10 @@ is at the path when it thaws.
 ## DoD
 
 - [x] Typecheck and the whole suite pass on Windows (1709 passed).
-- [ ] CI green on ubuntu (node 22 and 24), where the POSIX-only cases run.
+- [x] CI green on ubuntu (node 22 and 24) and windows, where the POSIX-only
+  cases run.
+- [x] AI review of the PR: five findings, two fixed (final error of the
+  election, `unref` on the grace timer), three answered.
 - [ ] Controlled reproduction on two PCs with real processes, as the issue
   asks: on PC B start session 1, then session 2; send continuously from PC A
   to session 2 while session 1 exits. Expect every send `received`, and at
