@@ -263,6 +263,13 @@ For the canonical protocol specification, see [PROTOCOL.md](PROTOCOL.md).
   always had. Such a wait used to be silent: on 2026-11-27 the owner's
   phone logged "supervisor: down" and then nothing for 27 minutes
   (`START_BACKOFF_S=1800`), which read as a dead guard.
+- **`remote-pi doctor` no longer calls the installed package a worktree.**
+  The `pi settings` check flags every path-based remote-pi entry in the
+  global settings as a second copy that would double-load tools. On the
+  owner's phone the only entry is the npm global install the daemon itself
+  runs from (2026-11-27), so the warning was a false positive on every
+  run. The package the running code belongs to is exempt now, symlinks
+  included; any other copy is still flagged.
 
 ## [0.10.3] - 2026-11-27
 
