@@ -129,9 +129,13 @@ import {
 import { handleGitStatus, getGitStatus } from "./actions/git_status.js";
 import type { WireGhRef, WireGitStatus, WireSessionStats } from "./protocol/types.js";
 import { SAFE_MODEL_TOKEN } from "./protocol/types.js";
-import { handleOpenTerminal, handleListWorktrees, handleRemoveWorktree, createWorktree, openTerminalTab } from "./actions/open_terminal.js";
+import { AGY_TMUX_SIZE, handleOpenTerminal, handleListWorktrees, handleRemoveWorktree, createWorktree, openTerminalTab, startModelProblem } from "./actions/open_terminal.js";
 import { handleForgetRoom } from "./actions/forget_room.js";
 import { handleStartSession } from "./actions/start_session.js";
+import { handleDeviceInfo } from "./actions/device_info.js";
+import { listAgyModels } from "./actions/agent_models.js";
+import { buildAgentCommand } from "./actions/launch.js";
+import { parseAgentKind } from "./protocol/agent_selection.js";
 import { handleListProjects } from "./projects/handlers.js";
 import { handleChangeLayout } from "./actions/change_layout.js";
 import { ensureModelRegistry } from "./actions/registry.js";
@@ -5561,6 +5565,38 @@ export function _dispatchSessionAction(
       handleThinkingSet(ext.pi, sender, msg);
       break;
     case "list_models": {
+      // Plan/173 — AGY's catalogue comes from the CLI on this device, not
+      // from Pi's registry. It is answered here, through the same sender, so
+      // the app path and the mesh control path stay one dispatch.
+      if (msg.agent === "agy") {
+        void listAgyModels().then((r) => {
+          if (r.ok) {
+            sender.send({
+              type: "models_list",
+              in_reply_to: msg.id,
+              models: r.models,
+              agent: "agy",
+            });
+          } else {
+            sender.send({
+              type: "error",
+              in_reply_to: msg.id,
+              code: "internal_error",
+              message: r.message,
+            });
+          }
+        }).catch((err: unknown) => {
+          // Same net as the Pi branch below: a throw inside the chain must
+          // still answer, or the app waits for its own timeout.
+          sender.send({
+            type: "error",
+            in_reply_to: msg.id,
+            code: "internal_error",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        });
+        break;
+      }
       const lmCtx = (ext.lastEventCtx ?? ext.lastCtx) as ActionCtx | null;
       void _resolveRegistry(lmCtx)
         .then((reg) => handleListModels(lmCtx, reg, sender, msg))
@@ -5649,6 +5685,9 @@ export async function _spawnWorktreeSession(opts: {
   /** Plan/167 — spawn a transient `pi --mode rpc` child under the Piper
    *  supervisor instead of opening a visible terminal. */
   headless?: boolean;
+  /** Plan/173 — which agent the new terminal runs (default Pi). `agy` starts
+   *  `remote-pi agy` in the worktree and cannot be headless. */
+  agent?: string | null;
 }): Promise<{ ok: boolean; message: string; path?: string; branch?: string }> {
   const base = opts.base && opts.base.trim() ? opts.base.trim() : (ext.myRoomMeta?.cwd ?? process.cwd());
   // ai-review #107 r2: `base` from a remote caller is an arbitrary path BY
@@ -5656,14 +5695,34 @@ export async function _spawnWorktreeSession(opts: {
   // vector (createWorktree uses array-args execFileSync) and createWorktree
   // rejects non-git bases (`git rev-parse --is-inside-work-tree`) — the same
   // guard the app's open_terminal path relies on.
-  if (opts.provider !== undefined || opts.model_id !== undefined) {
-    // Both-or-neither: a lone half can't compose a valid --model flag.
-    if (!opts.provider || !opts.model_id) {
-      return { ok: false, message: "spawn_worktree requires both provider and model_id (or neither)" };
-    }
-    if (!SAFE_MODEL_TOKEN.test(opts.provider) || !SAFE_MODEL_TOKEN.test(opts.model_id)) {
-      return { ok: false, message: `invalid model identifier: ${opts.provider}/${opts.model_id}` };
-    }
+  // Both-or-neither: a lone half can't compose a valid --model flag. The Pi
+  // tool and the control envelope pass `null` for "no model", which must read
+  // like absent: until plan/173 a model-less spawn through either of them was
+  // refused with this very error (`null !== undefined`).
+  const provider = opts.provider != null ? opts.provider.trim() : "";
+  const modelId = opts.model_id != null ? opts.model_id.trim() : "";
+  if ((provider !== "") !== (modelId !== "")) {
+    return { ok: false, message: "spawn_worktree requires both provider and model_id (or neither)" };
+  }
+  if (provider !== "" && (!SAFE_MODEL_TOKEN.test(provider) || !SAFE_MODEL_TOKEN.test(modelId))) {
+    return { ok: false, message: `invalid model identifier: ${provider}/${modelId}` };
+  }
+  const pickedModel = provider !== "" ? { provider, model_id: modelId } : null;
+  // Plan/173 — an unknown agent is refused, never read as Pi.
+  const agentRes = parseAgentKind(opts.agent);
+  if (!agentRes.ok) return { ok: false, message: agentRes.message };
+  const agent = agentRes.agent;
+  if (agent === "agy" && opts.headless) {
+    return {
+      ok: false,
+      message: "spawn_worktree cannot start AGY headless (AGY has no supervisor worker); omit headless.",
+    };
+  }
+  // Plan/173 — refuse an AGY model this device does not offer before a
+  // worktree is created (see `startModelProblem`).
+  if (agent === "agy") {
+    const problem = await startModelProblem({ agent, model: pickedModel });
+    if (problem) return { ok: false, message: problem };
   }
   const wt = createWorktree(base, opts.branch ?? null);
   if (!wt.ok || !wt.entry) return { ok: false, message: wt.message };
@@ -5675,7 +5734,7 @@ export async function _spawnWorktreeSession(opts: {
     // path would have (`<worktree-path>@<agent_name>`).
     const agentName =
       loadLocalConfig(wt.entry.path).agent_name ?? defaultAgentName(wt.entry.path);
-    const model = opts.provider && opts.model_id ? `${opts.provider}/${opts.model_id}` : undefined;
+    const model = pickedModel ? `${pickedModel.provider}/${pickedModel.model_id}` : undefined;
     const address = `${wt.entry.path}@${agentName}`;
     try {
       const data = await callSupervisor({
@@ -5710,8 +5769,18 @@ export async function _spawnWorktreeSession(opts: {
       return { ok: false, message: `headless spawn failed: ${e instanceof Error ? e.message : String(e)}. ${kept}` };
     }
   }
-  const modelFlag = opts.provider && opts.model_id ? ` --model ${opts.provider}/${opts.model_id}` : "";
-  const outcome = await openTerminalTab(wt.entry.path, `pi${modelFlag}`);
+  const command = buildAgentCommand({
+    agent,
+    resume: { kind: "new" },
+    model: pickedModel,
+  });
+  // Plan/173 — AGY draws into the detached tmux session before the first
+  // attach, so it gets a canvas up front. Pi keeps the two-argument call of
+  // the pre-173 path.
+  const outcome =
+    agent === "agy"
+      ? await openTerminalTab(wt.entry.path, command, { size: { ...AGY_TMUX_SIZE } })
+      : await openTerminalTab(wt.entry.path, command);
   return {
     ok: outcome.ok,
     message: outcome.ok ? `${outcome.message} (${wt.message})` : outcome.message,
@@ -5747,7 +5816,8 @@ export function _synthesizeSessionAction(
     case "session_new":
       return { type: "session_new", id };
     case "list_models":
-      return { type: "list_models", id };
+      // Plan/173 — the envelope's `agent` selects the catalogue.
+      return { type: "list_models", id, ...(ctrl.agent === "agy" ? { agent: "agy" as const } : {}) };
     case "session_shutdown":
       return { type: "session_shutdown", id, defer_if_busy: true };
     case "model_set":
@@ -5854,6 +5924,15 @@ async function _handleControlEnvelopeInner(
     reply({ ok: false, action: ctrl.op, error: "no active Pi session on this peer" });
     return;
   }
+  // Plan/173 — a bad agent is refused for every op it may apply to, instead
+  // of being read as Pi further down.
+  if (ctrl.agent !== undefined) {
+    const a = parseAgentKind(ctrl.agent);
+    if (!a.ok) {
+      reply({ ok: false, action: ctrl.op, error: a.message });
+      return;
+    }
+  }
   switch (ctrl.op) {
     case "session_compact":
     case "session_new":
@@ -5900,6 +5979,7 @@ async function _handleControlEnvelopeInner(
         provider: ctrl.provider ?? null,
         model_id: ctrl.model_id ?? null,
         headless: ctrl.headless === true,
+        agent: ctrl.agent ?? null,
       });
       reply({
         ok: r.ok,
@@ -6273,7 +6353,12 @@ export function _routeClientMessageFrom(
     // --continue` spawn (resumes the existing conversation, re-announces the
     // same room). No new worktree, no pin.
     case "start_session_request":
-      handleStartSession(sender, msg);
+      void handleStartSession(sender, msg);
+      break;
+    // Plan/173 — the paired device describes itself (host class, terminal
+    // kind, startable agents, version) for the app's start sheet.
+    case "device_info_request":
+      void handleDeviceInfo(sender, msg);
       break;
     // Plan/149 — store (or clear) a session's GitHub ref. Two paths in one
     // handler: the LIVE session (room_id is ours → room_meta push + registry)
@@ -7349,7 +7434,11 @@ export async function _cmdAgyCli(args: string[]): Promise<void> {
   await _ensureCliLocalConfig(targetCwd, true);
 
   const absCwd = resolve(targetCwd);
-  const agyCmd = process.platform === "win32" ? "agy.cmd" : "agy";
+  // The bare name lets the shell resolve whichever form the installer put on
+  // PATH: `agy.exe` for the native installer, `agy.cmd` for an npm shim.
+  // Asking for `agy.cmd` by name (until plan/173 A2) missed the plain `.exe`,
+  // so `remote-pi agy` failed on a native install.
+  const agyCmd = "agy";
 
   // `agy.cmd` needs shell:true on Windows, but Node joins shell arguments with
   // bare spaces before handing them to cmd.exe — re-quote each already-tokenized

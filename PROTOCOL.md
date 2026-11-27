@@ -258,6 +258,48 @@ Vocabulário curado de ações tipadas que o app mobile invoca sobre a sessão d
 }
 ```
 
+### Starting a session: agent, model and device (plan/173)
+
+A session started from the app can name **which agent** runs and **with which
+model**. Both are optional. A request without the new fields behaves exactly
+as before.
+
+| Field | On | Meaning |
+|---|---|---|
+| `agent` | `open_terminal_request`, `start_session_request` | `"pi"` (default) or `"agy"` (the Antigravity CLI, via `remote-pi agy`) |
+| `provider`, `model_id` | the same two requests | A model for THIS session only: `--model <provider>/<id>` for Pi, `--model <id>` for AGY |
+| `agent` | `list_models` | `"agy"` lists AGY's models on that device instead of Pi's registry |
+| `agent` | `models_list` | Echoes a non-Pi catalogue |
+
+- **Validation.** An unknown agent is an error, never a fallback to Pi. A
+  model needs both halves. Both halves must pass `SAFE_MODEL_TOKEN`. For AGY,
+  an id outside the device's catalogue is refused while that catalogue is
+  available; while it is not (signed out, offline, or too slow to answer
+  before a start) AGY decides itself.
+- **One wire shape.** A model is always `{ provider, id, name }`. For AGY the
+  provider is a display grouping derived from the id (`claude-*` →
+  `anthropic`, `gemini-*` → `google`, `gpt-*` → `openai`), and only the id
+  reaches the AGY command line.
+- **No chat for AGY.** An AGY terminal is not shown as a chat in the app. The
+  app says where it runs and offers to open the terminal.
+
+```json
+// Start AGY on the device with one model, in the folder's own terminal
+{ "type": "start_session_request", "id": "<uuid>", "cwd": "C:\\proj",
+  "agent": "agy", "provider": "google", "model_id": "gemini-4-neon-high" }
+
+// The device describes itself (served by the device daemon)
+{ "type": "device_info_request", "id": "<uuid>" }
+{ "type": "device_info_result", "in_reply_to": "<uuid>", "ok": true,
+  "host": { "platform": "android", "label": "localhost", "terminal": "tmux" },
+  "agents": ["pi", "agy"], "version": "0.11.0" }
+```
+
+`device_info_result.host.platform` is one of `windows`, `android`, `macos`,
+`linux`, `other`. `host.terminal` says how a started terminal appears there:
+`wt`, `window`, `tmux` or `none`. On a failure the reply is `ok:false` with an
+empty `agents` list and a `message`.
+
 ### Device daemon control (plan/168)
 
 Verbos de reparo para o daemon always-on, roteados pra room `device` como

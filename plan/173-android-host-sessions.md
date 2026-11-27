@@ -356,6 +356,34 @@ the phone.
   call yields `ok:false` with AGY's stderr as the message, never a hang.
 - An AGY id outside the list is refused with a clear error.
 
+**Status (2026-11-27): A1 and A2 are built** (branch `feat/173-a1-a2`), unit-
+tested on a PC. Not yet exercised from the app: A4 wires the pickers. What
+was found on the way:
+
+- **A model-less `spawn_worktree` was refused.** Both the Pi tool and a
+  `$rp_control` envelope pass `null` for an absent model, and the
+  both-or-neither check read that as "one half given". Starting a worktree
+  session without a model through either of them failed with "requires both
+  provider and model_id". Fixed with a regression test.
+- **`remote-pi agy` named the wrong launcher on Windows.** It asked for
+  `agy.cmd`; the native installer ships `agy.exe`. It now uses the bare name
+  through the shell, which resolves either form.
+- **`agy models` has two failure shapes.** Signed out, it may exit non-zero,
+  or exit 0 and print "Please sign in". Both are reported as a failure with
+  AGY's words, never as an empty catalogue.
+- **AGY needs a canvas before the first attach.** It draws its TUI into the
+  detached tmux session at once, so AGY sessions get an initial size.
+- **Review of #132 (2026-11-27).** Two contradictions were still dropped
+  silently instead of refused: `runPi:false` with a model opened a plain
+  shell without the model, and the Pi tools read an unknown `agent` as Pi.
+  Both are refused now, like `runPi:false` with AGY already was. The
+  re-review added one: the catalogue check before a start has its own 10 s
+  deadline, so a slow `agy models` cannot hold a start for 30 s.
+- **Open for A4, not in this PR: pass an explicit action timeout.** The app's
+  default is 15 s (`ActionsRepository`), but on a slow device `agy models` may
+  take 30 s and `agy --version` 15 s. Until A4 passes a longer timeout for the
+  AGY calls, the app shows a generic timeout before the extension's answer.
+
 ### A3 — Extension: Termux platform and `remote-pi phone-setup`
 
 - `daemon/install.ts`: `detectPlatform()` returns `"android"` inside Termux.

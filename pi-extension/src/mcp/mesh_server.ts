@@ -474,11 +474,14 @@ mcp.registerTool("model_set", {
 }, async ({ target, provider, model_id }) => controlRequest(target, { op: "model_set", provider, model_id }));
 
 mcp.registerTool("list_models", {
-  description: "List the models available to a remote Pi peer (its OWN registry) plus its current model.",
+  description:
+    "List the models available to a remote peer plus its current model. agent:'agy' lists the " +
+    "Antigravity CLI's models on that machine instead of Pi's registry (plan/173).",
   inputSchema: {
     target: z.string().describe("Peer address from list_peers, echoed verbatim"),
+    agent: z.enum(["pi", "agy"]).optional().describe("'agy' for the Antigravity CLI's catalogue on that machine (default: Pi's registry)"),
   },
-}, async ({ target }) => controlRequest(target, { op: "list_models" }));
+}, async ({ target, agent }) => controlRequest(target, { op: "list_models", ...(agent === "agy" ? { agent } : {}) }));
 
 mcp.registerTool("spawn_worktree", {
   description: "Create a git worktree on a remote peer's machine and start a fresh `pi` session there (visible terminal, auto-joins the mesh). Optional model via the standard --model flag. headless:true spawns an invisible transient worker under the Piper supervisor instead of a terminal window (requires the supervisor on the target machine).",
@@ -489,8 +492,9 @@ mcp.registerTool("spawn_worktree", {
     provider: z.string().optional().describe("Optional model provider for the spawned session"),
     model_id: z.string().optional().describe("Optional model id — requires provider"),
     headless: z.boolean().optional().describe("Spawn an invisible transient worker (pi --mode rpc under the Piper supervisor) instead of a visible terminal"),
+    agent: z.enum(["pi", "agy"]).optional().describe("Agent to start in the worktree: 'agy' runs `remote-pi agy` (visible terminal only, not with headless)"),
   },
-}, async ({ target, branch, base, provider, model_id, headless }) => {
+}, async ({ target, branch, base, provider, model_id, headless, agent }) => {
   // ai-review #107 r5: both-or-neither, same rule as the Pi tool. Without
   // this guard a provider-only call would silently DROP the model and
   // spawn with the default — worse than an error.
@@ -509,6 +513,7 @@ mcp.registerTool("spawn_worktree", {
     ...(base ? { base } : {}),
     ...(provider && model_id ? { provider, model_id } : {}),
     ...(headless ? { headless: true } : {}),
+    ...(agent === "agy" ? { agent } : {}),
   });
 });
 

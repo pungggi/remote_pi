@@ -38,7 +38,9 @@ describe.skipIf(process.platform === "win32" || isTermux())("openTerminalTab off
     const outcome = await openTerminalTab("/home/me/project", "pi");
     expect(outcome.ok).toBe(false);
     expect(outcome.method).toBe("none");
-    expect(outcome.message).toMatch(/only supported on Windows/);
+    // Plan/173 — the refusal names the platform it ran on.
+    expect(outcome.message).toMatch(/not supported on/);
+    expect(outcome.message).toContain(process.platform);
     expect(spawn).not.toHaveBeenCalled();
     expect(execFileSync).not.toHaveBeenCalled();
   });

@@ -314,3 +314,77 @@ describe("plan/161 session-control tools — remote path", () => {
     expect(r.details).toEqual({ ok: false });
   });
 });
+
+describe("plan/173 agent parameter on the control tools", () => {
+  test("spawn_worktree agent:'agy' flows to the local spawn", async () => {
+    const { pi, tools } = makeMockPi();
+    const deps = makeDeps();
+    registerSessionControlTools(pi, deps);
+    await call(tools.get("spawn_worktree")!, { agent: "agy" });
+    expect(deps.spawnWorktreeLocal).toHaveBeenCalledWith(expect.objectContaining({ agent: "agy" }));
+  });
+
+  test("spawn_worktree with agent:'pi', null or none keeps the pre-173 request shape", async () => {
+    const { pi, tools } = makeMockPi();
+    const deps = makeDeps();
+    registerSessionControlTools(pi, deps);
+    await call(tools.get("spawn_worktree")!, { agent: "pi" });
+    await call(tools.get("spawn_worktree")!, { agent: null });
+    await call(tools.get("spawn_worktree")!, {});
+    for (const c of vi.mocked(deps.spawnWorktreeLocal).mock.calls) {
+      expect(c[0]).not.toHaveProperty("agent");
+    }
+  });
+
+  test("list_models agent:'agy' dispatches list_models with the agent locally", async () => {
+    const { pi, tools } = makeMockPi();
+    const deps = makeDeps({
+      dispatchLocal: vi.fn().mockResolvedValue({
+        type: "models_list", in_reply_to: "x", models: [], agent: "agy",
+      } as ServerMessage),
+    });
+    registerSessionControlTools(pi, deps);
+    await call(tools.get("list_models")!, { agent: "agy" });
+    expect(deps.dispatchLocal).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "list_models", agent: "agy" }),
+    );
+  });
+
+  test("an unknown agent is refused before anything is dispatched or sent (review of #132)", async () => {
+    const { pi, tools } = makeMockPi();
+    const peer = makeMockPeer();
+    const deps = makeDeps({ getPeer: () => peer });
+    registerSessionControlTools(pi, deps);
+    const cases = [
+      ["list_models", { agent: "copilot" }],
+      ["list_models", { agent: "copilot", target: "pc2:C:\\proj@w1" }],
+      ["spawn_worktree", { agent: "copilot" }],
+      ["spawn_worktree", { agent: "copilot", target: "pc2:C:\\proj@w1" }],
+    ] as const;
+    for (const [name, params] of cases) {
+      const r = await call(tools.get(name)!, params);
+      expect((r.content as { text: string }[])[0].text, name).toMatch(/unknown agent "copilot" \(expected "pi" or "agy"\)/);
+      expect(r.details, name).toEqual({ ok: false });
+    }
+    // Nothing left the caller: not to the local session, not to the spawn, not to the peer.
+    expect(deps.dispatchLocal).not.toHaveBeenCalled();
+    expect(deps.spawnWorktreeLocal).not.toHaveBeenCalled();
+    expect(peer.request).not.toHaveBeenCalled();
+  });
+
+  test("list_models with a target carries the agent in the control envelope", async () => {
+    const { pi, tools } = makeMockPi();
+    const peer = makeMockPeer();
+    registerSessionControlTools(pi, makeDeps({ getPeer: () => peer }));
+    await call(tools.get("list_models")!, { target: "pc2:C:\\proj@w1", agent: "agy" });
+    await call(tools.get("list_models")!, { target: "pc2:C:\\proj@w1" });
+    expect(peer.request).toHaveBeenNthCalledWith(
+      1,
+      "pc2:C:\\proj@w1",
+      { $rp_control: { op: "list_models", agent: "agy" } },
+      expect.any(Number),
+    );
+    // No agent requested: the envelope is exactly the pre-173 one.
+    expect(peer.request).toHaveBeenNthCalledWith(2, "pc2:C:\\proj@w1", { $rp_control: { op: "list_models" } }, expect.any(Number));
+  });
+});
