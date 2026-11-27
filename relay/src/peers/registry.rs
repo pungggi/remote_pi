@@ -29,6 +29,9 @@ pub enum PiForwardRoute {
     /// Every live connection got it. `fallback` is set when the frame named a
     /// local address but no connection advertises it; otherwise the frame is
     /// not a unicast to a local address (a control envelope, for instance).
+    /// A connection with an EMPTY roster advertises nothing, so for routing it
+    /// is indistinguishable from one that sent no roster: the relay never
+    /// reads "owns nobody" as "deliver to nobody".
     FanOut { recipients: usize, fallback: bool },
 }
 
@@ -855,55 +858,38 @@ impl PeerRegistry {
     /// one of those addresses is then delivered to that connection only
     /// ([`PeerRegistry::forward_pi_envelope`]).
     pub fn set_pi_roster(&self, conn_id: u64, addresses: HashSet<String>) {
-        let mut rosters = match self.pi_rosters.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                tracing::warn!("pi roster mutex poisoned; clearing rosters");
-                let mut guard = poisoned.into_inner();
-                guard.clear();
-                self.pi_rosters.clear_poison();
-                guard
-            }
-        };
-        rosters.insert(conn_id, Arc::new(addresses));
+        self.rosters().insert(conn_id, Arc::new(addresses));
     }
 
     fn clear_pi_roster(&self, conn_id: u64) {
-        match self.pi_rosters.lock() {
-            Ok(mut rosters) => {
-                rosters.remove(&conn_id);
-            }
-            Err(poisoned) => {
-                self.pi_rosters.clear_poison();
-                poisoned.into_inner().remove(&conn_id);
-            }
-        }
+        self.rosters().remove(&conn_id);
     }
 
     /// The addresses `conn_id` advertises, or None when it sent no roster.
     pub fn pi_roster(&self, conn_id: u64) -> Option<Arc<HashSet<String>>> {
-        self.pi_rosters.lock().ok()?.get(&conn_id).cloned()
+        self.rosters().get(&conn_id).cloned()
     }
 
-    /// The live-or-not connection ids whose roster contains `address`. An
-    /// unreadable roster map targets nothing, which only costs the fan-out.
-    fn advertising_connections(&self, address: &str) -> HashSet<u64> {
+    /// The roster map. A roster belongs to one connection and the next
+    /// `peers_update` replaces it whole, so a panic elsewhere leaves nothing
+    /// half-written worth dropping: the poison is cleared and the rosters stay.
+    fn rosters(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Arc<HashSet<String>>>> {
         match self.pi_rosters.lock() {
-            Ok(rosters) => rosters
-                .iter()
-                .filter(|(_, set)| set.contains(address))
-                .map(|(conn_id, _)| *conn_id)
-                .collect(),
+            Ok(guard) => guard,
             Err(poisoned) => {
                 self.pi_rosters.clear_poison();
-                poisoned
-                    .into_inner()
-                    .iter()
-                    .filter(|(_, set)| set.contains(address))
-                    .map(|(conn_id, _)| *conn_id)
-                    .collect()
+                poisoned.into_inner()
             }
         }
+    }
+
+    /// The connection ids whose roster contains `address`.
+    fn advertising_connections(&self, address: &str) -> HashSet<u64> {
+        self.rosters()
+            .iter()
+            .filter(|(_, set)| set.contains(address))
+            .map(|(conn_id, _)| *conn_id)
+            .collect()
     }
 
     /// Delivers a cross-PC frame to the live connections of `peer_id`.
@@ -2193,5 +2179,50 @@ mod tests {
             })
         );
         assert!(rxs.iter_mut().all(has_frame));
+    }
+
+    /// A broker that owns nobody advertises exactly that. It is not a reason
+    /// to deliver to nobody: the fan-out still reaches everyone, so a sibling
+    /// broker that does own the address can answer.
+    #[tokio::test]
+    async fn an_empty_roster_falls_back_to_every_connection() {
+        let (reg, ids, mut rxs) = roster_fixture().await;
+        reg.set_pi_roster(ids[0], HashSet::new());
+
+        assert_eq!(
+            reg.forward_pi_envelope("pc-b", pi_frame(1), Some("/demo@demo")),
+            Some(PiForwardRoute::FanOut {
+                recipients: 3,
+                fallback: true
+            })
+        );
+        assert!(rxs.iter_mut().all(has_frame));
+    }
+
+    /// A panic elsewhere must not cost the rosters: until the next
+    /// `peers_update` every unicast would fall back to the fan-out.
+    #[tokio::test]
+    async fn a_poisoned_roster_map_keeps_its_rosters() {
+        let (reg, ids, mut rxs) = roster_fixture().await;
+        reg.set_pi_roster(ids[0], demo_roster());
+
+        let registry = &reg;
+        std::thread::scope(|scope| {
+            let poisoned = scope.spawn(move || {
+                let _guard = registry.pi_rosters.lock().unwrap();
+                panic!("poison the roster map");
+            });
+            assert!(poisoned.join().is_err());
+        });
+        assert!(reg.pi_rosters.is_poisoned());
+
+        assert_eq!(
+            reg.forward_pi_envelope("pc-b", pi_frame(1), Some("/demo@demo")),
+            Some(PiForwardRoute::Targeted(1))
+        );
+        assert!(has_frame(&mut rxs[0]));
+        assert!(!has_frame(&mut rxs[1]) && !has_frame(&mut rxs[2]));
+        assert!(!reg.pi_rosters.is_poisoned());
+        assert_eq!(reg.pi_roster(ids[0]).as_deref(), Some(&demo_roster()));
     }
 }

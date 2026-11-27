@@ -458,7 +458,9 @@ fn parse_peers_update(envelope: &serde_json::Value) -> Option<HashSet<String>> {
 /// The local address a unicast envelope is addressed to (`to = "<pc>:<address>"`),
 /// or None for a frame that is no such unicast: a control envelope to
 /// `_broker_remote`, `broadcast`, or an address without a PC prefix. The
-/// split is on the first colon, as in the extension's `parseAddress`.
+/// split is on the first colon, as in the extension's `parseAddress`. The PC
+/// prefix itself is not checked: on the wire it is display-only, and the
+/// technical target is the frame's `to_pc`.
 fn unicast_local_address(envelope: &serde_json::Value) -> Option<String> {
     let (pc, address) = envelope.get("to")?.as_str()?.split_once(':')?;
     if pc.is_empty()
