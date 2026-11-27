@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
@@ -152,6 +153,10 @@ describe("findTemplate", () => {
     expect(content).toContain("{PREFIX}");
     expect(content).toContain("guard run");
     expect(content).toContain("$PIPER/supervisord.log");
+    // 2026-11-27: Termux:Boot starts without the termux-exec preload. Without
+    // the export the supervisor's `spawn pi` fails with ENOENT after each boot.
+    expect(content).toContain('if [ -z "$LD_PRELOAD" ] && [ -e "{PREFIX}/lib/libtermux-exec.so" ]; then');
+    expect(content).toContain('export LD_PRELOAD="{PREFIX}/lib/libtermux-exec.so"');
   });
 });
 
@@ -234,6 +239,8 @@ describe("renderTemplate", () => {
     expect(out).toContain(`nohup "${vars.node}" "${vars.remotePi}" guard run`);
     expect(out).toContain(`export PATH="${vars.prefix}/bin:${vars.path}"`);
     expect(out).toContain(`export HOME="${vars.home}"`);
+    expect(out).toContain(`[ -e "${vars.prefix}/lib/libtermux-exec.so" ]`);
+    expect(out).toContain(`export LD_PRELOAD="${vars.prefix}/lib/libtermux-exec.so"`);
     // The desktop templates never contain these placeholders, so their output
     // is byte-for-byte what it was.
     for (const name of ["systemd", "launchd", "taskscheduler", "vbs-launcher"] as const) {
@@ -539,6 +546,8 @@ describe("installService / uninstallService (android)", () => {
     expect(raw).toContain(`nohup "${vars.node}" "${vars.remotePi}" guard run`);
     expect(raw).toContain(`export PATH="/data/data/com.termux/files/usr/bin:${vars.path}"`);
     expect(raw).toContain("termux-wake-lock");
+    // termux-exec for the shebang of `pi` (2026-11-27): guarded, never forced.
+    expect(raw).toContain('[ -e "/data/data/com.termux/files/usr/lib/libtermux-exec.so" ]');
     expect(raw).not.toMatch(/\{[A-Z_]+\}/);
     if (process.platform !== "win32") {
       // Termux:Boot executes only scripts with the executable bit.
@@ -786,4 +795,117 @@ describe("normalizeUnitText", () => {
       expect(rules.split(/\r?\n/), rule).toContain(rule);
     }
   });
+});
+
+// ── The boot script under sh, with a simulated Termux prefix (2026-11-27) ───
+//
+// The LD_PRELOAD export is the line whose absence left the owner's phone
+// without a device daemon after every Termux:Boot start: the supervisor came
+// up, and every `spawn pi` ended in ENOENT. So the line is not only read in
+// the template. The rendered script runs under `sh` with a stand-in for node
+// that records the environment it inherited, wherever a POSIX `sh` is on
+// PATH (the ubuntu and macos runners; the Windows runner has no `sh` for a
+// POSIX PATH, so the block is skipped there).
+describe.skipIf(process.platform === "win32")("the Termux boot script under sh", () => {
+  let tmp: string;
+  let home: string;
+  let prefix: string;
+  /** The installed package's `dist/`, inside the simulated prefix. */
+  let supervisor: string;
+  let remotePi: string;
+  let node: string;
+  let seen: string;
+  const termuxExec = (): string => join(prefix, "lib", "libtermux-exec.so");
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "pi-boot-sh-"));
+    home = join(tmp, "home");
+    prefix = join(tmp, "usr");
+    mkdirSync(join(home, ".termux", "boot"), { recursive: true });
+    mkdirSync(join(prefix, "bin"), { recursive: true });
+    mkdirSync(join(prefix, "lib"), { recursive: true });
+    // install refuses paths that do not exist, as it would on the phone.
+    const dist = join(prefix, "lib", "node_modules", "remote-pi", "dist");
+    mkdirSync(join(dist, "bin"), { recursive: true });
+    supervisor = join(dist, "bin", "supervisord.js");
+    remotePi = join(dist, "index.js");
+    writeFileSync(supervisor, "// stub\n");
+    writeFileSync(remotePi, "#!/usr/bin/env node\n");
+    // The stand-in for node records its first argument and what it inherited.
+    node = join(prefix, "bin", "node");
+    writeFileSync(
+      node,
+      '#!/bin/sh\nprintf "%s|%s|%s\\n" "$1" "${LD_PRELOAD:-}" "${LD_LIBRARY_PATH:-}" >> "$FAKE_NODE_OUT"\n',
+      { mode: 0o755 },
+    );
+    seen = join(tmp, "seen.txt");
+    writeFileSync(seen, "");
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  /** Installs the script for this prefix, runs it once as Termux:Boot would
+   *  (`caller` is that process's extra environment) and returns the script. */
+  function installAndRun(caller: NodeJS.ProcessEnv = {}): string {
+    const script = join(home, ".termux", "boot", "start-piper.sh");
+    installService(
+      { ...defaultRenderVars(), node, supervisor, home, path: "/usr/bin:/bin", remotePi, prefix },
+      { platform: "android", home },
+    );
+    const res = spawnSync("sh", [script], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { HOME: home, PATH: "/usr/bin:/bin", FAKE_NODE_OUT: seen, ...caller },
+    });
+    expect(res.error).toBeUndefined();
+    expect(res.status, res.stderr).toBe(0);
+    return readFileSync(script, "utf8");
+  }
+
+  /** `<argument>|<LD_PRELOAD>|<LD_LIBRARY_PATH>` as the supervisor's and the
+   *  guard's stand-ins wrote it, once both have (they run in the background,
+   *  in no defined order). */
+  async function inherited(): Promise<string[]> {
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const lines = readFileSync(seen, "utf8").split("\n").filter(Boolean);
+      if (lines.length >= 2 || Date.now() > deadline) return lines;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+
+  test("with termux-exec in the prefix, the supervisor and the guard inherit LD_PRELOAD from the script", async () => {
+    writeFileSync(termuxExec(), "a stand-in for the shared library\n");
+    // Termux:Boot: nothing is preloaded in the environment that runs the script.
+    const script = installAndRun();
+    expect(script).toContain(`[ -e "${prefix}/lib/libtermux-exec.so" ]`);
+    const lines = await inherited();
+    const preloaded = `${termuxExec()}|${join(prefix, "lib")}`;
+    // Two background jobs: which stand-in writes first is not defined, so the
+    // lines are told apart by the argument each was started with.
+    const byArgument = new Map(lines.map((line) => [line.split("|")[0], line.split("|").slice(1).join("|")]));
+    expect([...byArgument.keys()].sort()).toEqual([supervisor, remotePi].sort());
+    expect(byArgument.get(supervisor)).toBe(preloaded);
+    expect(byArgument.get(remotePi)).toBe(preloaded);
+  }, 20_000);
+
+  test("a value the caller already has is kept", async () => {
+    writeFileSync(termuxExec(), "x\n");
+    installAndRun({ LD_PRELOAD: "/data/data/com.termux/files/usr/lib/libtermux-exec-ld-preload.so" });
+    for (const line of await inherited()) {
+      expect(line.split("|")[1]).toBe("/data/data/com.termux/files/usr/lib/libtermux-exec-ld-preload.so");
+    }
+  }, 20_000);
+
+  test("without termux-exec nothing is preloaded; the rest of the script is unchanged", async () => {
+    installAndRun();
+    const lines = await inherited();
+    expect(lines).toHaveLength(2);
+    for (const line of lines) {
+      expect(line.split("|")[1]).toBe("");
+      expect(line.split("|")[2]).toBe(join(prefix, "lib"));
+    }
+  }, 20_000);
 });

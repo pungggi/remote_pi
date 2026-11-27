@@ -402,6 +402,22 @@ script. `remote-pi daemon status` now exits non-zero when the supervisor does
 not answer (the interim guard found that an exit-code probe had read a
 wedged supervisor as healthy).
 
+**Found on the device, 2026-11-26 and 2026-11-27: the device daemon died
+after every reboot.** Termux:Boot started the supervisor and the guard both
+times, and the device daemon crashed within ten seconds: `spawn pi ENOENT`
+in `~/.pi/piper/supervisord.log`, "device daemon: crashed" in `guard.log`.
+The phone was off the mesh from 20:14 until the owner's agent restarted the
+fleet by hand the next morning at 08:35. Cause: npm links `pi` to a script
+with the shebang `#!/usr/bin/env node`. Android has no `/usr/bin/env`. A
+Termux shell starts such scripts only because the app preloads
+`libtermux-exec.so`, which rewrites the shebang, and Termux:Boot runs the
+boot script without that preload. A3 shipped neither the export nor a way
+around the shebang. The fix (2026-11-27): the boot script exports
+`LD_PRELOAD` when it is unset and the library exists, and inside Termux the
+supervisor starts the device daemon as `node <pi's cli.js>`. Device check 5
+of the list below is the one that would have caught it; a reboot test with
+the owner present closes it.
+
 **To verify on the device after merge (all of it, in this order)**
 
 1. Run `remote-pi phone-setup --relay http://<pc-ip>:3000` ONCE on the phone.

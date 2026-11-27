@@ -59,7 +59,7 @@ export const DEVICE_ROOM_WAIT_MS = 120_000;
 const HEARTBEAT_SLACK_MS = 75_000;
 
 export interface PhoneSetupOptions {
-  /** `--relay <url>`: saved with `remote-pi set-relay` before anything runs. */
+  /** `--relay <url>`: saved with `remote-pi set-relay` once its `/health` answered. */
   relay?: string;
   /** `--yes`: answer every prompt with yes (non-interactive runs). */
   yes: boolean;
@@ -92,6 +92,11 @@ export function parsePhoneSetupArgs(args: string[]): { options: PhoneSetupOption
     } else return { options, error: `unknown argument: ${a}` };
   }
   return { options };
+}
+
+/** `<relay>/health`, whatever trailing slash the relay URL carries. */
+export function healthUrl(relay: string): string {
+  return `${relay.replace(/\/$/, "")}/health`;
 }
 
 /**
@@ -371,12 +376,25 @@ export async function runPhoneSetup(opts: PhoneSetupOptions, deps: PhoneSetupDep
   }
 
   // ── relay first: everything below depends on reaching it ──
+  // A `--relay` value is saved only once it answered `/health`. The config is
+  // what every later process reads: a run that stops on a mistyped, loopback
+  // or unreachable address must not leave the phone pointing at it.
+  let relayChecked: string | null = null;
   if (opts.relay !== undefined) {
     if (isWebSocketScheme(opts.relay) || !isValidRelayUrl(opts.relay)) {
       report.line("fail", "relay", `"${opts.relay}" is not an http(s) URL. Example: --relay http://192.168.1.20:3000`);
       return 1;
     }
+    if (isLoopbackHost(opts.relay)) {
+      report.line("fail", "relay", `${opts.relay} is loopback. On the phone the relay is your PC: remote-pi phone-setup --relay http://<pc-ip>:3000`);
+      return 1;
+    }
+    if ((await deps.fetchText(healthUrl(opts.relay), 5000)) === null) {
+      report.line("fail", "relay", `${healthUrl(opts.relay)} did not answer — check Wi-Fi and that the PC's relay is running (remote-pi doctor there)`);
+      return 1;
+    }
     deps.setRelay(opts.relay);
+    relayChecked = healthUrl(opts.relay);
   }
 
   report.heading("Environment");
@@ -431,7 +449,9 @@ export async function runPhoneSetup(opts: PhoneSetupOptions, deps: PhoneSetupDep
     report.line("fail", "relay", `${relay} is loopback. On the phone the relay is your PC: remote-pi phone-setup --relay http://<pc-ip>:3000`);
     return 1;
   }
-  if ((await deps.fetchText(`${relay.replace(/\/$/, "")}/health`, 5000)) === null) {
+  // A `--relay` value was probed above. The effective URL is probed here only
+  // when it is another one (what was saved may come back normalised).
+  if (healthUrl(relay) !== relayChecked && (await deps.fetchText(healthUrl(relay), 5000)) === null) {
     report.line("fail", "relay", `${relay}/health did not answer — check Wi-Fi and that the PC's relay is running (remote-pi doctor there)`);
     return 1;
   }

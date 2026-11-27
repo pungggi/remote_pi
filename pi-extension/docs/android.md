@@ -79,8 +79,9 @@ remote-pi phone-setup --relay http://<pc-lan-ip>:3000
 ```
 
 It refuses to run outside Termux, so a PC keeps `remote-pi install`. Flags:
-`--relay <url>` saves the relay first (the phone cannot reach the PC's
-loopback address), `--yes` answers both prompts for scripts, `--ttl <seconds>`
+`--relay <url>` is probed and then saved (the phone cannot reach the PC's
+loopback address, and an address that does not answer must not replace a
+working one), `--yes` answers both prompts for scripts, `--ttl <seconds>`
 bounds the pairing link (default and maximum: 10 minutes).
 
 What it does, in order:
@@ -141,6 +142,24 @@ log reading.
 | **`remote-pi guard`** | the supervisor itself: gone, alive but silent, or older than 24 h | a separate Termux process | `~/.pi/piper/guard.log` |
 | **Termux:Boot** | everything after a reboot | Android, `~/.termux/boot/start-piper.sh` | the script's comments |
 | Termux app gone | nothing inside Termux can restart it | not built: plan/173 A7 | research and spike |
+
+**termux-exec, or why the device daemon died after every reboot.** npm links
+`pi` to a script whose shebang is `#!/usr/bin/env node`. Android has no
+`/usr/bin/env`. In a Termux shell that still works, because the app preloads
+`libtermux-exec.so`, which rewrites such a shebang when a program is started.
+Termux:Boot runs the boot script without that preload. Before 0.10.2 the
+script did not set it, so after each boot the supervisor and the guard came up
+and the device daemon crashed within ten seconds: `spawn pi ENOENT` in
+`~/.pi/piper/supervisord.log`, "device daemon: crashed" in `guard.log`. On
+2026-11-26 that left the phone off the mesh from 20:14 until a restart by
+hand the next morning. Since 0.10.2 two things hold:
+
+- **The boot script exports `LD_PRELOAD`** when it is unset and
+  `$PREFIX/lib/libtermux-exec.so` exists. Everything the script starts
+  inherits it, the tmux server and the sessions inside included.
+- **The supervisor starts the device daemon as `node <pi's cli.js>`**, not
+  through the shebang. That path needs no preload at all, so a supervisor
+  started from a shell without it still brings the device daemon up.
 
 **The guard.** The boot script starts `remote-pi guard run`; `remote-pi guard
 start`, `status`, `stop` and `once` manage it. Every 30 s it asks the
