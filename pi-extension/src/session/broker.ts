@@ -184,6 +184,10 @@ interface RegisterMsg {
 
 interface RegisterAck {
   type: "register_ack";
+  /** Which broker instance answered (issue #140). A leader registers back
+ *  through the path it just bound; when another process rebound that path in
+ *  the meantime, this field says so. Older brokers omit it. */
+  instance?: string;
   /** Canonical address (plan/38). New clients route by this. */
   address_assigned: string;
   /** Clean leaf name actually assigned (carries `#N` on a same-(cwd,name)
@@ -209,6 +213,9 @@ export class Broker {
   private readonly auditPath?: string;
   private readonly onRouted?: BrokerOptions["onRouted"];
   private readonly server: Server;
+  /** Distinguishes this broker from any other that may answer at the same
+ *  path (issue #140). Returned in every `register_ack`. */
+  readonly instanceId: string = uuidv7();
   /** Plan/25 Wave C: optional handoff for cross-PC routing. Null = local only. */
   private remoteRouter: RemoteRouter | null = null;
 
@@ -382,6 +389,7 @@ export class Broker {
     // `name_assigned` still get a routable identity.
     const ack: RegisterAck = {
       type: "register_ack",
+      instance: this.instanceId,
       address_assigned: conn.address,
       name_assigned: conn.name,
     };

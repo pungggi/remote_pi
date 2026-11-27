@@ -86,6 +86,26 @@ and 0.10.1 releases moved to their sections on 2026-11-27.
 
 ### Fixed
 
+- **One broker per host, and a cross-PC `denied` you can trust** (issue
+  #140, pi-extension). `agent_send` from one PC to a session on another
+  could come back `denied` although the message was delivered and answered
+  (five of twelve sends in the rollout of 2026-11-27).
+  - **Cause**: the leader election removed the socket file after any failed
+    probe. Two followers re-electing at the same moment could each remove
+    the other's fresh socket, so the first leader stayed behind with its
+    clients and its relay bridge, unreachable at the path. Two brokers then
+    answered for one PC, and the sender kept whichever answer came first.
+  - **Election**: only an `ECONNREFUSED` probe counts as "nobody listens",
+    and only the very socket that probe condemned is removed. The same rule
+    guards the per-folder lock.
+  - **Safety nets**: a leader that hears another broker at its own path
+    follows it. A leader whose path is later taken away stands down, and its
+    clients re-elect onto the new owner.
+  - **ACKs**: a bridge that does not own the target holds its `denied` back
+    (500 ms), and a sender keeps a cross-PC `denied` waiting for a
+    `received` for another 300 ms. A refusal that is still final names the
+    brokers (by pid) that denied, in the tool text and in `details.answers`.
+    A send that really ends as `denied` now takes about 0.8 s.
 - **Relay: deterministic `rooms` snapshot ordering** (plan/164). `rooms_of` returned `HashMap::into_values()`, so the snapshot serialized in a different order on every call: the per-conn byte-identical dedup could never suppress `rooms_check` replies, the phone app saw every reply as "changed", and the resulting re-poll loop pushed ~60 full snapshots/s onto the same WebSocket that carries `agent_chunk` — starving response streaming. Snapshots are now sorted by `room_id`; regression test covers multi-room suppression (single-room tests could never catch the ordering bug). The firehose 10s window log now also attributes rooms traffic (`rooms_poll_top`, `rooms_sent_conn_top`, `rooms_sent_target_top`). Measured: 623 replies/10s → 3.
 - **The guard says when it is waiting.** When the start backoff holds the
   next supervisor start, `guard.log` gets one line per wait, `supervisor:

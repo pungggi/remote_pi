@@ -148,7 +148,7 @@ inspect the status — it dictates what to do next.**
 | Status | Means | What you do |
 |---|---|---|
 | `received` | Broker delivered the envelope. Delivery is reliable — even if the peer is mid-turn, its harness enqueues the message for the next turn. | Move on (or call `wait_for_message` on MCP if synchronous coordination is needed). |
-| `denied` | Peer explicitly refused (or no such peer). | Do NOT retry. Report to the user. |
+| `denied` | No broker confirmed the address. Cross-PC, this is final only after a short grace in which a `received` would have won. | Check `list_peers` for the exact address before sending again. Report to the user. |
 | `timeout` | No ACK (~5s). Transport error — broker down, or peer vanished. | Treat a reasonless timeout as transient. Retry once after ~10s, then escalate. |
 
 For a trusted Relay failure on a cross-PC unicast, the public statuses remain
@@ -253,6 +253,11 @@ semantics. A reasonless `denied` can mean a stale remote roster; refresh with
 `list_peers`. Trusted Relay reasons in `details` map `offline` to `timeout` and
 `not_authorized` / `bad_envelope` to `denied`; they settle the pending operation
 internally, not as inbox replies.
+
+The relay hands a cross-PC send to every connection the target PC has, so more
+than one broker there could answer. A `denied` is therefore held back on both
+ends until a `received` had its chance (about 0.8 s in total). When it is still
+final, the tool text names the brokers that denied by pid.
 
 ---
 
@@ -367,8 +372,9 @@ and optionally `wait_for_message`.)
    Presence is pull-based.
 3. **Send**: `agent_send({to, body, re?})` → inspect the status.
 4. **Unicast status**: `received | denied | timeout`. `received` queues work
-   even for a mid-turn peer; abandon on `denied`; investigate `timeout`.
-   Closed Relay reasons in `details` map `offline` to `timeout` and
+   even for a mid-turn peer. A cross-PC `denied` arrives after a short grace
+   and names who denied: check `list_peers`, then decide. Investigate
+   `timeout`. Closed Relay reasons in `details` map `offline` to `timeout` and
    `not_authorized` / `bad_envelope` to `denied`. No retry-on-busy.
 5. **Broadcast/multicast**: status `sent`. Fire-and-forget.
 6. **Reply**: set `re` to their `id`, `to` to their `from` (the full address,

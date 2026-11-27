@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Server } from "node:net";
 import { roomIdFor } from "../rooms.js";
-import { removeStaleSock, tryBind, tryConnect } from "./leader_election.js";
+import { probe, removeStaleSock, socketIdentity, tryBind } from "./leader_election.js";
 import { ipcAddress, usesNamedPipe } from "./ipc.js";
 
 /**
@@ -108,17 +108,25 @@ export async function acquireCwdLock(cwd: string, name?: string): Promise<CwdLoc
   let server: Server | null = await tryBind(lockPath);
   if (server) return _acquired(server, lockPath);
 
-  // Bind failed — check whether the existing socket has a live listener.
-  const probe = await tryConnect(lockPath);
-  if (probe) {
-    probe.destroy();
+  // Bind failed — check whether the existing socket has a live listener. On
+  // POSIX, remember which socket the probe is about to question (issue #140,
+  // same rule as the local broker's leader election): a removal may only ever
+  // hit the socket its own probe condemned, never one a rival has just bound.
+  const questioned = usesNamedPipe() ? null : socketIdentity(lockPath);
+  const probeResult = await probe(lockPath);
+  if (probeResult.ok) {
+    probeResult.socket.destroy();
     return { ok: false, lockPath };
   }
 
   // POSIX: a leftover stale `.sock` file blocks the bind → clean it + retry.
-  // Windows: a named pipe auto-disappears when its owner exits, so there is
-  // never a stale pipe to remove.
-  if (!usesNamedPipe()) removeStaleSock(lockPath);
+  // Only a refused probe proves nobody listens, and only that same inode is
+  // removed: a lock another Pi has just acquired in this folder is not ours
+  // to delete. Windows: a named pipe auto-disappears when its owner exits, so
+  // there is never a stale pipe to remove.
+  if (!usesNamedPipe() && probeResult.reason === "refused" && questioned) {
+    removeStaleSock(lockPath, questioned);
+  }
   server = await tryBind(lockPath);
   if (server) return _acquired(server, lockPath);
 

@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { BrokerRemote, parseAddress } from "./broker_remote.js";
+import { CROSS_PC_DENIED_DELAY_MS } from "./ack_policy.js";
 import type { Broker, RemoteInjectStatus } from "./broker.js";
 import { envelope, type Envelope } from "./envelope.js";
 import type { MeshTopologySnapshot, PiRoutingIdentity } from "../mesh/siblings.js";
@@ -778,6 +779,99 @@ describe("BrokerRemote.handleIncoming (anti-spoof + injection)", () => {
       (s.env.body as { type?: string } | null)?.type === "ack",
     );
     expect(generatedAck).toBeUndefined();
+  });
+
+  // Issue #140: the relay hands a cross-PC envelope to every connection the
+  // PC has, so more than one local broker may answer. A confirmation is not
+  // delayed; a refusal is held back so a sibling broker's `received` arrives
+  // first, and both name the process that answered.
+  test("received is answered at once and names the answering broker's pid", () => {
+    const fakePi = new FakePi();
+    const { broker } = makeFakeBroker({ injectStatus: "received" });
+    new BrokerRemote({
+      broker, pi: fakePi as never,
+      topology: topology(
+        { pcLabel: "casa", pcPubkey: KEY_A },
+        [{ pcLabel: "trab", pcPubkey: KEY_B }],
+      ),
+    });
+
+    const inbound = envelope("trab:agent-1", "casa:sess-3", { hello: "world" });
+    fakePi.emit("envelope", inbound, KEY_B);
+
+    const acks = fakePi.sent.filter((s) =>
+      (s.env.body as { type?: string } | null)?.type === "ack",
+    );
+    expect(acks).toHaveLength(1);
+    expect(acks[0]!.env.body).toEqual({
+      type: "ack", status: "received", target: "sess-3", pid: process.pid,
+    });
+    expect(acks[0]!.env.re).toBe(inbound.id);
+  });
+
+  test("denied is held back for the delay, then names the broker's pid", async () => {
+    vi.useFakeTimers();
+    try {
+      const fakePi = new FakePi();
+      const { broker, injectFromRemote } = makeFakeBroker({ injectStatus: "denied" });
+      const logs: string[] = [];
+      new BrokerRemote({
+        broker, pi: fakePi as never,
+        topology: topology(
+          { pcLabel: "casa", pcPubkey: KEY_A },
+          [{ pcLabel: "trab", pcPubkey: KEY_B }],
+        ),
+        log: (m) => logs.push(m),
+      });
+
+      const inbound = envelope("trab:agent-1", "casa:ghost", { hello: "world" });
+      fakePi.emit("envelope", inbound, KEY_B);
+      const acksOf = () => fakePi.sent.filter((s) =>
+        (s.env.body as { type?: string } | null)?.type === "ack",
+      );
+
+      expect(injectFromRemote).toHaveBeenCalledTimes(1);
+      expect(acksOf()).toHaveLength(0);
+      expect(logs.some((line) =>
+        line.includes('event=ack_denied target="ghost"') && line.includes(`pid=${process.pid}`),
+      )).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(CROSS_PC_DENIED_DELAY_MS - 1);
+      expect(acksOf()).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(acksOf()).toHaveLength(1);
+      expect(acksOf()[0]!.env.body).toEqual({
+        type: "ack", status: "denied", target: "ghost", pid: process.pid,
+      });
+      expect(acksOf()[0]!.env.to).toBe(inbound.from);
+      expect(acksOf()[0]!.env.re).toBe(inbound.id);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a bridge that detaches never sends its held-back denial", async () => {
+    vi.useFakeTimers();
+    try {
+      const fakePi = new FakePi();
+      const { broker } = makeFakeBroker({ injectStatus: "denied" });
+      const br = new BrokerRemote({
+        broker, pi: fakePi as never,
+        topology: topology(
+          { pcLabel: "casa", pcPubkey: KEY_A },
+          [{ pcLabel: "trab", pcPubkey: KEY_B }],
+        ),
+      });
+
+      fakePi.emit("envelope", envelope("trab:agent-1", "casa:ghost", { hello: "world" }), KEY_B);
+      br.detach();
+      fakePi.sent.length = 0;
+
+      await vi.advanceTimersByTimeAsync(CROSS_PC_DENIED_DELAY_MS);
+      expect(fakePi.sent).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

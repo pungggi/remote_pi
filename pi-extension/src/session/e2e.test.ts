@@ -9,6 +9,7 @@ import { ipcAddress } from "./ipc.js";
 import { SessionPeer } from "./peer.js";
 import { envelope, type Envelope } from "./envelope.js";
 import { BrokerRemote } from "./broker_remote.js";
+import { CROSS_PC_DENIED_GRACE_MS } from "./ack_policy.js";
 import { probeListPeers } from "../index.js";
 import { composeAddress, sanitizeMeshName, type PeerInfo, type RemoteRouter } from "./broker.js";
 import { migrateAgentName } from "./local_config.js";
@@ -548,7 +549,7 @@ describe("ACK protocol (plan/25 Wave 0)", () => {
       },
     );
 
-    test.each(["busy", "denied"] as const)(
+    test.each(["busy"] as const)(
       "valid exact prefixed-broker ACK preserves %s status and target",
       async (status) => {
         const sock = tmpSock();
@@ -591,6 +592,112 @@ describe("ACK protocol (plan/25 Wave 0)", () => {
         }
       },
     );
+
+    // The relay hands a cross-PC envelope to every connection the target PC
+    // has, and every local broker that receives one answers for its own peers
+    // (issue #140). These two tests replay that on the sender side.
+    test("cross-PC denied is held for the grace; received inside it wins", async () => {
+      const sock = tmpSock();
+      const peer = await makePeer(sock, "orq");
+      const broker = peer.localBroker()!;
+      const capture = capturingRemoteRouter();
+      broker.setRemoteRouter(capture.router);
+
+      try {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        let result: Awaited<ReturnType<SessionPeer["sendWithAck"]>> | undefined;
+        const pending = peer
+          .sendWithAck("trab:agent-1", { task: "race" }, null, 1_000)
+          .then((value) => { result = value; return value; });
+        const outbound = await capture.nextOutbound();
+
+        // A broker that does not know the target answers first.
+        expect(broker.injectFromRemote(envelope(
+          "trab:broker",
+          peer.address(),
+          { type: "ack", status: "denied", target: "agent-1", pid: 4241 },
+          outbound.id,
+        ))).toBe("received");
+        await flushUds();
+        expect(result).toBeUndefined();
+
+        // Inside the grace the broker that owns the target confirms.
+        await vi.advanceTimersByTimeAsync(CROSS_PC_DENIED_GRACE_MS - 1);
+        expect(broker.injectFromRemote(envelope(
+          "trab:broker",
+          peer.address(),
+          { type: "ack", status: "received", target: "agent-1", pid: 4242 },
+          outbound.id,
+        ))).toBe("received");
+        await flushUds();
+
+        const expected = { status: "received", id: outbound.id, target: "agent-1" };
+        expect(result).toEqual(expected);
+        await expect(pending).resolves.toEqual(expected);
+
+        // A refusal that outlives the send changes nothing, and leaves no timer.
+        await vi.advanceTimersByTimeAsync(CROSS_PC_DENIED_GRACE_MS);
+        expect(broker.injectFromRemote(envelope(
+          "trab:broker",
+          peer.address(),
+          { type: "ack", status: "denied", target: "agent-1", pid: 4243 },
+          outbound.id,
+        ))).toBe("received");
+        await flushUds();
+        expect(result).toEqual(expected);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        broker.setRemoteRouter(null);
+        await peer.leave();
+        vi.useRealTimers();
+      }
+    });
+
+    test("cross-PC denied settles after the grace and names every broker that denied", async () => {
+      const sock = tmpSock();
+      const peer = await makePeer(sock, "orq");
+      const broker = peer.localBroker()!;
+      const capture = capturingRemoteRouter();
+      broker.setRemoteRouter(capture.router);
+
+      try {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        let result: Awaited<ReturnType<SessionPeer["sendWithAck"]>> | undefined;
+        const pending = peer
+          .sendWithAck("trab:agent-1", { task: "unknown" }, null, 1_000)
+          .then((value) => { result = value; return value; });
+        const outbound = await capture.nextOutbound();
+
+        for (const pid of [4241, 4242]) {
+          expect(broker.injectFromRemote(envelope(
+            "trab:broker",
+            peer.address(),
+            { type: "ack", status: "denied", target: "agent-1", pid },
+            outbound.id,
+          ))).toBe("received");
+        }
+        await flushUds();
+
+        // The first refusal starts ONE grace; the second is only recorded.
+        expect(result).toBeUndefined();
+        expect(vi.getTimerCount()).toBe(2);
+
+        await vi.advanceTimersByTimeAsync(CROSS_PC_DENIED_GRACE_MS);
+        const expected = {
+          status: "denied",
+          id: outbound.id,
+          target: "agent-1",
+          answers: [{ status: "denied", pid: 4241 }, { status: "denied", pid: 4242 }],
+        };
+        expect(result).toEqual(expected);
+        await expect(pending).resolves.toEqual(expected);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        broker.setRemoteRouter(null);
+        await peer.leave();
+        vi.useRealTimers();
+      }
+    });
   });
 
   test("trusted offline transport error immediately resolves sendWithAck with reason", async () => {

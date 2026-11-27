@@ -1,3 +1,4 @@
+import { describeUnconfirmedDenial } from "../session/ack_policy.js";
 import type { AckResult } from "../session/peer.js";
 
 type MeshAckResult = {
@@ -33,6 +34,9 @@ function formatDenied(to: string, ack: AckResult): string {
     return `Relay rejected the envelope for ${to}${errorSuffix}. ` +
       `Do not blindly retry; correct the envelope first.`;
   }
+  // Cross-PC: these brokers denied the address and none confirmed it in time
+  // (issue #140). Local brokers deny nothing today; that text stays.
+  if (ack.answers && ack.answers.length > 0) return describeUnconfirmedDenial(to, ack);
   return `${to} denied the message`;
 }
 

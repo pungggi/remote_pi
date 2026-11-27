@@ -1,9 +1,59 @@
 import { describe, expect, test } from "vitest";
-import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
+import { once } from "node:events";
+import { existsSync, linkSync, mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
-import { joinOrLead } from "./leader_election.js";
+import { basename, dirname, join } from "node:path";
+import {
+  joinOrLead,
+  probe,
+  removeStaleSock,
+  socketIdentity,
+} from "./leader_election.js";
 import { ipcAddress } from "./ipc.js";
+
+const posix = process.platform !== "win32";
+
+async function listen(server: Server, path: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(path, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+}
+
+async function close(server: Server): Promise<void> {
+  if (!server.listening) return;
+  const closed = once(server, "close");
+  server.close();
+  await closed;
+}
+
+/**
+ * A socket file whose listener is gone, the way a crashed leader leaves one.
+ * Bind under one name, hard-link the same inode under two more, then let the
+ * server close: the bound name goes away with it, the links stay behind. The
+ * `.keep` link stays for the whole test, so the stale inode is never freed and
+ * a socket bound later cannot come back with the same inode number.
+ *
+ * Returns the cleanup.
+ */
+async function plantStaleSocket(stalePath: string): Promise<() => void> {
+  const live = `${stalePath}.live`;
+  const keep = `${stalePath}.keep`;
+  const server = createServer();
+  await listen(server, live);
+  linkSync(live, stalePath);
+  linkSync(live, keep);
+  await close(server);
+  return () => {
+    for (const leftover of [keep, live, stalePath]) {
+      try { unlinkSync(leftover); } catch { /* already gone */ }
+    }
+  };
+}
 
 function tmpSock(): string {
   // Per-test unique IPC address (pipe on Windows; `.sock` file on POSIX). The
@@ -93,4 +143,103 @@ describe("joinOrLead", () => {
       // can't recover (rare). Documented limitation.
     }
   });
+
+  // ── issue #140: the removal may only hit the socket its own probe condemned ──
+  //
+  // Two followers re-elect at the same moment after a leader dies. Both see the
+  // stale file, both are refused; the first clears it and binds, the second
+  // must not clear it AGAIN, or the first leader is orphaned with its clients
+  // and its relay bridge and the host has two brokers. POSIX only: a Windows
+  // pipe has no file to remove.
+  test.skipIf(!posix)("removeStaleSock(identity) leaves a socket another process bound in the meantime", async () => {
+    const sock = tmpSock();
+    const cleanup = await plantStaleSocket(sock);
+    const condemned = socketIdentity(sock);
+    expect(condemned).not.toBeNull();
+
+    // The rival got there first: same path, different inode.
+    unlinkSync(sock);
+    const rival = createServer();
+    await listen(rival, sock);
+    try {
+      expect(socketIdentity(sock)!.ino).not.toBe(condemned!.ino);
+      expect(removeStaleSock(sock, condemned!)).toBe(false);
+
+      // Still reachable: nothing of the rival's was removed.
+      const reachable = await probe(sock);
+      expect(reachable.ok).toBe(true);
+      if (reachable.ok) reachable.socket.destroy();
+    } finally {
+      await close(rival);
+      cleanup();
+    }
+  });
+
+  test.skipIf(!posix)("removeStaleSock(identity) removes the stale socket it was shown", async () => {
+    const sock = tmpSock();
+    const cleanup = await plantStaleSocket(sock);
+    const stale = socketIdentity(sock);
+    expect(stale).not.toBeNull();
+
+    try {
+      expect(removeStaleSock(sock, stale!)).toBe(true);
+      expect(existsSync(sock)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test.skipIf(!posix)("a stale socket is refused (ECONNREFUSED); a missing path is an error, not a refusal", async () => {
+    const sock = tmpSock();
+    const cleanup = await plantStaleSocket(sock);
+    try {
+      expect(await probe(sock)).toEqual({ ok: false, reason: "refused", code: "ECONNREFUSED" });
+      expect(await probe(join(dirname(sock), "never-bound.sock"))).toEqual({
+        ok: false, reason: "error", code: "ENOENT",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  test.skipIf(!posix)("a rival that rebinds between the refused probe and the removal is followed, not orphaned", async () => {
+    const sock = tmpSock();
+    const cleanup = await plantStaleSocket(sock);
+    const rival = createServer();
+    let planted = false;
+    try {
+      const result = await joinOrLead(sock, {
+        afterProbe: (probeResult) => {
+          if (planted || probeResult.ok || probeResult.reason !== "refused") return;
+          planted = true;
+          // What the other joiner does in that gap: clear the stale file, bind.
+          unlinkSync(sock);
+          rival.listen(sock);
+        },
+      });
+
+      expect(planted).toBe(true);
+      expect(result.role).toBe("follower");
+      if (result.role === "follower") result.socket.destroy();
+
+      // The rival keeps its socket and its callers.
+      const reachable = await probe(sock);
+      expect(reachable.ok).toBe(true);
+      if (reachable.ok) reachable.socket.destroy();
+    } finally {
+      await close(rival);
+      cleanup();
+    }
+  });
+
+  test.skipIf(!posix)("a plain file at the path is never removed; the election gives up and says why", async () => {
+    const sock = tmpSock();
+    writeFileSync(sock, "not a socket");
+    try {
+      await expect(joinOrLead(sock)).rejects.toThrow(/stayed taken after every refused probe/);
+      expect(existsSync(sock)).toBe(true);
+    } finally {
+      unlinkSync(sock);
+    }
+  }, 15_000);
 });
