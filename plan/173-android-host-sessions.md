@@ -373,6 +373,14 @@ was found on the way:
   AGY's words, never as an empty catalogue.
 - **AGY needs a canvas before the first attach.** It draws its TUI into the
   detached tmux session at once, so AGY sessions get an initial size.
+- **Review of #132 (2026-11-27).** Two contradictions were still dropped
+  silently instead of refused: `runPi:false` with a model opened a plain
+  shell without the model, and the Pi tools read an unknown `agent` as Pi.
+  Both are refused now, like `runPi:false` with AGY already was.
+- **For A4: pass an explicit action timeout.** The app's default is 15 s
+  (`ActionsRepository`), but on a slow device `agy models` may take 30 s and
+  `agy --version` 15 s. The app would show a generic timeout before the
+  extension's explanation arrives.
 
 ### A3 — Extension: Termux platform and `remote-pi phone-setup`
 
