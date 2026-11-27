@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
@@ -33,6 +33,7 @@ import {
   userLocalBinDir,
   vbsLauncherPath,
 } from "./install.js";
+import { termuxBootBackupDir } from "../termux.js";
 
 /**
  * Pure-function tests for the install module. We do NOT exercise the
@@ -510,6 +511,9 @@ describe("installService / uninstallService (android)", () => {
   let ext: string;
   let vars: ReturnType<typeof defaultRenderVars>;
   const script = (): string => join(tmpHome, ".termux", "boot", "start-piper.sh");
+  /** Where install keeps the dated copy of a replaced script: outside the
+   *  boot directory, because Termux:Boot runs every file of it (2026-11-27). */
+  const backupDir = (home: string): string => termuxBootBackupDir(home);
 
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), "pi-boot-"));
@@ -625,14 +629,19 @@ describe("installService / uninstallService (android)", () => {
       new RegExp(`${script().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} was not written by remote-pi, so it is left alone`),
     );
     expect(readFileSync(script(), "utf8")).toBe(interim);
-    expect(existsSync(`${script()}.bak-20261126-143015`)).toBe(false);
+    expect(existsSync(backupDir(tmpHome))).toBe(false);
 
     const result = installService(vars, { platform: "android", home: tmpHome, now: () => at, force: true });
 
-    const backup = `${script()}.bak-20261126-143015`;
+    // 2026-11-27: the copy is NOT made next to the script. Termux:Boot runs
+    // every file of ~/.termux/boot at boot (and sets the executable bit
+    // itself), so an old copy there would run at every boot.
+    const backup = join(backupDir(tmpHome), "start-piper.sh.bak-20261126-143015");
     expect(result.backup).toBe(backup);
     expect(readFileSync(backup, "utf8")).toBe(interim);          // byte-for-byte copy
     expect(readFileSync(script(), "utf8")).toBe(previewTermuxBootScript(vars)); // and ours is in place
+    expect(readdirSync(dirname(script())).sort()).toEqual(["start-piper.sh"]); // nothing else in the boot directory
+    expect(existsSync(`${script()}.bak-20261126-143015`)).toBe(false);
     expect(result.log).toContain(`existing ${script()} differs: kept a copy at ${backup}`);
     expect(result.diff).toBeDefined();
     // Log order: the notice, the diff, then the "wrote" line.
@@ -664,7 +673,7 @@ describe("installService / uninstallService (android)", () => {
     writeFileSync(script(), older);
     expect(isGeneratedBootScript(older)).toBe(true);
     const refreshed = installService(vars, { platform: "android", home: tmpHome, now: () => new Date(2026, 10, 26, 15, 0, 0).getTime() });
-    expect(refreshed.backup).toBe(`${script()}.bak-20261126-150000`);
+    expect(refreshed.backup).toBe(join(backupDir(tmpHome), "start-piper.sh.bak-20261126-150000"));
     expect(readFileSync(refreshed.backup!, "utf8")).toBe(older);
     expect(readFileSync(script(), "utf8")).toBe(ours);
     expect(isGeneratedBootScript(readFileSync(script(), "utf8"))).toBe(true);

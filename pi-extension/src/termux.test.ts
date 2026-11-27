@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, sep } from "node:path";
 import {
   TERMUX_BOOT_PACKAGE,
   TERMUX_BOOT_SCRIPT,
@@ -10,7 +10,9 @@ import {
   findOnPath,
   isExecutable,
   isTermux,
+  legacyBootBackupsInBootDir,
   readTermuxProperty,
+  termuxBootBackupDir,
   termuxBootScriptPath,
   termuxPath,
   termuxPropertiesPath,
@@ -173,6 +175,43 @@ describe("findOnPath / isExecutable", () => {
     if (process.platform !== "win32") {
       // Windows reports every existing file as executable; POSIX honours the bit.
       expect(isExecutable(join(bin, "plain.txt"))).toBe(false);
+    }
+  });
+});
+
+describe("boot script backups (2026-11-27)", () => {
+  test("the dated copy lives under ~/.pi/piper/boot-backups, never in ~/.termux/boot", () => {
+    // Termux:Boot runs every file of its directory at boot and sets the
+    // executable bit itself, so nothing but the live script belongs there.
+    expect(termuxBootBackupDir("/h")).toBe(join("/h", ".pi", "piper", "boot-backups"));
+    expect(termuxBootBackupDir("/h")).not.toContain(".termux");
+    expect(termuxBootBackupDir()).toBe(join(termuxBootScriptPath(), "..", "..", "..", ".pi", "piper", "boot-backups"));
+  });
+
+  test("legacy copies are found in the boot directory by their exact name, sorted; nothing else matches", () => {
+    const home = mkdtempSync(join(tmpdir(), "pi-termux-bak-"));
+    try {
+      const boot = join(home, ".termux", "boot");
+      mkdirSync(boot, { recursive: true });
+      for (const name of [
+        "start-piper.sh",
+        "start-piper.sh.bak-20261126-191759",
+        "start-piper.sh.bak-20261127-124819",
+        "notes.txt",
+        "piper-guard.sh.replaced-20261126-191907",
+        "start-piper.sh.bak-nonsense",
+      ]) {
+        writeFileSync(join(boot, name), "x");
+      }
+      const found = legacyBootBackupsInBootDir(home);
+      expect(found.map((p) => p.split(sep).pop())).toEqual([
+        "start-piper.sh.bak-20261126-191759",
+        "start-piper.sh.bak-20261127-124819",
+      ]);
+      // No boot directory at all: nothing to report, no error.
+      expect(legacyBootBackupsInBootDir(join(home, "nowhere"))).toEqual([]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });

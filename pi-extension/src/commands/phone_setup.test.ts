@@ -472,7 +472,7 @@ describe("runPhoneSetup — migrating the interim files (plan/173 review)", () =
     "nohup pi-supervisord >> ~/.pi/piper/boot.log 2>&1 &",
     "",
   ].join("\n");
-  const QUESTION = "Replace the existing boot script? A dated copy is kept next to it (start-piper.sh.bak-<timestamp>).";
+  const QUESTION = "Replace the existing boot script? A dated copy is kept under ~/.pi/piper/boot-backups/ (start-piper.sh.bak-<timestamp>).";
 
   test("a script that is not ours: diff shown and asked (default yes); no → nothing is changed", async () => {
     const h = harness();
@@ -493,13 +493,15 @@ describe("runPhoneSetup — migrating the interim files (plan/173 review)", () =
     h.state.existingBootScript = INTERIM;
     h.deps.install = (opts) => {
       h.calls.push(opts.force ? "install:force" : "install:plain");
-      return { ok: true, unitPath: SCRIPT, log: [], backup: `${SCRIPT}.bak-20261126-143000`, diff: ["    - # written by hand on 2026-11-26"] };
+      return { ok: true, unitPath: SCRIPT, log: [], backup: "/data/data/com.termux/files/home/.pi/piper/boot-backups/start-piper.sh.bak-20261126-143000", diff: ["    - # written by hand on 2026-11-26"] };
     };
     expect(await runPhoneSetup(BASE_OPTS, h.deps)).toBe(0);
     expect(h.calls).toContain("confirm(Y):Replace");
     expect(h.calls).toContain("install:force");   // force only because the user agreed
-    expect(strip(h.lines)).toContain(`boot script: ${SCRIPT} written; the previous version is kept at ${SCRIPT}.bak-20261126-143000`);
-    expect(h.lines.some((l) => l.includes("The existing script is kept as start-piper.sh.bak-<timestamp>."))).toBe(true);
+    expect(strip(h.lines)).toContain(
+      "boot script: " + SCRIPT + " written; the previous version is kept at /data/data/com.termux/files/home/.pi/piper/boot-backups/start-piper.sh.bak-20261126-143000",
+    );
+    expect(h.lines.some((l) => l.includes("The existing script is kept under ~/.pi/piper/boot-backups/ as start-piper.sh.bak-<timestamp>."))).toBe(true);
   });
 
   test("the question defaults to yes (Enter replaces, with the dated copy)", async () => {
