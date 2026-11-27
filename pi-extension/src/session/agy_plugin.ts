@@ -14,7 +14,7 @@ export const AGY_MESH_PLUGIN_NAME = "remote-pi-mesh";
 export const AGY_MESH_SIDECAR_ID = "mesh-watcher";
 export const AGY_MESH_SIDECAR_KEY = `${AGY_MESH_PLUGIN_NAME}/${AGY_MESH_SIDECAR_ID}`;
 
-const DEFAULT_PLUGIN_VERSION = "0.10.2";
+const DEFAULT_PLUGIN_VERSION = "0.10.3";
 const DEFAULT_AGY_AGENT_NAME = "agy";
 const HOOK_TIMEOUT_SECONDS = 5;
 
