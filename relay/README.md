@@ -26,6 +26,11 @@ Every device authenticates with an Ed25519 keypair during the WebSocket handshak
 - For App↔Pi traffic, the outer `ct` remains opaque and is never decoded.
 - Pi→Pi `pi_envelope` frames and signed membership blobs are parsed in memory only
   as needed for routing and authorization.
+- A cross-PC unicast reaches only the connections of the target key whose
+  broker advertised the target's local address in a `peers_update` frame it
+  sent (issue #140). When none does, every connection gets the frame, as
+  before. Those rosters are routing state in memory: never logged, never
+  persisted, gone with the connection.
 - No envelope body, key material, or signature is logged or persisted as a message
   payload. SQLite persistence is limited to Owner-signed membership authorization
   metadata, not message traffic.

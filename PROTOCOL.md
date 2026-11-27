@@ -94,7 +94,7 @@ Em unicast, cada chamada de `agent_send` aguarda um ACK rápido (default 5s) ger
 
 Os motivos fechados do relay são `offline`, `not_authorized` e `bad_envelope`: `offline → timeout`; `not_authorized | bad_envelope → denied`. O resultado carrega reason/error explícito (`transport_error: <reason>`) quando o relay confiável o informou.
 
-No cross-PC o relay entrega o envelope a TODAS as conexões do PC alvo, e cada broker local responde pelos seus peers. Um `denied` por isso é segurado 500 ms no destino e mais 300 ms no sender, para um `received` chegar primeiro (issue #140). O host deve ter um só broker: a eleição de líder só remove o socket que o próprio probe recusou, e um líder cujo caminho foi tomado se retira. Os motivos do relay não esperam.
+No cross-PC o relay entrega o envelope às conexões do PC alvo que anunciam o endereço no roster `peers_update` (a todas, quando nenhuma anuncia; issue #140), e cada broker local responde pelos seus peers. Um `denied` por isso é segurado 500 ms no destino e mais 300 ms no sender, para um `received` chegar primeiro (issue #140). O host deve ter um só broker: a eleição de líder só remove o socket que o próprio probe recusou, e um líder cujo caminho foi tomado se retira. Os motivos do relay não esperam.
 
 **Reply de conteúdo** é assíncrona: peer responde com **outro send normal** carregando `re: <send-id-original>`. Sender vê a reply na inbox no próximo turn. `agent_request` continua disponível apenas como comportamento legado/deprecado; o fluxo preferido é `agent_send` + reply assíncrona.
 
@@ -135,6 +135,10 @@ devem ser atualizados na mesma janela de manutenção, não gradualmente.
   "envelope": { /* envelope encaminhado */ }
 }
 ```
+
+### Qual conexão do PC alvo recebe (issue #140)
+
+Uma chave de PC pode ter várias conexões (vários processos Pi, keeper, daemon), e cada broker local atrás de uma responde pelos seus peers. O relay entrega um unicast `to = "<pc>:<endereço local>"` só às conexões que anunciaram esse endereço no roster `peers_update` que elas mesmas enviaram. Quando nenhuma anuncia (ainda sem roster, peer que acabou de mudar de broker), entrega a todas, como antes. Envelopes de controle `_broker_remote` vão sempre a todas. O roster é estado de roteamento em memória: nunca é logado nem persistido, e some com a conexão.
 
 ### Autorização e anti-spoof
 

@@ -9,11 +9,20 @@
 //! The relay authenticates Pi-A via the existing challenge-response (so we
 //! already trust `sender_peer_id` here), looks up the `mesh_versions` blob
 //! that lists Pi-A and confirms Pi-B is in the same Owner's member list, then
-//! forwards to Pi-B (any live conn) as:
+//! forwards to Pi-B's live connections as:
 //!
 //! ```jsonc
 //! { "type": "pi_envelope_in", "from_pc": "<Pi-A-pubkey>", "envelope": <verbatim> }
 //! ```
+//!
+//! Issue #140 — WHICH connections of Pi-B get a unicast. One PC key can have
+//! several connections, and the local broker behind each answers for its own
+//! peers; with more than one broker on the PC, the first answer used to
+//! settle a send. The relay reads the `peers_update` rosters it relays anyway
+//! and remembers which local addresses a connection's broker owns. A unicast
+//! `to = "<pc>:<address>"` then goes to the connections that advertise
+//! `address`, and to all of them only when none does (no roster yet, a peer
+//! that just moved). In memory only: rosters are never logged or persisted.
 //!
 //! Failures don't use a custom error frame — the relay synthesizes an envelope
 //! with `body.type = "transport_error"` (per the plan's ACK protocol section),
@@ -45,6 +54,17 @@ const MAX_CACHE_ENTRIES: usize = 1024;
 /// any legitimate Pi↔Pi frame — this brings the control path in line with
 /// the 4 MiB `ct` ceiling the outer-envelope path enforces.
 pub const MAX_PI_ENVELOPE_BYTES: usize = 4 * 1024 * 1024;
+
+/// Issue #140 — the receiver-local name of the endpoint brokers talk to each
+/// other through (`<pc>:_broker_remote`). Control envelopes to it are never
+/// narrowed to one connection.
+const BROKER_REMOTE_ENDPOINT: &str = "_broker_remote";
+/// Bounds on a roster the relay is willing to route by. They mirror the
+/// extension's own wire limits (`MAX_PEERS_UPDATE_ENTRIES`, an address of at
+/// most a cwd plus a name); a roster beyond them is ignored, which only
+/// costs the fan-out.
+const MAX_ROSTER_ENTRIES: usize = 1024;
+const MAX_ROSTER_ADDRESS_BYTES: usize = 8192;
 
 /// In-memory cache that maps `Pi-pubkey → authorization result`. Positive
 /// entries retain one shared union of direct mesh siblings; negative entries
@@ -302,9 +322,12 @@ impl TransportErrorReason {
 }
 
 /// Handles one `pi_envelope` frame. `sender_peer_id` is the authenticated
-/// Pi-A pubkey (already verified by the WS handshake).
+/// Pi-A pubkey (already verified by the WS handshake) and `sender_conn_id`
+/// the connection it arrived on, which is where a `peers_update` roster is
+/// attributed to (issue #140).
 pub async fn handle_pi_envelope(
     sender_peer_id: &str,
+    sender_conn_id: u64,
     frame: &serde_json::Value,
     registry: &PeerRegistry,
     mesh: Arc<MeshStore>,
@@ -375,14 +398,77 @@ pub async fn handle_pi_envelope(
     });
     let msg = Message::Text(outbound.to_string());
 
-    if registry.forward_to_peer(&target, msg) {
-        PiForwardResult::Forwarded
-    } else {
-        PiForwardResult::TransportError(make_transport_error(
+    // Past authorization, so only a peer the Owner paired can shape routing.
+    if let Some(roster) = parse_peers_update(envelope) {
+        registry.set_pi_roster(sender_conn_id, roster);
+    }
+    match registry.forward_pi_envelope(&target, msg, unicast_local_address(envelope).as_deref()) {
+        Some(route) => {
+            // Counts only: an address is envelope content and is not logged.
+            tracing::debug!(?route, "pi_envelope forwarded");
+            PiForwardResult::Forwarded
+        }
+        None => PiForwardResult::TransportError(make_transport_error(
             Some(envelope),
             TransportErrorReason::Offline,
-        ))
+        )),
     }
+}
+
+/// The local peer addresses a `peers_update` control envelope advertises
+/// (issue #140), or None when the envelope is no such frame, is malformed, or
+/// exceeds the bounds. The relay then keeps what it knew about the connection.
+fn parse_peers_update(envelope: &serde_json::Value) -> Option<HashSet<String>> {
+    let endpoint = format!(":{BROKER_REMOTE_ENDPOINT}");
+    for field in ["from", "to"] {
+        if !envelope.get(field)?.as_str()?.ends_with(&endpoint) {
+            return None;
+        }
+    }
+    let body = envelope.get("body")?;
+    if body.get("type")?.as_str()? != "peers_update" {
+        return None;
+    }
+    let peers = body.get("peers")?.as_array()?;
+    let addresses: Vec<&str> = match body.get("peers_detailed") {
+        Some(serde_json::Value::Array(detailed)) => detailed
+            .iter()
+            .map(|entry| entry.get("address")?.as_str())
+            .collect::<Option<Vec<_>>>()?,
+        _ => peers
+            .iter()
+            .map(serde_json::Value::as_str)
+            .collect::<Option<Vec<_>>>()?,
+    };
+    if addresses.len() > MAX_ROSTER_ENTRIES
+        || addresses
+            .iter()
+            .any(|address| address.is_empty() || address.len() > MAX_ROSTER_ADDRESS_BYTES)
+    {
+        return None;
+    }
+    Some(
+        addresses
+            .iter()
+            .map(|address| (*address).to_owned())
+            .collect(),
+    )
+}
+
+/// The local address a unicast envelope is addressed to (`to = "<pc>:<address>"`),
+/// or None for a frame that is no such unicast: a control envelope to
+/// `_broker_remote`, `broadcast`, or an address without a PC prefix. The
+/// split is on the first colon, as in the extension's `parseAddress`.
+fn unicast_local_address(envelope: &serde_json::Value) -> Option<String> {
+    let (pc, address) = envelope.get("to")?.as_str()?.split_once(':')?;
+    if pc.is_empty()
+        || address.is_empty()
+        || address == "broadcast"
+        || address == BROKER_REMOTE_ENDPOINT
+    {
+        return None;
+    }
+    Some(address.to_owned())
 }
 
 fn is_uuid(value: &str) -> bool {
@@ -772,7 +858,7 @@ mod tests {
                 "body": {},
             },
         });
-        match handle_pi_envelope(&pi_key(0x0a), &frame, &registry, store, cache).await {
+        match handle_pi_envelope(&pi_key(0x0a), u64::MAX, &frame, &registry, store, cache).await {
             PiForwardResult::TransportError(_) => {}
             PiForwardResult::Forwarded => panic!("must be transport_error"),
         }
@@ -799,9 +885,166 @@ mod tests {
                 "body": { "blob": big_body },
             },
         });
-        match handle_pi_envelope(&pi_key(0x0a), &frame, &registry, store, cache).await {
+        match handle_pi_envelope(&pi_key(0x0a), u64::MAX, &frame, &registry, store, cache).await {
             PiForwardResult::TransportError(_) => {}
             PiForwardResult::Forwarded => panic!("must be transport_error"),
         }
+    }
+
+    // ── issue #140: routing by roster ──────────────────────────────────────
+
+    fn roster_frame(
+        peers: serde_json::Value,
+        detailed: Option<serde_json::Value>,
+    ) -> serde_json::Value {
+        let mut body = serde_json::json!({ "type": "peers_update", "peers": peers });
+        if let Some(detailed) = detailed {
+            body["peers_detailed"] = detailed;
+        }
+        serde_json::json!({
+            "from": "pc-b:_broker_remote",
+            "to": "pc-a:_broker_remote",
+            "id": "30000000-0000-4000-8000-000000000010",
+            "re": null,
+            "body": body,
+        })
+    }
+
+    fn address_set(values: &[&str]) -> HashSet<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    fn test_room_meta() -> crate::rooms::RoomMeta {
+        crate::rooms::RoomMeta {
+            room_id: "main".to_owned(),
+            name: None,
+            cwd: None,
+            model: None,
+            provider: None,
+            thinking: None,
+            working: false,
+            waiting_for_input: false,
+            provider_error: false,
+            git: None,
+            keeper: None,
+            context_usage: None,
+            plan_usage: None,
+            gh_ref: None,
+            gh_suggestion: None,
+            stats: None,
+            started_at: 0,
+        }
+    }
+
+    #[test]
+    fn peers_update_roster_is_read_from_detailed_addresses_or_the_flat_list() {
+        let detailed = serde_json::json!([
+            { "cwd": "/demo", "name": "demo", "address": "/demo@demo" },
+            { "cwd": "C:\\work", "name": "api", "address": "C:\\work@api" },
+        ]);
+        assert_eq!(
+            parse_peers_update(&roster_frame(
+                serde_json::json!(["/demo@demo", "C:\\work@api"]),
+                Some(detailed),
+            )),
+            Some(address_set(&["/demo@demo", "C:\\work@api"])),
+        );
+        assert_eq!(
+            parse_peers_update(&roster_frame(serde_json::json!(["/demo@demo"]), None)),
+            Some(address_set(&["/demo@demo"])),
+        );
+        // An empty roster is a statement too: this broker owns nobody.
+        assert_eq!(
+            parse_peers_update(&roster_frame(serde_json::json!([]), None)),
+            Some(HashSet::new()),
+        );
+    }
+
+    #[test]
+    fn peers_update_outside_bounds_or_shape_is_ignored() {
+        let too_many = serde_json::json!(vec!["/p@p"; MAX_ROSTER_ENTRIES + 1]);
+        assert_eq!(parse_peers_update(&roster_frame(too_many, None)), None);
+
+        let long = format!("/{}@p", "x".repeat(MAX_ROSTER_ADDRESS_BYTES));
+        assert_eq!(
+            parse_peers_update(&roster_frame(serde_json::json!([long]), None)),
+            None,
+        );
+
+        for body in [
+            serde_json::json!({ "type": "peers_request" }),
+            serde_json::json!({ "type": "peers_update" }),
+            serde_json::json!({ "type": "peers_update", "peers": "nope" }),
+            serde_json::json!({ "type": "peers_update", "peers": [42] }),
+            serde_json::json!({ "type": "peers_update", "peers": ["/p@p"], "peers_detailed": [{ "address": 7 }] }),
+            serde_json::json!({ "type": "peers_update", "peers": [""] }),
+        ] {
+            let mut frame = roster_frame(serde_json::json!([]), None);
+            frame["body"] = body.clone();
+            assert_eq!(parse_peers_update(&frame), None, "{body}");
+        }
+
+        // Not the broker-to-broker endpoint on either side.
+        let mut frame = roster_frame(serde_json::json!(["/p@p"]), None);
+        frame["to"] = serde_json::json!("pc-a:/demo@demo");
+        assert_eq!(parse_peers_update(&frame), None);
+        let mut frame = roster_frame(serde_json::json!(["/p@p"]), None);
+        frame["from"] = serde_json::json!("pc-b:/demo@demo");
+        assert_eq!(parse_peers_update(&frame), None);
+    }
+
+    #[test]
+    fn unicast_local_address_splits_on_the_first_colon_and_skips_control_targets() {
+        let to = |value: &str| serde_json::json!({ "to": value });
+        assert_eq!(
+            unicast_local_address(&to("pc-b:/demo@demo")),
+            Some("/demo@demo".to_owned()),
+        );
+        // A Windows cwd keeps its drive-letter colon.
+        assert_eq!(
+            unicast_local_address(&to("pc-b:C:\\work@api")),
+            Some("C:\\work@api".to_owned()),
+        );
+        for value in [
+            "broadcast",
+            "pc-b:broadcast",
+            "pc-b:_broker_remote",
+            "_broker_remote",
+            "/local@agent",
+            ":/local@agent",
+            "pc-b:",
+            "",
+        ] {
+            assert_eq!(unicast_local_address(&to(value)), None, "{value}");
+        }
+        assert_eq!(unicast_local_address(&serde_json::json!({ "to": 7 })), None);
+    }
+
+    #[tokio::test]
+    async fn peers_update_is_attributed_to_the_connection_it_came_from() {
+        let registry = PeerRegistry::new(
+            Arc::new(PresenceManager::new()),
+            Arc::new(RoomManager::new()),
+            Arc::new(crate::metrics::FirehoseMetrics::new()),
+        );
+        let store = Arc::new(MeshStore::open_in_memory().unwrap());
+        let cache = Arc::new(MeshAuthCache::new());
+        write_owner_blob(&store, &[7; 32], &[&pi_key(0x0b), &pi_key(0x0a)], 1);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = registry.register(pi_key(0x0b), test_room_meta(), tx).await;
+
+        let frame = serde_json::json!({
+            "type": "pi_envelope",
+            "to_pc": pi_key(0x0a),
+            "envelope": roster_frame(serde_json::json!(["/demo@demo"]), None),
+        });
+        let result = handle_pi_envelope(&pi_key(0x0b), conn, &frame, &registry, store, cache).await;
+        // Pi-A is offline here; the roster is recorded all the same.
+        assert!(matches!(result, PiForwardResult::TransportError(_)));
+        assert_eq!(
+            registry.pi_roster(conn),
+            Some(Arc::new(address_set(&["/demo@demo"])))
+        );
+        assert_eq!(registry.pi_roster(conn + 1), None);
     }
 }

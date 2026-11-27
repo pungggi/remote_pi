@@ -106,6 +106,20 @@ and 0.10.1 releases moved to their sections on 2026-11-27.
     `received` for another 300 ms. A refusal that is still final names the
     brokers (by pid) that denied, in the tool text and in `details.answers`.
     A send that really ends as `denied` now takes about 0.8 s.
+- **Relay: a cross-PC unicast goes to the connection that owns the target**
+  (issue #140, relay part). `pi_forward.rs` forwarded every cross-PC frame
+  to every connection of the target key. The relay now remembers which local
+  addresses a connection advertised in the `peers_update` frames it sent,
+  and delivers `to = "<pc>:<address>"` only to the connections that advertise
+  the address. When none does, every connection gets the frame, as before.
+  Control envelopes between brokers are never narrowed. Rosters live in
+  memory only: never logged, never persisted.
+  - **Rollout**: relay first is safe. An old relay keeps the fan-out, and the
+    extension has sent these rosters since plan/25 (`peers`) and plan/38
+    (`peers_detailed`), so nothing changes there.
+  - **With both halves in place** a unicast normally gets one answer, and
+    the extension's 0.8 s wait only applies to a send that really ends as
+    `denied`.
 - **Relay: deterministic `rooms` snapshot ordering** (plan/164). `rooms_of` returned `HashMap::into_values()`, so the snapshot serialized in a different order on every call: the per-conn byte-identical dedup could never suppress `rooms_check` replies, the phone app saw every reply as "changed", and the resulting re-poll loop pushed ~60 full snapshots/s onto the same WebSocket that carries `agent_chunk` — starving response streaming. Snapshots are now sorted by `room_id`; regression test covers multi-room suppression (single-room tests could never catch the ordering bug). The firehose 10s window log now also attributes rooms traffic (`rooms_poll_top`, `rooms_sent_conn_top`, `rooms_sent_target_top`). Measured: 623 replies/10s → 3.
 - **The guard says when it is waiting.** When the start backoff holds the
   next supervisor start, `guard.log` gets one line per wait, `supervisor:
