@@ -143,9 +143,16 @@ function runAgy(
     };
     let child: ChildProcess;
     try {
-      // Fixed argument vectors only (no caller text), so `shell:true` on
-      // Windows has nothing to quote-split.
-      child = spawnFn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], shell, windowsHide: true });
+      // One command LINE through the shell on Windows. Node warns about an
+      // args array next to `shell:true` (DEP0190) because the shell would
+      // concatenate it unescaped. The arguments are fixed constants here, so
+      // joining them ourselves is exact and keeps the logs free of the warning.
+      const commandLine = shell ? [cmd, ...args].join(" ") : cmd;
+      child = spawnFn(commandLine, shell ? [] : args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        shell,
+        windowsHide: true,
+      });
     } catch (e) {
       done({ code: null, stdout: "", stderr: "", error: e as NodeJS.ErrnoException, timedOut: false });
       return;

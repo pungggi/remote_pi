@@ -117,6 +117,21 @@ function fakeSpawn() {
   return spawnFn as unknown as typeof import("node:child_process").spawn;
 }
 
+/** The command a recorded spawn call ran, as one line (`agy models`). */
+function commandOf(spawnFn: unknown, n: number): string {
+  const call = (spawnFn as { mock: { calls: unknown[][] } }).mock.calls[n];
+  if (!call) throw new Error(`spawn call ${n} missing`);
+  const args = Array.isArray(call[1]) ? (call[1] as string[]) : [];
+  return [String(call[0]), ...args].join(" ").trim();
+}
+
+/** The options of a recorded spawn call. */
+function optionsOf(spawnFn: unknown, n: number): Record<string, unknown> {
+  const call = (spawnFn as { mock: { calls: unknown[][] } }).mock.calls[n];
+  if (!call) throw new Error(`spawn call ${n} missing`);
+  return (call[2] ?? {}) as Record<string, unknown>;
+}
+
 describe("listAgyModels", () => {
   beforeEach(() => {
     _resetAgyCacheForTests();
@@ -131,7 +146,8 @@ describe("listAgyModels", () => {
     if (first.ok) expect(first.models).toHaveLength(8);
     await listAgyModels({ spawn: spawnFn, now: () => 1_000_000 + AGY_CACHE_MS - 1 });
     expect(spawnFn).toHaveBeenCalledTimes(1);
-    expect(spawnFn).toHaveBeenCalledWith("agy", ["models"], expect.objectContaining({ stdio: ["ignore", "pipe", "pipe"] }));
+    expect(commandOf(spawnFn, 0)).toBe("agy models");
+    expect((optionsOf(spawnFn, 0).stdio as string[])).toEqual(["ignore", "pipe", "pipe"]);
     // After the cache expires agy is asked again.
     replies = [{ code: 0, stdout: REAL_OUTPUT }];
     await listAgyModels({ spawn: spawnFn, now: () => 1_000_000 + AGY_CACHE_MS + 1 });
@@ -187,7 +203,7 @@ describe("probeAgy", () => {
     expect(await probeAgy({ spawn: spawnFn, now: () => 10 })).toBe(true);
     expect(await probeAgy({ spawn: spawnFn, now: () => 11 })).toBe(true);
     expect(spawnFn).toHaveBeenCalledTimes(1);
-    expect(spawnFn).toHaveBeenCalledWith("agy", ["--version"], expect.anything());
+    expect(commandOf(spawnFn, 0)).toBe("agy --version");
   });
 
   test("false when the CLI is missing, and not cached", async () => {
