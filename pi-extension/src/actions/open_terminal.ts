@@ -163,10 +163,12 @@ function cmdQuote(s: string): string {
   return `"${String(s)}"`;
 }
 
-/** Plan/152 — command that resumes one exact persisted Pi session. Built by
- *  the shared launcher so every surface spells it the same way. */
+/** Plan/152 — command that opens the room's stored Pi session in its folder.
+ *  Pi creates the session when it was never saved or its file is gone, so a
+ *  start cannot die on a missing file (issue #142). Built by the shared
+ *  launcher so every surface spells it the same way. */
 export function piSessionResumeCommand(sessionId: string): string {
-  return buildAgentCommand({ agent: "pi", resume: { kind: "session", id: sessionId } });
+  return buildAgentCommand({ agent: "pi", resume: { kind: "session-id", id: sessionId } });
 }
 
 /**

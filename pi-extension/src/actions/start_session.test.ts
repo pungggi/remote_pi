@@ -1,6 +1,7 @@
 /**
  * Plan/124 + plan/152 — Start session always opens a visible terminal.
- * Exact IDs use `pi --session`; legacy rooms use `pi --continue`.
+ * Stored IDs use `pi --session-id` (opened or created, issue #142); legacy
+ * rooms use `pi --continue`.
  */
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -45,7 +46,7 @@ describe("handleStartSession visible terminal resume", () => {
     vi.mocked(openTerminalTab).mockReset();
   });
 
-  test("exact ID opens a new visible terminal with pi --session", async () => {
+  test("stored ID opens a new visible terminal with pi --session-id", async () => {
     const sessionId = "123e4567-e89b-42d3-a456-426614174000";
     vi.mocked(readRoomsRegistry).mockReturnValue(new Map([
       ["room-1", { cwd: "/x", roomId: "room-1", lastSeenAt: 1, sessionId }],
@@ -62,7 +63,7 @@ describe("handleStartSession visible terminal resume", () => {
     // Plan/173 — the relay room travels as the tmux session name on Termux.
     expect(openTerminalTab).toHaveBeenCalledWith(
       "/x",
-      `pi --session '${sessionId}'`,
+      `pi --session-id '${sessionId}'`,
       { newWindow: true, sessionName: "room-1" },
     );
     expect(s.sent).toEqual([{
@@ -70,8 +71,28 @@ describe("handleStartSession visible terminal resume", () => {
       in_reply_to: "exact-1",
       ok: true,
       room_id: "room-1",
-      message: "Opened terminal — resuming the saved Pi session.",
+      message: "Opened terminal — resuming the Pi session of this room.",
     }]);
+  });
+
+  // Issue #142 — the session behind a stored id may have no file: it was
+  // only opened (Pi writes the file with the first message) or it was
+  // deleted. The start must not use `pi --session`, which exits then.
+  test("a stored ID whose session has no file is started, not refused", async () => {
+    const sessionId = "01a22212-e81e-70d3-ad8d-f657d0ed74c5";
+    vi.mocked(readRoomsRegistry).mockReturnValue(new Map([
+      ["room-1", { cwd: "/x", roomId: "room-1", lastSeenAt: 1, sessionId }],
+    ]));
+    vi.mocked(openTerminalTab).mockResolvedValue({ ok: true, message: "opened", method: "tmux" });
+
+    handleStartSession(fakeSender() as any, {
+      type: "start_session_request", id: "never-written", cwd: "/x",
+    } as StartMsg);
+    await flush();
+
+    const command = String(vi.mocked(openTerminalTab).mock.calls[0]?.[1]);
+    expect(command).toBe(`pi --session-id '${sessionId}'`);
+    expect(command).not.toMatch(/--session /);
   });
 
   test("exact terminal failure does not fall back to a different session", async () => {

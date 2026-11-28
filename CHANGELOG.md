@@ -86,6 +86,18 @@ and 0.10.1 releases moved to their sections on 2026-11-27.
 
 ### Fixed
 
+- **"Start session" brings back a session that has no file yet** (issue
+  #142, pi-extension). The room registry can hold a Pi session id whose
+  file does not exist: the conversation was deleted, or the session was left
+  before its first message, because Pi writes the file with the first message.
+  `pi --session <id>` then answered `No session found matching`, exited at
+  once, the tmux session closed with it, and the app had already reported
+  "resuming the saved Pi session".
+  - **Fix**: the handler now runs `pi --session-id <id>`. Pi opens that
+    session or creates it, so the tile comes back either way.
+  - **Still open in #142**: a session that already runs elsewhere is started a
+    second time instead of refused.
+
 - **One broker per host, and a cross-PC `denied` you can trust** (issue
   #140, pi-extension). `agent_send` from one PC to a session on another
   could come back `denied` although the message was delivered and answered

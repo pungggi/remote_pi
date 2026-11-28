@@ -4,7 +4,10 @@
  * Brings an OFFLINE session back to life in its OWN cwd (no new worktree, no
  * pin). Plan/152 prefers an exact interactive resume: when the room registry
  * has the Pi session ID, open a NEW VISIBLE terminal window running
- * `pi --session <id>` (a background MRU tab is not sufficient).
+ * `pi --session-id <id>` (a background MRU tab is not sufficient). The id is
+ * opened or created: a session that was only opened has no file yet, and a
+ * deleted one has none either, so `pi --session <id>` would exit at once and
+ * take the terminal with it (issue #142).
  *
  * Older rooms have no stored ID. They open the SAME kind of visible terminal
  * with `pi --continue`, preserving the cwd's most-recent conversation without
@@ -98,11 +101,11 @@ export async function handleStartSession(
     successMessage =
       "Opened terminal — AGY is running in this folder. Its chat is not shown in the app; use the terminal.";
   } else {
-    const resume: AgentResume = sessionId ? { kind: "session", id: sessionId } : { kind: "continue" };
+    const resume: AgentResume = sessionId ? { kind: "session-id", id: sessionId } : { kind: "continue" };
     const input: AgentCommandInput = { agent: "pi", resume, model: selection.model };
     command = buildAgentCommand(input);
     successMessage = sessionId
-      ? "Opened terminal — resuming the saved Pi session."
+      ? "Opened terminal — resuming the Pi session of this room."
       : "Opened terminal — continuing the latest Pi session in this folder.";
   }
   void openTerminalTab(

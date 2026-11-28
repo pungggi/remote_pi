@@ -2,13 +2,26 @@ import { describe, expect, test } from "vitest";
 import { AGY_LAUNCH_COMMAND, buildAgentCommand, piModelFlag, shellSingleQuote } from "./launch.js";
 
 describe("buildAgentCommand (plan/173 A2)", () => {
-  test("Pi without a model is the pre-173 command for every resume kind", () => {
+  test("Pi without a model: bare, new, continue, and the stored session id", () => {
     expect(buildAgentCommand({ agent: "pi" })).toBe("pi");
     expect(buildAgentCommand({ agent: "pi", resume: { kind: "new" } })).toBe("pi");
     expect(buildAgentCommand({ agent: "pi", resume: { kind: "continue" } })).toBe("pi --continue");
-    expect(buildAgentCommand({ agent: "pi", resume: { kind: "session", id: "abc-123" } })).toBe(
-      "pi --session 'abc-123'",
+    expect(buildAgentCommand({ agent: "pi", resume: { kind: "session-id", id: "abc-123" } })).toBe(
+      "pi --session-id 'abc-123'",
     );
+  });
+
+  // Issue #142 — the room registry can hold an id whose session has no file
+  // (never written, or deleted). `pi --session <id>` then exits at once and
+  // the terminal closes with it; `--session-id` opens the session or creates
+  // it, so the start survives both cases.
+  test("a stored session id is opened or created, never --session", () => {
+    const command = buildAgentCommand({
+      agent: "pi",
+      resume: { kind: "session-id", id: "01a22212-e81e-70d3-ad8d-f657d0ed74c5" },
+    });
+    expect(command).toBe("pi --session-id '01a22212-e81e-70d3-ad8d-f657d0ed74c5'");
+    expect(command).not.toMatch(/--session /);
   });
 
   test("Pi with a model gets --model provider/id after the resume flag", () => {
@@ -17,8 +30,8 @@ describe("buildAgentCommand (plan/173 A2)", () => {
     expect(buildAgentCommand({ agent: "pi", resume: { kind: "continue" }, model })).toBe(
       "pi --continue --model zai/glm-5.3-flash",
     );
-    expect(buildAgentCommand({ agent: "pi", resume: { kind: "session", id: "s1" }, model })).toBe(
-      "pi --session 's1' --model zai/glm-5.3-flash",
+    expect(buildAgentCommand({ agent: "pi", resume: { kind: "session-id", id: "s1" }, model })).toBe(
+      "pi --session-id 's1' --model zai/glm-5.3-flash",
     );
   });
 
@@ -33,7 +46,7 @@ describe("buildAgentCommand (plan/173 A2)", () => {
 
   test("AGY has no session resume: a resume hint does not change its command", () => {
     expect(
-      buildAgentCommand({ agent: "agy", resume: { kind: "session", id: "stored-pi-session" } }),
+      buildAgentCommand({ agent: "agy", resume: { kind: "session-id", id: "stored-pi-session" } }),
     ).toBe("remote-pi agy");
   });
 
