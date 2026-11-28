@@ -94,6 +94,18 @@ and 0.10.1 releases moved to their sections on 2026-11-27.
 
 ### Fixed
 
+- **"Start session" brings back a session that has no file yet** (issue
+  #142, pi-extension). The room registry can hold a Pi session id whose
+  file does not exist: the conversation was deleted, or the session was left
+  before its first message, because Pi writes the file with the first message.
+  `pi --session <id>` then answered `No session found matching`, exited at
+  once, the tmux session closed with it, and the app had already reported
+  "resuming the saved Pi session".
+  - **Fix**: the handler now runs `pi --session-id <id>`. Pi opens that
+    session or creates it, so the tile comes back either way.
+  - **Still open in #142**: a session that already runs elsewhere is started a
+    second time instead of refused.
+
 - **Relay: a cross-PC unicast goes to the connection that owns the target**
   (issue #140, relay part). `pi_forward.rs` forwarded every cross-PC frame
   to every connection of the target key. The relay now remembers which local

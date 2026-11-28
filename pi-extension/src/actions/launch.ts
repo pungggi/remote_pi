@@ -6,7 +6,7 @@
  * in the project folder:
  *
  *   agent  fresh              continue           resume a stored session
- *   pi     `pi`               `pi --continue`    `pi --session <id>`
+ *   pi     `pi`               `pi --continue`    `pi --session-id <id>`
  *   agy    `remote-pi agy`    —                  —
  *
  * plus the optional start model: `--model <provider>/<id>` for Pi and
@@ -32,7 +32,12 @@ import { SAFE_MODEL_TOKEN } from "../protocol/types.js";
 export type AgentResume =
   | { kind: "new" }
   | { kind: "continue" }
-  | { kind: "session"; id: string };
+  /** Open the session with that id in the folder. Pi creates it when no such
+   *  session was saved. Why: a session gets its file with its first message,
+   *  so the id of a session that was only opened, or whose file was deleted,
+   *  must not fail the start. `pi --session <id>` exits on a missing file
+   *  (issue #142); `--session-id` opens or creates. */
+  | { kind: "session-id"; id: string };
 
 /** The command run for `agent: "agy"`. */
 export const AGY_LAUNCH_COMMAND = "remote-pi agy";
@@ -85,6 +90,6 @@ export function buildAgentCommand(input: AgentCommandInput): string {
   const resume = input.resume ?? { kind: "new" as const };
   let base = "pi";
   if (resume.kind === "continue") base = "pi --continue";
-  if (resume.kind === "session") base = `pi --session ${shellSingleQuote(resume.id)}`;
+  if (resume.kind === "session-id") base = `pi --session-id ${shellSingleQuote(resume.id)}`;
   return `${base}${piModelFlag(input.model)}`;
 }
