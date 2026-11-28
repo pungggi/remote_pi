@@ -1,0 +1,66 @@
+# CI for relay/ — format, clippy, tests.
+#
+# Why this file exists (2026-11-28): the extension, the app and the cockpit
+# had workflows, the relay had none, so the routing change for #140 (PR #143)
+# was verified on one laptop only. relay/CLAUDE.md asks for
+# `cargo clippy -- -D warnings` before every commit; this is where that is
+# checked.
+#
+# Runs when relay/** changes, when this file changes, or on request. One leg,
+# ubuntu-latest with the stable toolchain: the relay is built on Linux
+# wherever it is deployed for others (the Docker image, Termux), and
+# `cargo fmt --check` accepts exactly what the current `stable` rustfmt
+# produces, so `stable` is also the reference for formatting.
+
+name: relay-ci
+
+on:
+  pull_request:
+    paths:
+      - "relay/**"
+      - ".github/workflows/relay-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "relay/**"
+      - ".github/workflows/relay-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: relay-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  relay:
+    name: relay · stable
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # Keyed by Cargo.lock and the toolchain. A cold build compiles the
+      # vendored OpenSSL (several minutes); this keeps most runs warm.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: relay
+
+      - name: Format
+        run: cargo fmt --check
+
+      # relay/CLAUDE.md: strict lint, must pass before a commit. `--locked`
+      # because Cargo.lock is committed.
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked

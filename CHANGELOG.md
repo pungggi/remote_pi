@@ -16,6 +16,14 @@ and 0.10.1 releases moved to their sections on 2026-11-27.
 
 ### Added
 
+- **Start Pi or AGY with a model, and ask a device what it can start**
+  (plan/173 A1+A2, pi-extension + app protocol). `open_terminal_request` and
+  `start_session_request` take `agent` (`pi` | `agy`, default `pi`) and an
+  optional `provider`/`model_id` for that one session; `list_models` takes
+  `agent`; `device_info_request` reports host, startable agents and version.
+  An unknown agent is refused, never read as Pi. The app carries the same
+  validation (`safeModelToken`, `startModelProblem`) but does not call the
+  new fields until stage A4.
 - **Timestamps in the chat (plan/172)**: the transcript had no sense of
   time and mixed two clocks. Live frames carried no time, so the app
   stamped arrival on the phone's clock while replayed history used the
@@ -98,26 +106,6 @@ and 0.10.1 releases moved to their sections on 2026-11-27.
   - **Still open in #142**: a session that already runs elsewhere is started a
     second time instead of refused.
 
-- **One broker per host, and a cross-PC `denied` you can trust** (issue
-  #140, pi-extension). `agent_send` from one PC to a session on another
-  could come back `denied` although the message was delivered and answered
-  (five of twelve sends in the rollout of 2026-11-27).
-  - **Cause**: the leader election removed the socket file after any failed
-    probe. Two followers re-electing at the same moment could each remove
-    the other's fresh socket, so the first leader stayed behind with its
-    clients and its relay bridge, unreachable at the path. Two brokers then
-    answered for one PC, and the sender kept whichever answer came first.
-  - **Election**: only an `ECONNREFUSED` probe counts as "nobody listens",
-    and only the very socket that probe condemned is removed. The same rule
-    guards the per-folder lock.
-  - **Safety nets**: a leader that hears another broker at its own path
-    follows it. A leader whose path is later taken away stands down, and its
-    clients re-elect onto the new owner.
-  - **ACKs**: a bridge that does not own the target holds its `denied` back
-    (500 ms), and a sender keeps a cross-PC `denied` waiting for a
-    `received` for another 300 ms. A refusal that is still final names the
-    brokers (by pid) that denied, in the tool text and in `details.answers`.
-    A send that really ends as `denied` now takes about 0.8 s.
 - **Relay: a cross-PC unicast goes to the connection that owns the target**
   (issue #140, relay part). `pi_forward.rs` forwarded every cross-PC frame
   to every connection of the target key. The relay now remembers which local
@@ -133,6 +121,40 @@ and 0.10.1 releases moved to their sections on 2026-11-27.
     the extension's 0.8 s wait only applies to a send that really ends as
     `denied`.
 - **Relay: deterministic `rooms` snapshot ordering** (plan/164). `rooms_of` returned `HashMap::into_values()`, so the snapshot serialized in a different order on every call: the per-conn byte-identical dedup could never suppress `rooms_check` replies, the phone app saw every reply as "changed", and the resulting re-poll loop pushed ~60 full snapshots/s onto the same WebSocket that carries `agent_chunk` — starving response streaming. Snapshots are now sorted by `room_id`; regression test covers multi-room suppression (single-room tests could never catch the ordering bug). The firehose 10s window log now also attributes rooms traffic (`rooms_poll_top`, `rooms_sent_conn_top`, `rooms_sent_target_top`). Measured: 623 replies/10s → 3.
+
+## [0.10.4] - 2026-11-28
+
+Release of the extension only (`pi-extension`). The app keeps its own
+version line.
+
+### Fixed
+
+- **One broker per host, and a cross-PC `denied` you can trust** (issue
+  #140). `agent_send` from one PC to a session on another could come back
+  `denied` although the message was delivered and answered (five of twelve
+  sends in the rollout of 2026-11-27).
+  - **Cause**: the leader election removed the socket file after any failed
+    probe. Two followers re-electing at the same moment could each remove
+    the other's fresh socket, so the first leader stayed behind with its
+    clients and its relay bridge, unreachable at the path. Two brokers then
+    answered for one PC, and the sender kept whichever answer came first.
+  - **Election**: only an `ECONNREFUSED` probe counts as "nobody listens",
+    and only the very socket that probe condemned is removed. The same rule
+    guards the per-folder lock.
+  - **Safety nets**: a leader that hears another broker at its own path
+    follows it. A leader whose path is later taken away stands down, and its
+    clients re-elect onto the new owner.
+  - **Only the owner of the path closes a broker.** Closing a listening
+    server makes libuv unlink whatever lies at its path, so a leader that
+    gives up its broker without owning the path abandons the listener
+    instead of closing it.
+  - **ACKs**: a bridge that does not own the target holds its `denied` back
+    (500 ms), and a sender keeps a cross-PC `denied` waiting for a
+    `received` for another 300 ms. A refusal that is still final names the
+    brokers (by pid) that denied, in the tool text and in `details.answers`.
+    A send that really ends as `denied` now takes about 0.8 s.
+  - **Tool text**: a cross-PC refusal reads "Delivery to … was NOT confirmed"
+    and points at `list_peers` instead of "do not retry; report to user".
 - **The guard says when it is waiting.** When the start backoff holds the
   next supervisor start, `guard.log` gets one line per wait, `supervisor:
   start postponed by the start backoff until HH:MM`, as the rate limit
