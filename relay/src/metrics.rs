@@ -8,8 +8,8 @@
 //! real). A periodic reporter task drains them every 10 s.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tracing::info;
 
@@ -47,7 +47,9 @@ pub struct FirehoseMetrics {
 /// 3 entries as `id8=count, …` (peer ids truncated to 8 chars for greppable,
 /// compact log lines). Empty maps render as `-`.
 fn drain_top3(map: &Mutex<HashMap<String, u64>>) -> String {
-    let Ok(mut m) = map.lock() else { return "-".to_string() };
+    let Ok(mut m) = map.lock() else {
+        return "-".to_string();
+    };
     if m.is_empty() {
         return "-".to_string();
     }
