@@ -439,6 +439,11 @@ a confirmation that may still come:
 - **Result**: a send that really ends as `denied` takes about 0.8 s, and
   `details.answers` lists the brokers (by pid) that denied.
 
+A relay that routes by roster (after issue #140's relay part) delivers a
+unicast only to the connections that advertise the target, so there is
+normally one answer. The two waits stay: they still protect against an older
+relay, and against a target that is moving between brokers.
+
 Mesh addresses are opaque routing values: echo them verbatim, including
 receiver-local PC aliases with percent-encoded bytes (such as `%3A` or `%25`)
 or collision suffixes containing `~`. Never parse, build, decode, or normalize

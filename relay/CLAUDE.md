@@ -35,6 +35,9 @@ pelo Owner em SQLite.
 - No tráfego App↔Pi, o `ct` externo permanece opaco e nunca é decodificado.
 - `pi_envelope` Pi→Pi e membership assinado são parseados em memória somente
   conforme necessário para routing e autorização.
+- O `to` de um unicast e o roster de um `peers_update` são lidos em memória só
+  para rotear (issue #140): nunca logados, nunca persistidos; o roster some com
+  a conexão.
 - Nenhum body de envelope, material de chave ou assinatura pode ser logado ou
   persistido como payload de mensagem.
 - A persistência SQLite é limitada a metadados de autorização de membership

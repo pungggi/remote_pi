@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
@@ -20,6 +20,20 @@ use crate::rooms::{RoomManager, RoomMeta, RoomMetaPatch};
 type RoomKey = (String, String); // (peer_id, room_id)
 type ConnEntry = (u64, RoomMeta, mpsc::UnboundedSender<Message>);
 type MailboxEntry = (std::time::Instant, String); // (stored_at, rewritten fwd line)
+
+/// Where a cross-PC unicast went (issue #140).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PiForwardRoute {
+    /// Only the connections that advertise the target's local address got it.
+    Targeted(usize),
+    /// Every live connection got it. `fallback` is set when the frame named a
+    /// local address but no connection advertises it; otherwise the frame is
+    /// not a unicast to a local address (a control envelope, for instance).
+    /// A connection with an EMPTY roster advertises nothing, so for routing it
+    /// is indistinguishable from one that sent no roster: the relay never
+    /// reads "owns nobody" as "deliver to nobody".
+    FanOut { recipients: usize, fallback: bool },
+}
 
 /// Maps `(peer_id, room_id)` pairs to a *list* of live connections.
 ///
@@ -73,6 +87,10 @@ pub struct PeerRegistry {
     mailboxes: Mutex<HashMap<RoomKey, std::collections::VecDeque<MailboxEntry>>>,
     mailbox_max: usize,
     mailbox_ttl: std::time::Duration,
+    /// Issue #140 — per-connection set of local peer addresses the connection
+    /// has advertised in a `peers_update` frame it sent. Routing state only:
+    /// in memory, never logged, gone with the connection.
+    pi_rosters: Mutex<HashMap<u64, Arc<HashSet<String>>>>,
     /// Plan 153 — best-effort wake events, independent of live room subscribers.
     push_events: Mutex<Option<PushEventSink>>,
 }
@@ -109,6 +127,7 @@ impl PeerRegistry {
             mailboxes: Mutex::new(HashMap::new()),
             mailbox_max,
             mailbox_ttl,
+            pi_rosters: Mutex::new(HashMap::new()),
             push_events: Mutex::new(None),
         }
     }
@@ -261,6 +280,8 @@ impl PeerRegistry {
             let peer_offlined = room_emptied && !lock.keys().any(|(p, _)| p == peer_id);
             (room_emptied, peer_offlined)
         };
+        // The connection is gone, and with it what it advertised (issue #140).
+        self.clear_pi_roster(conn_id);
 
         if room_emptied {
             self.notify_room_ended(peer_id, room_id, now_ms).await;
@@ -830,6 +851,103 @@ impl PeerRegistry {
             }
         }
         delivered
+    }
+
+    /// Issue #140 — remembers which local peer addresses the connection
+    /// `conn_id` advertises in a `peers_update` frame. A cross-PC unicast to
+    /// one of those addresses is then delivered to that connection only
+    /// ([`PeerRegistry::forward_pi_envelope`]).
+    pub fn set_pi_roster(&self, conn_id: u64, addresses: HashSet<String>) {
+        self.rosters().insert(conn_id, Arc::new(addresses));
+    }
+
+    fn clear_pi_roster(&self, conn_id: u64) {
+        self.rosters().remove(&conn_id);
+    }
+
+    /// The addresses `conn_id` advertises, or None when it sent no roster.
+    pub fn pi_roster(&self, conn_id: u64) -> Option<Arc<HashSet<String>>> {
+        self.rosters().get(&conn_id).cloned()
+    }
+
+    /// The roster map. A roster belongs to one connection and the next
+    /// `peers_update` replaces it whole, so a panic elsewhere leaves nothing
+    /// half-written worth dropping: the poison is cleared and the rosters stay.
+    fn rosters(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Arc<HashSet<String>>>> {
+        match self.pi_rosters.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                self.pi_rosters.clear_poison();
+                poisoned.into_inner()
+            }
+        }
+    }
+
+    /// The connection ids whose roster contains `address`.
+    fn advertising_connections(&self, address: &str) -> HashSet<u64> {
+        self.rosters()
+            .iter()
+            .filter(|(_, set)| set.contains(address))
+            .map(|(conn_id, _)| *conn_id)
+            .collect()
+    }
+
+    /// Delivers a cross-PC frame to the live connections of `peer_id`.
+    ///
+    /// Issue #140: a unicast envelope names a local address of the target PC
+    /// (`to = "<pc>:<address>"`), and only the connection whose broker
+    /// advertised that address can deliver it. Every other broker on that PC
+    /// would answer `denied`, and whichever answer reached the sender first
+    /// used to decide the send. So a unicast goes to the connections that
+    /// advertise the address, and to all of them only when none does (no
+    /// roster yet, a peer that just moved): slower to settle, never wrong.
+    /// Frames that name no local address always go to every connection.
+    ///
+    /// Returns `None` when no connection accepted the frame.
+    pub fn forward_pi_envelope(
+        &self,
+        peer_id: &str,
+        msg: Message,
+        local_address: Option<&str>,
+    ) -> Option<PiForwardRoute> {
+        // Roster lookups finish before the sender map is locked: the two
+        // locks are never held together.
+        let advertising = local_address.map(|address| self.advertising_connections(address));
+        let lock = self.senders.lock().unwrap();
+        let send_to = |only: Option<&HashSet<u64>>| -> usize {
+            let mut sent = 0;
+            for ((p, _), v) in lock.iter() {
+                if p != peer_id {
+                    continue;
+                }
+                for (cid, _, tx) in v.iter() {
+                    if only.is_some_and(|allowed| !allowed.contains(cid)) {
+                        continue;
+                    }
+                    if tx.send(msg.clone()).is_ok() {
+                        sent += 1;
+                    }
+                }
+            }
+            sent
+        };
+
+        if let Some(allowed) = advertising.as_ref() {
+            let targeted = send_to(Some(allowed));
+            if targeted > 0 {
+                return Some(PiForwardRoute::Targeted(targeted));
+            }
+            let recipients = send_to(None);
+            return (recipients > 0).then_some(PiForwardRoute::FanOut {
+                recipients,
+                fallback: true,
+            });
+        }
+        let recipients = send_to(None);
+        (recipients > 0).then_some(PiForwardRoute::FanOut {
+            recipients,
+            fallback: false,
+        })
     }
 }
 
@@ -1943,5 +2061,168 @@ mod tests {
         );
         let [.., rooms_emit3, _] = metrics.snapshot();
         assert_eq!(rooms_emit3, rooms_emit + 1, "one subscriber → one emission");
+    }
+
+    // ── issue #140: cross-PC unicast routing by roster ──────────────
+
+    /// Three connections of one PC key at one room.
+    async fn roster_fixture() -> (
+        PeerRegistry,
+        Vec<u64>,
+        Vec<mpsc::UnboundedReceiver<Message>>,
+    ) {
+        let reg = make_registry();
+        let mut ids = Vec::new();
+        let mut rxs = Vec::new();
+        for _ in 0..3 {
+            let (tx, rx) = mpsc::unbounded_channel::<Message>();
+            ids.push(reg.register("pc-b".into(), make_meta("main"), tx).await);
+            rxs.push(rx);
+        }
+        (reg, ids, rxs)
+    }
+
+    fn pi_frame(n: usize) -> Message {
+        Message::Text(format!("{{\"n\":{n}}}"))
+    }
+
+    /// Whether `rx` holds a frame right now.
+    fn has_frame(rx: &mut mpsc::UnboundedReceiver<Message>) -> bool {
+        rx.try_recv().is_ok()
+    }
+
+    fn demo_roster() -> HashSet<String> {
+        HashSet::from(["/demo@demo".to_owned()])
+    }
+
+    #[tokio::test]
+    async fn unicast_to_an_advertised_address_reaches_only_that_connection() {
+        let (reg, ids, mut rxs) = roster_fixture().await;
+        reg.set_pi_roster(ids[0], demo_roster());
+
+        let route = reg.forward_pi_envelope("pc-b", pi_frame(1), Some("/demo@demo"));
+        assert_eq!(route, Some(PiForwardRoute::Targeted(1)));
+        assert!(has_frame(&mut rxs[0]));
+        assert!(!has_frame(&mut rxs[1]) && !has_frame(&mut rxs[2]));
+
+        // Another key is not touched by a roster that happens to know the address.
+        assert_eq!(
+            reg.forward_pi_envelope("pc-c", pi_frame(2), Some("/demo@demo")),
+            None
+        );
+    }
+
+    /// No connection advertises the address (no roster yet, a peer that
+    /// just moved): every connection gets the frame, as before the roster
+    /// routing existed. Slower to settle, never wrong.
+    #[tokio::test]
+    async fn unicast_nobody_advertises_falls_back_to_every_connection() {
+        let (reg, ids, mut rxs) = roster_fixture().await;
+        reg.set_pi_roster(ids[0], demo_roster());
+
+        assert_eq!(
+            reg.forward_pi_envelope("pc-b", pi_frame(1), Some("/gone@peer")),
+            Some(PiForwardRoute::FanOut {
+                recipients: 3,
+                fallback: true
+            })
+        );
+        assert!(rxs.iter_mut().all(has_frame));
+    }
+
+    #[tokio::test]
+    async fn frames_that_name_no_local_address_go_to_every_connection() {
+        let (reg, ids, mut rxs) = roster_fixture().await;
+        reg.set_pi_roster(ids[0], demo_roster());
+
+        assert_eq!(
+            reg.forward_pi_envelope("pc-b", pi_frame(1), None),
+            Some(PiForwardRoute::FanOut {
+                recipients: 3,
+                fallback: false
+            })
+        );
+        assert!(rxs.iter_mut().all(has_frame));
+    }
+
+    #[tokio::test]
+    async fn a_roster_dies_with_its_connection() {
+        let (reg, ids, _rxs) = roster_fixture().await;
+        reg.set_pi_roster(ids[1], demo_roster());
+        assert_eq!(reg.pi_roster(ids[1]).as_deref(), Some(&demo_roster()));
+
+        reg.unregister("pc-b", "main", ids[1]).await;
+
+        assert!(reg.pi_roster(ids[1]).is_none());
+        assert_eq!(
+            reg.forward_pi_envelope("pc-b", pi_frame(1), Some("/demo@demo")),
+            Some(PiForwardRoute::FanOut {
+                recipients: 2,
+                fallback: true
+            })
+        );
+    }
+
+    /// The advertising connection is gone but not unregistered yet: its
+    /// channel refuses, and the fan-out reaches everyone else.
+    #[tokio::test]
+    async fn a_dead_advertising_connection_falls_back_to_the_rest() {
+        let (reg, ids, mut rxs) = roster_fixture().await;
+        reg.set_pi_roster(ids[0], demo_roster());
+        drop(rxs.remove(0));
+
+        assert_eq!(
+            reg.forward_pi_envelope("pc-b", pi_frame(1), Some("/demo@demo")),
+            Some(PiForwardRoute::FanOut {
+                recipients: 2,
+                fallback: true
+            })
+        );
+        assert!(rxs.iter_mut().all(has_frame));
+    }
+
+    /// A broker that owns nobody advertises exactly that. It is not a reason
+    /// to deliver to nobody: the fan-out still reaches everyone, so a sibling
+    /// broker that does own the address can answer.
+    #[tokio::test]
+    async fn an_empty_roster_falls_back_to_every_connection() {
+        let (reg, ids, mut rxs) = roster_fixture().await;
+        reg.set_pi_roster(ids[0], HashSet::new());
+
+        assert_eq!(
+            reg.forward_pi_envelope("pc-b", pi_frame(1), Some("/demo@demo")),
+            Some(PiForwardRoute::FanOut {
+                recipients: 3,
+                fallback: true
+            })
+        );
+        assert!(rxs.iter_mut().all(has_frame));
+    }
+
+    /// A panic elsewhere must not cost the rosters: until the next
+    /// `peers_update` every unicast would fall back to the fan-out.
+    #[tokio::test]
+    async fn a_poisoned_roster_map_keeps_its_rosters() {
+        let (reg, ids, mut rxs) = roster_fixture().await;
+        reg.set_pi_roster(ids[0], demo_roster());
+
+        let registry = &reg;
+        std::thread::scope(|scope| {
+            let poisoned = scope.spawn(move || {
+                let _guard = registry.pi_rosters.lock().unwrap();
+                panic!("poison the roster map");
+            });
+            assert!(poisoned.join().is_err());
+        });
+        assert!(reg.pi_rosters.is_poisoned());
+
+        assert_eq!(
+            reg.forward_pi_envelope("pc-b", pi_frame(1), Some("/demo@demo")),
+            Some(PiForwardRoute::Targeted(1))
+        );
+        assert!(has_frame(&mut rxs[0]));
+        assert!(!has_frame(&mut rxs[1]) && !has_frame(&mut rxs[2]));
+        assert!(!reg.pi_rosters.is_poisoned());
+        assert_eq!(reg.pi_roster(ids[0]).as_deref(), Some(&demo_roster()));
     }
 }

@@ -187,13 +187,58 @@ is at the path when it thaws.
   fails with the reason. Before, it took the path over and orphaned that
   leader.
 
+## Stage 2: relay routes a unicast by roster (follow-up PR)
+
+The issue's "proper, relay side" fix, built after #141 was merged.
+
+**Design**
+
+- **Learn who owns what.** Every `peers_update` a connection sends passes the
+  relay. `handle_pi_envelope` reads its addresses (bounded: at most 1024, each
+  at most 8 KiB; anything else is ignored) and remembers them for the
+  connection they came from (`PeerRegistry::set_pi_roster`).
+- **Deliver accordingly.** A unicast `to = "<pc>:<address>"` goes only to the
+  connections of the target key that advertise `address`
+  (`forward_pi_envelope` → `PiForwardRoute::Targeted`). When none does, every
+  connection gets it (`FanOut { fallback: true }`): slower to settle, never
+  wrong.
+- **Never narrowed**: control envelopes to `_broker_remote`, `broadcast`,
+  frames without a PC prefix.
+- **Forgotten with the connection**: `unregister` clears the roster.
+- **Policy**: the roster is routing state in memory. It is never logged
+  (only counts are) and never persisted, as `relay/CLAUDE.md` requires.
+
+**Why it is safe to roll out first**
+
+- An old extension already sends the rosters, and its unicast envelopes have
+  the `<pc>:<address>` shape.
+- An old relay behind a new extension keeps the fan-out; the extension's
+  grace covers that.
+
+**Acceptance**
+
+- [x] Unit: the roster is read from `peers_detailed` or the flat `peers`,
+  bounds and shape violations are ignored, only `_broker_remote` frames
+  count, and the address splits on the first colon (a Windows cwd keeps its
+  drive letter).
+- [x] Registry: a unicast to an advertised address reaches only that
+  connection; nobody advertises it, every connection; no local address, every
+  connection; a roster dies with its connection; a dead advertising
+  connection falls back to the rest.
+- [x] Through the real relay (WS): PC B has three connections under one key,
+  b1 advertises `/demo@demo`. A unicast to it reaches b1 only, an unknown
+  address and a control frame reach all three, and after b1 leaves the
+  address falls back to the rest.
+- [x] `cargo clippy --all-targets -- -D warnings` and `cargo test` green.
+
+**Rollout** (owner): rebuild the relay on the PC host and in Termux; no
+extension change needed. The relay's `cargo fmt --check` reports a
+pre-existing difference in `metrics.rs` under rustfmt 1.93 that this PR leaves
+alone.
+
 ## Next plans
 
-- **Relay-side routing** (the issue's "proper" fix). `pi_forward.rs` forwards
-  to every connection of the target key. Track each connection's roster from
-  the `peers_update` frames it sends, deliver a unicast only to connections
-  that advertise the target, and fall back to the fan-out when none does. Own
-  release and rollout (PC relay and phone relay).
+- **Relay-side routing**: done in the follow-up PR, see "Stage 2" above.
 - **The device daemon as preferred leader** (the issue's addition). Needs a
   decision before any code:
   - *Yield on request.* A peer marked `preferredLeader` (the daemon) asks the

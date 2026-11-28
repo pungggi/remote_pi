@@ -708,6 +708,7 @@ async fn handle_peer(socket: WebSocket, peer_addr: SocketAddr, state: AppState) 
                                     };
                                     match handle_pi_envelope(
                                         &peer_id,
+                                        conn_id,
                                         &frame,
                                         &registry,
                                         mesh.clone(),

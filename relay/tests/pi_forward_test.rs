@@ -657,6 +657,7 @@ async fn stored_malformed_member_shape_invalidates_whole_owner() {
         let error = transport_error_frame(
             handle_pi_envelope(
                 &a,
+                u64::MAX,
                 &frame,
                 &registry,
                 Arc::new(store),
@@ -695,5 +696,140 @@ async fn malformed_pi_envelope_returns_transport_error_bad_envelope() {
     assert!(
         frame["envelope"]["re"].is_null(),
         "re must be null when original id is unrecoverable"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Issue #140 — a unicast goes to the connection that advertises the address
+// ────────────────────────────────────────────────────────────────────────────
+
+/// A `peers_update` roster as a broker sends it to a sibling.
+fn roster_envelope(addresses: &[&str], id: &str) -> Value {
+    json!({
+        "from": "pc-b:_broker_remote",
+        "to": "pc-a:_broker_remote",
+        "id": id,
+        "re": null,
+        "body": {
+            "type": "peers_update",
+            "peers": addresses,
+            "peers_detailed": addresses
+                .iter()
+                .map(|address| json!({ "cwd": "/demo", "name": "demo", "address": address }))
+                .collect::<Vec<_>>(),
+        },
+    })
+}
+
+fn unicast(to: &str, id: &str) -> Value {
+    json!({
+        "from": "pc-a:/work@sender",
+        "to": to,
+        "id": id,
+        "re": null,
+        "body": { "type": "ping" },
+    })
+}
+
+/// Nothing arrives on `ws` for a quarter of a second.
+async fn assert_silent(ws: &mut common::WsStream, label: &str) {
+    assert!(
+        tokio::time::timeout(tokio::time::Duration::from_millis(250), ws.next())
+            .await
+            .is_err(),
+        "{label} must not receive the frame"
+    );
+}
+
+/// PC B has three connections under one key, as a phone has with several Pi
+/// processes. Only the first advertises `/demo@demo`. A unicast to that
+/// address must reach exactly that connection: the other brokers could only
+/// answer `denied`, and the first answer used to settle the send (#140).
+#[tokio::test]
+async fn unicast_reaches_only_the_connection_that_advertises_the_address() {
+    let port = start_relay().await;
+    let base_http = format!("http://127.0.0.1:{port}");
+
+    let owner = random_key();
+    let sk_a = random_key();
+    let sk_b = random_key();
+    let peer_a = B64.encode(sk_a.verifying_key().to_bytes());
+    let peer_b = B64.encode(sk_b.verifying_key().to_bytes());
+    publish_owner_blob(&base_http, &owner, &[&peer_a, &peer_b], 1).await;
+
+    let (mut ws_a, _) = connect_and_auth_with_key(port, &sk_a).await;
+    let (mut ws_b1, _) = connect_and_auth_with_key(port, &sk_b).await;
+    let (mut ws_b2, _) = connect_and_auth_with_key(port, &sk_b).await;
+    let (mut ws_b3, _) = connect_and_auth_with_key(port, &sk_b).await;
+    await_registered(&mut ws_a, "ws_a registration barrier").await;
+    await_registered(&mut ws_b1, "ws_b1 registration barrier").await;
+    await_registered(&mut ws_b2, "ws_b2 registration barrier").await;
+    await_registered(&mut ws_b3, "ws_b3 registration barrier").await;
+
+    // b1's broker publishes its roster to A. A receiving it proves the relay
+    // has recorded it: the record happens before the forward.
+    send_pi_envelope(
+        &mut ws_b1,
+        &peer_a,
+        roster_envelope(&["/demo@demo"], "00000000-0000-4000-8000-000000000030"),
+    )
+    .await;
+    let roster = recv_json(&mut ws_a, "ws_a roster").await;
+    assert_eq!(roster["envelope"]["body"]["type"], "peers_update");
+
+    // A unicast to the advertised address reaches b1 only.
+    let targeted = unicast("pc-b:/demo@demo", "00000000-0000-4000-8000-000000000031");
+    send_pi_envelope(&mut ws_a, &peer_b, targeted.clone()).await;
+    let frame = recv_json(&mut ws_b1, "ws_b1 targeted").await;
+    assert_eq!(frame["type"], "pi_envelope_in");
+    assert_eq!(frame["from_pc"], peer_a);
+    assert_eq!(frame["envelope"], targeted);
+    assert_silent(&mut ws_b2, "ws_b2").await;
+    assert_silent(&mut ws_b3, "ws_b3").await;
+
+    // A unicast nobody advertises falls back to every connection.
+    let unknown = unicast(
+        "pc-b:/nowhere@ghost",
+        "00000000-0000-4000-8000-000000000032",
+    );
+    send_pi_envelope(&mut ws_a, &peer_b, unknown.clone()).await;
+    for ws in [&mut ws_b1, &mut ws_b2, &mut ws_b3] {
+        assert_eq!(recv_json(ws, "fallback fan-out").await["envelope"], unknown);
+    }
+
+    // A control envelope between brokers is never narrowed.
+    let control = json!({
+        "from": "pc-a:_broker_remote",
+        "to": "pc-b:_broker_remote",
+        "id": "00000000-0000-4000-8000-000000000033",
+        "re": null,
+        "body": { "type": "peers_request" },
+    });
+    send_pi_envelope(&mut ws_a, &peer_b, control.clone()).await;
+    for ws in [&mut ws_b1, &mut ws_b2, &mut ws_b3] {
+        assert_eq!(recv_json(ws, "control fan-out").await["envelope"], control);
+    }
+
+    // b1 leaves. Its roster goes with it, so the address falls back to the
+    // connections that remain.
+    ws_b1.close(None).await.unwrap();
+    let mut fell_back = false;
+    for _ in 0..20 {
+        send_pi_envelope(&mut ws_a, &peer_b, targeted.clone()).await;
+        let arrived = tokio::time::timeout(tokio::time::Duration::from_millis(200), ws_b2.next())
+            .await
+            .is_ok();
+        if arrived {
+            assert_eq!(
+                recv_json(&mut ws_b3, "ws_b3 after fallback").await["envelope"],
+                targeted
+            );
+            fell_back = true;
+            break;
+        }
+    }
+    assert!(
+        fell_back,
+        "after b1 left, its address must reach every remaining connection"
     );
 }
