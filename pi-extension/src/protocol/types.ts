@@ -318,10 +318,10 @@ export type ClientMessage =
   | { type: "change_layout_request"; id: string; layout: string }
   // Plan/124 + plan/152 — bring an offline session back to life in its OWN
   // cwd (no new worktree, no pin). A registry-stored Pi session ID opens a
-  // terminal with `pi --session-id <id>` (opened or created: a session that
-  // was only opened has no file, issue #142); older rooms open the same
-  // visible terminal with `pi --continue` instead of hidden RPC. Both re-announce the
-  // same room. `name` scopes custom-named sessions (omit/default → legacy
+  // terminal with `pi --session-id <id>`: opened, or created when that
+  // session has no file (issue #142). Older rooms open the same visible
+  // terminal with `pi --continue` instead of hidden RPC. Both re-announce
+  // the same room. `name` scopes custom-named sessions (omit/default → legacy
   // cwd-only room). The request shape is unchanged by plan/152.
   | {
       type: "start_session_request";
